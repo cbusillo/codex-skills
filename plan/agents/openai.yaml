@@ -1,0 +1,7 @@
+interface:
+  display_name: "Local Plan"
+  short_description: "Legacy local/offline plan files"
+  default_prompt: "Use $plan only for explicit local/offline plan files; use $github-plan for durable GitHub issue-backed planning."
+
+policy:
+  allow_implicit_invocation: false
