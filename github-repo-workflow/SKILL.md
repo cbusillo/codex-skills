@@ -26,6 +26,8 @@ Default to PR-backed implementation work.
   credentials out of repos and committed config. Prefer an ignored local helper
   or credential manager that injects tokens transiently; do not rewrite
   persistent remotes to include tokens.
+- If `.local/github-repo-workflow.md` exists, read it before GitHub write
+  actions and follow its private local conventions.
 - For work the repository owner should see, include PR/issue links in the final
   response.
 
