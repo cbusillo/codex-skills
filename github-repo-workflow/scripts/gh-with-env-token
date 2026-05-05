@@ -17,8 +17,6 @@ if [ -z "${GH_TOKEN:-}" ]; then
 		GH_TOKEN=$CODEX_GITHUB_TOKEN
 	elif [ -n "${GITHUB_TOKEN:-}" ]; then
 		GH_TOKEN=$GITHUB_TOKEN
-	elif [ -n "${SHINY_CODE_BOT_PAT:-}" ]; then
-		GH_TOKEN=$SHINY_CODE_BOT_PAT
 	fi
 fi
 

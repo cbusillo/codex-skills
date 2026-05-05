@@ -36,8 +36,8 @@ Examples:
 
 ```text
 .local/profile.md
-.local/github.md
-github-repo-workflow/defaults.local.md
+.local/github-repo-workflow.md
+.local/github-plan.md
 ```
 
 When a skill needs local context, it should treat the local file as optional and
