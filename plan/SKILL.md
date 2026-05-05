@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Use only when the user explicitly asks for a local/offline plan file, wants to find/read/update/delete existing files in $CODEX_HOME/plans (default ~/.codex/plans), or says not to use GitHub. For ordinary durable planning, GitHub issue-backed planning, workstreams, roadmaps, milestones, labels, Projects, or cross-repo blockers, use the github-plan skill instead.
+description: Use only when the user explicitly asks for a local/offline plan file, wants to find/read/update/delete existing files in $CODEX_HOME/plans, or says not to use GitHub. For ordinary durable planning, GitHub issue-backed planning, workstreams, roadmaps, milestones, labels, Projects, or cross-repo blockers, use the github-plan skill instead.
 metadata:
   short-description: Manage local/offline plan files
 ---
@@ -25,7 +25,8 @@ This skill can also be used to draft codebase or system overviews.
 
 ## Core rules
 
-- Resolve the plans directory as `$CODEX_HOME/plans` or `~/.codex/plans` when `CODEX_HOME` is not set.
+- Resolve the plans directory as `$CODEX_HOME/plans` when set. Otherwise prefer
+  `~/.code/plans` when a Code home exists, then fall back to `~/.codex/plans`.
 - Create the plans directory if it does not exist.
 - Never write to the repo; only read files to understand context.
 - Require frontmatter with **only** `name` and `description` (single-line values) for on-disk plans.
@@ -133,7 +134,7 @@ python ./scripts/create_plan.py \
 Read frontmatter summary for a plan (run from the plan skill directory):
 
 ```bash
-python ./scripts/read_plan_frontmatter.py ~/.codex/plans/codex-rate-limit-overview.md
+python ./scripts/read_plan_frontmatter.py ~/.code/plans/codex-rate-limit-overview.md
 ```
 
 List plan summaries (optional filter; run from the plan skill directory):
