@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
+env_file=${CODEX_SKILLS_ENV_FILE:-$repo_root/.env}
+
+if [ -f "$env_file" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$env_file"
+	set +a
+fi
+
+if [ -z "${GH_TOKEN:-}" ]; then
+	if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+		GH_TOKEN=$CODEX_GITHUB_TOKEN
+	elif [ -n "${GITHUB_TOKEN:-}" ]; then
+		GH_TOKEN=$GITHUB_TOKEN
+	elif [ -n "${SHINY_CODE_BOT_PAT:-}" ]; then
+		GH_TOKEN=$SHINY_CODE_BOT_PAT
+	fi
+fi
+
+if [ -z "${GH_TOKEN:-}" ]; then
+	echo "Set GH_TOKEN, GITHUB_TOKEN, or CODEX_GITHUB_TOKEN in $env_file" >&2
+	exit 1
+fi
+
+export GH_TOKEN
+exec gh "$@"

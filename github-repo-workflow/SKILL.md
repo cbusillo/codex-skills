@@ -23,9 +23,10 @@ Default to PR-backed implementation work.
   branch pushes, PR creation/updates, issue creation/updates, comments, and
   labels. Fall back to the active human account only when the automation
   credential is unavailable or lacks permission, and say so. Keep bot
-  credentials out of repos and committed config. Prefer an ignored local helper
-  or credential manager that injects tokens transiently; do not rewrite
-  persistent remotes to include tokens.
+  credentials out of repos and committed config. Prefer
+  `scripts/gh-with-env-token`, an ignored local helper, or a credential manager
+  that injects tokens transiently; do not rewrite persistent remotes to include
+  tokens.
 - If `.local/github-repo-workflow.md` exists, read it before GitHub write
   actions and follow its private local conventions.
 - For work the repository owner should see, include PR/issue links in the final

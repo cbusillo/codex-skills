@@ -48,6 +48,26 @@ Avoid storing tokens or passwords even in ignored files. Prefer environment
 variables, credential helpers, or secret managers, and document only the variable
 names a skill expects.
 
+## GitHub Automation Token
+
+The GitHub workflow skill includes `github-repo-workflow/scripts/gh-with-env-token`,
+a small wrapper around `gh` that reads an ignored `.env` file and exports a token
+only for the command it runs.
+
+Copy `.env.example` to `.env` and set one of:
+
+- `GH_TOKEN`
+- `GITHUB_TOKEN`
+- `CODEX_GITHUB_TOKEN`
+
+Then call:
+
+```sh
+github-repo-workflow/scripts/gh-with-env-token pr view
+```
+
+The `.env` file is ignored by git. Do not commit real tokens.
+
 ## Public-Safety Checklist
 
 Before publishing or pushing a new skill, scan for:
