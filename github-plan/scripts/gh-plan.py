@@ -16,8 +16,7 @@ from typing import Any
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
-BOT_GH = pathlib.Path.home() / ".code/skills/github-repo-workflow/scripts/shiny-bot-gh"
-WORKSPACE_CONFIG = pathlib.Path.home() / ".code/github-planning.json"
+BOT_GH = SKILL_DIR.parent / "github-repo-workflow/scripts/gh-with-env-token"
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -68,6 +67,19 @@ def emit(payload: Any) -> None:
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
+def get_codex_home() -> pathlib.Path:
+    if os.environ.get("CODEX_HOME"):
+        return pathlib.Path(os.environ["CODEX_HOME"]).expanduser()
+    code_home = pathlib.Path("~/.code").expanduser()
+    if (code_home / "skills").is_dir() or (code_home / "plans").exists():
+        return code_home
+    return pathlib.Path("~/.codex").expanduser()
+
+
+def workspace_config_path() -> pathlib.Path:
+    return get_codex_home() / "github-planning.json"
+
+
 def run_raw(
     args: list[str],
     *,
@@ -76,14 +88,14 @@ def run_raw(
     prefer_active: bool = False,
     recoverable: bool = False,
 ) -> tuple[str, str, str]:
-    """Run gh through shiny-code-bot first, then active gh auth on failure."""
+    """Run gh through configured automation first, then active gh auth."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
     commands: list[tuple[str, list[str]]] = []
     if not prefer_active and BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1":
-        commands.append(("shiny-code-bot", [str(BOT_GH), *args]))
+        commands.append(("automation-gh", [str(BOT_GH), *args]))
     commands.append(("active-gh-user", ["gh", *args]))
     if prefer_active and BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1":
-        commands.append(("shiny-code-bot", [str(BOT_GH), *args]))
+        commands.append(("automation-gh", [str(BOT_GH), *args]))
 
     for actor, command in commands:
         proc = subprocess.run(
@@ -202,6 +214,7 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
 
 def load_config(repo: str | None = None) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
+    WORKSPACE_CONFIG = workspace_config_path()
     if WORKSPACE_CONFIG.exists():
         config = deep_merge(config, json.loads(WORKSPACE_CONFIG.read_text()))
     repo_config = repo_config_path(repo)

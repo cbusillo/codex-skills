@@ -32,7 +32,14 @@ def _request(url: str) -> bytes:
 
 
 def _codex_home() -> str:
-    return os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+    if os.environ.get("CODEX_HOME"):
+        return os.environ["CODEX_HOME"]
+    code_home = os.path.expanduser("~/.code")
+    if os.path.isdir(os.path.join(code_home, "skills")) or os.path.exists(
+        os.path.join(code_home, "plans")
+    ):
+        return code_home
+    return os.path.expanduser("~/.codex")
 
 
 def _installed_skills() -> set[str]:

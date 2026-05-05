@@ -22,7 +22,7 @@ plan or the work must not be written to GitHub.
 - Think in chat first; do not immediately create GitHub issues for fuzzy ideas.
 - Search before create; update an existing issue when the intent overlaps.
 - Promote durable work to one canonical issue with the `plan` label.
-- Optimize for Chris finishing work, not for cataloging every possible idea.
+- Optimize for the user finishing work, not for cataloging every possible idea.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions.
 - Use native GitHub dependencies and sub-issues for relationships, including
@@ -36,28 +36,16 @@ plan or the work must not be written to GitHub.
 
 ## Human Workflow
 
-Roles:
+If `.local/github-plan.md` exists, read it before creating, routing, or updating
+durable plan issues and follow its private local conventions.
 
-- `@cellmechanic` is Justin. He manages priority, sequencing, triage, and the
-  Project board for most of Chris's work.
-- `@Mbanks89` is Mike and owns Outboard Parts Warehouse and Sell Your Outboard;
-  OPW/SYO work should route to him rather than Justin by default.
-- `@TubeTester` is Rob and manages Verireel work.
-- Chris works with Code on execution and should not have to manage the system.
-- Code protects focus, captures branches without pivoting by default, and keeps
-  the re-entry point current.
+Use the `Manager` Project field for ownership by default when configured. Assign
+or mention a manager only when their attention is actually needed. Private repo
+items require repo access; Project access alone may not reveal private issue
+contents.
 
-Access model:
-
-- `@cellmechanic` has admin access to the `Code Plans` Project.
-- `@Mbanks89` has writer access to the `Code Plans` Project for OPW/SYO work.
-- Rob/`@TubeTester` is not expected to manage `Code Plans` unless that changes.
-- Private repo items also require repo access; Project access alone is not
-  enough to see private issue contents.
-- Use the `Manager` Project field for ownership by default. Assign or mention
-  the manager only when their attention is actually needed.
-
-Manager routing lives in `~/.code/github-planning.json` under
+Manager routing should live in workspace planning config such as
+`~/.code/github-planning.json` or `~/.codex/github-planning.json` under
 `workflow.default_manager` and `workflow.repo_managers`; update that JSON when
 manager routing changes.
 
@@ -68,18 +56,17 @@ Default session ritual:
 2. Pick one next action and start work.
 3. When a new idea appears, classify it as do now, acceptance criterion, related
    issue, or later. Do not pivot without an explicit decision.
-4. Before pausing, update `Current Status` so future Chris can resume quickly.
-5. Let `@cellmechanic`/Project fields handle management state; keep Chris in
-   maker mode.
+4. Before pausing, update `Current Status` so the user can resume quickly.
+5. Let Project fields handle management state; keep the user in maker mode.
 
 Use `Focus` in the Project as a simple attention lane:
 
-- `Now`: one thing Chris and Code are actively trying to finish.
-- `Next`: ready after Now or after `@cellmechanic` chooses it.
+- `Now`: one thing the user and Code are actively trying to finish.
+- `Next`: ready after Now or after the manager chooses it.
 - `Waiting`: blocked or awaiting an external decision/event.
 - `Later`: real but intentionally out of focus.
 
-Prefer at most one `Now` item unless `@cellmechanic` or Chris explicitly chooses a
+Prefer at most one `Now` item unless the user or manager explicitly chooses a
 parallel track.
 
 ## Token Discipline
@@ -148,13 +135,12 @@ Examples:
 ## Projects
 
 Projects are optional views. Add plans to Projects when the repo/workspace config
-defines a default Project or the user asks for Project tracking. The default
-workspace Project is `Code Plans`.
+defines a default Project or the user asks for Project tracking.
 
 Use only a few human-facing fields:
 
 - `Focus`: Now, Next, Waiting, or Later.
-- `Manager`: usually `@cellmechanic`.
+- `Manager`: configured human owner or reviewer.
 - `Finish Line`: compact observable done state.
 - `Roadmap Start`: coarse planning anchor for when work is or becomes active.
 - `Roadmap Target`: realistic target window when one is useful and honest.
@@ -163,10 +149,10 @@ Do not duplicate the whole issue body into Project fields.
 
 ### Roadmap Dates
 
-When maintaining `Code Plans`, keep roadmap dates useful for LLM-assisted coding
-without turning them into fake promises. Coding slices can often be dated in days
-rather than weeks, but integration, validation, external feedback, and UI/product
-judgment still need calendar space.
+When maintaining planning Projects, keep roadmap dates useful for LLM-assisted
+coding without turning them into fake promises. Coding slices can often be dated
+in days rather than weeks, but integration, validation, external feedback, and
+UI/product judgment still need calendar space.
 
 - `Now`: set `Roadmap Start` to today or the actual start date; set
   `Roadmap Target` to the plausible finish window when one exists.
@@ -181,10 +167,12 @@ dates when reality changes.
 
 ```sh
 ~/.code/skills/github-plan/scripts/gh-plan.py project-list --owner OWNER
-~/.code/skills/github-plan/scripts/gh-plan.py --repo OWNER/REPO project-add 123 \
+~/.code/skills/github-plan/scripts/gh-plan.py \
+  --repo OWNER/REPO project-add 123 \
   --owner OWNER --project "Roadmap"
-~/.code/skills/github-plan/scripts/gh-plan.py --repo OWNER/REPO project-set 123 \
-  --focus Now --manager @cellmechanic --finish-line "Observable done state"
+~/.code/skills/github-plan/scripts/gh-plan.py \
+  --repo OWNER/REPO project-set 123 \
+  --focus Now --manager @manager-login --finish-line "Observable done state"
 ```
 
 If GitHub reports missing `project` or `read:project` scope, say so and continue
