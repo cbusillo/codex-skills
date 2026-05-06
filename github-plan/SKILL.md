@@ -39,10 +39,12 @@ plan or the work must not be written to GitHub.
 If `.local/github-plan.md` exists, read it before creating, routing, or updating
 durable plan issues and follow its private local conventions.
 
-Use the `Manager` Project field for ownership by default when configured. Assign
-or mention a manager only when their attention is actually needed. Private repo
-items require repo access; Project access alone may not reveal private issue
-contents.
+Use the `Manager` Project field for the product/decision owner from planning
+config. When a specific human must do the next external task, such as account
+setup, credentials, vendor access, or business approval, assign the GitHub issue
+to that person. Mention someone in a comment only when their attention is needed
+now. Private repo items require repo access; Project access alone may not reveal
+private issue contents.
 
 Manager routing should live in workspace planning config such as
 `~/.code/github-planning.json` or `~/.codex/github-planning.json` under
