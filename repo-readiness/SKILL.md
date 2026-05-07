@@ -48,6 +48,8 @@ should not affect readiness for the active repo/branch.
    practical gate for the repo and change.
 5. If GitHub state matters, use `github-repo-workflow` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
+   For stacked PRs, include whether a rollup/integration PR would be safer or
+   faster than merging each layer and rerunning expensive checks repeatedly.
 6. If UI was touched, use `browser-ui-review` for browser-visible validation.
 7. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.

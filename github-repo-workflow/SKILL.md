@@ -92,6 +92,17 @@ Before merging any PR, do a fresh PR read and account for feedback:
   push
 - proceed only after explicit user approval for the merge action
 
+For stacked PRs, first identify whether the open PRs form a dependent chain
+such as `feature-c -> feature-b -> feature-a -> main`. If the stack is more
+than two PRs deep or expensive checks will rerun at every layer, propose a
+rollup/integration PR before merging the chain one by one. Create a branch from
+the final base, merge or cherry-pick the stack into that branch, open one PR to
+the protected/default branch, wait for checks once on the final combined result,
+then close the checkpoint PRs as superseded after the integration PR merges.
+Do not call this a squash unless commits are intentionally collapsed; preserving
+useful commits on the rollup branch with a normal merge commit is preferred for
+auditability.
+
 ## Merge Method Preference
 
 When the user asks whether work is ready to merge, interpret that as PR-backed
@@ -120,6 +131,11 @@ so: after a squash merge, local branches may show as ahead/behind because their
 original commits are patch-equivalent to `main` but not ancestors of `main`.
 That makes normal branch deletion and divergence checks less obvious. Use
 rebase merge rarely and only with explicit approval.
+
+When merging an approved short stack directly, merge top-down and wait for the
+next PR's refreshed required checks before continuing. Prefer the rollup PR path
+for long stacks, early MVP spines, or branches with slow security/static
+analysis workflows.
 
 ## Post-Merge Verification
 
@@ -214,6 +230,18 @@ non-secret repo config.
 gh pr view <number> --json number,title,state,isDraft,mergeStateStatus,labels,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeCommit,url
 gh issue view <number> --json number,title,state,labels,comments,url
 gh run view <run-id> --json status,conclusion,workflowName,headSha,url,jobs
+```
+
+Do not guess GitHub CLI JSON field names. `gh` prints the available fields when
+`--json` is omitted; use that to discover fields before composing a large query,
+especially across different `gh` versions or resources. If a field is missing
+such as `reviewThreads`, fall back to supported fields (`comments`, `reviews`,
+`statusCheckRollup`, `latestReviews`) or use `gh api graphql` for GraphQL-only
+data. A safe pattern is:
+
+```sh
+gh pr view <number> --repo OWNER/REPO --json 2>&1 | sed -n '/Available fields:/,$p'
+gh pr view <number> --repo OWNER/REPO --json number,title,url,comments,reviews,statusCheckRollup
 ```
 
 Prefer `statusCheckRollup` for the active PR and branch-specific runs before treating the latest repo-wide runs as relevant. When a deploy health endpoint reports a revision or tag, compare it with the merge commit, PR head, or branch SHA the task cares about.
