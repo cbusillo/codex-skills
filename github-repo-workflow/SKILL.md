@@ -145,6 +145,19 @@ default branch when repo config says to or when the task affects readiness,
 deploy, security, or shared quality. Inspect available GitHub security/quality
 signals before calling repo work fully closed.
 
+When checks or deploys are slow, keep moving without muddying the merge lane:
+
+- Keep the main checkout stable for the PR whose post-merge verification is in
+  progress.
+- Use read-only agents for next-issue discovery, dependency inspection, PR
+  review prep, docs lookup, or implementation planning while checks run.
+- Use isolated write worktrees/agents for the next implementation only when the
+  scope is clearly independent of the just-merged work. Rebase or merge latest
+  `main` into that task branch before opening or merging the next PR.
+- Do not let parallel work replace the required post-merge verification: return
+  to the original PR, record check/deploy/health evidence, and update any linked
+  issue or plan before calling it done.
+
 Report GitHub security/quality signal outcomes explicitly:
 
 - `clean`: checked and no relevant open findings.

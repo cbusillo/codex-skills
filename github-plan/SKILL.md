@@ -61,6 +61,12 @@ Default session ritual:
 4. Before pausing, update `Current Status` so the user can resume quickly.
 5. Let Project fields handle management state; keep the user in maker mode.
 
+When another repo workflow is waiting on CI, deploy, or post-merge health,
+parallelize planning safely: use read-only agents to inspect the next issue,
+dependency graph, or likely implementation path while the main checkout remains
+available for verification. Hand implementation back to the repo workflow before
+editing or merging.
+
 Use `Focus` in the Project as a simple attention lane:
 
 - `Now`: one thing the user and Code are actively trying to finish.
