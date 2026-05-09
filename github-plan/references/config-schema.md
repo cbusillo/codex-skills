@@ -53,6 +53,9 @@ Rules:
   user prose.
 - Use native GitHub dependencies and sub-issues as canonical relationships.
 - Projects are views. Do not require Project writes for planning to work.
+- LaunchPlane is not a published config surface in this version. If a future
+  release adds LaunchPlane settings, document the supported keys here and wire
+  them into `gh-plan.py` at the same time.
 - Put cross-repo defaults in the workspace config, not in a single repo.
 - Project fields should reduce human lostness. Prefer `Focus`, `Manager`, and
   `Finish Line`; avoid duplicating the whole issue body into fields.
