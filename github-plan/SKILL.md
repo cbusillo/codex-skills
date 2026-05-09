@@ -9,9 +9,15 @@ metadata:
 
 ## Purpose
 
-Use GitHub issues as the durable planning database and keep local/chat planning
-ephemeral. The model should reason with the user first, then create or update
-GitHub issues only when the work should survive the current conversation.
+Use GitHub issues as the durable planning database for all users and keep
+local/chat planning ephemeral. The model should reason with the user first,
+then create or update GitHub issues only when the work should survive the
+current conversation.
+
+Optional surfaces such as GitHub Projects or LaunchPlane may make the plan graph
+easier to scan, prioritize, or recover, but they are not separate planning
+backends. GitHub issues remain the canonical record for issue bodies, labels,
+relationships, blockers, and completion state.
 
 This skill supersedes the local file-backed `plan` skill for normal planning.
 Use local plan files only when the user explicitly requests an offline/local
@@ -27,7 +33,8 @@ plan or the work must not be written to GitHub.
   point for future sessions.
 - Use native GitHub dependencies and sub-issues for relationships, including
   cross-repo relationships.
-- Use Projects as a view layer, not the source of truth.
+- Use Projects and other configured surfaces as view layers, not sources of
+  truth.
 - Use milestones for release/phase/date buckets only.
 - Avoid dynamic labels. Use the fixed configured label set; ask before adding a
   new taxonomy.
@@ -59,9 +66,17 @@ Default session ritual:
 3. When a new idea appears, classify it as do now, acceptance criterion, related
    issue, or later. Do not pivot without an explicit decision.
 4. Before pausing, update `Current Status` so the user can resume quickly.
-5. Let Project fields handle management state; keep the user in maker mode.
+5. Let configured surface fields handle management state; keep the user in maker
+   mode.
 
-Use `Focus` in the Project as a simple attention lane:
+When another repo workflow is waiting on CI, deploy, or post-merge health,
+parallelize planning safely: use read-only agents to inspect the next issue,
+dependency graph, or likely implementation path while the main checkout remains
+available for verification. Hand implementation back to the repo workflow before
+editing or merging.
+
+Use the configured planning surface's focus or attention-lane concept as a
+simple priority lane. In GitHub Projects this is the `Focus` field:
 
 - `Now`: one thing the user and Code are actively trying to finish.
 - `Next`: ready after Now or after the manager chooses it.
@@ -134,7 +149,24 @@ Examples:
   link 42 subissue OWNER/PLATFORM_REPO#17
 ```
 
-## Projects
+## Planning Surfaces
+
+Planning surfaces are optional views over the same GitHub-backed plan data. They
+may help people choose work, inspect roadmap shape, or recover context, but they
+must not replace the GitHub issue as the durable record.
+
+If a private/local surface workflow is unavailable, inaccessible, read-only, or
+missing credentials, continue with issue-backed planning. Do not mention an
+unavailable surface unless the user asked about it or the local integration
+failed while being used.
+
+Workspace-local skills and private config may prefer a surface such as
+LaunchPlane as the first place to orient, choose `Now`, or inspect roadmap state.
+Even in those LaunchPlane-first workflows, write durable status, blockers,
+acceptance criteria, dependencies, PR relationships, and completion state back to
+GitHub issues.
+
+## GitHub Projects
 
 Projects are optional views. Add plans to Projects when the repo/workspace config
 defines a default Project or the user asks for Project tracking.
@@ -180,6 +212,21 @@ dates when reality changes.
 If GitHub reports missing `project` or `read:project` scope, say so and continue
 with issue-backed planning.
 
+## LaunchPlane
+
+LaunchPlane is an optional planning surface. Public/shared skills must work
+fully without LaunchPlane access. When local config or a private skill makes
+LaunchPlane the preferred cockpit, use it for orientation, focus, roadmap, and
+recovery, then use GitHub issues for canonical durable mutations.
+
+Shared `github-plan` does not define LaunchPlane API calls or a published
+LaunchPlane config contract by itself. Use LaunchPlane only when a private skill,
+local reference, or configured script provides the read path. Start with
+read-only LaunchPlane behavior: status checks, opening views, and selecting the
+active GitHub issue. Keep durable plan prose, relationships, blockers, labels,
+and completion truth in GitHub issues unless a later, code-backed workflow
+explicitly defines and documents a sync contract.
+
 ## Workflow
 
 1. Decide whether the work is ephemeral or durable. Keep ephemeral planning in
@@ -192,7 +239,7 @@ with issue-backed planning.
 5. Use `update-section` to keep `Current Status`, acceptance criteria,
    decisions, and validation current.
 6. Use `link`, `unlink`, and `deps` for blockers and cross-repo relationships.
-7. Add to Projects only as a view/tracking layer.
+7. Add to configured surfaces only as view/tracking layers.
 8. When work completes, update status and close or relabel the issue; do not
    leave stale local plan files behind.
 
