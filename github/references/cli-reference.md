@@ -54,6 +54,10 @@ EOF
 For timeline comments, use `scripts/gh-comment`. For PR review feedback, use
 `gh pr review --body-file`.
 
+`scripts/gh-issue` routes through `scripts/gh-with-env-token` by default so it
+uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
+special local cases where a different `gh` executable should be used.
+
 Avoid passing escaped `\n` through shell-quoted `--body`. Also avoid unquoted
 heredocs like `<<EOF` for Markdown bodies: shell command substitution runs
 inside backticks before the body reaches GitHub. Use `<<'EOF'` for literal
