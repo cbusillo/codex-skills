@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "status": "no_context",
+  "provider": "launchplane",
+  "generated_at": "2026-01-02T03:04:05Z",
+  "request": {
+    "repository": "example-org/example-app"
+  },
+  "summary": {
+    "recommendation": "Continue without Launchplane context."
+  },
+  "sections": {},
+  "links": [],
+  "warnings": [
+    {
+      "code": "missing_config",
+      "message": "Launchplane context is not configured."
+    }
+  ]
+}

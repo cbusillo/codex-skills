@@ -75,6 +75,9 @@ Before publishing or pushing a new skill, scan for:
 - personal home paths
 - private repository, organization, client, or project names
 - tokens, keys, passwords, and copied command output containing secrets
+- Launchplane-derived context such as internal hostnames, product/context names,
+  private repo names, branch names, issue titles, work-request ids, provider
+  details, and copied operational context
 - generated local runtime files
 - files under `.system/`, `.local/`, or `.disabled/`
 
