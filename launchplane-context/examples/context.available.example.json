@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "status": "available",
+  "provider": "launchplane",
+  "generated_at": "2026-01-02T03:04:05Z",
+  "request": {
+    "repository": "example-org/example-app",
+    "branch": "feature/example-preview",
+    "issue_number": 123,
+    "pr_number": 456
+  },
+  "summary": {
+    "recommendation": "Inspect the linked pull request before starting new work.",
+    "safe_to_start": false,
+    "state": "waiting",
+    "blocked_by": "Preview readiness is waiting on required checks.",
+    "source_of_truth_url": "https://github.com/example-org/example-app/pull/456"
+  },
+  "sections": {
+    "repo_product_mapping": {
+      "status": "available",
+      "repositories": [
+        {
+          "repository": "example-org/example-app",
+          "classification": "managed_runtime",
+          "product_key": "example-app",
+          "driver_id": "generic-web",
+          "source_url": "https://github.com/example-org/example-app"
+        }
+      ]
+    },
+    "work_graph": {
+      "status": "available",
+      "items": [
+        {
+          "source_of_truth_url": "https://github.com/example-org/example-app/issues/123",
+          "state": "waiting",
+          "safe_to_start": false,
+          "next_action": "Wait for preview readiness to pass required checks.",
+          "why_now": "The issue is already in progress and has a linked preview request."
+        }
+      ]
+    },
+    "every_code": {
+      "status": "available",
+      "requests": [
+        {
+          "state": "running",
+          "source_issue_url": "https://github.com/example-org/example-app/issues/123",
+          "result_pr_url": "https://github.com/example-org/example-app/pull/456",
+          "summary_status": "Preview validation is waiting on checks."
+        }
+      ]
+    },
+    "preview_readiness": {
+      "status": "available",
+      "items": [
+        {
+          "status": "waiting_on_checks",
+          "source_of_truth_url": "https://github.com/example-org/example-app/pull/456",
+          "detail": "Preview readiness is waiting on required checks."
+        }
+      ]
+    }
+  },
+  "links": [
+    {
+      "label": "Pull request",
+      "url": "https://github.com/example-org/example-app/pull/456",
+      "kind": "github_pr"
+    }
+  ],
+  "warnings": []
+}
