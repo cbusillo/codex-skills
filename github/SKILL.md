@@ -35,9 +35,10 @@ Use PRs for all non-trivial code changes.
   expensive checks or create avoidable conflict churn.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
-- **Formatting**: Use `scripts/gh-comment` or `--body-file` for multiline
-  issue and PR timeline comments. For PR review feedback, use
-  `gh pr review --body-file`.
+- **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,
+  `scripts/gh-comment` for issue and PR timeline comments, and
+  `gh pr review --body-file` for PR review feedback. Avoid unquoted heredocs
+  for Markdown bodies because shell command substitution runs inside backticks.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 
@@ -56,6 +57,7 @@ Always prefer the bundled scripts for structured state and safe formatting:
 - `scripts/gh-plan.py`: Issue and Project management (see `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
+- `scripts/gh-issue`: Safe multiline issue create/edit bodies from stdin.
 - `scripts/gh-comment`: Safe multiline commenting.
 
 ## Workflow Loop
