@@ -7,6 +7,7 @@
 !**/*.local.example.*
 
 .disabled/
+.code/
 .DS_Store
 .env
 .env.*

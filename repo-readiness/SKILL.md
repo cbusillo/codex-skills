@@ -23,7 +23,10 @@ Leave the user with a truthful readiness answer:
 
 1. Identify the repo, branch, active task, changed files, and whether a PR/issue
    is in play.
-2. Check `.github/github.json` when present before inferring gates.
+2. Check `.github/github.json` when present before inferring gates. If only the
+   legacy `.github/github-repo-workflow.json` exists, read it as the same
+   metadata shape and suggest migrating to `.github/github.json` only when
+   metadata is already being updated.
    If it has a `qualityGate` block, use it for how to run tests, lint/static
    analysis, format checks, typechecks, builds, and IDE/static inspections. Use
    `qualityGate.docsRequiredWhen` for docs freshness triggers. If it has a
@@ -31,7 +34,7 @@ Leave the user with a truthful readiness answer:
    entry points. Fall back to repo instructions (`AGENTS.md`, README,
    docs/policies/gates), CI files, and manifests for any unset metadata fields.
    If a durable command is confidently inferred, cite the source and propose a
-   `.github/github.json` addition rather than auto-writing it.
+   metadata addition rather than auto-writing it.
 3. Inspect local state:
 
 ```bash
@@ -103,10 +106,11 @@ cannot be fixed cleanly, discuss an explicit suppression, baseline, or config
 change.
 
 When work changes docs routing, validation commands, lint/inspection routing,
-required docs conditions, important workflows, health endpoints, repo relationships, cleanup
-policy, or ownership boundaries, check whether `.github/github.json`
-is stale. Report metadata drift as a readiness warning or blocker only when it
-changes what "ready" means for the current task.
+required docs conditions, important workflows, health endpoints, repo
+relationships, cleanup policy, or ownership boundaries, check whether
+`.github/github.json` or legacy `.github/github-repo-workflow.json` is stale.
+Report metadata drift as a readiness warning or blocker only when it changes
+what "ready" means for the current task.
 
 For every non-trivial code change, perform a docs-impact check. If docs-required
 triggers match, inspect the relevant docs and update them when stale. If no docs

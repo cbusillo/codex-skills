@@ -36,7 +36,10 @@ Use PRs for all non-trivial code changes.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-comment` or `--body-file` for multiline
-  issue, PR, and review comments.
+  issue and PR timeline comments. For PR review feedback, use
+  `gh pr review --body-file`.
+- **Workflow Detail**: See `references/repo-workflow.md` for orientation,
+  PR/check/review handling, and cleanup guardrails.
 
 ## Diagnostics & Hygiene
 
@@ -49,6 +52,7 @@ Use PRs for all non-trivial code changes.
 ## Tools & Scripts
 
 Always prefer the bundled scripts for structured state and safe formatting:
+
 - `scripts/gh-plan.py`: Issue and Project management (see `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.

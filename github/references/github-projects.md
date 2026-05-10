@@ -16,7 +16,8 @@ Use the `Focus` field to indicate the current priority of a plan:
 ## Manager Routing
 
 The `Manager` field should hold the human owner or reviewer. Resolve this from:
-- `~/.code/githubning.json` (`workflow.default_manager` or `workflow.repo_managers`)
+
+- `~/.code/github-planning.json` (`workflow.default_manager` or `workflow.repo_managers`)
 - Repository instructions or `AGENTS.md`.
 
 ## Roadmap Dates

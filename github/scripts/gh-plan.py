@@ -54,6 +54,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
+PLANNING_KEYS = {"labels", "label_defs", "project", "workflow"}
+
 
 class PlanError(Exception):
     pass
@@ -81,7 +83,7 @@ def get_codex_home() -> pathlib.Path:
 
 
 def workspace_config_path() -> pathlib.Path:
-    return get_codex_home() / "githubning.json"
+    return get_codex_home() / "github-planning.json"
 
 
 def run_raw(
@@ -207,25 +209,35 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
         repo_name = repo.split("/", 1)[1]
         candidates.append(pathlib.Path.home() / "Developer" / repo_name)
     for candidate in candidates:
-        path = candidate / ".github/github.json"
-        if not path.exists():
-            continue
         if repo and repo_from_git(candidate) != repo:
             continue
-        return path
+        for path in (
+            candidate / ".github/github.json",
+            candidate / ".github/github-repo-workflow.json",
+        ):
+            if path.exists():
+                return path
     return None
 
 
 def load_config(repo: str | None = None) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
-    WORKSPACE_CONFIG = workspace_config_path()
-    if WORKSPACE_CONFIG.exists():
-        config = deep_merge(config, json.loads(WORKSPACE_CONFIG.read_text()))
+    workspace_config = workspace_config_path()
+    if workspace_config.exists():
+        config = deep_merge(config, json.loads(workspace_config.read_text()))
     repo_config = repo_config_path(repo)
     if repo_config and repo_config.exists():
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
             config = deep_merge(config, data["planning"])
+        elif repo_config.name == "github-repo-workflow.json":
+            legacy_planning = {
+                key: data[key]
+                for key in PLANNING_KEYS
+                if isinstance(data.get(key), dict)
+            }
+            if legacy_planning:
+                config = deep_merge(config, legacy_planning)
     return config
 
 

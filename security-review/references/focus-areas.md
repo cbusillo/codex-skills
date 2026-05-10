@@ -9,6 +9,9 @@ technologies and project types.
   boundaries.
 - **Elevation**: Usage of `sudo`, `with_user`, and context flags that bypass
   security.
+- **Computed Fields**: Stored/computed fields that expose restricted data or
+  recompute under elevated users.
+- **Import/Export**: CSV/import/export paths that bypass normal UI controls.
 - **Surface Area**: Public controllers/routes, portal flows, JSON endpoints, and
   file handling.
 - **Sensitive Data**: Secrets in `ir.config_parameter`, env files, logs,
@@ -33,6 +36,8 @@ technologies and project types.
 
 - **Authority**: Secret records, runtime environment authority, and promotion
   logic.
+- **Credential Separation**: Separation between deploy/operator credentials and
+  app/runtime credentials.
 - **Resilience**: Backup gates, restore flows, and fail-closed behavior.
 - **Audit**: Auditability of sensitive changes to secrets or deployment
   pipelines.
@@ -40,6 +45,9 @@ technologies and project types.
 ## Infrastructure
 
 - **Docker**: Build secrets, layer leakage, source injection, and base image
-  trust.
-- **Packages**: Dependency pinning, lockfile integrity, and live-credential
-  leakage in tests.
+  trust. Use real image inspection when Dockerfile reasoning is not enough.
+- **Image Contracts**: Entrypoint behavior, user permissions, exposed files, and
+  downstream image-contract expectations.
+- **Packages**: PyPI trusted publishing, release tags, workflow permissions,
+  token handling, dependency pinning/locking, archive contents, and
+  live-credential leakage in tests.

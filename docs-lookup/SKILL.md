@@ -21,6 +21,11 @@ Use this skill for:
 - bug fixes where a library, provider, or CLI may have changed behavior
 - tasks that involve fast-moving ecosystems where the agent's internal training
   data may be stale or imprecise.
+- tasks that mention Odoo, JetBrains APIs, Next.js, React, Prisma, Mantine,
+  Docker, GitHub Actions, uv, PyPI, Dokploy, Launchplane, Stripe, Shopify,
+  RepairShopr, Fishbowl, or similar tools.
+- tasks involving local/private infrastructure docs; use `LOCAL_INFRA_DOCS`
+  routing from `references/routing.md` when configured.
 
 Do not use this skill for stable local repo facts that can be answered directly
 from checked-in code or docs.
@@ -78,9 +83,16 @@ falling back to repo-root search. Prefer `docs.index` as the entry point, then
 relevant semantic paths such as `docs.architecture`, `docs.operations`,
 `docs.style`, or `docs.policies`.
 
-Always check the repository's `AGENTS.md` and `docs/README.md` before using
-external docs for local-specific architecture or operational questions. If
-metadata is missing or stale, suggest a refresh instead of guessing.
+Always check the repository's `AGENTS.md` before using external docs for
+local-specific architecture or operational questions. Treat README files as
+human-facing by default, but keep them as a normal local fallback when repo
+metadata and `AGENTS.md` do not cover the needed operational or architecture
+context. When README carries agent-operational guidance that is not captured in
+`AGENTS.md` or repo metadata, note that as a repo-docs follow-up instead of
+ignoring it.
+
+For technology-specific routing, including optional local infrastructure docs,
+see `references/routing.md`.
 
 ## Quality Rules
 
