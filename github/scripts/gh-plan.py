@@ -208,9 +208,13 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
     for candidate in candidates:
         if repo and repo_from_git(candidate) != repo:
             continue
-        path = candidate / ".github/github.json"
-        if path.exists():
-            return path
+        for relative_path in (
+            pathlib.Path(".github/github.json"),
+            pathlib.Path(".github/github-repo-workflow.json"),
+        ):
+            path = candidate / relative_path
+            if path.exists():
+                return path
     return None
 
 
