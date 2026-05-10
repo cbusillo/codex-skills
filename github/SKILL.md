@@ -38,6 +38,8 @@ Use PRs for all non-trivial code changes.
 - **Formatting**: Use `scripts/gh-comment` or `--body-file` for multiline
   issue and PR timeline comments. For PR review feedback, use
   `gh pr review --body-file`.
+- **Workflow Detail**: See `references/repo-workflow.md` for orientation,
+  PR/check/review handling, and cleanup guardrails.
 
 ## Diagnostics & Hygiene
 

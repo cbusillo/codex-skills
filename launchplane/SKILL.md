@@ -21,13 +21,16 @@ readiness.
 - **Usage**: `uv run scripts/launchplane-context.py --repo OWNER/REPO`
 - **Output**: See `references/context.available.example.json` for schema.
 - **Reporting**: Report readiness, blockers, and next action based on context.
+- **Contract**: See `references/context-helper-contract.md` for config,
+  fallback, and redaction behavior.
 
 ## Runtime Management (Operator)
 
 Mutate runtime environments, managed secrets, and product config.
 
 - **Safety**: Strictly follow the `references/operator-contract.md`.
-- **Auth**: Use the `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`.
+- **Auth**: Source local operator credentials through the operator contract;
+  do not paste token values into chat, issues, PRs, docs, or logs.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
   2. Build a product-config request.

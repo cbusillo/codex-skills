@@ -78,12 +78,12 @@ Launchplane, and infrastructure components.
 Before applying generic focus areas, check for repository-specific security
 documentation and policies:
 
-1.  **`.github/github.json`**: Check the `docs` block for handles
+1. **`.github/github.json`**: Check the `docs` block for handles
     like `secrets`, `architecture`, or `policies`. Use these paths to find the
     repo's primary security contracts.
-2.  **`AGENTS.md`**: Look for security guardrails and ownership boundaries
+2. **`AGENTS.md`**: Look for security guardrails and ownership boundaries
     specific to the current repository.
-3.  **Repo Docs**: Read linked security policies (e.g., `docs/secrets.md` or
+3. **Repo Docs**: Read linked security policies (e.g., `docs/secrets.md` or
     `docs/policies/security.md`) to ground the review in the project's established
     safety standards.
 
@@ -104,8 +104,9 @@ focus areas.
 ### Local infrastructure
 
 - For local Mac, home-lab, network, Proxmox/LXC, backup, or service security,
-  use `claude-local-machine` docs as the local source of truth and start
-  read-only unless the user explicitly approves mutation.
+  use the docs path configured in `LOCAL_INFRA_DOCS` as the local source of
+  truth when present, and start read-only unless the user explicitly approves
+  mutation.
 
 ## Guardrails
 
