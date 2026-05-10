@@ -21,9 +21,11 @@ Use this skill for:
 - bug fixes where a library, provider, or CLI may have changed behavior
 - tasks that involve fast-moving ecosystems where the agent's internal training
   data may be stale or imprecise.
-- tasks involving technologies covered by `references/routing.md`, such as
-  web frameworks, deployment tooling, package managers, and local/private
-  infrastructure docs.
+- tasks that mention Odoo, JetBrains APIs, Next.js, React, Prisma, Mantine,
+  Docker, GitHub Actions, uv, PyPI, Dokploy, Launchplane, Stripe, Shopify,
+  RepairShopr, Fishbowl, or similar tools.
+- tasks involving local/private infrastructure docs; use `LOCAL_INFRA_DOCS`
+  routing from `references/routing.md` when configured.
 
 Do not use this skill for stable local repo facts that can be answered directly
 from checked-in code or docs.

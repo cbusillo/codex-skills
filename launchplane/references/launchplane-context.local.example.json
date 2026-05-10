@@ -1,4 +1,5 @@
 {
+  "_comment": "Example helper input config only; this is not emitted context output.",
   "service_url": "https://launchplane.example.invalid",
   "token_env": "LAUNCHPLANE_CONTEXT_TOKEN",
   "subject_env": "LAUNCHPLANE_CONTEXT_SUBJECT",

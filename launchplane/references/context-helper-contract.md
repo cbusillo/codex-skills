@@ -36,7 +36,8 @@ Default environment variables:
 
 A local config file may use the same shape as
 `references/launchplane-context.local.example.json` and should be stored in an
-ignored/private location.
+ignored/private location. That file is a helper input config example, not an
+example of emitted helper output.
 
 ## Exit And Fallback
 
