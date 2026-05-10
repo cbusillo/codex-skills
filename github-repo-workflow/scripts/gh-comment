@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: gh-comment issue|pr NUMBER [--repo OWNER/REPO] [--edit-last] [--create-if-none]
+
+Read a GitHub issue or PR comment body from stdin and post it with gh
+--body-file, preserving real newlines and Markdown formatting.
+USAGE
+}
+
+if [[ $# -lt 2 ]]; then
+  usage >&2
+  exit 2
+fi
+
+kind="$1"
+number="$2"
+shift 2
+
+case "$kind" in
+  issue|pr) ;;
+  *)
+    echo "error: first argument must be 'issue' or 'pr'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+tmp_body="$(mktemp)"
+cleanup() {
+  rm -f "$tmp_body"
+}
+trap cleanup EXIT
+
+cat >"$tmp_body"
+
+if [[ ! -s "$tmp_body" ]]; then
+  echo "error: comment body is empty" >&2
+  exit 2
+fi
+
+gh "$kind" comment "$number" --body-file "$tmp_body" "$@"

@@ -329,6 +329,8 @@ reviews, and inline threads before deciding what to change.
   thread/comment status, and proposed fix.
 - Ask before posting GitHub replies, resolving threads, or dismissing feedback
   unless the user explicitly asked to handle review comments end-to-end.
+- For multiline GitHub comments, use the bundled `scripts/gh-comment` helper or
+  `--body-file`; never pass escaped `\n` through `--body`.
 - If both review feedback and CI failures are present, address actionable review
   feedback first when the fix will create a new SHA; avoid rerunning checks on
   an old SHA that is about to be replaced.
@@ -369,7 +371,9 @@ Allowed without asking:
   the task.
 - Update a PR body with current scope, verification, screenshots, and open
   questions.
-- Add factual PR or issue comments with verification state or links.
+- Add factual PR or issue comments with verification state or links. For
+  multiline comments, use `scripts/gh-comment` or `--body-file`; never pass
+  escaped `\n` through `--body`.
 - Run `git fetch --prune`.
 - Remove a clean local worktree for a PR that is already merged only when repo
   config sets `cleanup.removeMergedCleanWorktrees` to `true`. Otherwise report
@@ -411,6 +415,18 @@ and passing it with the relevant `--body-file` flag when the `gh` subcommand
 supports it. This is the most reliable path for PRs, issues, releases, and
 comments because it preserves blank lines, lists, and code fences without
 depending on shell-specific quoting.
+
+For issue and PR comments, prefer the bundled helper, which reads the body from
+stdin and uses `--body-file` internally:
+
+```sh
+cat <<'EOF' | ~/.code/skills/github-repo-workflow/scripts/gh-comment issue 42 --repo OWNER/REPO
+Line one
+
+## Summary
+- Item
+EOF
+```
 
 Prefer one of these:
 

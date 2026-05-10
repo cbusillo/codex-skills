@@ -100,6 +100,10 @@ Executable code (Python/Bash/etc.) for tasks that require deterministic reliabil
 - **Benefits**: Token efficient, deterministic, may be executed without loading into context
 - **Note**: Scripts may still need to be read by Codex for patching or environment-specific adjustments
 
+When a workflow depends on fragile CLI payloads such as multiline Markdown,
+JSON, or shell-sensitive quoting, prefer a helper script that reads stdin or a
+file over teaching quoting tricks in prose.
+
 ##### References (`references/`)
 
 Documentation and reference material intended to be loaded as needed into context to inform Codex's process and thinking.
