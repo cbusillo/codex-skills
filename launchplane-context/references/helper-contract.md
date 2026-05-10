@@ -22,6 +22,24 @@ The exact script path is intentionally undefined in this contract. Public skills
 should call a shared helper once it exists instead of embedding Launchplane API
 requests in each `SKILL.md`.
 
+## Configuration
+
+The helper should work without configuration and return `no_context`. Private
+configuration may come from environment variables or an ignored local JSON file.
+Public examples must use fake hostnames only.
+
+Default environment variables:
+
+- `LAUNCHPLANE_CONTEXT_URL`: Launchplane service base URL.
+- `LAUNCHPLANE_CONTEXT_TOKEN`: read-only Launchplane context token.
+- `LAUNCHPLANE_CONTEXT_SUBJECT`: optional terminal-agent subject header value.
+- `LAUNCHPLANE_CONTEXT_TOKEN_LABEL`: optional terminal-agent token-label header
+  value.
+
+A local config file may use the same shape as
+`launchplane-context/examples/launchplane-context.local.example.json` and should
+be stored in an ignored/private location.
+
 ## Exit Codes
 
 - `0`: helper completed and emitted a valid JSON payload. This includes the
