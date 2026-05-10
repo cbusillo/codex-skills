@@ -1,11 +1,8 @@
 # GitHub Plan Config Schema
 
-Planning config may live in `.github/github.json` under the
-`planning` key for repo-local policy, and in `~/.code/github-planning.json` for
-workspace defaults. Repo-local values override workspace defaults.
-
-For compatibility, helpers also read legacy `.github/github-repo-workflow.json`
-when `.github/github.json` is absent.
+Planning config lives in `.github/github.json` under the `planning` key for
+repo-local policy, and in `~/.code/github-planning.json` for workspace defaults.
+Repo-local values override workspace defaults.
 
 ```json
 {

@@ -54,9 +54,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
-PLANNING_KEYS = {"labels", "label_defs", "project", "workflow"}
-
-
 class PlanError(Exception):
     pass
 
@@ -211,12 +208,9 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
     for candidate in candidates:
         if repo and repo_from_git(candidate) != repo:
             continue
-        for path in (
-            candidate / ".github/github.json",
-            candidate / ".github/github-repo-workflow.json",
-        ):
-            if path.exists():
-                return path
+        path = candidate / ".github/github.json"
+        if path.exists():
+            return path
     return None
 
 
@@ -230,14 +224,6 @@ def load_config(repo: str | None = None) -> dict[str, Any]:
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
             config = deep_merge(config, data["planning"])
-        elif repo_config.name == "github-repo-workflow.json":
-            legacy_planning = {
-                key: data[key]
-                for key in PLANNING_KEYS
-                if isinstance(data.get(key), dict)
-            }
-            if legacy_planning:
-                config = deep_merge(config, legacy_planning)
     return config
 
 

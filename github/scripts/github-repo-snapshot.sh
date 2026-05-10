@@ -128,8 +128,6 @@ current_branch="$(git branch --show-current 2>/dev/null || true)"
 if [[ -z "$config_path" ]]; then
   if [[ -f ".github/github.json" ]]; then
     config_path=".github/github.json"
-  elif [[ -f ".github/github-repo-workflow.json" ]]; then
-    config_path=".github/github-repo-workflow.json"
   fi
 fi
 
@@ -149,8 +147,6 @@ if [[ -n "$config_path" ]]; then
 
   if [[ "$config_path" == ".github/github.json" && -f ".github/github.override.json" ]]; then
     config_override_path=".github/github.override.json"
-  elif [[ "$config_path" == ".github/github-repo-workflow.json" && -f ".github/github-repo-workflow.override.json" ]]; then
-    config_override_path=".github/github-repo-workflow.override.json"
   fi
 
   if [[ -n "$config_override_path" ]]; then
