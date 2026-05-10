@@ -1,8 +1,11 @@
 # GitHub Plan Config Schema
 
 Planning config may live in `.github/github.json` under the
-`planning` key for repo-local policy, and in `~/.code/githubning.json` for
+`planning` key for repo-local policy, and in `~/.code/github-planning.json` for
 workspace defaults. Repo-local values override workspace defaults.
+
+For compatibility, helpers also read legacy `.github/github-repo-workflow.json`
+when `.github/github.json` is absent.
 
 ```json
 {
@@ -61,5 +64,5 @@ Rules:
   `Finish Line`; avoid duplicating the whole issue body into fields.
 - Use `workflow.repo_managers` for repo-specific human ownership. Fall back to
   `workflow.default_manager` only when a repo has no specific manager.
-- Live manager routing belongs in `~/.code/githubning.json`; keep this
+- Live manager routing belongs in `~/.code/github-planning.json`; keep this
   reference generic so ownership changes do not require doc edits.

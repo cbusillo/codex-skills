@@ -81,7 +81,7 @@ def get_codex_home() -> pathlib.Path:
 
 
 def workspace_config_path() -> pathlib.Path:
-    return get_codex_home() / "githubning.json"
+    return get_codex_home() / "github-planning.json"
 
 
 def run_raw(
@@ -207,12 +207,14 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
         repo_name = repo.split("/", 1)[1]
         candidates.append(pathlib.Path.home() / "Developer" / repo_name)
     for candidate in candidates:
-        path = candidate / ".github/github.json"
-        if not path.exists():
-            continue
         if repo and repo_from_git(candidate) != repo:
             continue
-        return path
+        for path in (
+            candidate / ".github/github.json",
+            candidate / ".github/github-repo-workflow.json",
+        ):
+            if path.exists():
+                return path
     return None
 
 
