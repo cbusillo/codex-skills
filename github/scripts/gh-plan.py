@@ -80,12 +80,8 @@ def get_codex_home() -> pathlib.Path:
     return pathlib.Path("~/.codex").expanduser()
 
 
-def workspace_config_paths() -> list[pathlib.Path]:
-    home = get_codex_home()
-    return [
-        home / "github-planning.json",
-        home / "githubning.json",
-    ]
+def workspace_config_path() -> pathlib.Path:
+    return get_codex_home() / "github-planning.json"
 
 
 def run_raw(
@@ -224,10 +220,9 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
 
 def load_config(repo: str | None = None) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
-    for workspace_config in workspace_config_paths():
-        if workspace_config.exists():
-            config = deep_merge(config, json.loads(workspace_config.read_text()))
-            break
+    workspace_config = workspace_config_path()
+    if workspace_config.exists():
+        config = deep_merge(config, json.loads(workspace_config.read_text()))
     repo_config = repo_config_path(repo)
     if repo_config and repo_config.exists():
         data = json.loads(repo_config.read_text())
