@@ -54,7 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
-PLANNING_KEYS = {"labels", "label_defs", "projects", "project_fields", "workflow"}
+PLANNING_KEYS = {"labels", "label_defs", "project", "projects", "project_fields", "workflow"}
 
 
 class PlanError(Exception):
@@ -237,6 +237,8 @@ def load_config(repo: str | None = None) -> dict[str, Any]:
                 for key in PLANNING_KEYS
                 if isinstance(data.get(key), dict)
             }
+            if isinstance(legacy_planning.get("project"), dict):
+                legacy_planning.setdefault("projects", legacy_planning.pop("project"))
             if legacy_planning:
                 config = deep_merge(config, legacy_planning)
     return config
