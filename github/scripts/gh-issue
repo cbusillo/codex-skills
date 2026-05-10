@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+gh_bin="${GH_ISSUE_GH:-$script_dir/gh-with-env-token}"
+
 usage() {
 	cat <<'USAGE'
 Usage:
@@ -45,9 +48,9 @@ fi
 
 case "$command" in
 create)
-	gh issue create --title "$target" --body-file "$tmp_body" "$@"
+	"$gh_bin" issue create --title "$target" --body-file "$tmp_body" "$@"
 	;;
 edit)
-	gh issue edit "$target" --body-file "$tmp_body" "$@"
+	"$gh_bin" issue edit "$target" --body-file "$tmp_body" "$@"
 	;;
 esac
