@@ -37,6 +37,20 @@ git status --short --branch
 git worktree list
 ```
 
+If the shared Launchplane context helper is present and configured, call it once
+as optional closeout context for the repo/workstream:
+
+```bash
+~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+```
+
+Use `available` context to notice pending Every Code work, preview readiness,
+deploy/product evidence, or source-of-truth links that should be reflected in
+the closeout. Treat `no_context`, `unavailable`, `unauthorized`, `invalid`, or
+helper failure as normal absence. Do not block safe-to-exit only because
+Launchplane context is unavailable, and do not copy raw helper payloads into
+handoffs, issues, PRs, or final summaries.
+
 4. If GitHub state matters for closeout, use `github-repo-workflow` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
    security/quality signals, and safe branch/worktree cleanup.

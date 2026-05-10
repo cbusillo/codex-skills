@@ -223,6 +223,20 @@ When stale remotes could change the answer, fetch first in the same snapshot:
 ~/.code/skills/github-repo-workflow/scripts/github-repo-snapshot.sh --health-url https://example.com/api/health
 ```
 
+If the shared Launchplane context helper is present and configured, call it once
+after the repo snapshot when product/runtime context could affect the answer:
+
+```sh
+~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+```
+
+Use `available` context to identify product mapping, Every Code work, preview
+readiness, deploy evidence, or source links that should shape the GitHub repo
+summary. Treat `no_context`, `unavailable`, `unauthorized`, `invalid`, or helper
+failure as normal absence. Do not use Launchplane helper output as permission to
+mutate GitHub or provider state, and do not copy raw helper payloads into PRs,
+issues, or comments.
+
 The script automatically reads `.github/github-repo-workflow.json` when present.
 When using that default config, it also deep-merges
 `.github/github-repo-workflow.override.json` if present and reports that the

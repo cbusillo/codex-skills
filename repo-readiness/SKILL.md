@@ -38,6 +38,19 @@ Leave the user with a truthful readiness answer:
 git status --short --branch
 ```
 
+If the shared Launchplane context helper is present and configured, call it once
+as optional readiness context for the active repo/branch/PR:
+
+```bash
+~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+```
+
+Use `available` context only as a hint for product mapping, preview readiness,
+Every Code state, deploy evidence, or source-of-truth links. Treat `no_context`,
+`unavailable`, `unauthorized`, `invalid`, or helper failure as normal absence and
+continue with local/GitHub readiness checks. Do not print raw helper stderr or
+copy helper payloads into readiness output.
+
 If you inspect worktrees, ignore Codex Desktop auto-review worktrees under
 `~/.code/working/<repo>/branches/auto-review*` unless the user's task is
 specifically about that review. They are detached external review context and
