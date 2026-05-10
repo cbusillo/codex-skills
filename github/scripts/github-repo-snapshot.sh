@@ -149,6 +149,8 @@ if [[ -n "$config_path" ]]; then
 
   if [[ "$config_path" == ".github/github.json" && -f ".github/github.override.json" ]]; then
     config_override_path=".github/github.override.json"
+  elif [[ "$config_path" == ".github/github-repo-workflow.json" && -f ".github/github-repo-workflow.override.json" ]]; then
+    config_override_path=".github/github-repo-workflow.override.json"
   fi
 
   if [[ -n "$config_override_path" ]]; then
