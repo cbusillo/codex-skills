@@ -87,3 +87,6 @@ One useful local scan:
 rg -n --hidden --glob '!**/.git/**' \
   '(TOKEN|SECRET|PRIVATE|/Users/|github_pat_|ghp_|sk-[A-Za-z0-9])'
 ```
+
+For Launchplane context-specific review, also see
+`launchplane-context/references/public-safety.md`.
