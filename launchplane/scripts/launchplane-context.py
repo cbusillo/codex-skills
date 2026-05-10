@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Emit optional Launchplane context for public-safe skills."""
 
 from __future__ import annotations

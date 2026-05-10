@@ -19,8 +19,8 @@ Use this skill for:
 - SDK method names, request/response shapes, auth setup, webhooks, billing,
   deployment, package publishing, or CI configuration
 - bug fixes where a library, provider, or CLI may have changed behavior
-- tasks that mention Odoo, JetBrains APIs, Next.js, Prisma, Mantine, Docker,
-  uv, PyPI, GitHub Actions, Dokploy, Stripe, or similar tools
+- tasks that involve fast-moving ecosystems where the agent's internal training
+  data may be stale or imprecise.
 
 Do not use this skill for stable local repo facts that can be answered directly
 from checked-in code or docs.
@@ -72,34 +72,15 @@ the query to remove sensitive details.
 
 ## Repo Routing
 
-If the current repo has `.github/github-repo-workflow.json` with a `docs` block,
-use those repo-relative paths as the primary local routing targets before the
-fallbacks below. Prefer `docs.index` as the entry point, then relevant semantic
-paths such as `docs.architecture`, `docs.operations`, `docs.style`, or
-`docs.policies`. If a metadata path is missing, stale, or disagrees with the
-repo docs, say so and suggest a repo metadata refresh instead of guessing.
+If the current repo has `.github/github.json` with a `docs` block,
+use those repo-relative paths as the primary local routing targets before
+falling back to repo-root search. Prefer `docs.index` as the entry point, then
+relevant semantic paths such as `docs.architecture`, `docs.operations`,
+`docs.style`, or `docs.policies`.
 
-- Codex/OpenAI: official OpenAI docs and the local `code` repo. For Codex CLI,
-  Every Code, harness behavior, tools, skills, prompts, sandboxing, browser
-  control, agent orchestration, or local runtime behavior, inspect local sources
-  first. Use `code` as the primary harness/fork source, and check nearby local
-  repos such as `code-everywhere`, `shell-tool-mcp`, and
-  `jetbrains-inspection-api` when the task touches those integrations.
-- Odoo: local Odoo docs and code first, then official Odoo docs for the target
-  major version. Prefer Odoo Intelligence MCP for model/field/addon discovery.
-- JetBrains: JetBrains Platform SDK docs, Gradle IntelliJ plugin docs, and the
-  local plugin/MCP server docs.
-- Next.js/React/Prisma/Mantine: official framework docs for the installed major
-  version; check local manifests before choosing examples.
-- Docker/GitHub Actions/uv/PyPI: official docs, action READMEs, and release
-  notes for current CLI behavior.
-- Dokploy/Launchplane: local Launchplane docs and source are authoritative for
-  this workspace; external Dokploy docs only answer platform behavior.
-- Local architecture and operations: `claude-local-machine` is the workspace's
-  primary local knowledge base for Mac setup, home-lab infrastructure,
-  Proxmox/LXC, UniFi/network, backups, services, scratch cleanup, and
-  infrastructure docs. Check its `AGENTS.md` and `docs/README.md` before using
-  external docs for local architecture questions.
+Always check the repository's `AGENTS.md` and `docs/README.md` before using
+external docs for local-specific architecture or operational questions. If
+metadata is missing or stale, suggest a refresh instead of guessing.
 
 ## Quality Rules
 

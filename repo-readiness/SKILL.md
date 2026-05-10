@@ -23,7 +23,7 @@ Leave the user with a truthful readiness answer:
 
 1. Identify the repo, branch, active task, changed files, and whether a PR/issue
    is in play.
-2. Check `.github/github-repo-workflow.json` when present before inferring gates.
+2. Check `.github/github.json` when present before inferring gates.
    If it has a `qualityGate` block, use it for how to run tests, lint/static
    analysis, format checks, typechecks, builds, and IDE/static inspections. Use
    `qualityGate.docsRequiredWhen` for docs freshness triggers. If it has a
@@ -31,7 +31,7 @@ Leave the user with a truthful readiness answer:
    entry points. Fall back to repo instructions (`AGENTS.md`, README,
    docs/policies/gates), CI files, and manifests for any unset metadata fields.
    If a durable command is confidently inferred, cite the source and propose a
-   `.github/github-repo-workflow.json` addition rather than auto-writing it.
+   `.github/github.json` addition rather than auto-writing it.
 3. Inspect local state:
 
 ```bash
@@ -42,7 +42,7 @@ If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
 
 ```bash
-~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+~/.code/skills/launchplane/scripts/launchplane-context.py --repo OWNER/REPO
 ```
 
 Use `available` context only as a hint for product mapping, preview readiness,
@@ -59,7 +59,7 @@ should not affect readiness for the active repo/branch.
 4. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest
    practical gate for the repo and change.
-5. If GitHub state matters, use `github-repo-workflow` for PR checks, Actions,
+5. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
    For stacked PRs, include whether a rollup/integration PR would be safer or
    faster than merging each layer and rerunning expensive checks repeatedly.
@@ -104,7 +104,7 @@ change.
 
 When work changes docs routing, validation commands, lint/inspection routing,
 required docs conditions, important workflows, health endpoints, repo relationships, cleanup
-policy, or ownership boundaries, check whether `.github/github-repo-workflow.json`
+policy, or ownership boundaries, check whether `.github/github.json`
 is stale. Report metadata drift as a readiness warning or blocker only when it
 changes what "ready" means for the current task.
 
@@ -122,12 +122,12 @@ Preferred flow:
 
 1. Check open projects with the JetBrains inspection project-list tool when
    available.
-2. Check `.github/github-repo-workflow.json` for optional
+2. Check `.github/github.json` for optional
    `qualityGate.inspection` or legacy `jetbrains` blocks. Prefer configured
    `ide`, `openProjectPath`, and `scopePreference` over inference.
 3. If the repo is not open and no repo config applies, infer the IDE from the
    repo:
-   - Python, Odoo, uv, Django/FastAPI, mixed Python web: PyCharm
+   - Python, uv, Django/FastAPI, mixed Python web: PyCharm
    - Kotlin/Gradle/JetBrains plugin: IntelliJ IDEA
    - TypeScript/Node frontend-only: WebStorm
    - Rust-focused workspace: IntelliJ IDEA
@@ -146,7 +146,7 @@ open -a "WebStorm" "$repo_root"
    report that specific blocker and continue with other readiness checks.
 
 If inference was wrong, ambiguous, or corrected by the user, suggest adding or
-updating the repo's `.github/github-repo-workflow.json` `jetbrains` block. Do
+updating the repo's `.github/github.json` `jetbrains` block. Do
 not edit repo config without approval.
 
 Use targeted inspections first when possible: changed files, current file,

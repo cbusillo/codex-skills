@@ -67,17 +67,15 @@ the workflow. Release-specific work may also require:
 Do not publish, tag, push, or dispatch release workflows unless the user
 explicitly asks.
 
-## Repo-Specific Notes
+## Repo-Specific Execution
 
-- `repairshopr_api`: lockfile consistency is a hard concern; follow its
-  `AGENTS.md` and lockfile check script.
-- `printnode_community`: preserve package/import naming and release stewardship
-  rules; do not push/open PRs unless explicitly asked by repo instructions.
-- `odoo-ai`, tenant repos, and Odoo tooling: use their scripted uv entrypoints
-  such as `uv run test` and `uv run platform`; avoid system Python.
-- `launchplane`: use `uv run ...` and update docs when behavior or ownership
-  changes.
-- `odoo-intelligence-mcp`: use documented MCP test/format/coverage commands.
+Repository-specific execution details—such as custom test commands, lockfile policies, or platform-specific entrypoints—should be managed via repository metadata:
+
+- **`.github/github.json`**: Use the `qualityGate` and `metadataFreshness` blocks to define canonical commands.
+- **`AGENTS.md`**: Refer to this file for behavioral quirks, lockfile consistency requirements, or stewardship rules specific to the repository.
+- **Environment Variables**: Use repository-documented environment variables for gating live tests or providing necessary credentials.
+
+Always favor the repository's own defined agent instructions and metadata over generic defaults.
 
 ## Reporting
 

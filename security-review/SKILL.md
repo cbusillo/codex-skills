@@ -67,40 +67,28 @@ internet exposure, auth expectations, or data sensitivity materially change the
 risk ranking. If the user wants a quick pass, state assumptions instead of
 blocking.
 
-## Repo-Specific Focus
+## Security Focus Areas
 
-### Odoo repos
+When reviewing specific technologies or project types, use the relevant focus
+areas in `references/focus-areas.md` as guidance. This includes Odoo, Next.js,
+Launchplane, and infrastructure components.
 
-- ACLs, record rules, group checks, multi-company/tenant boundaries.
-- `sudo`, `with_user`, context flags, computed fields, import/export paths.
-- Public controllers/routes, portal flows, JSON endpoints, file handling.
-- Secrets in `ir.config_parameter`, env files, logs, fixtures, migrations, and
-  generated configs.
-- Shopify/RepairShopr/Fishbowl or other integration webhooks and sync loops.
+### Repository-Specific Guidance
 
-### VeriReel / Next.js apps
+Before applying generic focus areas, check for repository-specific security
+documentation and policies:
 
-- Auth/session boundaries, password reset, account deletion, owner/admin paths.
-- Prisma query authorization and public verification endpoints.
-- Billing/subscription state, Stripe or payment webhooks, raw-body validation,
-  replay handling, idempotency, and customer/account mapping.
-- QR/public resource identifiers and enumeration risk.
+1.  **`.github/github.json`**: Check the `docs` block for handles
+    like `secrets`, `architecture`, or `policies`. Use these paths to find the
+    repo's primary security contracts.
+2.  **`AGENTS.md`**: Look for security guardrails and ownership boundaries
+    specific to the current repository.
+3.  **Repo Docs**: Read linked security policies (e.g., `docs/secrets.md` or
+    `docs/policies/security.md`) to ground the review in the project's established
+    safety standards.
 
-### Launchplane / deployment control plane
-
-- Secret records, runtime environment authority, promotion/deploy records,
-  backup gates, restore flows, and fail-closed behavior.
-- Separation between deploy/operator credentials and app/runtime credentials.
-- Auditability of promotion, deploy, backup, and secret changes.
-
-### Docker image repos
-
-- Build secrets, token leakage in layers/logs, source injection, image contents,
-  base image trust, entrypoint behavior, user permissions, and downstream image
-  contracts.
-- Verify with real image inspection when Dockerfile reasoning is not enough.
-
-### Python packages and CLIs
+Always prioritize the repository's own security documentation over the generic
+focus areas.
 
 - PyPI trusted publishing, release tags, workflow permissions, token handling,
   dependency pinning/locking, archive contents, and live-credential tests.

@@ -23,7 +23,7 @@ Leave the user with a truthful closeout answer:
 
 1. Identify the repo, branch, active task, and whether a PR/issue/plan is in
    play.
-2. If `.github/github-repo-workflow.json` exists, read it and check metadata
+2. If `.github/github.json` exists, read it and check metadata
    freshness. Compare the current work with `metadataFreshness.updateWhen` and
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
@@ -41,7 +41,7 @@ If the shared Launchplane context helper is present and configured, call it once
 as optional closeout context for the repo/workstream:
 
 ```bash
-~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+~/.code/skills/launchplane/scripts/launchplane-context.py --repo OWNER/REPO
 ```
 
 Use `available` context to notice pending Every Code work, preview readiness,
@@ -51,10 +51,10 @@ helper failure as normal absence. Do not block safe-to-exit only because
 Launchplane context is unavailable, and do not copy raw helper payloads into
 handoffs, issues, PRs, or final summaries.
 
-4. If GitHub state matters for closeout, use `github-repo-workflow` for PR,
+4. If GitHub state matters for closeout, use `github` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
    security/quality signals, and safe branch/worktree cleanup.
-5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
+5. Use `github` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project updates. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
 6. Remove consumed `handoff*.md` files after durable decisions are captured in a
@@ -122,12 +122,12 @@ when that improves continuity.
 
 ## Plan Hygiene
 
-- Prefer `github-plan` and update the active issue's `Current Status`, finish
+- Prefer `github` and update the active issue's `Current Status`, finish
   line, blockers, and Project fields before parking work.
 - Mark completed checklist items, record blockers, and remove or rewrite stale
   assumptions in the GitHub plan issue.
 - If workflow metadata changes are deferred, record the exact
-  `.github/github-repo-workflow.json` follow-up in the GitHub plan or closeout
+  `.github/github.json` follow-up in the GitHub plan or closeout
   remaining items.
 - Delete or migrate finished local working plans once useful context has been
   captured in GitHub or repo docs.
@@ -139,7 +139,7 @@ when that improves continuity.
 - Preserve unrelated user changes.
 - Do not run destructive git commands.
 - Do not force-delete branches or worktrees.
-- Use `github-repo-workflow` for PR-backed branch/worktree cleanup and GitHub
+- Use `github` for PR-backed branch/worktree cleanup and GitHub
   state.
 - After merged PRs, include relevant post-merge Actions and GitHub
   security/quality signal outcomes when GitHub data is available. Report signals
@@ -169,6 +169,25 @@ Treat these as external review context, not the active workstream.
 - If the user asks about a review result or review worktree specifically, switch
   context deliberately and inspect that worktree as the task target.
 
+## The Love Gate
+
+Before finalizing the closeout, perform a "Love Gate" check. This is an
+emotional and qualitative alignment step where the agent evaluates the session's
+output against the user's ultimate satisfaction and the agent's own engineering
+standards.
+
+- **Check if you "love" the work**: Does the implementation feel clean, idiomatic,
+  and complete? Is the solution robust, or does it feel like a "just-in-case"
+  patch?
+- **Identify what you do not love**: Are there any compromises, technical debt,
+  missing edge cases, or "smells" that remain? Be honest about shortcuts taken
+  due to context limits or task complexity.
+- **Report findings**: Include a brief "Love Gate" section in your closeout
+  summary.
+
+This gate ensures that the session ends not just with technical passing, but
+with a shared understanding of the work's quality and "soul."
+
 ## Output Format
 
 Use a compact closeout report:
@@ -177,6 +196,7 @@ Use a compact closeout report:
 - Remaining: concrete blockers or follow-up work.
 - Checks: gates, inspections, docs, metadata, CI/Actions, and GitHub
   security/quality signals that passed, failed, were pending, or were not run.
+- Love Gate: what you love about the results, and anything you do not love.
 - Cleanup: artifacts, plans, handoffs, branches, or worktrees removed or left
   intentionally.
 - State: dirty files, PR status, CI status, or plan status when relevant.

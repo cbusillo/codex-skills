@@ -1,6 +1,0 @@
-{
-  "service_url": "https://launchplane.example.invalid",
-  "token_env": "LAUNCHPLANE_CONTEXT_TOKEN",
-  "subject_env": "LAUNCHPLANE_CONTEXT_SUBJECT",
-  "token_label_env": "LAUNCHPLANE_CONTEXT_TOKEN_LABEL"
-}

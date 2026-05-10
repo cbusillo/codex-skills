@@ -95,10 +95,21 @@ Every SKILL.md consists of:
 
 Executable code (Python/Bash/etc.) for tasks that require deterministic reliability or are repeatedly rewritten.
 
-- **When to include**: When the same code is being rewritten repeatedly or deterministic reliability is needed
-- **Example**: `scripts/rotate_pdf.py` for PDF rotation tasks
-- **Benefits**: Token efficient, deterministic, may be executed without loading into context
-- **Note**: Scripts may still need to be read by Codex for patching or environment-specific adjustments
+- **Standard**: All Python scripts must include **PEP 723 inline metadata** for dependency management. This ensures the script is hermetic and can be executed via `uv run` without manual environment setup.
+- **Example Header**:
+  ```python
+  #!/usr/bin/env python3
+  # /// script
+  # requires-python = ">=3.12"
+  # dependencies = [
+  #     "requests",
+  #     "rich",
+  # ]
+  # ///
+  ```
+- **Execution**: Prefer `uv run scripts/name.py` over direct `python` calls.
+- **When to include**: When the same code is being rewritten repeatedly or deterministic reliability is needed.
+- **Benefits**: Token efficient, deterministic, and environment-agnostic.
 
 When a workflow depends on fragile CLI payloads such as multiline Markdown,
 JSON, or shell-sensitive quoting, prefer a helper script that reads stdin or a

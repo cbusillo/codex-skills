@@ -1,7 +1,0 @@
-interface:
-  display_name: "GitHub Plan"
-  short_description: "Plan durable work in GitHub issues"
-  default_prompt: "Use $github-plan to plan durable work in GitHub issues with compact scripted lookups."
-
-policy:
-  allow_implicit_invocation: true

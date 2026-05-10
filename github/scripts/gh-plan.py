@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Compact GitHub issue planning helper for Codex skills."""
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from typing import Any
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
-BOT_GH = SKILL_DIR.parent / "github-repo-workflow/scripts/gh-with-env-token"
+BOT_GH = SKILL_DIR.parent / "github/scripts/gh-with-env-token"
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -77,7 +81,7 @@ def get_codex_home() -> pathlib.Path:
 
 
 def workspace_config_path() -> pathlib.Path:
-    return get_codex_home() / "github-planning.json"
+    return get_codex_home() / "githubning.json"
 
 
 def run_raw(
@@ -203,7 +207,7 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
         repo_name = repo.split("/", 1)[1]
         candidates.append(pathlib.Path.home() / "Developer" / repo_name)
     for candidate in candidates:
-        path = candidate / ".github/github-repo-workflow.json"
+        path = candidate / ".github/github.json"
         if not path.exists():
             continue
         if repo and repo_from_git(candidate) != repo:
@@ -511,7 +515,9 @@ def cmd_show(args: argparse.Namespace) -> None:
 def cmd_create(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
-    title = args.title.strip()
+    title = (args.title_flag or args.title or "").strip()
+    if not title:
+        raise PlanError("Issue title is required (pass as positional argument or --title)")
     search_query = f'"{title}" in:title'
     _, matches = gh_json([
         "issue", "list", "-R", repo, "--state", "all", "--limit", "100",
@@ -963,7 +969,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("create", help="Create a durable plan issue")
-    p.add_argument("title")
+    p.add_argument("title", nargs="?", help="Issue title (positional)")
+    p.add_argument("--title", dest="title_flag", help="Issue title (flag)")
     p.add_argument("--body")
     p.add_argument("--body-file")
     p.add_argument("--label", action="append")

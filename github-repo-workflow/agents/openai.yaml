@@ -1,4 +1,0 @@
-interface:
-  display_name: "GitHub Repo Workflow"
-  short_description: "Use GitHub PRs, issues, Actions, and safe repo hygiene."
-  default_prompt: "Check the current GitHub and local repo state, then summarize or take the safe repo action that is implied."
