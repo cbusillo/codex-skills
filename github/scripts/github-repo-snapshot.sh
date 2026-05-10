@@ -128,6 +128,8 @@ current_branch="$(git branch --show-current 2>/dev/null || true)"
 if [[ -z "$config_path" ]]; then
   if [[ -f ".github/github.json" ]]; then
     config_path=".github/github.json"
+  elif [[ -f ".github/github-repo-workflow.json" ]]; then
+    config_path=".github/github-repo-workflow.json"
   fi
 fi
 
