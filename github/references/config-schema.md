@@ -7,6 +7,9 @@ workspace defaults. Repo-local values override workspace defaults.
 For compatibility, helpers also read legacy `.github/github-repo-workflow.json`
 when `.github/github.json` is absent.
 
+Helpers read `~/.code/github-planning.json` first and then fall back to the
+legacy `~/.code/githubning.json` filename when the new file is absent.
+
 ```json
 {
   "planning": {

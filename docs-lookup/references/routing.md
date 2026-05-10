@@ -2,8 +2,11 @@
 
 Use this routing guide after checking local repo instructions and metadata.
 Prefer agent-facing sources (`AGENTS.md`, `.github/github.json`, and routed docs)
-over human-facing README files unless the task is explicitly about installation,
-usage, product behavior, or README content.
+over human-facing README files, but still read README files as a normal local
+fallback when they are the only repo-owned source for installation, usage,
+product behavior, operational commands, or architecture context. If README is
+carrying agent-facing workflow rules, create or recommend a repo follow-up to
+move that guidance into `AGENTS.md` or workflow metadata.
 
 ## Technology Routes
 

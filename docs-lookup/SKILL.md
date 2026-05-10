@@ -85,8 +85,11 @@ relevant semantic paths such as `docs.architecture`, `docs.operations`,
 
 Always check the repository's `AGENTS.md` before using external docs for
 local-specific architecture or operational questions. Treat README files as
-human-facing by default; use them for agent routing only when repo metadata,
-AGENTS.md, or the task explicitly points there.
+human-facing by default, but keep them as a normal local fallback when repo
+metadata and `AGENTS.md` do not cover the needed operational or architecture
+context. When README carries agent-operational guidance that is not captured in
+`AGENTS.md` or repo metadata, note that as a repo-docs follow-up instead of
+ignoring it.
 
 For technology-specific routing, including optional local infrastructure docs,
 see `references/routing.md`.
