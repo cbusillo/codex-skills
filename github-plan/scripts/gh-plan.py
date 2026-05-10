@@ -371,6 +371,12 @@ def read_body(args: argparse.Namespace, fallback: str = "") -> str:
     return fallback
 
 
+def write_temp_body(body: str) -> pathlib.Path:
+    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+        tmp.write(body)
+        return pathlib.Path(tmp.name)
+
+
 def relationship_line(rel: str, target: dict[str, Any]) -> str:
     target_repo = target["repo"]
     target_number = int(target["number"])
@@ -861,9 +867,18 @@ def cmd_close(args: argparse.Namespace) -> None:
         edit_args.extend(["--add-label", plan_labels["done"]])
     actor, _, _ = run_raw(edit_args)
 
+    close_comment = read_body(args) if args.body is not None or args.body_file else ""
+    if close_comment:
+        tmp_path = write_temp_body(close_comment)
+        try:
+            actor, _, _ = run_raw([
+                "issue", "comment", str(number), "-R", issue_repo,
+                "--body-file", str(tmp_path),
+            ])
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     close_args = ["issue", "close", str(number), "-R", issue_repo, "--reason", args.reason]
-    if args.comment:
-        close_args.extend(["--comment", args.comment])
     actor, _, _ = run_raw(close_args)
 
     project_result: dict[str, Any] = {}
@@ -987,7 +1002,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("close", help="Close a completed plan and update Project state")
     p.add_argument("issue")
     p.add_argument("--reason", default="completed")
-    p.add_argument("--comment")
+    p.add_argument("--comment", dest="body")
+    p.add_argument("--comment-file", dest="body_file")
     p.add_argument("--owner")
     p.add_argument("--project")
     p.set_defaults(func=cmd_close)

@@ -90,6 +90,8 @@ parallel track.
 
 Always use `scripts/gh-plan.py` instead of ad hoc `gh` calls for planning state.
 It returns compact JSON and avoids loading issue bodies unless needed.
+For multiline close comments, use `close --comment-file <path>` or
+`--comment-file -`; do not pass escaped `\n` through shell-quoted `--comment`.
 
 Default read path:
 
@@ -274,8 +276,9 @@ public safety.
 - `link` / `unlink`: manages native dependencies and sub-issues.
 - `deps`: compact dependency and sub-issue view.
 - `close`: closes a completed plan, relabels it `plan:done`, sets Project
-  status to Done, and clears Focus. Before closing, update `Current Status` so
-  the issue records why it is done or no longer active.
+  status to Done, and clears Focus. Use `--comment-file` for multiline close
+  comments. Before closing, update `Current Status` so the issue records why it
+  is done or no longer active.
 - `project-list` / `project-add` / `project-set`: Project view integration.
 - `ensure-labels`: creates only the fixed configured planning labels.
 
