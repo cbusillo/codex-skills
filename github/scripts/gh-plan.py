@@ -54,6 +54,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
+PLANNING_KEYS = {"labels", "label_defs", "project", "workflow"}
+
 
 class PlanError(Exception):
     pass
@@ -228,6 +230,14 @@ def load_config(repo: str | None = None) -> dict[str, Any]:
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
             config = deep_merge(config, data["planning"])
+        elif repo_config.name == "github-repo-workflow.json":
+            legacy_planning = {
+                key: data[key]
+                for key in PLANNING_KEYS
+                if isinstance(data.get(key), dict)
+            }
+            if legacy_planning:
+                config = deep_merge(config, legacy_planning)
     return config
 
 
