@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Install a skill from a GitHub repo path into $CODEX_HOME/skills."""
 
 from __future__ import annotations

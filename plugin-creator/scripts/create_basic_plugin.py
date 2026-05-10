@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Scaffold a plugin directory and optionally update marketplace.json."""
 
 from __future__ import annotations

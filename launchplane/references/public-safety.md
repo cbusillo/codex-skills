@@ -1,4 +1,4 @@
-# Launchplane Context Public Safety
+# Launchplane Public Safety
 
 Launchplane context can be sensitive even when it contains no plaintext secrets.
 Use this checklist before committing examples, helper output, handoff files,
@@ -8,17 +8,16 @@ issue text, PR descriptions, screenshots, or logs that mention Launchplane.
 
 Treat these as private unless the user explicitly says they are safe to publish:
 
-- Launchplane service hosts, internal URLs, trace URLs, and route payloads
-- terminal-agent, local-operator, GitHub, or worker token names when paired with
-  real values or paths
-- product keys, context names, environment names, tenant names, customer names,
-  and private repository names
-- branch names, issue titles, PR titles, work-request ids, preview gate ids, and
-  operational status text copied from a private workspace
-- provider details such as Dokploy target ids, application names, health URLs,
-  runtime env dumps, policy digests, and deployment evidence payloads
-- local filesystem paths, checkout paths, terminal session names, worker
-  hostnames, and ignored config paths that reveal machine topology
+- Launchplane service hosts, internal URLs, trace URLs, and route payloads.
+- Token names when paired with real values or private paths.
+- Product keys, context names, environment names, tenant names, customer names,
+  and private repository names.
+- Branch names, issue titles, PR titles, work-request ids, preview gate ids,
+  and operational status text copied from a private workspace.
+- Provider details such as target ids, application names, health URLs, runtime
+  env dumps, policy digests, and deployment evidence payloads.
+- Local filesystem paths, checkout paths, terminal session names, worker
+  hostnames, and ignored config paths that reveal machine topology.
 
 ## Safe Examples
 
@@ -65,8 +64,8 @@ Useful scan for Launchplane context changes:
 
 ```sh
 rg -n --hidden --glob '!**/.git/**' \
-  '(TOKEN|SECRET|PRIVATE|/Users/|github_pat_|ghp_|sk-[A-Za-z0-9]|launchplane\\.shinycomputers|shinycomputers|cbusillo)' \
-  launchplane-context README.md github-plan repo-readiness github-repo-workflow work-closeout
+  '(TOKEN|SECRET|PRIVATE|/Users/|github_pat_|ghp_|sk-[A-Za-z0-9]|launchplane)' \
+  launchplane README.md repo-readiness work-closeout
 ```
 
 Expected false positives should be documented in the PR validation notes.

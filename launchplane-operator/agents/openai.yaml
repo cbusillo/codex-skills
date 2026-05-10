@@ -1,4 +1,0 @@
-interface:
-  display_name: "Launchplane Operator"
-  short_description: "Use Launchplane-owned runtime, secret, deploy, and promotion paths."
-  default_prompt: "Use the Launchplane operator workflow for runtime env, managed secrets, live target sync, deploy, promotion, or other Launchplane-owned mutations."

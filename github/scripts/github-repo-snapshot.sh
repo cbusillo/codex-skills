@@ -63,7 +63,7 @@ Usage: github-repo-snapshot.sh [--json] [--fetch] [--config PATH] [--health-url 
 Print a snapshot of local git, GitHub PRs/issues/actions, and optional deploy
 health endpoints. By default the script does not mutate repo or GitHub state;
 use --fetch when a post-fetch local snapshot is needed. When the default repo
-config is used, .github/github-repo-workflow.override.json is deep-merged when
+config is used, .github/github.override.json is deep-merged when
 present and reported as an applied local override.
 
 Options:
@@ -71,7 +71,7 @@ Options:
   --fetch            Run git fetch --prune before taking the snapshot and
                      include the fetch result in JSON output.
   --config PATH      Read optional repo config. Defaults to
-                     .github/github-repo-workflow.json when present.
+                     .github/github.json when present.
   --health-url URL   Check an http(s) deploy health endpoint. May be repeated.
 USAGE
       exit 0
@@ -125,8 +125,8 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root" || exit 1
 current_branch="$(git branch --show-current 2>/dev/null || true)"
 
-if [[ -z "$config_path" && -f ".github/github-repo-workflow.json" ]]; then
-  config_path=".github/github-repo-workflow.json"
+if [[ -z "$config_path" && -f ".github/github.json" ]]; then
+  config_path=".github/github.json"
 fi
 
 if [[ -n "$config_path" ]]; then
@@ -143,8 +143,8 @@ if [[ -n "$config_path" ]]; then
     exit 2
   fi
 
-  if [[ "$config_path" == ".github/github-repo-workflow.json" && -f ".github/github-repo-workflow.override.json" ]]; then
-    config_override_path=".github/github-repo-workflow.override.json"
+  if [[ "$config_path" == ".github/github.json" && -f ".github/github.override.json" ]]; then
+    config_override_path=".github/github.override.json"
   fi
 
   if [[ -n "$config_override_path" ]]; then

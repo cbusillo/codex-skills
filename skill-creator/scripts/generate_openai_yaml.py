@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """
 OpenAI YAML Generator - Creates agents/openai.yaml for a skill folder.
 

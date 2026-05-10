@@ -36,8 +36,8 @@ Examples:
 
 ```text
 .local/profile.md
-.local/github-repo-workflow.md
-.local/github-plan.md
+.local/github.md
+.local/launchplane.md
 ```
 
 When a skill needs local context, it should treat the local file as optional and
@@ -50,7 +50,7 @@ names a skill expects.
 
 ## GitHub Automation Token
 
-The GitHub workflow skill includes `github-repo-workflow/scripts/gh-with-env-token`,
+The GitHub workflow skill includes `github/scripts/gh-with-env-token`,
 a small wrapper around `gh` that reads an ignored `.env` file and exports a token
 only for the command it runs.
 
@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` and set one of:
 Then call:
 
 ```sh
-github-repo-workflow/scripts/gh-with-env-token pr view
+github/scripts/gh-with-env-token pr view
 ```
 
 The `.env` file is ignored by git. Do not commit real tokens.
@@ -89,4 +89,4 @@ rg -n --hidden --glob '!**/.git/**' \
 ```
 
 For Launchplane context-specific review, also see
-`launchplane-context/references/public-safety.md`.
+`launchplane/references/public-safety.md`.
