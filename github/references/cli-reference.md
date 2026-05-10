@@ -11,24 +11,50 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 ## Common Commands
 
 ### Orientation
+
 - `index`: List compact plan issues (no bodies).
 - `search <query>`: Search for issues.
 - `show <issue>`: Show selected sections. Use `--full` for the entire body.
 - `deps <issue>`: Show dependencies and sub-issues.
 
 ### Management
+
 - `create <title>`: Create a new plan issue. Supports `--title` (flag), `--body`,
   `--plan-status`, `--focus`, and `--finish-line`.
 - `update-section <issue> <section>`: Patch a single markdown section.
-- `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or `subissue` relationships.
+- `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or
+  `subissue` relationships.
 - `close <issue>`: Mark plan as done, update labels, and clear Project focus.
 
 ### Projects
+
 - `project-list --owner <owner>`: List Projects.
 - `project-add <issue> --project <name>`: Add issue to a Project.
 - `project-set <issue>`: Update Project fields (`--focus`, `--manager`, `--finish-line`).
 
 ## Formatting Tip
 
-For multiline comments or bodies, use `--body-file <path>` or `--comment-file <path>`.
-Avoid passing escaped `\n` through shell-quoted `--body`.
+For multiline issue create/edit bodies, prefer `scripts/gh-issue` so literal
+Markdown is read from stdin and passed to `gh` with `--body-file`:
+
+```bash
+scripts/gh-issue create "Audit repo metadata" --repo OWNER/REPO <<'EOF'
+## Objective
+
+Review `.github/github.json` and keep backticks literal.
+EOF
+
+scripts/gh-issue edit 123 --repo OWNER/REPO <<'EOF'
+## Current Status
+
+State: Active
+EOF
+```
+
+For timeline comments, use `scripts/gh-comment`. For PR review feedback, use
+`gh pr review --body-file`.
+
+Avoid passing escaped `\n` through shell-quoted `--body`. Also avoid unquoted
+heredocs like `<<EOF` for Markdown bodies: shell command substitution runs
+inside backticks before the body reaches GitHub. Use `<<'EOF'` for literal
+Markdown when a heredoc is necessary.

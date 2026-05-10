@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	cat <<'USAGE'
+Usage:
+  gh-issue create TITLE [--repo OWNER/REPO] [gh issue create options]
+  gh-issue edit NUMBER [--repo OWNER/REPO] [gh issue edit options]
+
+Read a GitHub issue body from stdin and pass it to gh with --body-file,
+preserving literal Markdown backticks, newlines, and shell-looking text.
+USAGE
+}
+
+if [[ $# -lt 2 ]]; then
+	usage >&2
+	exit 2
+fi
+
+command="$1"
+target="$2"
+shift 2
+
+case "$command" in
+create | edit) ;;
+*)
+	echo "error: first argument must be 'create' or 'edit'" >&2
+	usage >&2
+	exit 2
+	;;
+esac
+
+tmp_body="$(mktemp)"
+cleanup() {
+	rm -f "$tmp_body"
+}
+trap cleanup EXIT
+
+cat >"$tmp_body"
+
+if [[ ! -s "$tmp_body" ]]; then
+	echo "error: issue body is empty" >&2
+	exit 2
+fi
+
+case "$command" in
+create)
+	gh issue create --title "$target" --body-file "$tmp_body" "$@"
+	;;
+edit)
+	gh issue edit "$target" --body-file "$tmp_body" "$@"
+	;;
+esac
