@@ -98,6 +98,17 @@ Default read path:
 ~/.code/skills/github-plan/scripts/gh-plan.py --repo OWNER/REPO show 123
 ```
 
+If Launchplane context is configured and useful for orientation, call the shared
+helper before or alongside `index`:
+
+```sh
+~/.code/skills/launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+```
+
+Use `summary.source_of_truth_url`, `summary.recommendation`, and section status
+fields to choose what GitHub issue or PR to inspect. Ignore the helper when it
+returns `no_context`, `unavailable`, `unauthorized`, or `invalid`.
+
 Only use `show --full` when editing broad context or when the requested answer
 depends on full prose. Prefer `update-section` over rewriting the whole body.
 
@@ -219,13 +230,21 @@ fully without LaunchPlane access. When local config or a private skill makes
 LaunchPlane the preferred cockpit, use it for orientation, focus, roadmap, and
 recovery, then use GitHub issues for canonical durable mutations.
 
-Shared `github-plan` does not define LaunchPlane API calls or a published
-LaunchPlane config contract by itself. Use LaunchPlane only when a private skill,
-local reference, or configured script provides the read path. Start with
-read-only LaunchPlane behavior: status checks, opening views, and selecting the
-active GitHub issue. Keep durable plan prose, relationships, blockers, labels,
-and completion truth in GitHub issues unless a later, code-backed workflow
-explicitly defines and documents a sync contract.
+When the shared Launchplane context helper exists, `github-plan` may call it once
+during orientation to decide which GitHub issue or PR deserves attention. Treat
+all non-`available` statuses, helper failures, or missing config as normal
+absence and continue with GitHub-only planning. Do not print raw helper stderr by
+default.
+
+```sh
+launchplane-context/scripts/launchplane-context.py --repo OWNER/REPO
+```
+
+Use helper output only as a hint for source links, readiness, blockers, and next
+inspection targets. Keep durable plan prose, relationships, blockers, labels,
+and completion truth in GitHub issues. Do not copy Launchplane context payloads
+into public issues, PR bodies, or handoffs unless they have been reviewed for
+public safety.
 
 ## Workflow
 
