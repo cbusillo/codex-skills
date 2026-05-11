@@ -1,7 +1,6 @@
 # Codex Skills
 
-Reusable skills for Codex-style coding agents, including OpenAI Codex CLI,
-Code, and Every Code.
+Reusable skills for Codex-style coding agents, including OpenAI Codex CLI and Every Code.
 
 Each skill lives in its own directory with a `SKILL.md` file. Skills can include
 supporting references, scripts, agents, assets, and examples when the workflow
