@@ -15,16 +15,6 @@ Repo-local values override workspace defaults.
   "importantWorkflows": ["CI"],
   "healthUrls": [],
   "relatedRepos": [],
-  "validatedThrough": [
-    {
-      "date": "2026-05-10",
-      "source": "OWNER/REPO#123",
-      "checks": ["jq empty .github/github.json", "GitHub Actions CI"],
-      "caveats": [
-        "Runtime deploy gates were not triggered for metadata-only changes."
-      ]
-    }
-  ],
   "metadataFreshness": {
     "updateWhen": ["validation gates change", "important workflows change"]
   },
@@ -87,42 +77,6 @@ Common top-level keys:
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `cleanup`: repo-local cleanup policy for merged branches and worktrees.
 - `metadataFreshness`: events that should trigger metadata review.
-
-## `validatedThrough`
-
-Use `validatedThrough` to record when the workflow metadata was last validated
-and what evidence supports it. It is a readiness breadcrumb for future agents,
-not a replacement for running full gates on every later code change.
-
-Each entry should be compact and evidence-oriented:
-
-```json
-{
-  "date": "2026-05-10",
-  "source": "OWNER/REPO#123",
-  "checks": [
-    "jq empty .github/github.json",
-    "github-repo-snapshot.sh --json",
-    "GitHub Actions CI"
-  ],
-  "caveats": [
-    "Runtime deploy gates were not triggered for metadata-only changes."
-  ]
-}
-```
-
-Field guidance:
-
-- `date`: ISO date when the metadata evidence was gathered.
-- `source`: PR, issue, commit, or run that future agents can inspect.
-- `checks`: commands, CI jobs, or audits that support the metadata as current.
-- `caveats`: important limits, especially skipped expensive, runtime, deploy,
-  tenant, preview, or manual gates.
-
-In plain terms for handoff: a `validatedThrough` record says "the metadata and
-readiness routing were checked through this evidence." It does not promise that
-the whole product was redeployed, every tenant workflow was exercised, or every
-expensive runtime gate was rerun unless those checks are listed explicitly.
 
 Rules:
 
