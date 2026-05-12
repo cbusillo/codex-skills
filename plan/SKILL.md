@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Use only when the user explicitly asks for a local/offline plan file in $CODEX_HOME/plans, or wants to find, read, update, or delete an existing local plan. Do not use for GitHub-backed repo planning, workstream tracking, blockers, milestones, Projects, roadmaps, or implementation coordination; use the github skill instead.
+description: Legacy local plan files only. Use only when explicitly requested; use github for GitHub-backed planning.
 metadata:
   short-description: Manage explicit local/offline plans
 ---

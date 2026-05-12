@@ -1,0 +1,7 @@
+interface:
+  display_name: "Local Plans"
+  short_description: "Manage explicit local plan files"
+  default_prompt: "Use $plan to manage an explicit local/offline plan file."
+
+policy:
+  allow_implicit_invocation: false
