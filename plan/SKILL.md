@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Legacy local plan files only. Use only when explicitly requested; use github for GitHub-backed planning.
+description: Legacy local plan files only. Use only when explicitly requested; use github-plan for GitHub-backed planning.
 metadata:
   short-description: Manage explicit local/offline plans
 ---
@@ -13,7 +13,7 @@ planning workflow.
 
 ## Default Routing
 
-- For GitHub-backed repositories, use the `github` skill for durable planning,
+- For GitHub-backed repositories, use the `github-plan` skill for durable planning,
   blockers, milestones, Projects, workstream status, and implementation
   coordination.
 - Use local plan files only when the user explicitly asks for a local/offline
@@ -38,4 +38,4 @@ planning workflow.
    GitHub Issue later.
 
 When the user asks for planning in a GitHub-backed repo without explicitly
-requesting a local/offline plan file, stop and use `github` instead.
+requesting a local/offline plan file, stop and use `github-plan` instead.
