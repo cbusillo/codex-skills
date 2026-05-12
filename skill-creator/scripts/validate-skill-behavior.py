@@ -60,12 +60,45 @@ def test_launchplane_product_config_uses_operator_api_first() -> None:
         "do not assume a global `launchplane` binary exists" in normalized,
         "Launchplane guidance must not make the global CLI the first-shot path",
     )
+    require(
+        "launchplane host-only cli helpers" in normalized,
+        "Launchplane CLI guidance should be quarantined as host-only",
+    )
+    require(
+        "explicitly on the launchplane host via ssh" in normalized,
+        "Launchplane CLI guidance should require the host or a concrete command",
+    )
+
+
+def test_github_plan_sweeps_stale_related_issues() -> None:
+    plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    normalized_plan = " ".join(plan_text.split())
+    normalized_github = " ".join(github_text.split())
+
+    require(
+        "stale github planning state is a regression source" in normalized_plan,
+        "GitHub planning guidance must name stale issues as a regression source",
+    )
+    require(
+        "update every related issue" in normalized_plan,
+        "GitHub planning closeout must update all related issues that changed",
+    )
+    require(
+        "stale, duplicate, related, and pr-linked issues were swept" in normalized_plan,
+        "GitHub plan closeout checklist must include stale/duplicate/related/PR-linked sweep",
+    )
+    require(
+        "use `github-plan` to sweep stale/duplicate/related planning issues" in normalized_github,
+        "GitHub execution closeout must delegate related issue sweep to github-plan",
+    )
 
 
 def main() -> None:
     tests = [
         test_chronicle_stays_quiet_when_unavailable,
         test_launchplane_product_config_uses_operator_api_first,
+        test_github_plan_sweeps_stale_related_issues,
     ]
     for test in tests:
         test()

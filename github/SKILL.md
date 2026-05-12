@@ -71,4 +71,6 @@ Always prefer the bundled scripts for structured state and safe formatting:
 2. **Plan**: Delegate durable planning to `github-plan`.
 3. **Act**: Create a task branch, commit, and open a PR.
 4. **Verify**: Address CI and review feedback using `github-ci-diagnose.py`.
-5. **Close**: Merge, verify post-merge signals, close the Issue, and clean up.
+5. **Close**: Merge, verify post-merge signals, use `github-plan` to sweep
+   stale/duplicate/related planning issues, close or relabel reconciled issues,
+   and clean up.
