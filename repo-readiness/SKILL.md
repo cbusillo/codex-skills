@@ -106,6 +106,9 @@ When work changes docs routing, validation commands, lint/inspection routing,
 required docs conditions, important workflows, health endpoints, repo
 relationships, cleanup policy, or ownership boundaries, check whether
 `.github/github.json` is stale.
+Do not treat manifest-owned dependency or inventory changes as a reason to copy
+those facts into workflow metadata; point to the canonical manifests or docs
+instead.
 Report metadata drift as a readiness warning or blocker only when it changes
 what "ready" means for the current task.
 

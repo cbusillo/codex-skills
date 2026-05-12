@@ -82,6 +82,10 @@ Rules:
 
 - Keep labels fixed and small. Do not generate dynamic labels from arbitrary
   user prose.
+- Do not duplicate machine-owned source-of-truth data, such as package
+  manifests, Odoo addon manifests, dependency lists, or generated inventories,
+  into `.github/github.json`. Prefer routing pointers to canonical files and
+  let manifests own dependency and inventory facts.
 - Use native GitHub dependencies and sub-issues as canonical relationships.
 - Projects are views. Do not require Project writes for planning to work.
 - LaunchPlane is not a published config surface in this version. If a future
