@@ -58,8 +58,10 @@ handoffs, issues, PRs, or final summaries.
 5. Use `github` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project updates. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
-6. Remove consumed `handoff*.md` files after durable decisions are captured in a
-   plan or repo docs, unless the user asks to keep iterating.
+6. Remove consumed `handoff*.md` files after durable planning decisions are
+   captured in GitHub or an explicit offline/local plan, and after implemented
+   behavior is reflected in repo docs when docs are actually stale, unless the
+   user asks to keep iterating.
 7. Clean only artifacts clearly created by the current work: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or consumed handoff files.
@@ -129,8 +131,9 @@ when that improves continuity.
   assumptions in the GitHub plan issue.
 - If workflow metadata changes are deferred, record the exact `.github/github.json`
   follow-up in the GitHub plan or closeout remaining items.
-- Delete or migrate finished local working plans once useful context has been
-  captured in GitHub or repo docs.
+- Delete or migrate finished local working plans once useful planning context
+  has been captured in GitHub, or once implemented behavior has been reflected
+  in repo docs when docs are actually stale.
 - Migrate stale local plans into active GitHub plans instead of leaving archive
   clutter.
 
