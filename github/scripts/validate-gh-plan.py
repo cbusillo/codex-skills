@@ -226,11 +226,64 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     assert payload["project_fields"] == {"error": "project sync throttled"}, payload
 
 
+def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
+    plan = load_plan_module()
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        input: str | None = None,
+        text: bool | None = None,
+        stdout: Any = None,
+        stderr: Any = None,
+        cwd: Any = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, stdout, stderr, cwd
+        calls.append(command)
+        if command[0].endswith("gh-with-env-token"):
+            return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
+        if command[0] == "gh":
+            return completed(stdout='{"ok": true}')
+        raise AssertionError(f"unexpected command: {command}")
+
+    plan.subprocess.run = fake_run
+    actor, stdout, _ = plan.run_raw(["api", "rate_limit"], recoverable=True)
+    assert actor == "active-gh-user", actor
+    assert json.loads(stdout) == {"ok": True}, stdout
+    assert len(calls) == 2, calls
+
+    calls.clear()
+
+    def fake_non_rate_failure(
+        command: list[str],
+        input: str | None = None,
+        text: bool | None = None,
+        stdout: Any = None,
+        stderr: Any = None,
+        cwd: Any = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del input, text, stdout, stderr, cwd
+        calls.append(command)
+        if command[0].endswith("gh-with-env-token"):
+            return completed(stderr="HTTP 403: resource not accessible by integration", returncode=1)
+        raise AssertionError(f"active gh should not be called for non-rate failure: {command}")
+
+    plan.subprocess.run = fake_non_rate_failure
+    try:
+        plan.run_raw(["api", "repos/owner/repo"], recoverable=True)
+    except plan.PlanError as exc:
+        assert "resource not accessible" in str(exc), exc
+    else:
+        raise AssertionError("non-rate bot failure should not fall back to active gh")
+    assert len(calls) == 1, calls
+
+
 def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_create_reports_issue_when_project_sync_fails,
+        test_run_raw_falls_back_only_for_graphql_rate_limit,
     ]
     for test in tests:
         test()
