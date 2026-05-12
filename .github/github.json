@@ -1,0 +1,68 @@
+{
+  "defaultBranch": "main",
+  "projectType": "codex-skills",
+  "docs": {
+    "index": "README.md",
+    "githubSkill": "github/SKILL.md",
+    "githubWorkflow": "github/references/repo-workflow.md",
+    "githubConfigSchema": "github/references/config-schema.md",
+    "repoReadiness": "repo-readiness/SKILL.md",
+    "workCloseout": "work-closeout/SKILL.md",
+    "publicSafety": "launchplane/references/public-safety.md"
+  },
+  "qualityGate": {
+    "syntax": {
+      "python": "python3 -m py_compile github/scripts/gh-plan.py github/scripts/github-ci-diagnose.py launchplane/scripts/launchplane-context.py skill-creator/scripts/generate_openai_yaml.py skill-creator/scripts/init_skill.py skill-creator/scripts/quick_validate.py skill-installer/scripts/github_utils.py skill-installer/scripts/install-skill-from-github.py skill-installer/scripts/list-skills.py",
+      "shell": "bash -n github/scripts/github-repo-snapshot.sh github/scripts/gh-with-env-token"
+    },
+    "json": {
+      "metadata": "jq empty .github/github.json"
+    },
+    "docsRequiredWhen": [
+      "skill behavior changes",
+      "script behavior changes",
+      "config schema changes",
+      "GitHub workflow changes",
+      "public safety guidance changes"
+    ]
+  },
+  "importantWorkflows": [],
+  "qaLabels": [],
+  "deployLabels": [],
+  "healthUrls": [],
+  "relatedRepos": [],
+  "githubSignals": {
+    "postMerge": {
+      "waitForActions": true,
+      "checkSecurityAndQuality": true
+    },
+    "capabilities": {
+      "codeScanning": "unknown",
+      "secretScanning": "unknown",
+      "dependencyGraph": "unknown",
+      "dependabotAlerts": "unknown",
+      "securityAdvisories": "unknown"
+    },
+    "refreshWhen": [
+      "repo visibility changes",
+      "GitHub plan changes",
+      "security settings change",
+      "token permissions change"
+    ]
+  },
+  "cleanup": {
+    "deleteMergedLocalBranches": true,
+    "removeMergedCleanWorktrees": true
+  },
+  "metadataFreshness": {
+    "updateWhen": [
+      "docs routing changes",
+      "validation gates change",
+      "primary commands change",
+      "important workflows change",
+      "repo relationship changes",
+      "cleanup policy changes",
+      "ownership boundaries change"
+    ]
+  }
+}

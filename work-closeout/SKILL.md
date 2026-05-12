@@ -24,9 +24,7 @@ Leave the user with a truthful closeout answer:
 1. Identify the repo, branch, active task, and whether a PR/issue/plan is in
    play.
 2. If `.github/github.json` exists, read it and check metadata
-   freshness. If only legacy `.github/github-repo-workflow.json` exists, read it
-   as the same metadata shape and suggest migrating only when metadata is
-   already being updated. Compare the current work with
+   freshness. Compare the current work with
    `metadataFreshness.updateWhen` and
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
@@ -132,8 +130,7 @@ when that improves continuity.
 - Mark completed checklist items, record blockers, and remove or rewrite stale
   assumptions in the GitHub plan issue.
 - If workflow metadata changes are deferred, record the exact `.github/github.json`
-  or legacy `.github/github-repo-workflow.json` follow-up in the GitHub plan or
-  closeout remaining items.
+  follow-up in the GitHub plan or closeout remaining items.
 - Delete or migrate finished local working plans once useful planning context
   has been captured in GitHub, or once implemented behavior has been reflected
   in repo docs when docs are actually stale.
