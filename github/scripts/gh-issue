@@ -46,11 +46,44 @@ if [[ ! -s "$tmp_body" ]]; then
 	exit 2
 fi
 
-case "$command" in
-create)
-	"$gh_bin" issue create --title "$target" --body-file "$tmp_body" "$@"
-	;;
-edit)
-	"$gh_bin" issue edit "$target" --body-file "$tmp_body" "$@"
-	;;
-esac
+is_rate_limited() {
+	grep -Eiq 'rate limit|rate_limit|API rate limit|secondary rate' "$1"
+}
+
+run_gh_issue() {
+	local stderr_file
+	local status=0
+	stderr_file="$(mktemp)"
+	case "$command" in
+	create)
+		"$gh_bin" issue create --title "$target" --body-file "$tmp_body" "$@" 2>"$stderr_file" || status=$?
+		;;
+	edit)
+		"$gh_bin" issue edit "$target" --body-file "$tmp_body" "$@" 2>"$stderr_file" || status=$?
+		;;
+	esac
+	status="${status:-0}"
+	if [[ $status -eq 0 ]]; then
+		rm -f "$stderr_file"
+		return 0
+	fi
+	if [[ -z "${GH_ISSUE_GH:-}" && "$gh_bin" != "gh" ]] && is_rate_limited "$stderr_file"; then
+		cat "$stderr_file" >&2
+		echo "warning: automation gh token hit a rate limit; retrying with active gh auth" >&2
+		case "$command" in
+		create)
+			gh issue create --title "$target" --body-file "$tmp_body" "$@"
+			;;
+		edit)
+			gh issue edit "$target" --body-file "$tmp_body" "$@"
+			;;
+		esac
+		status=$?
+	else
+		cat "$stderr_file" >&2
+	fi
+	rm -f "$stderr_file"
+	return "$status"
+}
+
+run_gh_issue "$@"

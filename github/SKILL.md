@@ -38,6 +38,9 @@ Use PRs for all non-trivial code changes.
 - **Merges & Stacks**: Prefer the repository's normal PR merge method. For
   stacked PRs, consider a rollup branch when merging each layer would rerun
   expensive checks or create avoidable conflict churn.
+- **Cross-Repo PRs**: When creating a PR for a repository other than the current
+  working directory, run `gh pr create` from that repository or pass both
+  `--repo OWNER/REPO` and an explicit `--head` branch.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,

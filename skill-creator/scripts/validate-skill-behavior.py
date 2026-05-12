@@ -94,11 +94,26 @@ def test_github_plan_sweeps_stale_related_issues() -> None:
     )
 
 
+def test_github_cross_repo_pr_create_is_explicit() -> None:
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    normalized = " ".join(github_text.split())
+
+    require(
+        "when creating a pr for a repository other than the current working directory" in normalized,
+        "GitHub skill must warn about cross-repo PR creation context",
+    )
+    require(
+        "pass both `--repo owner/repo` and an explicit `--head` branch" in normalized,
+        "GitHub skill must require --repo plus explicit --head for cross-repo PR create",
+    )
+
+
 def main() -> None:
     tests = [
         test_chronicle_stays_quiet_when_unavailable,
         test_launchplane_product_config_uses_operator_api_first,
         test_github_plan_sweeps_stale_related_issues,
+        test_github_cross_repo_pr_create_is_explicit,
     ]
     for test in tests:
         test()
