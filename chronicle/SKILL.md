@@ -3,10 +3,10 @@ name: chronicle
 description: |
   Allows you to view the user's screen as well as several hours of history. Use
   when the user makes a reference to their recent work, for which it'd be helpful
-  to see the screen. This skill MUST be used whenever you need to resolve
-  ambiguity in a user request, where the user hasn't specified enough context to
-  do the task. Examples include disambiguating the specific
-  user/app/document/error the user is referring to.
+  to see the screen. Use this skill only when screen context is the best way to
+  resolve ambiguity in a user request. Do not use it for ordinary repo, GitHub,
+  filesystem, or memory-context questions that can be answered from those
+  sources directly.
 
   You must also use this skill if the user asks about any question regarding
   Chronicle or asks what you can see from the screen.
@@ -35,8 +35,10 @@ records a rolling buffer of the past several hours of work to
    the `screen_recording` folder; the user may have just recently disabled
    Chronicle. Regardless, the takeaway is that recordings cannot be fresh when
    Chronicle isn't running; therefore, you shouldn't treat the videos as fresh.
-   (Note: when communicating Chronicle status to the user, don't mention the
-   pidfile. That's an implementation detail.)
+   If Chronicle is unavailable, proceed with other relevant context sources and
+   do not mention Chronicle status unless the user explicitly asked for screen
+   history, Chronicle, or what you can see on screen. When you do mention status,
+   keep it brief and don't mention the pidfile; that's an implementation detail.
 
 Ensure you follow preconditions before using the skill.
 
