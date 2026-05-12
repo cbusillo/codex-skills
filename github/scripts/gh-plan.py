@@ -280,6 +280,84 @@ def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     return actor, data
 
 
+def issue_labels(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):
+        return []
+    names: list[str] = []
+    for item in labels:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            names.append(item["name"])
+    return names
+
+
+def rest_create_issue(
+    repo: str,
+    title: str,
+    body: str,
+    labels: list[str],
+    milestone: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    payload: dict[str, Any] = {"title": title, "body": body}
+    if labels:
+        payload["labels"] = labels
+    if milestone:
+        payload["milestone"] = milestone
+    actor, data = gh_json(
+        [
+            "api",
+            *API_VERSION_ARGS,
+            "-X",
+            "POST",
+            f"repos/{repo}/issues",
+            "--input",
+            "-",
+        ],
+        input_text=json.dumps(payload),
+    )
+    if not isinstance(data, dict):
+        raise PlanError("gh api issue create returned no issue")
+    data["repo"] = repo
+    return actor, data
+
+
+def rest_edit_issue(
+    repo: str,
+    number: int,
+    *,
+    body: str | None = None,
+    title: str | None = None,
+    labels: list[str] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    payload: dict[str, Any] = {}
+    if body is not None:
+        payload["body"] = body
+    if title is not None:
+        payload["title"] = title
+    if labels is not None:
+        payload["labels"] = labels
+    if not payload:
+        raise PlanError("No issue fields to update")
+    actor, data = gh_json(
+        [
+            "api",
+            *API_VERSION_ARGS,
+            "-X",
+            "PATCH",
+            f"repos/{repo}/issues/{number}",
+            "--input",
+            "-",
+        ],
+        input_text=json.dumps(payload),
+    )
+    if not isinstance(data, dict):
+        raise PlanError("gh api issue edit returned no issue")
+    data["repo"] = repo
+    return actor, data
+
+
 def get_issue_compact(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     actor, issue = get_issue(ref, repo)
     return actor, compact_issue(issue)
@@ -553,27 +631,17 @@ def cmd_create(args: argparse.Namespace) -> None:
     body = read_body(args, template_body(title))
     if args.finish_line:
         body = replace_section(body, "Finish Line", args.finish_line)
-    cmd = ["issue", "create", "-R", repo, "--title", title]
-    for label in wanted_labels:
-        cmd.extend(["--label", label])
-    if args.milestone:
-        cmd.extend(["--milestone", args.milestone])
     project_config = config.get("projects") or {}
     project = args.project
     if project is None and project_config.get("enabled", True):
         project = project_config.get("default_project")
-    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-        tmp.write(body)
-        tmp_path = tmp.name
-    try:
-        actor, stdout, _ = run_raw([*cmd, "--body-file", tmp_path])
-    finally:
-        pathlib.Path(tmp_path).unlink(missing_ok=True)
-    lines = stdout.strip().splitlines()
-    if not lines:
-        raise PlanError("gh issue create returned no output")
-    url = lines[-1]
-    _, issue = get_issue(url, repo)
+    actor, issue = rest_create_issue(
+        repo,
+        title,
+        body,
+        wanted_labels,
+        args.milestone,
+    )
     project_fields_set: dict[str, Any] = {}
     if project:
         try:
@@ -608,14 +676,7 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     body = issue.get("body") or ""
     new_text = read_body(args)
     updated = replace_section(body, args.section, new_text)
-    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-        tmp.write(updated)
-        tmp_path = tmp.name
-    try:
-        actor, _, _ = run_raw(["issue", "edit", str(number), "-R", issue_repo, "--body-file", tmp_path])
-    finally:
-        pathlib.Path(tmp_path).unlink(missing_ok=True)
-    _, refreshed = get_issue(args.issue, repo)
+    actor, refreshed = rest_edit_issue(issue_repo, number, body=updated)
     emit({"ok": True, "actor": actor, "updated_section": args.section, "issue": compact_issue(refreshed)})
 
 
@@ -637,13 +698,7 @@ def cmd_link(args: argparse.Namespace) -> None:
         actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "POST", f"repos/{source_repo}/issues/{source_number}/sub_issues", "-F", f"sub_issue_id={target['id']}"])
     elif rel == "related":
         updated = add_relationship_note(source.get("body") or "", "related", target)
-        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-            tmp.write(updated)
-            tmp_path = tmp.name
-        try:
-            actor, _, _ = run_raw(["issue", "edit", str(source_number), "-R", source_repo, "--body-file", tmp_path])
-        finally:
-            pathlib.Path(tmp_path).unlink(missing_ok=True)
+        actor, source = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
 
@@ -673,13 +728,7 @@ def cmd_unlink(args: argparse.Namespace) -> None:
         actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "DELETE", f"repos/{source_repo}/issues/{source_number}/sub_issue", "-F", f"sub_issue_id={target['id']}"])
     elif rel == "related":
         updated = remove_relationship_note(source.get("body") or "", "related", target)
-        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-            tmp.write(updated)
-            tmp_path = tmp.name
-        try:
-            actor, _, _ = run_raw(["issue", "edit", str(source_number), "-R", source_repo, "--body-file", tmp_path])
-        finally:
-            pathlib.Path(tmp_path).unlink(missing_ok=True)
+        actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
     emit({"ok": True, "actor": actor, "relationship_removed": rel})
@@ -847,10 +896,10 @@ def cmd_project_add(args: argparse.Namespace) -> None:
     project = args.project or (config.get("projects") or {}).get("default_project")
     if not project:
         raise PlanError("Pass --project or set planning.projects.default_project")
-    _, number, project_data = resolve_project(owner, project)
+    _, number, project_data = resolve_project(owner, project, recoverable=True)
     actor, data = gh_json([
         "project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"
-    ], prefer_active=True)
+    ], prefer_active=True, recoverable=True)
     emit({"ok": True, "actor": actor, "owner": owner, "project": project_data or {"number": number}, "item": data})
 
 
@@ -871,6 +920,7 @@ def cmd_project_set(args: argparse.Namespace) -> None:
         focus=args.focus,
         manager=args.manager,
         finish_line=args.finish_line,
+        recoverable=True,
     )
     emit({"ok": True, **result})
 
@@ -948,6 +998,7 @@ def cmd_project_list(args: argparse.Namespace) -> None:
     actor, data = gh_json(
         cmd,
         prefer_active=True,
+        recoverable=True,
     )
     emit({"ok": True, "actor": actor, "owner": owner, "projects": data})
 
