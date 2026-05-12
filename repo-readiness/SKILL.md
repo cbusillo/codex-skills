@@ -23,10 +23,7 @@ Leave the user with a truthful readiness answer:
 
 1. Identify the repo, branch, active task, changed files, and whether a PR/issue
    is in play.
-2. Check `.github/github.json` when present before inferring gates. If only the
-   legacy `.github/github-repo-workflow.json` exists, read it as the same
-   metadata shape and suggest migrating to `.github/github.json` only when
-   metadata is already being updated.
+2. Check `.github/github.json` before inferring gates.
    If it has a `qualityGate` block, use it for how to run tests, lint/static
    analysis, format checks, typechecks, builds, and IDE/static inspections. Use
    `qualityGate.docsRequiredWhen` for docs freshness triggers. If it has a
@@ -108,7 +105,7 @@ change.
 When work changes docs routing, validation commands, lint/inspection routing,
 required docs conditions, important workflows, health endpoints, repo
 relationships, cleanup policy, or ownership boundaries, check whether
-`.github/github.json` or legacy `.github/github-repo-workflow.json` is stale.
+`.github/github.json` is stale.
 Report metadata drift as a readiness warning or blocker only when it changes
 what "ready" means for the current task.
 
@@ -127,7 +124,7 @@ Preferred flow:
 1. Check open projects with the JetBrains inspection project-list tool when
    available.
 2. Check `.github/github.json` for optional
-   `qualityGate.inspection` or legacy `jetbrains` blocks. Prefer configured
+   `qualityGate.inspection` or `jetbrains` blocks. Prefer configured
    `ide`, `openProjectPath`, and `scopePreference` over inference.
 3. If the repo is not open and no repo config applies, infer the IDE from the
    repo:
