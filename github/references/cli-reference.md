@@ -58,6 +58,11 @@ For timeline comments, use `scripts/gh-comment`. For PR review feedback, use
 uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
 special local cases where a different `gh` executable should be used.
 
+Planning helpers are bot-first by default. If the bot token hits a GraphQL/API
+rate limit, helpers may retry with the active `gh` account and report the actor
+in their JSON output. Do not make active-user execution the default; reserve
+`GH_PLAN_ALLOW_ACTIVE_FIRST=1` for explicit local debugging.
+
 Avoid passing escaped `\n` through shell-quoted `--body`. Also avoid unquoted
 heredocs like `<<EOF` for Markdown bodies: shell command substitution runs
 inside backticks before the body reaches GitHub. Use `<<'EOF'` for literal

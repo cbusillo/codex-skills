@@ -91,11 +91,12 @@ def run_raw(
     prefer_active: bool = False,
     recoverable: bool = False,
 ) -> tuple[str, str, str]:
-    """Run gh through configured automation first, then active gh auth."""
+    """Run gh through automation first, with active gh as a rate-limit fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
     bot_enabled = BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
+    active_first = prefer_active and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
     commands: list[tuple[str, list[str]]] = []
-    if prefer_active:
+    if active_first:
         commands.append(("active-gh-user", ["gh", *args]))
         if bot_enabled:
             commands.append(("automation-gh", [str(BOT_GH), *args]))
@@ -116,16 +117,20 @@ def run_raw(
         if proc.returncode == 0:
             return actor, proc.stdout, proc.stderr
         if (
-            not prefer_active
+            not active_first
             and actor == "automation-gh"
             and index + 1 == len(commands)
             and is_graphql_rate_limited(proc.stderr)
         ):
             continue
-        if actor == "automation-gh" or prefer_active:
+        if actor == "automation-gh" or active_first:
             break
 
     if tried and tried[-1][0] == "automation-gh" and is_graphql_rate_limited(tried[-1][1].stderr):
+        print(
+            "warning: automation gh token hit a GraphQL/API rate limit; retrying with active gh auth",
+            file=sys.stderr,
+        )
         proc = subprocess.run(
             ["gh", *args],
             input=input_text,
@@ -150,7 +155,9 @@ def run_raw(
 
 def is_graphql_rate_limited(stderr: str) -> bool:
     lowered = stderr.lower()
-    return "rate limit" in lowered and ("graphql" in lowered or "api rate" in lowered)
+    return "rate limit" in lowered and (
+        "graphql" in lowered or "api rate" in lowered or "secondary rate" in lowered
+    )
 
 
 def gh_json(
