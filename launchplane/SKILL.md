@@ -41,6 +41,9 @@ Mutate runtime environments, managed secrets, and product config.
   3. Build a product-config request for `POST /v1/product-config/apply`.
   4. **Dry-run** and inspect redacted results.
   5. **Apply** with a concrete reason only after the dry-run succeeds.
+  6. Inspect returned `next_actions` and complete required follow-up actions;
+     product-config apply can update Launchplane records before the live target
+     runtime has been synced.
 
 ## Intentionality & Safety
 
