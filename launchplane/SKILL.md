@@ -6,7 +6,7 @@ description: Unified Launchplane Expert for inspecting runtime context and perfo
 # Launchplane Expert
 
 Use this skill to inspect product/runtime state and perform safe,
-authenticated mutations via the Launchplane service or CLI.
+authenticated mutations via the Launchplane service API.
 
 ## Core Goal
 
@@ -54,5 +54,6 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `POST /v1/product-config/apply`: Primary product-config operator path for
   trusted local agents; use local-operator bearer auth and dry-run before apply.
-- Launchplane CLI helpers: Use only when the repo provides a concrete command;
-  do not assume a global `launchplane` binary exists.
+- Launchplane host-only CLI helpers: Use only when you are explicitly on the
+  Launchplane host via SSH or the repo provides a concrete command. Do not
+  assume a global `launchplane` binary exists on ordinary workstations.

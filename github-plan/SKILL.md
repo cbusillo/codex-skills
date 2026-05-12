@@ -156,6 +156,22 @@ creating sub-issues or Project fields.
 Use native relationships first when the helper/API supports them. Body
 references are explanatory, not canonical.
 
+## Related Issue Sweep
+
+Stale GitHub planning state is a regression source. Before closeout, handoff,
+or declaring a workstream done, search for related, duplicate, stale, parent,
+sub-issue, blocker, and PR-linked issues that might still describe the old
+state.
+
+- Update every related issue whose `Current Status`, labels, blockers,
+  relationships, or acceptance criteria changed.
+- Close or relabel stale duplicate issues when they no longer represent current
+  work.
+- Prefer updating the canonical parent and linked sub-issues over leaving
+  corrective context only in chat or PR comments.
+- If an old issue might mislead a future agent, treat it as unfinished cleanup,
+  not optional housekeeping.
+
 ## Projects And Surfaces
 
 Planning surfaces are optional views over GitHub issue-backed plan data. They
@@ -178,6 +194,7 @@ Before saying a plan is captured, verify:
 - parent issue exists for a broad workstream
 - sub-issues exist when the Broad Workstream Rule applies
 - blockers/dependencies are represented
+- stale, duplicate, related, and PR-linked issues were swept and reconciled
 - `Current Status` and next action are concrete
 - docs are not being used as active plan state
 
