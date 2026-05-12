@@ -1,30 +1,32 @@
 ---
 name: github
-description: Comprehensive GitHub Expert persona for durable planning, blockers, milestones, Projects, implementation workflows (PRs, Branches, Actions), and safe repository hygiene in GitHub-backed repos. Prefer this over local plan files for work that should survive the current conversation.
+description: "Comprehensive GitHub Expert persona for repository execution and hygiene: PRs, branches, Actions, reviews, merge/deploy state, issue comments, and safe cleanup. For durable planning, roadmaps, blockers, Projects, or workstream graphs, use github-plan."
 ---
 
 # GitHub Expert
 
-Use this skill to manage the entire lifecycle of a change—from durable planning
-and focus tracking to implementation, review, and repository hygiene.
+Use this skill to manage repository execution: branches, pull requests, Actions,
+reviews, merge/deploy state, issue comments, and safe cleanup.
 
 ## Core Mandate
 
-Keep planning and execution in sync. Use GitHub Issues as the durable planning
-database and Pull Requests as the implementation record.
+Keep execution grounded in current GitHub and local repo state. Use Pull
+Requests as the implementation record. For durable planning, workstream graphs,
+blockers, milestones, Projects, or roadmap tracking, use the `github-plan`
+skill.
 
-## Durable Planning (Issues & Projects)
+## Durable Planning Boundary
 
-Promote work that should survive the current conversation to GitHub Issues.
+Use `github-plan` for planning surfaces: durable Issues, parent/sub-issue
+graphs, blockers, milestones, Projects, roadmap/focus state, stale or duplicate
+plan cleanup, and replacing local plan files with GitHub issues.
 
-- **Issue Shape**: Strictly follow the structure in `references/issue-templates.md`.
-- **Focus & Projects**: Use `references/github-projects.md` to manage priority
-  (`Focus` field), roadmap dates, and manager routing.
-- **Workflow**: Reason in chat first, search before creating, and keep the
-  `Current Status` section updated as a recovery point.
-- **Docs Boundary**: Do not duplicate active roadmap, blocker, or checklist
-  state into repo docs. Update repo docs only through implementation work when
-  they need to describe current behavior, configuration, or operational policy.
+This skill may comment on, link to, or close issues as part of implementation
+workflow, but it should not flatten broad planning work into a single issue.
+
+Do not duplicate active roadmap, blocker, or checklist state into repo docs.
+Update repo docs only through implementation work when they need to describe
+current behavior, configuration, or operational policy.
 
 ## Implementation & Workflow (PRs & Branches)
 
@@ -65,8 +67,8 @@ Always prefer the bundled scripts for structured state and safe formatting:
 
 ## Workflow Loop
 
-1. **Orient**: Run `github-repo-snapshot.sh` and `gh-plan.py index`.
-2. **Plan**: Draft or update a durable plan Issue.
+1. **Orient**: Run `github-repo-snapshot.sh`; use `github-plan` if planning state matters.
+2. **Plan**: Delegate durable planning to `github-plan`.
 3. **Act**: Create a task branch, commit, and open a PR.
 4. **Verify**: Address CI and review feedback using `github-ci-diagnose.py`.
 5. **Close**: Merge, verify post-merge signals, close the Issue, and clean up.

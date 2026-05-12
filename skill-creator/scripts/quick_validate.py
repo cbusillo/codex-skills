@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
 # ///
 """
 Quick validation script for skills - minimal version
