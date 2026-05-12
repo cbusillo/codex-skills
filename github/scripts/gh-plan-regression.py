@@ -146,8 +146,92 @@ def test_project_commands_are_recoverable() -> None:
     assert all(call["recoverable"] for call in project_calls), project_calls
 
 
+def test_create_reports_issue_when_project_sync_fails() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "active": "plan:active"},
+        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": "Code", "repo_managers": {}},
+    }
+    original_gh_json = plan.gh_json
+
+    def fake_gh_json(
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        prefer_active: bool = False,
+        recoverable: bool = False,
+    ) -> tuple[str, Any]:
+        if args[:2] == ["issue", "list"]:
+            return "automation-gh", []
+        return original_gh_json(
+            args,
+            input_text=input_text,
+            prefer_active=prefer_active,
+            recoverable=recoverable,
+        )
+
+    plan.gh_json = fake_gh_json
+    plan.ensure_labels = lambda repo, wanted, config: ("automation-gh", [])
+    plan.rest_create_issue = lambda repo, title, body, labels, milestone: ("automation-gh", issue)
+    plan.resolve_project = lambda owner, project, recoverable=False: ("active-gh-user", 7, {"title": project, "number": 7})
+
+    def fake_run_raw(
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        check: bool = True,
+        prefer_active: bool = False,
+        recoverable: bool = False,
+    ) -> tuple[str, str, str]:
+        del input_text, check, prefer_active
+        if args[:2] == ["project", "item-add"] and recoverable:
+            raise plan.PlanError("project sync throttled")
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    plan.run_raw = fake_run_raw
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Durable plan",
+            title_flag=None,
+            body="## Finish Line\n\nShip it.\n",
+            body_file=None,
+            label=None,
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="active",
+            focus="Now",
+            manager=None,
+            finish_line=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert payload["issue"]["number"] == 10, payload
+    assert payload["project_fields"] == {"error": "project sync throttled"}, payload
+
+
 def main() -> None:
-    tests = [test_issue_body_updates_use_rest_patch, test_project_commands_are_recoverable]
+    tests = [
+        test_issue_body_updates_use_rest_patch,
+        test_project_commands_are_recoverable,
+        test_create_reports_issue_when_project_sync_fails,
+    ]
     for test in tests:
         test()
         print(f"ok {test.__name__}")
