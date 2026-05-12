@@ -1,6 +1,6 @@
 ---
 name: github
-description: Comprehensive GitHub Expert persona for planning, execution, and repository management. Use for durable planning (Issues, Projects), implementation workflows (PRs, Branches, Actions), and safe repository hygiene.
+description: Comprehensive GitHub Expert persona for durable planning, blockers, milestones, Projects, implementation workflows (PRs, Branches, Actions), and safe repository hygiene in GitHub-backed repos. Prefer this over local plan files for work that should survive the current conversation.
 ---
 
 # GitHub Expert
@@ -22,6 +22,9 @@ Promote work that should survive the current conversation to GitHub Issues.
   (`Focus` field), roadmap dates, and manager routing.
 - **Workflow**: Reason in chat first, search before creating, and keep the
   `Current Status` section updated as a recovery point.
+- **Docs Boundary**: Do not duplicate active roadmap, blocker, or checklist
+  state into repo docs. Update repo docs only through implementation work when
+  they need to describe current behavior, configuration, or operational policy.
 
 ## Implementation & Workflow (PRs & Branches)
 
