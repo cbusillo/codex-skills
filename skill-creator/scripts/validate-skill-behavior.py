@@ -39,8 +39,34 @@ def test_chronicle_stays_quiet_when_unavailable() -> None:
     )
 
 
+def test_launchplane_product_config_uses_operator_api_first() -> None:
+    text = (ROOT / "launchplane" / "SKILL.md").read_text()
+    lower = text.lower()
+    normalized = " ".join(lower.split())
+
+    require(
+        "use the service api path from the operator contract first" in normalized,
+        "Launchplane product-config work should start with the service API path",
+    )
+    require(
+        "post /v1/product-config/apply" in normalized,
+        "Launchplane operator guidance must name the product-config service route",
+    )
+    require(
+        "~/.config/launchplane/local-operator.env" in normalized,
+        "Launchplane operator guidance must point at local operator credentials",
+    )
+    require(
+        "do not assume a global `launchplane` binary exists" in normalized,
+        "Launchplane guidance must not make the global CLI the first-shot path",
+    )
+
+
 def main() -> None:
-    tests = [test_chronicle_stays_quiet_when_unavailable]
+    tests = [
+        test_chronicle_stays_quiet_when_unavailable,
+        test_launchplane_product_config_uses_operator_api_first,
+    ]
     for test in tests:
         test()
         print(f"ok {test.__name__}")
