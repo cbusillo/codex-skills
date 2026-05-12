@@ -31,11 +31,16 @@ Mutate runtime environments, managed secrets, and product config.
 - **Safety**: Strictly follow the `references/operator-contract.md`.
 - **Auth**: Source local operator credentials through the operator contract;
   do not paste token values into chat, issues, PRs, docs, or logs.
+- **First Shot**: For product-config/runtime/secret sync, use the service API
+  path from the operator contract first. Do not start by searching for a local
+  `launchplane` binary or by poking provider config directly.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
-  2. Build a product-config request.
-  3. **Dry-run** and inspect redacted results.
-  4. **Apply** with a concrete reason.
+  2. Source local operator credentials from
+     `~/.config/launchplane/local-operator.env`.
+  3. Build a product-config request for `POST /v1/product-config/apply`.
+  4. **Dry-run** and inspect redacted results.
+  5. **Apply** with a concrete reason only after the dry-run succeeds.
 
 ## Intentionality & Safety
 
@@ -47,4 +52,7 @@ verification.
 ## Tools
 
 - `scripts/launchplane-context.py`: Structural state helper.
-- `launchplane` CLI: Primary operator tool.
+- `POST /v1/product-config/apply`: Primary product-config operator path for
+  trusted local agents; use local-operator bearer auth and dry-run before apply.
+- Launchplane CLI helpers: Use only when the repo provides a concrete command;
+  do not assume a global `launchplane` binary exists.
