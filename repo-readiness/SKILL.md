@@ -9,6 +9,11 @@ Use this skill to answer whether a change, branch, PR, or workstream is ready.
 It is an orchestrator: follow repo-specific instructions first, then call the
 relevant focused skills or tools instead of duplicating their details.
 
+When the user asks whether work is done, ready to hand off, or safe to exit,
+use this skill first for gates and evidence, then use `work-closeout` for final
+hygiene, artifact cleanup, and durable parking state. Do not force a single
+skill when both readiness and closeout are required.
+
 ## Core Goal
 
 Leave the user with a truthful readiness answer:
@@ -63,17 +68,19 @@ If you inspect worktrees, ignore Codex Desktop auto-review worktrees under
 specifically about that review. They are detached external review context and
 should not affect readiness for the active repo/branch.
 
-4. During implementation, choose the narrowest useful gate that matches the
+5. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest
    practical gate for the repo and change.
-5. If GitHub state matters, use `github` for PR checks, Actions,
+6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
    For stacked PRs, include whether a rollup/integration PR would be safer or
    faster than merging each layer and rerunning expensive checks repeatedly.
-6. If UI was touched, use `browser-ui-review` for browser-visible validation.
-7. If security is in scope, use `security-review` explicitly; do not silently
+7. If UI was touched, use `browser-ui-review` for browser-visible validation.
+8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.
-8. Report readiness concisely.
+9. Report readiness concisely. If the user asked for handoff, wrap-up, or
+   safe-to-exit, continue into `work-closeout` after the readiness answer is
+   established.
 
 ## Gate Selection
 
