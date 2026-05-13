@@ -20,6 +20,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
+SYSTEM_OVERRIDE_NAMES = {"plan", "skill-creator", "skill-installer"}
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
 EXAMPLE_MARKERS = (
@@ -52,6 +53,16 @@ def active_skill_dirs() -> list[Path]:
             continue
         dirs.append(skill_md.parent)
     return dirs
+
+
+def system_skill_names() -> set[str]:
+    names: set[str] = set()
+    for skill_md in sorted((ROOT / ".system").glob("*/SKILL.md")):
+        frontmatter = read_frontmatter(skill_md)
+        name = frontmatter.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
 
 
 def read_frontmatter(skill_md: Path) -> dict[str, Any]:
@@ -174,6 +185,17 @@ def main() -> int:
 
     for skill_dir in skill_dirs:
         errors.extend(validate_skill_dir(skill_dir))
+
+    active_names = {skill_dir.name for skill_dir in skill_dirs}
+    overlapping_system_names = active_names & system_skill_names()
+    unexpected_overrides = overlapping_system_names - SYSTEM_OVERRIDE_NAMES
+    missing_overrides = SYSTEM_OVERRIDE_NAMES - overlapping_system_names
+    for name in sorted(unexpected_overrides):
+        errors.append(
+            f"{name}: active skill overrides .system/{name} but is not in SYSTEM_OVERRIDE_NAMES"
+        )
+    for name in sorted(missing_overrides):
+        errors.append(f"{name}: SYSTEM_OVERRIDE_NAMES entry does not match an active .system override")
 
     if errors:
         for error in errors:

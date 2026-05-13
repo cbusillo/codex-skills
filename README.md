@@ -24,6 +24,23 @@ This repository is intended to be safe for public sharing. Put personal,
 machine-specific, client-specific, or private workflow data in ignored local
 files instead of committing it.
 
+### System Skill Overrides
+
+Code recreates bundled system skills under `$CODEX_HOME/skills/.system` during
+startup. Treat `.system/` in this repository as generated/vendor cache state, not
+as maintained source. Edit the top-level skill directories instead.
+
+Some top-level skills intentionally use the same names as bundled system skills
+so they win by normal Code skill precedence:
+
+- `plan`
+- `skill-creator`
+- `skill-installer`
+
+Keep that override list explicit in the repo validator. If Code adds or removes
+bundled system skills, update the top-level override skill or the validator
+allowlist intentionally instead of editing `.system/` directly.
+
 Preferred patterns:
 
 ```text
