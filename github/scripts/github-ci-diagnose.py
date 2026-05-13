@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -29,6 +30,8 @@ FAILURE_MARKERS = (
     "timeout",
     "segmentation fault",
 )
+SCRIPT_DIR = Path(__file__).resolve().parent
+GH_COMMAND = os.environ.get("GITHUB_CI_DIAGNOSE_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 LOG_PENDING_MARKERS = (
     "still in progress",
     "log will be available when it is complete",
@@ -42,7 +45,7 @@ def main() -> int:
         print("error: not inside a git repository", file=sys.stderr)
         return 1
 
-    if which("gh") is None:
+    if Path(GH_COMMAND).name == "gh" and which("gh") is None:
         print("error: gh is not installed or not on PATH", file=sys.stderr)
         return 1
 
@@ -110,14 +113,14 @@ def run_command(command: Sequence[str], cwd: Path, *, text: bool = True) -> subp
 
 
 def run_gh(args: Sequence[str], cwd: Path) -> CommandResult:
-    process = run_command(["gh", *args], cwd=cwd)
+    process = run_command([GH_COMMAND, *args], cwd=cwd)
     assert isinstance(process.stdout, str)
     assert isinstance(process.stderr, str)
     return CommandResult(process.returncode, process.stdout, process.stderr)
 
 
 def run_gh_raw(args: Sequence[str], cwd: Path) -> tuple[int, bytes, str]:
-    process = run_command(["gh", *args], cwd=cwd, text=False)
+    process = run_command([GH_COMMAND, *args], cwd=cwd, text=False)
     assert isinstance(process.stdout, bytes)
     assert isinstance(process.stderr, bytes)
     return process.returncode, process.stdout, process.stderr.decode(errors="replace")

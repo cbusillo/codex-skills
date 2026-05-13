@@ -38,6 +38,13 @@ Leave the user with a truthful readiness answer:
 git status --short --branch
 ```
 
+4. For code changes, run targeted JetBrains inspections during the edit loop,
+   after meaningful file changes and before any push/PR update. Start with
+   changed files or the touched directory so the checked scope stays aligned
+   with the session's actual edits. Repeat after later edits that could affect
+   inspected code. Record explicit not-run reasons when inspections are
+   unavailable or intentionally parked.
+
 If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
 
@@ -150,8 +157,9 @@ open -a "WebStorm" "$repo_root"
    report that specific blocker and continue with other readiness checks.
 
 If inference was wrong, ambiguous, or corrected by the user, suggest adding or
-updating the repo's `.github/github.json` `jetbrains` block. Do
-not edit repo config without approval.
+updating the repo's `.github/github.json` `jetbrains` block. For repo metadata
+maintenance tasks, add or update the block when the correct IDE/path is known;
+otherwise do not edit repo config without approval.
 
 Use targeted inspections first when possible: changed files, current file,
 directory, or git scope. Use whole-project inspections only when repo policy or
