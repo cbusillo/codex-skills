@@ -26,9 +26,11 @@ files instead of committing it.
 
 ### System Skill Overrides
 
-Code recreates bundled system skills under `$CODEX_HOME/skills/.system` during
-startup. Treat `.system/` in this repository as generated/vendor cache state, not
-as maintained source. Edit the top-level skill directories instead.
+Code recreates bundled system skills under the runtime skills directory during
+startup: `$CODE_HOME/skills/.system` for Code, with
+`$CODEX_HOME/skills/.system` kept for compatibility. Treat `.system/` in this
+repository as generated/vendor cache state, not as maintained source. Edit the
+top-level skill directories instead.
 
 Some top-level skills intentionally use the same names as bundled system skills
 so they win by normal Code skill precedence:

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
 SYSTEM_OVERRIDE_NAMES = {"plan", "skill-creator", "skill-installer"}
+SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
 EXAMPLE_MARKERS = (
@@ -57,12 +59,61 @@ def active_skill_dirs() -> list[Path]:
 
 def system_skill_names() -> set[str]:
     names: set[str] = set()
-    for skill_md in sorted((ROOT / ".system").glob("*/SKILL.md")):
+    system_root = resolve_system_skills_root()
+    for skill_md in sorted(system_root.glob("*/SKILL.md")):
         frontmatter = read_frontmatter(skill_md)
         name = frontmatter.get("name")
         if isinstance(name, str) and name:
             names.add(name)
     return names
+
+
+def resolve_system_skills_root() -> Path:
+    """Return the Code runtime system skill cache, falling back to repo cache.
+
+    Code caches embedded system skills under the active runtime skills directory:
+    `CODE_HOME/skills/.system` for Code, with `CODEX_HOME/skills/.system` kept
+    for compatibility. This repo also carries a generated `.system` cache for CI
+    and source-checkout validation, but it should not shadow a real runtime cache.
+    """
+
+    candidates = runtime_system_root_candidates()
+    repo_system_root = ROOT / ".system"
+    candidates.append(repo_system_root)
+    for candidate in candidates:
+        if is_system_skills_root(candidate):
+            return candidate
+    return repo_system_root
+
+
+def runtime_system_root_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for home in runtime_home_candidates():
+        candidate = (home / "skills" / ".system").expanduser().resolve()
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
+
+
+def runtime_home_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    code_home = os.environ.get("CODE_HOME", "").strip()
+    if code_home:
+        candidates.append(Path(code_home))
+    codex_home = os.environ.get("CODEX_HOME", "").strip()
+    if codex_home:
+        candidates.append(Path(codex_home))
+    home = Path.home()
+    candidates.extend((home / ".code", home / ".codex"))
+    return candidates
+
+
+def is_system_skills_root(path: Path) -> bool:
+    return (path / SYSTEM_SKILLS_MARKER_FILENAME).is_file() and any(
+        path.glob("*/SKILL.md")
+    )
 
 
 def read_frontmatter(skill_md: Path) -> dict[str, Any]:
