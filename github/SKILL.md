@@ -41,12 +41,22 @@ Use PRs for all non-trivial code changes.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `gh pr create` from that repository or pass both
   `--repo OWNER/REPO` and an explicit `--head` branch.
+- **Pre-Push Quality**: For code changes, run targeted JetBrains inspections on
+  changed files or touched directories before pushing a branch or updating a PR
+  whenever the repo has an IDE project available. If unavailable, record the
+  not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,
   `scripts/gh-comment` for issue and PR timeline comments, and
   `gh pr review --body-file` for PR review feedback. Avoid unquoted heredocs
   for Markdown bodies because shell command substitution runs inside backticks.
+- **Authentication**: Prefer bundled GitHub scripts and route ad hoc `gh`
+  calls through `scripts/gh-with-env-token` so `.env` / `CODEX_GITHUB_TOKEN`
+  auth overrides any exhausted inherited `GH_TOKEN`. Use
+  `scripts/gh-with-env-token --print-auth-account ...` when the acting account
+  should be visible; it writes the account receipt to stderr so JSON stdout
+  remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 

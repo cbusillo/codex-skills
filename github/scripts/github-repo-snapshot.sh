@@ -9,6 +9,8 @@ json_output=0
 fetch_first=0
 health_urls=()
 cleanup_paths=()
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 
 cleanup() {
   local path
@@ -105,15 +107,22 @@ capture_lines_json() {
 }
 
 capture_gh_json() {
-  local output status
-  output="$({ "$@"; } 2>&1)"
-  status=$?
-  if [[ "$status" -eq 0 ]]; then
-    printf '%s\n' "$output"
-  else
-    jq -n --argjson exitCode "$status" --arg message "$output" \
-      '{error: {exitCode: $exitCode, message: $message}}'
+  local stdout stderr status
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  cleanup_paths+=("$stdout" "$stderr")
+  if "$@" >"$stdout" 2>"$stderr"; then
+    if jq -e . "$stdout" >/dev/null 2>&1; then
+      cat "$stdout"
+    else
+      jq -n --arg message "$(cat "$stdout")" --arg stderr "$(cat "$stderr")" \
+        '{error: {exitCode: 0, message: $message, stderr: $stderr}}'
+    fi
+    return
   fi
+  status=$?
+  jq -n --argjson exitCode "$status" --arg message "$(cat "$stderr")" --arg stdout "$(cat "$stdout")" \
+    '{error: {exitCode: $exitCode, message: $message, stdout: $stdout}}'
 }
 
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -207,18 +216,18 @@ if [[ "$json_output" -eq 1 ]]; then
   fi
 
   gh_available=0
-  if command -v gh >/dev/null 2>&1; then
+  if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
     gh_available=1
     if [[ -n "$current_branch" ]]; then
-      capture_gh_json gh pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup >"$tmpdir/current-pr.json"
-      capture_gh_json gh run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
+      capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup >"$tmpdir/current-pr.json"
+      capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
     else
       jq -n 'null' >"$tmpdir/current-pr.json"
       jq -n '[]' >"$tmpdir/branch-runs.json"
     fi
-    capture_gh_json gh pr list --state open --limit 20 --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,labels,url >"$tmpdir/open-prs.json"
-    capture_gh_json gh issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
-    capture_gh_json gh run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
+    capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,labels,url >"$tmpdir/open-prs.json"
+    capture_gh_json "$gh_bin" issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
+    capture_gh_json "$gh_bin" run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
   else
     jq -n 'null' >"$tmpdir/current-pr.json"
     jq -n '[]' >"$tmpdir/open-prs.json"
@@ -306,27 +315,27 @@ if [[ -n "$config_path" ]]; then
   run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
 fi
 
-if command -v gh >/dev/null 2>&1; then
+if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
-  if [[ -n "$current_branch" ]] && gh pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup 2>/dev/null; then
+  if [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup 2>/dev/null; then
     :
   else
     echo "no pull request associated with the current branch"
   fi
 
   section "Open Pull Requests"
-  run_or_note "gh pr list" gh pr list --state open --limit 20
+  run_or_note "gh pr list" "$gh_bin" pr list --state open --limit 20
 
   section "Open Issues"
-  run_or_note "gh issue list" gh issue list --state open --limit 30
+  run_or_note "gh issue list" "$gh_bin" issue list --state open --limit 30
 
   if [[ -n "$current_branch" ]]; then
     section "Recent Actions for Current Branch"
-    run_or_note "gh run list for current branch" gh run list --branch "$current_branch" --limit 10
+    run_or_note "gh run list for current branch" "$gh_bin" run list --branch "$current_branch" --limit 10
   fi
 
   section "Recent Actions"
-  run_or_note "gh run list" gh run list --limit 10
+  run_or_note "gh run list" "$gh_bin" run list --limit 10
 else
   section "GitHub CLI"
   echo "gh not found; skipping GitHub state."

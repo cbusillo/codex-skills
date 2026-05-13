@@ -13,6 +13,11 @@ Repo-local values override workspace defaults.
     }
   },
   "importantWorkflows": ["CI"],
+  "jetbrains": {
+    "ide": "IntelliJ IDEA",
+    "openProjectPath": ".",
+    "scopePreference": "changed_files"
+  },
   "healthUrls": [],
   "relatedRepos": [],
   "metadataFreshness": {
@@ -74,6 +79,9 @@ Common top-level keys:
 - `qaLabels` and `deployLabels`: labels that change QA or deploy behavior.
 - `healthUrls`: product, lane, or deploy health endpoints relevant to readiness.
 - `relatedRepos`: repos agents should consider during cross-repo work.
+- `jetbrains`: preferred IDE inspection target when it is not obvious. Use
+  `ide` for the macOS app name, `openProjectPath` for the repo-relative path to
+  open, and `scopePreference` for the default inspection scope.
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `cleanup`: repo-local cleanup policy for merged branches and worktrees.
 - `metadataFreshness`: events that should trigger metadata review.
