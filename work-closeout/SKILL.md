@@ -9,6 +9,11 @@ Use this skill to leave a workstream tidy and understandable. It is about
 cleanup and handoff, not proving readiness; use `repo-readiness` when the main
 question is whether checks pass or a PR can ship.
 
+When the user asks whether work is done, ready to hand off, or safe to exit,
+compose the skills in order: use `repo-readiness` first for gates and evidence,
+then use this skill for final hygiene, cleanup, and parking state. Do not force
+a single skill when both readiness and closeout are required.
+
 ## Core Goal
 
 Leave the user with a truthful closeout answer:
@@ -55,8 +60,8 @@ handoffs, issues, PRs, or final summaries.
 4. If GitHub state matters for closeout, use `github` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
    security/quality signals, and safe branch/worktree cleanup.
-5. Use `github` for durable plan state, blockers, stale/duplicate plan
-   cleanup, and Project updates. Use legacy `plan` only for explicit
+5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
+   cleanup, and Project planning state. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
 6. Remove consumed `handoff*.md` files after durable planning decisions are
    captured in GitHub or an explicit offline/local plan, and after implemented
