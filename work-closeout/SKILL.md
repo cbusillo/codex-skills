@@ -101,9 +101,9 @@ Safe to exit: no
   cleanup work is unresolved and untracked.
 - Temporary artifacts or processes could confuse the next session.
 
-For code changes, broad practical lint/static analysis and IDE inspection state
-must be included in closeout, or there must be a documented not-run reason or
-intentional parking decision.
+For code changes, broad practical lint/static analysis and `jetbrains-inspection`
+state must be included in closeout, or there must be a documented not-run reason
+or intentional parking decision.
 
 ## Parking Work
 
