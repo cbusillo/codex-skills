@@ -53,10 +53,11 @@ Use PRs for all non-trivial code changes.
   for Markdown bodies because shell command substitution runs inside backticks.
 - **Authentication**: Prefer bundled GitHub scripts and route ad hoc `gh`
   calls through `scripts/gh-with-env-token` so `.env` / `CODEX_GITHUB_TOKEN`
-  auth overrides any exhausted inherited `GH_TOKEN`. Use
-  `scripts/gh-with-env-token --print-auth-account ...` when the acting account
-  should be visible; it writes the account receipt to stderr so JSON stdout
-  remains parseable.
+  auth overrides any exhausted inherited `GH_TOKEN`. If no automation token is
+  configured, the wrapper uses the active local `gh` account and warns on
+  stderr. Use `scripts/gh-with-env-token --print-auth-account ...` when the
+  acting account should be visible; it writes the account receipt to stderr so
+  JSON stdout remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 
@@ -72,7 +73,8 @@ Use PRs for all non-trivial code changes.
 
 Always prefer the bundled scripts for structured state and safe formatting:
 
-- `scripts/gh-plan.py`: Issue and Project management (see `references/cli-reference.md`).
+- `scripts/gh-plan.py`: Issue and Project management (see
+  `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
 - `scripts/gh-issue`: Safe multiline issue create/edit bodies from stdin.
@@ -80,7 +82,8 @@ Always prefer the bundled scripts for structured state and safe formatting:
 
 ## Workflow Loop
 
-1. **Orient**: Run `github-repo-snapshot.sh`; use `github-plan` if planning state matters.
+1. **Orient**: Run `github-repo-snapshot.sh`; use `github-plan` if planning
+   state matters.
 2. **Plan**: Delegate durable planning to `github-plan`.
 3. **Act**: Create a task branch, commit, and open a PR.
 4. **Verify**: Address CI and review feedback using `github-ci-diagnose.py`.

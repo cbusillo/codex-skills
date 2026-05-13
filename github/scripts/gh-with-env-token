@@ -12,10 +12,10 @@ stderr_file=$(mktemp)
 trap 'rm -f "$stdout_file" "$stderr_file"' EXIT INT HUP TERM
 
 case "${1:-}" in
-	--print-auth-account)
-		print_auth_account=1
-		shift
-		;;
+--print-auth-account)
+	print_auth_account=1
+	shift
+	;;
 esac
 
 if [ -f "$env_file" ]; then
@@ -31,13 +31,6 @@ elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$GITHUB_TOKEN
 fi
 
-if [ -z "${GH_TOKEN:-}" ]; then
-	echo "Set GH_TOKEN, GITHUB_TOKEN, or CODEX_GITHUB_TOKEN in $env_file" >&2
-	exit 1
-fi
-
-export GH_TOKEN
-
 is_rate_limited() {
 	grep -Eiq 'rate limit|rate_limit|API rate limit|secondary rate' "$1"
 }
@@ -50,9 +43,9 @@ retry_with_active_auth() {
 	cat "$stderr_file" >&2
 	echo "warning: automation gh token failed; retrying with active gh auth" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
-		env -u GH_TOKEN -u GITHUB_TOKEN "$gh_command" auth status >&2 || true
+		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
-	env -u GH_TOKEN -u GITHUB_TOKEN "$gh_command" "$@"
+	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 }
 
 print_account() {
@@ -60,6 +53,18 @@ print_account() {
 	echo "gh auth status ($label):" >&2
 	"$gh_command" auth status >&2 || true
 }
+
+if [ -z "${GH_TOKEN:-}" ]; then
+	echo "warning: no automation gh token found; using active gh auth" >&2
+	if [ "$print_auth_account" -eq 1 ]; then
+		echo "gh auth status (active gh auth):" >&2
+		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
+	fi
+	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
+	exit $?
+fi
+
+export GH_TOKEN
 
 if [ "$print_auth_account" -eq 1 ]; then
 	print_account "automation token"
