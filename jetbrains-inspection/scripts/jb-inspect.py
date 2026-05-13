@@ -183,10 +183,11 @@ def command_trigger(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
 
 def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
+    timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
     body = call_endpoint(route, "wait", route_params(args, context, route) | {
-        "timeout_ms": getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS),
+        "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-    })
+    }, timeout=wait_http_timeout(timeout_ms))
     return {"status": body.get("completion_reason") or body.get("status", "unknown"), "context": context, "route": body.get("route") or route, "wait": body}
 
 
@@ -200,10 +201,11 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
     route = resolve_route(args, context)
     trigger = call_endpoint(route, "trigger", trigger_params(args, context, route))
     active_route = trigger.get("route") or route
+    timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
     wait = call_endpoint(active_route, "wait", route_params(args, context, active_route) | {
-        "timeout_ms": getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS),
+        "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-    })
+    }, timeout=wait_http_timeout(timeout_ms))
     problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
     summary = summarize_problems(context, problems.get("route") or active_route, problems)
     summary["trigger"] = trigger
@@ -313,7 +315,12 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
         raise InspectError(f"Inspection API unavailable on port {port}: {error}", 3)
 
 
-def call_endpoint(route: dict[str, Any], endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+def call_endpoint(
+    route: dict[str, Any],
+    endpoint: str,
+    params: dict[str, Any],
+    timeout: float | None = None,
+) -> dict[str, Any]:
     port = int(route.get("port") or route.get("ide", {}).get("port") or 0)
     if not port:
         base_url = route.get("base_url") or ""
@@ -321,7 +328,7 @@ def call_endpoint(route: dict[str, Any], endpoint: str, params: dict[str, Any]) 
         port = parsed.port or 0
     if not port:
         raise InspectError("Route did not include an IDE port.", 3, {"route": route})
-    return http_get(port, endpoint, params, timeout=max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
+    return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
 
 
 def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -379,6 +386,10 @@ def problems_params(args: argparse.Namespace, context: dict[str, Any], route: di
         "offset": getattr(args, "offset", 0),
     })
     return params
+
+
+def wait_http_timeout(timeout_ms: int) -> float:
+    return max(DEFAULT_TIMEOUT_SECONDS, (timeout_ms / 1000.0) + 5.0)
 
 
 def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
