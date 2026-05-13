@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Regression checks for gh-plan.py command shapes.
 
 These checks avoid live GitHub calls. They load gh-plan.py as a module and
