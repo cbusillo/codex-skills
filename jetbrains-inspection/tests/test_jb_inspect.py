@@ -75,6 +75,13 @@ class WorktreeSafetyTest(unittest.TestCase):
 
         jb_inspect.ensure_worktree_safe(route, context, args)
 
+    def test_allows_open_project_inside_current_worktree(self):
+        route = {"base_path": "/tmp/current-worktree/packages/app"}
+        context = {"worktree_root": "/tmp/current-worktree", "worktree_strategy": "prefer-current"}
+        args = Namespace(no_worktree_check=False)
+
+        jb_inspect.ensure_worktree_safe(route, context, args)
+
     def test_approval_flag_allows_any_worktree(self):
         route = {"base_path": "/tmp/main-checkout"}
         context = {"worktree_root": "/tmp/linked-worktree", "worktree_strategy": "prefer-current"}

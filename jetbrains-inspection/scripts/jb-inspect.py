@@ -608,7 +608,7 @@ def ensure_worktree_safe(route: dict[str, Any], context: dict[str, Any], args: a
         return
     if route_path == worktree_path:
         return
-    if worktree_path.is_relative_to(route_path):
+    if worktree_path.is_relative_to(route_path) or route_path.is_relative_to(worktree_path):
         return
     raise InspectError(
         "Resolved JetBrains project is not the current worktree; refusing to inspect the wrong tree.",
