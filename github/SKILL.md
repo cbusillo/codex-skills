@@ -41,10 +41,10 @@ Use PRs for all non-trivial code changes.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `gh pr create` from that repository or pass both
   `--repo OWNER/REPO` and an explicit `--head` branch.
-- **Pre-Push Quality**: For code changes, run targeted JetBrains inspections on
-  changed files or touched directories before pushing a branch or updating a PR
-  whenever the repo has an IDE project available. If unavailable, record the
-  not-run reason before pushing.
+- **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
+  targeted JetBrains inspections on changed files or touched directories before
+  pushing a branch or updating a PR whenever the repo has an IDE project
+  available. If unavailable, record the not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,

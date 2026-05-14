@@ -43,12 +43,12 @@ Leave the user with a truthful readiness answer:
 git status --short --branch
 ```
 
-4. For code changes, run targeted JetBrains inspections during the edit loop,
-   after meaningful file changes and before any push/PR update. Start with
-   changed files or the touched directory so the checked scope stays aligned
-   with the session's actual edits. Repeat after later edits that could affect
-   inspected code. Record explicit not-run reasons when inspections are
-   unavailable or intentionally parked.
+4. For code changes, use `jetbrains-inspection` during the edit loop when a
+   JetBrains IDE project is available or required. Start with changed files or
+   the touched directory so the checked scope stays aligned with the session's
+   actual edits. Repeat after later edits that could affect inspected code.
+   Record explicit not-run reasons when inspections are unavailable or
+   intentionally parked.
 
 If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
@@ -132,45 +132,12 @@ update is needed, say why briefly in readiness output.
 
 ## JetBrains IDE And Inspections
 
-When a repo requires JetBrains/PyCharm inspections and the inspection tool says
-the project is not open, open the repo in the appropriate JetBrains IDE and
-retry instead of stopping at the complaint.
-
-Preferred flow:
-
-1. Check open projects with the JetBrains inspection project-list tool when
-   available.
-2. Check `.github/github.json` for optional
-   `qualityGate.inspection` or `jetbrains` blocks. Prefer configured
-   `ide`, `openProjectPath`, and `scopePreference` over inference.
-3. If the repo is not open and no repo config applies, infer the IDE from the
-   repo:
-   - Python, uv, Django/FastAPI, mixed Python web: PyCharm
-   - Kotlin/Gradle/JetBrains plugin: IntelliJ IDEA
-   - TypeScript/Node frontend-only: WebStorm
-   - Rust-focused workspace: IntelliJ IDEA
-4. On macOS, open the repo or configured project path with the selected app, for
-   example:
-
-```bash
-open -a "PyCharm" "$repo_root"
-open -a "IntelliJ IDEA" "$repo_root"
-open -a "WebStorm" "$repo_root"
-```
-
-5. Wait briefly for indexing/project registration, then retry the inspection
-   status or targeted inspection.
-6. If the selected IDE is not installed or the project still does not appear,
-   report that specific blocker and continue with other readiness checks.
-
-If inference was wrong, ambiguous, or corrected by the user, suggest adding or
-updating the repo's `.github/github.json` `jetbrains` block. For repo metadata
-maintenance tasks, add or update the block when the correct IDE/path is known;
-otherwise do not edit repo config without approval.
-
-Use targeted inspections first when possible: changed files, current file,
-directory, or git scope. Use whole-project inspections only when repo policy or
-change risk calls for it.
+Delegate JetBrains/PyCharm/IntelliJ/WebStorm inspection execution and triage to
+`jetbrains-inspection`. Treat stale results, incomplete capture, indexing,
+session drift, unavailable IDE, ambiguous routing, or wrong-worktree routing as
+not-clean states. Do not add suppressions, disable inspections, or change IDE
+inspection profiles without explicit approval unless the repo already has an
+approved convention.
 
 ## Output Format
 

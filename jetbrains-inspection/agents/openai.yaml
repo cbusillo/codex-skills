@@ -1,0 +1,4 @@
+interface:
+  display_name: "JetBrains Inspection"
+  short_description: "Run JetBrains IDE inspections safely"
+  default_prompt: "Use $jetbrains-inspection to run targeted IDE inspections before calling this code ready."
