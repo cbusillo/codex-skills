@@ -57,9 +57,12 @@ def active_skill_dirs() -> list[Path]:
     return dirs
 
 
-def system_skill_names() -> set[str]:
-    names: set[str] = set()
+def system_skill_names() -> set[str] | None:
     system_root = resolve_system_skills_root()
+    if system_root is None:
+        return None
+
+    names: set[str] = set()
     for skill_md in sorted(system_root.glob("*/SKILL.md")):
         frontmatter = read_frontmatter(skill_md)
         name = frontmatter.get("name")
@@ -68,22 +71,19 @@ def system_skill_names() -> set[str]:
     return names
 
 
-def resolve_system_skills_root() -> Path:
-    """Return the Code runtime system skill cache, falling back to repo cache.
+def resolve_system_skills_root() -> Path | None:
+    """Return the Code runtime system skill cache when available.
 
     Code caches embedded system skills under the active runtime skills directory:
     `CODE_HOME/skills/.system` for Code, with `CODEX_HOME/skills/.system` kept
-    for compatibility. This repo also carries a generated `.system` cache for CI
-    and source-checkout validation, but it should not shadow a real runtime cache.
+    for compatibility. This repo may also contain a generated `.system` cache,
+    but clean checkouts are not required to have generated system skills.
     """
 
-    candidates = runtime_system_root_candidates()
-    repo_system_root = ROOT / ".system"
-    candidates.append(repo_system_root)
-    for candidate in candidates:
+    for candidate in runtime_system_root_candidates():
         if is_system_skills_root(candidate):
             return candidate
-    return repo_system_root
+    return None
 
 
 def runtime_system_root_candidates() -> list[Path]:
@@ -237,16 +237,20 @@ def main() -> int:
     for skill_dir in skill_dirs:
         errors.extend(validate_skill_dir(skill_dir))
 
-    active_names = {skill_dir.name for skill_dir in skill_dirs}
-    overlapping_system_names = active_names & system_skill_names()
-    unexpected_overrides = overlapping_system_names - SYSTEM_OVERRIDE_NAMES
-    missing_overrides = SYSTEM_OVERRIDE_NAMES - overlapping_system_names
-    for name in sorted(unexpected_overrides):
-        errors.append(
-            f"{name}: active skill overrides .system/{name} but is not in SYSTEM_OVERRIDE_NAMES"
-        )
-    for name in sorted(missing_overrides):
-        errors.append(f"{name}: SYSTEM_OVERRIDE_NAMES entry does not match an active .system override")
+    system_names = system_skill_names()
+    if system_names is not None:
+        active_names = {skill_dir.name for skill_dir in skill_dirs}
+        overlapping_system_names = active_names & system_names
+        unexpected_overrides = overlapping_system_names - SYSTEM_OVERRIDE_NAMES
+        missing_overrides = SYSTEM_OVERRIDE_NAMES - overlapping_system_names
+        for name in sorted(unexpected_overrides):
+            errors.append(
+                f"{name}: active skill overrides .system/{name} but is not in SYSTEM_OVERRIDE_NAMES"
+            )
+        for name in sorted(missing_overrides):
+            errors.append(
+                f"{name}: SYSTEM_OVERRIDE_NAMES entry does not match an active .system override"
+            )
 
     if errors:
         for error in errors:
