@@ -18,4 +18,4 @@ jobs:
       - name: Validate skill files
         run: |
           set -euo pipefail
-          find . -name SKILL.md -type f -print | sort | grep -q .
+          ./scripts/validate-skills.sh
