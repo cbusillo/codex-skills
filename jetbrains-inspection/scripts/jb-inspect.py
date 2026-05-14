@@ -451,17 +451,22 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
 
 
 def print_human(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
         print(
-            f"\nROUTE: {route.get('ide', {}).get('name') or 'JetBrains IDE'} "
+            f"ROUTE: {route.get('ide', {}).get('name') or 'JetBrains IDE'} "
             f"project={route.get('project_name')} project_key={route.get('project_key')} "
             f"base_path={route.get('base_path')}"
         )
     status = payload.get("status")
     if status:
         print(f"STATUS: {status}")
+    print_result_flags(payload)
+    if "total_problems" in payload or "problems_shown" in payload:
+        total = payload.get("total_problems", 0)
+        shown = payload.get("problems_shown", len(payload.get("problems") or []))
+        clean = payload.get("clean")
+        print(f"SUMMARY: clean={clean} total_problems={total} problems_shown={shown}")
     problems = payload.get("problems") or []
     if problems:
         print("\nFINDINGS:")
@@ -471,6 +476,25 @@ def print_human(payload: dict[str, Any]) -> None:
             if line:
                 location = f"{location}:{line}"
             print(f"- [{problem.get('severity', 'unknown')}] {location} {problem.get('description', '')}")
+    if not route and not status:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def print_result_flags(payload: dict[str, Any]) -> None:
+    flags: list[str] = []
+    if payload.get("capture_incomplete"):
+        flags.append("capture_incomplete")
+    if payload.get("results_may_be_stale"):
+        flags.append("results_may_be_stale")
+    wait = payload.get("wait") or {}
+    if wait.get("timed_out"):
+        flags.append("timed_out")
+    if wait.get("capture_incomplete"):
+        flags.append("wait_capture_incomplete")
+    if wait.get("results_may_be_stale"):
+        flags.append("wait_results_may_be_stale")
+    if flags:
+        print(f"FLAGS: {', '.join(flags)}")
 
 
 def git_root(path: Path) -> Path | None:

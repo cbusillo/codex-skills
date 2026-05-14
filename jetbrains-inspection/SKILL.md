@@ -11,11 +11,15 @@ tool calls.
 
 ## Primary Helper
 
-Run the helper with `uv run`:
+Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
+In the common user-skill install, that path is:
 
 ```bash
 uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py run --repo "$PWD"
 ```
+
+If this skill was loaded from a repo-local or temporary path, use that loaded
+skill path instead of `~/.code/skills/...`.
 
 Useful commands:
 

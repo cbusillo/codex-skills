@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -122,6 +124,35 @@ class EndpointUtilityTest(unittest.TestCase):
 
         self.assertEqual(body, {"ok": True})
         self.assertEqual(calls, [(63343, "status", {"project_key": "path:/tmp/example"}, 12.5)])
+
+
+class HumanOutputTest(unittest.TestCase):
+    def test_print_human_is_concise_by_default(self):
+        payload = {
+            "status": "findings",
+            "clean": False,
+            "route": {
+                "ide": {"name": "WebStorm"},
+                "project_name": "example",
+                "project_key": "path:/tmp/example",
+                "base_path": "/tmp/example",
+            },
+            "total_problems": 1,
+            "problems_shown": 1,
+            "raw": {"large": "payload"},
+            "problems": [{"severity": "warning", "file": "src/app.ts", "line": 12, "description": "Example finding"}],
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("ROUTE: WebStorm", text)
+        self.assertIn("STATUS: findings", text)
+        self.assertIn("SUMMARY: clean=False total_problems=1 problems_shown=1", text)
+        self.assertIn("src/app.ts:12 Example finding", text)
+        self.assertNotIn('"raw"', text)
 
 
 if __name__ == "__main__":
