@@ -13,6 +13,13 @@ authenticated mutations via the Launchplane service API.
 Provide situational awareness and safe runtime management. Always favor
 service-backed audit trails over local ad-hoc fallbacks.
 
+Do not treat archived workstation files under `~/.config/launchplane/` as the
+authority for current Launchplane runtime or product state. Files such as
+`service.env`, `dokploy.env`, and `runtime-environments.toml` can be useful
+historical clues, but they are not live records. When a task asks about current
+product state, use the deployed Launchplane service/API or operator UI first;
+use direct database access only from an explicitly approved host-side context.
+
 ## Situational Awareness (Context)
 
 Use the context helper to identify product mapping, deploy evidence, and
