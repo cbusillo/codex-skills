@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Small behavior-oriented checks for skill instructions.
 
 These checks complement structural validation by guarding high-impact wording
