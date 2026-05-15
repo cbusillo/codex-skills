@@ -199,7 +199,7 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
 def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     body = call_endpoint(route, "status", route_params(args, context, route))
-    status = body.get("status") or body.get("completion_reason") or "unknown"
+    status = status_label(body)
     return {
         "status": status,
         "clean": classify_status_body_clean(body),
@@ -480,6 +480,29 @@ def classify_status_body_clean(body: dict[str, Any]) -> bool:
         return False
     bad_fragments = ("stale", "incomplete", "timeout", "timed_out", "ambiguous", "unavailable", "error")
     return not any(fragment in status for fragment in bad_fragments)
+
+
+def status_label(body: dict[str, Any]) -> str:
+    explicit_status = body.get("status") or body.get("completion_reason")
+    if explicit_status:
+        return str(explicit_status)
+    if body.get("session_drift"):
+        return "session_drift"
+    if body.get("results_may_be_stale"):
+        return "stale_results"
+    if body.get("capture_incomplete"):
+        return "capture_incomplete"
+    if body.get("timed_out"):
+        return "timed_out"
+    if body.get("indexing"):
+        return "indexing"
+    if body.get("is_scanning") or body.get("inspection_in_progress"):
+        return "running"
+    if body.get("clean_inspection") is True:
+        return "clean"
+    if body.get("has_inspection_results") is True:
+        return "results_available"
+    return "unknown"
 
 
 def classify_status_exit(result: dict[str, Any]) -> int:

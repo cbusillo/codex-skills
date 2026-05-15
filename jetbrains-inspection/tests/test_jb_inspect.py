@@ -130,6 +130,25 @@ class ClassificationTest(unittest.TestCase):
         result = {"clean": jb_inspect.classify_status_body_clean(body)}
         self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
+    def test_status_label_prefers_explicit_status(self):
+        self.assertEqual(jb_inspect.status_label({"status": "custom"}), "custom")
+
+    def test_status_label_synthesizes_from_boolean_state(self):
+        cases = [
+            ({"session_drift": True}, "session_drift"),
+            ({"results_may_be_stale": True}, "stale_results"),
+            ({"capture_incomplete": True}, "capture_incomplete"),
+            ({"timed_out": True}, "timed_out"),
+            ({"indexing": True}, "indexing"),
+            ({"is_scanning": True}, "running"),
+            ({"inspection_in_progress": True}, "running"),
+            ({"clean_inspection": True}, "clean"),
+            ({"has_inspection_results": True}, "results_available"),
+        ]
+        for body, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(jb_inspect.status_label(body), expected)
+
 
 class EndpointUtilityTest(unittest.TestCase):
     def test_wait_http_timeout_exceeds_plugin_timeout(self):
@@ -193,6 +212,7 @@ class EndpointUtilityTest(unittest.TestCase):
             jb_inspect.resolve_route = original_resolve_route
             jb_inspect.call_endpoint = original_call_endpoint
 
+        self.assertEqual(result["status"], "clean")
         self.assertEqual(result["clean"], True)
         self.assertEqual(calls[0][1], "status")
         self.assertEqual(
