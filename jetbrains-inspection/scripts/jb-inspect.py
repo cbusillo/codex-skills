@@ -30,6 +30,7 @@ DEFAULT_PORT_RANGE = range(63340, 63350)
 DEFAULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
+READY_STATUS_VALUES = {"clean", "results_available", "findings"}
 
 
 class InspectError(Exception):
@@ -473,13 +474,10 @@ def classify_status_body_clean(body: dict[str, Any]) -> bool:
         return False
     if body.get("is_scanning") or body.get("indexing") or body.get("inspection_in_progress"):
         return False
-    if body.get("clean_inspection") is True or body.get("has_inspection_results") is True:
-        return True
     status = str(body.get("status") or body.get("completion_reason") or "").lower()
-    if not status:
-        return False
-    bad_fragments = ("stale", "incomplete", "timeout", "timed_out", "ambiguous", "unavailable", "error")
-    return not any(fragment in status for fragment in bad_fragments)
+    if status:
+        return status in READY_STATUS_VALUES
+    return body.get("clean_inspection") is True or body.get("has_inspection_results") is True
 
 
 def status_label(body: dict[str, Any]) -> str:
