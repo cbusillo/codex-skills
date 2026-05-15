@@ -149,6 +149,25 @@ class ClassificationTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(jb_inspect.status_label(body), expected)
 
+    def test_status_explicit_ready_values_exit_zero(self):
+        for status in ("clean", "results_available", "findings"):
+            with self.subTest(status=status):
+                body = {"status": status}
+                result = {"clean": jb_inspect.classify_status_body_clean(body)}
+                self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_status_unknown_explicit_values_exit_nonzero(self):
+        for status in ("archived", "running", "failed", "cancelled", "pending_results"):
+            with self.subTest(status=status):
+                body = {"status": status}
+                result = {"clean": jb_inspect.classify_status_body_clean(body)}
+                self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
+    def test_status_unknown_explicit_value_ignores_cached_clean_flags(self):
+        body = {"status": "failed", "clean_inspection": True, "has_inspection_results": True}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
 
 class EndpointUtilityTest(unittest.TestCase):
     def test_wait_http_timeout_exceeds_plugin_timeout(self):
