@@ -105,6 +105,31 @@ class ClassificationTest(unittest.TestCase):
         result = {"status": "results_available", "problems": [{"description": "x"}]}
         self.assertEqual(jb_inspect.classify_problems_exit(result), 1)
 
+    def test_status_with_clean_result_exits_zero(self):
+        body = {"clean_inspection": True, "is_scanning": False}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_status_with_results_is_informational(self):
+        body = {"has_inspection_results": True, "is_scanning": False}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_status_session_drift_exits_nonzero(self):
+        body = {"session_drift": True, "clean_inspection": True}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
+    def test_status_stale_exits_nonzero(self):
+        body = {"results_may_be_stale": True, "has_inspection_results": True}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
+    def test_status_in_progress_exits_nonzero(self):
+        body = {"is_scanning": True}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
 
 class EndpointUtilityTest(unittest.TestCase):
     def test_wait_http_timeout_exceeds_plugin_timeout(self):
@@ -131,6 +156,57 @@ class EndpointUtilityTest(unittest.TestCase):
 
         self.assertEqual(body, {"ok": True})
         self.assertEqual(calls, [(63343, "status", {"project_key": "path:/tmp/example"}, 12.5)])
+
+    def test_status_command_passes_route_project_key_and_session_id(self):
+        calls = []
+
+        def fake_resolve_route(args, context):
+            return {
+                "port": 63343,
+                "project_key": "path:/tmp/example",
+                "session_id": "session-1",
+                "base_path": "/tmp/example",
+            }
+
+        def fake_call_endpoint(route, endpoint, params, timeout=None):
+            calls.append((route, endpoint, params, timeout))
+            return {"clean_inspection": True, "is_scanning": False}
+
+        original_resolve_route = jb_inspect.resolve_route
+        original_call_endpoint = jb_inspect.call_endpoint
+        jb_inspect.resolve_route = fake_resolve_route
+        jb_inspect.call_endpoint = fake_call_endpoint
+        try:
+            result = jb_inspect.command_status(
+                Namespace(
+                    project_key=None,
+                    session_id=None,
+                    project_path=None,
+                    worktree_path=None,
+                    cwd=None,
+                    project=None,
+                    ide=None,
+                ),
+                {"ide": "WebStorm"},
+            )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+            jb_inspect.call_endpoint = original_call_endpoint
+
+        self.assertEqual(result["clean"], True)
+        self.assertEqual(calls[0][1], "status")
+        self.assertEqual(
+            calls[0][2],
+            {
+                "project_key": "path:/tmp/example",
+                "session_id": "session-1",
+                "project_path": None,
+                "worktree_path": None,
+                "cwd": None,
+                "project": None,
+                "ide": "WebStorm",
+            },
+        )
 
 
 class HumanOutputTest(unittest.TestCase):
@@ -159,6 +235,30 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("STATUS: findings", text)
         self.assertIn("SUMMARY: clean=False total_problems=1 problems_shown=1", text)
         self.assertIn("src/app.ts:12 Example finding", text)
+        self.assertNotIn('"raw"', text)
+
+    def test_status_human_output_is_concise(self):
+        payload = {
+            "status": "unknown",
+            "clean": False,
+            "route": {
+                "ide": {"name": "IntelliJ IDEA"},
+                "project_name": "example",
+                "project_key": "path:/tmp/example",
+                "base_path": "/tmp/example",
+            },
+            "capture_incomplete": True,
+            "raw": {"large": "payload"},
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("ROUTE: IntelliJ IDEA", text)
+        self.assertIn("STATUS: unknown", text)
+        self.assertIn("FLAGS: capture_incomplete", text)
         self.assertNotIn('"raw"', text)
 
 

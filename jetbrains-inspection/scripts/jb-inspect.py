@@ -65,6 +65,10 @@ def main() -> int:
             context = build_context(args)
             result = command_wait(args, context)
             return emit(result, args.json, classify_wait_exit(result))
+        if args.command == "status":
+            context = build_context(args)
+            result = command_status(args, context)
+            return emit(result, args.json, classify_status_exit(result))
         if args.command == "problems":
             context = build_context(args)
             result = command_problems(args, context)
@@ -88,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(subparsers.add_parser("route", help="Resolve the target IDE/project route."), include_scope=False)
     add_common(subparsers.add_parser("trigger", help="Trigger an inspection."), include_scope=True)
     add_common(subparsers.add_parser("wait", help="Wait for a triggered inspection."), include_scope=False)
+    add_common(subparsers.add_parser("status", help="Fetch current inspection status."), include_scope=False)
     add_common(subparsers.add_parser("problems", help="Fetch inspection problems."), include_scope=False)
     add_common(subparsers.add_parser("run", help="Resolve, trigger, wait, and fetch problems."), include_scope=True)
 
@@ -189,6 +194,25 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
     }, timeout=wait_http_timeout(timeout_ms))
     return {"status": body.get("completion_reason") or body.get("status", "unknown"), "context": context, "route": body.get("route") or route, "wait": body}
+
+
+def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    route = resolve_route(args, context)
+    body = call_endpoint(route, "status", route_params(args, context, route))
+    status = body.get("status") or body.get("completion_reason") or "unknown"
+    return {
+        "status": status,
+        "clean": classify_status_body_clean(body),
+        "context": context,
+        "route": body.get("route") or route,
+        "is_scanning": body.get("is_scanning", False),
+        "has_inspection_results": body.get("has_inspection_results", False),
+        "clean_inspection": body.get("clean_inspection", False),
+        "capture_incomplete": body.get("capture_incomplete", False),
+        "results_may_be_stale": body.get("results_may_be_stale", False),
+        "timed_out": body.get("timed_out", False),
+        "raw": body,
+    }
 
 
 def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -442,6 +466,26 @@ def classify_problems_exit(result: dict[str, Any]) -> int:
     return 1 if result.get("problems") else 0
 
 
+def classify_status_body_clean(body: dict[str, Any]) -> bool:
+    if body.get("session_drift") or body.get("ambiguous") or body.get("unavailable"):
+        return False
+    if body.get("timed_out") or body.get("capture_incomplete") or body.get("results_may_be_stale"):
+        return False
+    if body.get("is_scanning") or body.get("indexing") or body.get("inspection_in_progress"):
+        return False
+    if body.get("clean_inspection") is True or body.get("has_inspection_results") is True:
+        return True
+    status = str(body.get("status") or body.get("completion_reason") or "").lower()
+    if not status:
+        return False
+    bad_fragments = ("stale", "incomplete", "timeout", "timed_out", "ambiguous", "unavailable", "error")
+    return not any(fragment in status for fragment in bad_fragments)
+
+
+def classify_status_exit(result: dict[str, Any]) -> int:
+    return 0 if result.get("clean") else 1
+
+
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
     if json_only:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -488,6 +532,8 @@ def print_result_flags(payload: dict[str, Any]) -> None:
         flags.append("results_may_be_stale")
     wait = payload.get("wait") or {}
     if wait.get("timed_out"):
+        flags.append("timed_out")
+    if payload.get("timed_out"):
         flags.append("timed_out")
     if wait.get("capture_incomplete"):
         flags.append("wait_capture_incomplete")

@@ -24,10 +24,12 @@ skill path instead of `~/.code/skills/...`.
 Useful commands:
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py list
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py route --repo "$PWD"
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py run --repo "$PWD" --scope changed_files
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py problems --repo "$PWD" --severity error
+HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
+uv run "$HELPER" list
+uv run "$HELPER" route --repo "$PWD"
+uv run "$HELPER" run --repo "$PWD" --scope changed_files
+uv run "$HELPER" status --repo "$PWD"
+uv run "$HELPER" problems --repo "$PWD" --severity error
 ```
 
 `run` is the default inspection loop: resolve route, trigger, wait, fetch
@@ -70,6 +72,9 @@ worktree, treat that as a blocker unless the user explicitly approves it.
 
 - `clean`: inspection passed for the selected scope.
 - findings: fix real findings in touched code before calling work ready.
+- `status` is informational and exits zero only when the helper can retrieve a
+  route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
+  indexing, running, timed out, or session-drifted.
 - `stale_results`, `capture_incomplete`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean; retry, narrow scope, open the
   project in the preferred IDE, or report the blocker.
