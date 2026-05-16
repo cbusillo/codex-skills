@@ -208,6 +208,8 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
         "context": context,
         "route": body.get("route") or route,
         "is_scanning": body.get("is_scanning", False),
+        "indexing": body.get("indexing", False),
+        "inspection_in_progress": body.get("inspection_in_progress", False),
         "has_inspection_results": body.get("has_inspection_results", False),
         "clean_inspection": body.get("clean_inspection", False),
         "session_drift": body.get("session_drift", False),
@@ -519,6 +521,9 @@ def classify_status_exit(result: dict[str, Any]) -> int:
         or result.get("capture_incomplete")
         or result.get("results_may_be_stale")
         or result.get("timed_out")
+        or result.get("is_scanning")
+        or result.get("indexing")
+        or result.get("inspection_in_progress")
     ):
         return 1
     status = str(result.get("status") or "").lower()

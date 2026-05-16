@@ -177,6 +177,9 @@ class ClassificationTest(unittest.TestCase):
         def fake_call_endpoint(route, endpoint, params, timeout=None):
             return {
                 "status": "findings",
+                "is_scanning": True,
+                "indexing": True,
+                "inspection_in_progress": True,
                 "session_drift": True,
                 "ambiguous": True,
                 "unavailable": True,
@@ -209,6 +212,9 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(result["status"], "findings")
         self.assertFalse(result["clean"])
         for flag in (
+            "is_scanning",
+            "indexing",
+            "inspection_in_progress",
             "session_drift",
             "ambiguous",
             "unavailable",
@@ -221,6 +227,9 @@ class ClassificationTest(unittest.TestCase):
 
     def test_status_usable_values_with_blocker_flags_exit_nonzero(self):
         blocker_flags = (
+            "is_scanning",
+            "indexing",
+            "inspection_in_progress",
             "session_drift",
             "ambiguous",
             "unavailable",
