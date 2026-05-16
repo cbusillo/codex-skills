@@ -136,6 +136,8 @@ class ClassificationTest(unittest.TestCase):
     def test_status_label_synthesizes_from_boolean_state(self):
         cases = [
             ({"session_drift": True}, "session_drift"),
+            ({"ambiguous": True}, "ambiguous"),
+            ({"unavailable": True}, "unavailable"),
             ({"results_may_be_stale": True}, "stale_results"),
             ({"capture_incomplete": True}, "capture_incomplete"),
             ({"timed_out": True}, "timed_out"),
