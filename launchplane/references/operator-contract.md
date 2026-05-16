@@ -14,6 +14,9 @@ Launchplane Operator.
 - **Verification**: Always perform a `dry-run` and inspect redacted evidence
   before applying changes.
 - **Reason**: Apply operations require a concrete non-empty reason.
+- **Helper**: Use `scripts/launchplane-write-action.py` and
+  `references/write-action-helper-contract.md` for bounded terminal helper
+  calls. Do not open-code Launchplane write routes in skill guidance.
 - **Merge Train**: Use
   `POST /v1/work-graph/merge-train/controller/run-once` as the default merge
   train operation. Phase-specific merge-train endpoints are troubleshooting and
@@ -57,6 +60,27 @@ repo metadata overrides only, not Launchplane operator credentials.
 
 See `references/context.available.example.json` for the structure of Launchplane
 context payloads.
+
+See `references/write-action-helper-contract.md` for the helper request/response
+shape, supported product-config and merge-train entrypoints, idempotency
+requirements, and compact failure statuses.
+
+Product-config helper work starts with `POST /v1/agent/write-intents/evaluate`
+for `intent: "product_config_apply"` and `mode: "dry_run"`. That preflight may
+name managed secret binding keys as metadata, plus a runtime destination for
+runtime key-safety evaluation. It must not carry plaintext secret values.
+
+`POST /v1/product-config/apply` accepts plaintext secret values only from an
+approval-capable operator surface that already has a private value source. The
+terminal helper may submit that route only from a private local payload file and
+must never accept plaintext secret values as CLI arguments, stdin, chat, issue
+text, PR text, or committed examples. Local-operator apply requires a prior
+matching dry-run and a stable idempotency key.
+
+`POST /v1/work-graph/merge-train/controller/run-once` accepts repository,
+base-branch, and mutate mode. Mutating helper calls require an idempotency key;
+dry-run calls may omit it. Stop and report controller attention states instead
+of calling phase-specific endpoints by default.
 
 ## Safety & Redaction
 
