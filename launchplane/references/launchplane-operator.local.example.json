@@ -1,0 +1,7 @@
+{
+  "_comment": "Example private operator input config only. Keep real files ignored and never commit tokens or private hosts.",
+  "service_url": "https://launchplane.example.invalid",
+  "operator_token_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
+  "operator_subject_env": "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
+  "operator_token_label_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
+}
