@@ -30,6 +30,7 @@ Repo-local values override workspace defaults.
       "plan": "plan",
       "active": "plan:active",
       "blocked": "plan:blocked",
+      "waiting": "plan:waiting",
       "stale": "plan:stale",
       "done": "plan:done"
     },

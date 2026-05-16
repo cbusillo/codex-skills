@@ -231,6 +231,54 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     assert payload["project_fields"] == {"error": "project sync throttled"}, payload
 
 
+def test_create_supports_waiting_plan_status() -> None:
+    plan = load_plan_module()
+    captured: dict[str, Any] = {}
+    issue = {
+        "repo": "owner/repo",
+        "number": 11,
+        "id": 1011,
+        "title": "Waiting plan",
+        "body": "## Current Status\n\nWaiting for: evidence.\n",
+        "html_url": "https://github.com/owner/repo/issues/11",
+        "labels": [{"name": "plan"}, {"name": "plan:waiting"}],
+        "state": "open",
+    }
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "waiting": "plan:waiting"},
+        "projects": {"enabled": False},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": None, "repo_managers": {}},
+    }
+    plan.gh_json = lambda args, **kwargs: ("automation-gh", []) if args[:2] == ["issue", "list"] else (_ for _ in ()).throw(AssertionError(args))
+    plan.ensure_labels = lambda repo, wanted, config: (captured.setdefault("labels", wanted), ("automation-gh", []))[1]
+    plan.rest_create_issue = lambda repo, title, body, labels, milestone: (captured.setdefault("created_labels", labels), ("automation-gh", issue))[1]
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Waiting plan",
+            title_flag=None,
+            body="## Current Status\n\nWaiting for: evidence.\n",
+            body_file=None,
+            label=None,
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="waiting",
+            focus=None,
+            manager=None,
+            finish_line=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert captured["labels"] == ["plan", "plan:waiting"], captured
+    assert captured["created_labels"] == ["plan", "plan:waiting"], captured
+
+
 def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
@@ -314,6 +362,7 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_create_reports_issue_when_project_sync_fails,
+        test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
     ]

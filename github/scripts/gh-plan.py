@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "plan": "plan",
         "active": "plan:active",
         "blocked": "plan:blocked",
+        "waiting": "plan:waiting",
         "stale": "plan:stale",
         "done": "plan:done",
     },
@@ -35,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "plan": {"color": "5319e7", "description": "Durable planning issue"},
         "plan:active": {"color": "0e8a16", "description": "Current active plan"},
         "plan:blocked": {"color": "d93f0b", "description": "Plan is blocked"},
+        "plan:waiting": {"color": "fbca04", "description": "Plan is waiting on non-issue evidence or decision"},
         "plan:stale": {"color": "bfbfbf", "description": "Plan needs review"},
         "plan:done": {"color": "006b75", "description": "Plan completed or superseded"},
     },
@@ -1063,7 +1065,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone")
     p.add_argument("--project")
     p.add_argument("--force", action="store_true")
-    p.add_argument("--plan-status", choices=["active", "blocked", "stale", "done", "none"], default="active")
+    p.add_argument("--plan-status", choices=["active", "blocked", "waiting", "stale", "done", "none"], default="active")
     p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"])
     p.add_argument("--manager")
     p.add_argument("--finish-line")
