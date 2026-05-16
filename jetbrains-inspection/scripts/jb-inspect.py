@@ -210,6 +210,9 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
         "is_scanning": body.get("is_scanning", False),
         "has_inspection_results": body.get("has_inspection_results", False),
         "clean_inspection": body.get("clean_inspection", False),
+        "session_drift": body.get("session_drift", False),
+        "ambiguous": body.get("ambiguous", False),
+        "unavailable": body.get("unavailable", False),
         "capture_incomplete": body.get("capture_incomplete", False),
         "results_may_be_stale": body.get("results_may_be_stale", False),
         "timed_out": body.get("timed_out", False),
@@ -509,7 +512,14 @@ def status_label(body: dict[str, Any]) -> str:
 
 
 def classify_status_exit(result: dict[str, Any]) -> int:
-    if result.get("capture_incomplete") or result.get("results_may_be_stale") or result.get("timed_out"):
+    if (
+        result.get("session_drift")
+        or result.get("ambiguous")
+        or result.get("unavailable")
+        or result.get("capture_incomplete")
+        or result.get("results_may_be_stale")
+        or result.get("timed_out")
+    ):
         return 1
     status = str(result.get("status") or "").lower()
     return 0 if status in USABLE_STATUS_VALUES else 1

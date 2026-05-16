@@ -170,6 +170,75 @@ class ClassificationTest(unittest.TestCase):
         self.assertFalse(result["clean"])
         self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
+    def test_status_command_surfaces_blocker_flags(self):
+        def fake_resolve_route(args, context):
+            return {"port": 63343, "project_key": "path:/tmp/example"}
+
+        def fake_call_endpoint(route, endpoint, params, timeout=None):
+            return {
+                "status": "findings",
+                "session_drift": True,
+                "ambiguous": True,
+                "unavailable": True,
+                "capture_incomplete": True,
+                "results_may_be_stale": True,
+                "timed_out": True,
+            }
+
+        original_resolve_route = jb_inspect.resolve_route
+        original_call_endpoint = jb_inspect.call_endpoint
+        jb_inspect.resolve_route = fake_resolve_route
+        jb_inspect.call_endpoint = fake_call_endpoint
+        try:
+            result = jb_inspect.command_status(
+                Namespace(
+                    project_key=None,
+                    session_id=None,
+                    project_path=None,
+                    worktree_path=None,
+                    cwd=None,
+                    project=None,
+                    ide=None,
+                ),
+                {},
+            )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+            jb_inspect.call_endpoint = original_call_endpoint
+
+        self.assertEqual(result["status"], "findings")
+        self.assertFalse(result["clean"])
+        for flag in (
+            "session_drift",
+            "ambiguous",
+            "unavailable",
+            "capture_incomplete",
+            "results_may_be_stale",
+            "timed_out",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIs(result[flag], True)
+
+    def test_status_usable_values_with_blocker_flags_exit_nonzero(self):
+        blocker_flags = (
+            "session_drift",
+            "ambiguous",
+            "unavailable",
+            "capture_incomplete",
+            "results_may_be_stale",
+            "timed_out",
+        )
+        for flag in blocker_flags:
+            with self.subTest(flag=flag):
+                body = {"status": "findings", flag: True}
+                result = {
+                    "status": "findings",
+                    "clean": jb_inspect.classify_status_body_clean(body),
+                    flag: True,
+                }
+                self.assertFalse(result["clean"])
+                self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
     def test_status_unknown_explicit_values_exit_nonzero(self):
         for status in ("archived", "running", "failed", "cancelled", "pending_results"):
             with self.subTest(status=status):
