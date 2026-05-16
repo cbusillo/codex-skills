@@ -107,12 +107,18 @@ class ClassificationTest(unittest.TestCase):
 
     def test_status_with_clean_result_exits_zero(self):
         body = {"clean_inspection": True, "is_scanning": False}
-        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        result = {
+            "status": jb_inspect.status_label(body),
+            "clean": jb_inspect.classify_status_body_clean(body),
+        }
         self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
     def test_status_with_results_is_informational(self):
         body = {"has_inspection_results": True, "is_scanning": False}
-        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        result = {
+            "status": jb_inspect.status_label(body),
+            "clean": jb_inspect.classify_status_body_clean(body),
+        }
         self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
     def test_status_session_drift_exits_nonzero(self):
@@ -155,24 +161,25 @@ class ClassificationTest(unittest.TestCase):
         for status in ("clean", "results_available"):
             with self.subTest(status=status):
                 body = {"status": status}
-                result = {"clean": jb_inspect.classify_status_body_clean(body)}
+                result = {"status": status, "clean": jb_inspect.classify_status_body_clean(body)}
                 self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
-    def test_status_findings_exits_nonzero(self):
+    def test_status_findings_is_usable_but_not_clean(self):
         body = {"status": "findings"}
-        result = {"clean": jb_inspect.classify_status_body_clean(body)}
-        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+        result = {"status": "findings", "clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertFalse(result["clean"])
+        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
     def test_status_unknown_explicit_values_exit_nonzero(self):
         for status in ("archived", "running", "failed", "cancelled", "pending_results"):
             with self.subTest(status=status):
                 body = {"status": status}
-                result = {"clean": jb_inspect.classify_status_body_clean(body)}
+                result = {"status": status, "clean": jb_inspect.classify_status_body_clean(body)}
                 self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
     def test_status_unknown_explicit_value_ignores_cached_clean_flags(self):
         body = {"status": "failed", "clean_inspection": True, "has_inspection_results": True}
-        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        result = {"status": "failed", "clean": jb_inspect.classify_status_body_clean(body)}
         self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
 

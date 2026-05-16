@@ -31,6 +31,7 @@ DEFAULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 READY_STATUS_VALUES = {"clean", "results_available"}
+USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 
 
 class InspectError(Exception):
@@ -508,7 +509,10 @@ def status_label(body: dict[str, Any]) -> str:
 
 
 def classify_status_exit(result: dict[str, Any]) -> int:
-    return 0 if result.get("clean") else 1
+    if result.get("capture_incomplete") or result.get("results_may_be_stale") or result.get("timed_out"):
+        return 1
+    status = str(result.get("status") or "").lower()
+    return 0 if status in USABLE_STATUS_VALUES else 1
 
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
