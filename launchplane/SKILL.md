@@ -36,6 +36,8 @@ readiness.
 Mutate runtime environments, managed secrets, and product config.
 
 - **Safety**: Strictly follow the `references/operator-contract.md`.
+- **Helper Contract**: Use `references/write-action-helper-contract.md` for
+  bounded helper entrypoints, exit behavior, and redacted output shape.
 - **Auth**: Prefer signed-in, scoped operator sessions in the Launchplane UI or
   service API. Source terminal/local operator credentials only through the
   operator contract; do not paste token values into chat, issues, PRs, docs, or
@@ -49,13 +51,19 @@ Mutate runtime environments, managed secrets, and product config.
   `launchplane` binary or by poking provider config directly.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
-  2. Use the signed-in/scoped operator path when a human-approved runtime or
+  2. Preflight product-config intent with `scripts/launchplane-write-action.py
+     product-config-preflight` when agent-side authorization or managed-secret
+     binding evidence is useful.
+  3. Use the signed-in/scoped operator path when a human-approved runtime or
      managed-secret mutation is required.
-  3. Build a product-config request for `POST /v1/product-config/apply`.
-  4. **Dry-run** and inspect redacted results.
-  5. **Apply** with a concrete reason only after the dry-run succeeds and the
+  4. Build a product-config request for `POST /v1/product-config/apply` only in
+     an approved operator surface. The helper may submit dry-run/apply from a
+     private local payload file, never from chat, CLI plaintext secret args, or
+     committed examples.
+  5. **Dry-run** and inspect redacted results.
+  6. **Apply** with a concrete reason only after the dry-run succeeds and the
      operator intent is explicit.
-  6. Inspect returned `next_actions` and complete required follow-up actions;
+  7. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 
@@ -69,6 +77,9 @@ Launchplane by editing provider configuration directly.
 Use Launchplane's controller route as the default merge-train workflow.
 
 - **Preferred Route**: `POST /v1/work-graph/merge-train/controller/run-once`.
+- **Helper**: Use `scripts/launchplane-write-action.py
+  merge-train-controller-run-once` instead of open-coding the route. Mutating
+  calls require an idempotency key.
 - **Operator Action**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
 - **Controller Semantics**: Each call advances one safe phase at a time:
@@ -92,6 +103,11 @@ verification.
 ## Tools
 
 - `scripts/launchplane-context.py`: Structural state helper.
+- `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
+  product-config intent preflight, private local product-config dry-run/apply,
+  and merge-train controller calls.
+- `POST /v1/agent/write-intents/evaluate`: Product-config preflight surface for
+  authorization and managed-secret binding evidence; never carries plaintext.
 - `POST /v1/product-config/apply`: Primary product-config operator path for
   signed-in/scoped operators; dry-run before apply.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train

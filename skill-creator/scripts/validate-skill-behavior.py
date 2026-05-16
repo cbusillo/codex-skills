@@ -13,7 +13,12 @@ unavailable.
 from __future__ import annotations
 
 import json
+import importlib.util
+import io
+import os
+import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 
@@ -145,6 +150,155 @@ def test_launchplane_operator_config_stays_private_and_optional() -> None:
     )
 
 
+def test_launchplane_write_action_helper_contract() -> None:
+    skill_text = (ROOT / "launchplane" / "SKILL.md").read_text()
+    contract = (
+        ROOT / "launchplane" / "references" / "write-action-helper-contract.md"
+    ).read_text()
+    helper = ROOT / "launchplane" / "scripts" / "launchplane-write-action.py"
+    helper_text = helper.read_text()
+    normalized_skill = " ".join(skill_text.lower().split())
+    normalized_contract = " ".join(contract.lower().split())
+    normalized_helper = " ".join(helper_text.lower().split())
+
+    require(
+        "scripts/launchplane-write-action.py" in normalized_skill,
+        "Launchplane skill must point agents at the write-action helper",
+    )
+    require(
+        "post /v1/agent/write-intents/evaluate" in normalized_skill,
+        "Launchplane skill must name the product-config preflight route",
+    )
+    require(
+        "never from chat, cli plaintext secret args, or committed examples" in normalized_skill,
+        "Launchplane skill must forbid plaintext secret helper input surfaces",
+    )
+    require(
+        "explicit write actions fail closed" in normalized_contract,
+        "Write-action contract must fail closed for explicit writes",
+    )
+    require(
+        "product-config-preflight" in normalized_contract,
+        "Write-action contract must document product-config preflight",
+    )
+    require(
+        "product-config-dry-run" in normalized_contract
+        and "product-config-apply" in normalized_contract,
+        "Write-action contract must document product-config dry-run/apply helper entrypoints",
+    )
+    require(
+        "merge-train-controller-run-once" in normalized_contract,
+        "Write-action contract must document merge-train controller helper entrypoint",
+    )
+    require(
+        "--idempotency-key" in normalized_contract,
+        "Write-action contract must require idempotency for mutating calls",
+    )
+    require(
+        "does not accept plaintext secrets as cli arguments" in normalized_contract,
+        "Write-action contract must forbid plaintext secret CLI arguments",
+    )
+    require(
+        "/v1/agent/write-intents/evaluate" in normalized_helper,
+        "Write-action helper must call the agent write-intent preflight route",
+    )
+    require(
+        "/v1/work-graph/merge-train/controller/run-once" in normalized_helper,
+        "Write-action helper must call the merge-train controller route",
+    )
+    require(
+        "stdin_payload_unsupported" in normalized_helper,
+        "Write-action helper must refuse stdin payload transport",
+    )
+    require(
+        "idempotency_key_required" in normalized_helper,
+        "Write-action helper must require idempotency keys for mutating calls",
+    )
+
+    no_context = subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "--config",
+            str(ROOT / ".missing-launchplane-operator-config.json"),
+            "merge-train-controller-run-once",
+            "--repo",
+            "example/repo",
+            "--base-branch",
+            "main",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("LAUNCHPLANE_")
+        },
+    )
+    require(no_context.returncode == 2, "Write-action helper must fail closed without config")
+    payload = json.loads(no_context.stdout)
+    require(payload["status"] == "no_context", "Write-action helper must emit no_context")
+    require(
+        "missing_operator_config" in json.dumps(payload),
+        "Write-action helper must explain missing operator config compactly",
+    )
+
+    spec = importlib.util.spec_from_file_location("launchplane_write_action", helper)
+    require(spec is not None and spec.loader is not None, "Write-action helper must be importable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    success_payload = module.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": False},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_example",
+            "records": {"merge_train_batch_candidate_record_id": "candidate-example"},
+            "result": {
+                "repository": "example/repo",
+                "base_branch": "main",
+                "controller_action": "build_candidate",
+                "authorization": "Bearer ghp_example",
+                "runtime": {"key": "NEXT_PUBLIC_EXAMPLE", "value": "must-not-render"},
+            },
+        },
+    )
+    rendered_success = json.dumps(success_payload)
+    require(success_payload["status"] == "accepted", "Write-action success status must pass through")
+    require(
+        success_payload["summary"]["controller_action"] == "build_candidate",
+        "Write-action success summary must expose controller action",
+    )
+    require("ghp_example" not in rendered_success, "Write-action success output must redact tokens")
+    require("must-not-render" not in rendered_success, "Write-action success output must drop values")
+
+    error_body = json.dumps(
+        {
+            "status": "rejected",
+            "trace_id": "launchplane_req_denied",
+            "error": {"code": "authorization_denied", "message": "Denied."},
+        }
+    ).encode()
+    http_error = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/example",
+        403,
+        "Forbidden",
+        hdrs={},
+        fp=io.BytesIO(error_body),
+    )
+    denied_payload = module.summarize_http_error(
+        operation="product-config-preflight",
+        request={"product": "example-product", "context": "example-testing"},
+        exc=http_error,
+    )
+    require(denied_payload["status"] == "denied", "Write-action 403 must summarize as denied")
+    require(
+        denied_payload["summary"]["error_code"] == "authorization_denied",
+        "Write-action denied summary must expose safe error code",
+    )
+
+
 def test_github_plan_sweeps_stale_related_issues() -> None:
     plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
     github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
@@ -188,6 +342,7 @@ def main() -> None:
         test_chronicle_stays_quiet_when_unavailable,
         test_launchplane_product_config_uses_operator_api_first,
         test_launchplane_operator_config_stays_private_and_optional,
+        test_launchplane_write_action_helper_contract,
         test_github_plan_sweeps_stale_related_issues,
         test_github_cross_repo_pr_create_is_explicit,
     ]
