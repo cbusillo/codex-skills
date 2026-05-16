@@ -57,8 +57,24 @@ def test_launchplane_product_config_uses_operator_api_first() -> None:
         "Launchplane operator guidance must name the product-config service route",
     )
     require(
-        "~/.config/launchplane/local-operator.env" in normalized,
-        "Launchplane operator guidance must point at local operator credentials",
+        "prefer signed-in, scoped operator sessions" in normalized,
+        "Launchplane operator guidance must prefer signed-in scoped operator sessions",
+    )
+    require(
+        "source terminal/local operator credentials only through the operator contract" in normalized,
+        "Launchplane operator guidance must keep terminal credentials contract-bound",
+    )
+    require(
+        "post /v1/work-graph/merge-train/controller/run-once" in normalized,
+        "Launchplane guidance must name the merge-train controller route",
+    )
+    require(
+        "phase-specific merge-train endpoints as detail or recovery surfaces" in normalized,
+        "Launchplane merge-train guidance must not make phase endpoints the default path",
+    )
+    require(
+        "do not hardcode repositories, labels, tokens" in normalized,
+        "Launchplane guidance must forbid hardcoded merge-train/operator config",
     )
     require(
         "do not assume a global `launchplane` binary exists" in normalized,
