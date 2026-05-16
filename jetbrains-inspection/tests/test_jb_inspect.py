@@ -152,11 +152,16 @@ class ClassificationTest(unittest.TestCase):
                 self.assertEqual(jb_inspect.status_label(body), expected)
 
     def test_status_explicit_ready_values_exit_zero(self):
-        for status in ("clean", "results_available", "findings"):
+        for status in ("clean", "results_available"):
             with self.subTest(status=status):
                 body = {"status": status}
                 result = {"clean": jb_inspect.classify_status_body_clean(body)}
                 self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_status_findings_exits_nonzero(self):
+        body = {"status": "findings"}
+        result = {"clean": jb_inspect.classify_status_body_clean(body)}
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
     def test_status_unknown_explicit_values_exit_nonzero(self):
         for status in ("archived", "running", "failed", "cancelled", "pending_results"):

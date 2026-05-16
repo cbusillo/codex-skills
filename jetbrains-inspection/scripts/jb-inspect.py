@@ -30,7 +30,7 @@ DEFAULT_PORT_RANGE = range(63340, 63350)
 DEFAULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
-READY_STATUS_VALUES = {"clean", "results_available", "findings"}
+READY_STATUS_VALUES = {"clean", "results_available"}
 
 
 class InspectError(Exception):
