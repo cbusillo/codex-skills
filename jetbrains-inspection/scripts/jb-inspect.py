@@ -486,6 +486,10 @@ def status_label(body: dict[str, Any]) -> str:
         return str(explicit_status)
     if body.get("session_drift"):
         return "session_drift"
+    if body.get("ambiguous"):
+        return "ambiguous"
+    if body.get("unavailable"):
+        return "unavailable"
     if body.get("results_may_be_stale"):
         return "stale_results"
     if body.get("capture_incomplete"):
