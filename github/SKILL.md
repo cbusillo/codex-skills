@@ -35,9 +35,12 @@ Use PRs for all non-trivial code changes.
 - **Branch Discipline**: Protect default, shared, release, and production
   branches. Create focused task branches before editing when currently on a
   protected branch.
-- **Merges & Stacks**: Prefer the repository's normal PR merge method. For
-  stacked PRs, consider a rollup branch when merging each layer would rerun
-  expensive checks or create avoidable conflict churn.
+- **Merges & Stacks**: When the user approves a merge and does not specify the
+  method, state that you are using a normal merge commit and run
+  `gh pr merge <pr> --merge`. Do not use `--squash` or `--rebase` unless the
+  user explicitly asks, repo policy requires it, or you ask and receive
+  confirmation. For stacked PRs, consider a rollup branch when merging each
+  layer would rerun expensive checks or create avoidable conflict churn.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `gh pr create` from that repository or pass both
   `--repo OWNER/REPO` and an explicit `--head` branch.
