@@ -108,6 +108,22 @@ Use Focus lanes when configured:
 
 Prefer at most one `Now` item unless the user explicitly chooses parallel work.
 
+Use planning status labels with narrow meanings:
+
+- `plan:active`: actionable now.
+- `plan:blocked`: blocked by a real, current dependency, preferably represented
+  by a native GitHub `blocked-by` relationship to an open issue.
+- `plan:waiting`: intentionally parked on non-issue evidence, live validation,
+  a user/customer/maintainer decision, or a future real-world event.
+- `plan:stale`: needs review before it should guide work.
+- `plan:done`: completed or superseded.
+
+Do not use `plan:blocked` merely because work is not currently in focus. If an
+issue has no open native blocker, prefer `plan:waiting` and make `Current
+Status` say `Waiting for:` or `Parked until:` with the concrete condition.
+If a non-issue condition truly blocks execution, include `Blocked by: No native
+issue blocker; waiting for ...` so future audits do not chase missing edges.
+
 If LaunchPlane or another local context helper is configured and useful for
 orientation, call it once before or alongside `index`. Treat unavailable,
 unauthorized, invalid, or missing context as normal absence and continue with
@@ -139,8 +155,13 @@ Keep `Current Status` short and concrete:
 State:
 Next action:
 Blocked by:
+Waiting for:
 Last verified:
 ```
+
+Use `Blocked by:` for issue dependencies and `Waiting for:` or `Parked until:`
+for non-issue conditions. Avoid listing completed work as a blocker; move it to
+`Relationships` as completed or historical context.
 
 Keep `Finish Line` observable. If the finish line is vague, narrow it before
 creating sub-issues or Project fields.
