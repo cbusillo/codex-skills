@@ -40,6 +40,10 @@ Mutate runtime environments, managed secrets, and product config.
   service API. Source terminal/local operator credentials only through the
   operator contract; do not paste token values into chat, issues, PRs, docs, or
   logs.
+- **Private Config**: For non-browser terminal execution, use the source order
+  in the operator contract. Missing private config means the write-capable path
+  is unavailable and must fail closed; do not use `.github/github.override.json`
+  for Launchplane credentials.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.

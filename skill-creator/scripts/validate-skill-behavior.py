@@ -12,6 +12,7 @@ unavailable.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -65,6 +66,14 @@ def test_launchplane_product_config_uses_operator_api_first() -> None:
         "Launchplane operator guidance must keep terminal credentials contract-bound",
     )
     require(
+        "missing private config means the write-capable path is unavailable and must fail closed" in normalized,
+        "Launchplane operator guidance must fail closed when private config is missing",
+    )
+    require(
+        "do not use `.github/github.override.json` for launchplane credentials" in normalized,
+        "Launchplane operator guidance must not store credentials in GitHub overrides",
+    )
+    require(
         "post /v1/work-graph/merge-train/controller/run-once" in normalized,
         "Launchplane guidance must name the merge-train controller route",
     )
@@ -87,6 +96,52 @@ def test_launchplane_product_config_uses_operator_api_first() -> None:
     require(
         "explicitly on the launchplane host via ssh" in normalized,
         "Launchplane CLI guidance should require the host or a concrete command",
+    )
+
+
+def test_launchplane_operator_config_stays_private_and_optional() -> None:
+    contract = (ROOT / "launchplane" / "references" / "operator-contract.md").read_text()
+    normalized = " ".join(contract.lower().split())
+
+    require(
+        "terminal/operator execution is optional private configuration" in normalized,
+        "Launchplane operator config must remain optional private configuration",
+    )
+    require(
+        "references/launchplane-operator.local.example.json" in normalized,
+        "Launchplane operator contract must point to the fake local config example",
+    )
+    require(
+        "real token values stay in the operator's private environment or secret manager" in normalized,
+        "Launchplane operator contract must keep real tokens out of committed config",
+    )
+    require(
+        "missing private config is a normal unavailable state" in normalized,
+        "Launchplane operator contract must treat missing private config as unavailable",
+    )
+    require(
+        "explicit write actions must fail closed" in normalized,
+        "Launchplane operator contract must fail closed for explicit writes",
+    )
+    require(
+        "do not use `.github/github.override.json` for secrets" in normalized,
+        "Launchplane operator contract must forbid storing secrets in GitHub overrides",
+    )
+
+    example = json.loads(
+        (ROOT / "launchplane" / "references" / "launchplane-operator.local.example.json").read_text()
+    )
+    require(
+        example["service_url"] == "https://launchplane.example.invalid",
+        "Launchplane operator example must use a fake public-safe service URL",
+    )
+    require(
+        example["operator_token_env"] == "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
+        "Launchplane operator example must name an env var instead of storing a token",
+    )
+    require(
+        not any(str(value).startswith(("ghp_", "github_pat_", "sk-")) for value in example.values()),
+        "Launchplane operator example must not contain token-like placeholder values",
     )
 
 
@@ -132,6 +187,7 @@ def main() -> None:
     tests = [
         test_chronicle_stays_quiet_when_unavailable,
         test_launchplane_product_config_uses_operator_api_first,
+        test_launchplane_operator_config_stays_private_and_optional,
         test_github_plan_sweeps_stale_related_issues,
         test_github_cross_repo_pr_create_is_explicit,
     ]

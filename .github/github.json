@@ -6,6 +6,10 @@
     "githubSkill": "github/SKILL.md",
     "githubWorkflow": "github/references/repo-workflow.md",
     "githubConfigSchema": "github/references/config-schema.md",
+    "launchplaneSkill": "launchplane/SKILL.md",
+    "launchplaneContextContract": "launchplane/references/context-helper-contract.md",
+    "launchplaneOperatorContract": "launchplane/references/operator-contract.md",
+    "launchplaneOperatorConfigExample": "launchplane/references/launchplane-operator.local.example.json",
     "repoReadiness": "repo-readiness/SKILL.md",
     "workCloseout": "work-closeout/SKILL.md",
     "publicSafety": "launchplane/references/public-safety.md"
