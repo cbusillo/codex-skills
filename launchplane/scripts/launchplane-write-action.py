@@ -166,7 +166,7 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
     config = load_config(args.config)
     env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env(None)
     if args.config:
-        service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or env_config.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
+        service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
     else:
         service_url = (
             args.url
@@ -205,7 +205,6 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
             ("argument", bool(args.url)),
             ("json_config", bool(config.get("service_url"))),
             ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
-            ("private_env", bool(env_config.get("LAUNCHPLANE_OPERATOR_URL"))),
         )
         if args.config
         else (
