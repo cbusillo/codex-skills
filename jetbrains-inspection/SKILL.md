@@ -6,8 +6,8 @@ description: Use JetBrains IDE inspections through the local inspection plugin; 
 # JetBrains Inspection
 
 Use this skill to run and interpret JetBrains IDE inspections through the local
-inspection plugin HTTP API. Prefer the bundled helper over direct curl or MCP
-tool calls.
+inspection plugin HTTP API. The script-backed helper is the primary agent
+interface; prefer it over direct curl or MCP tool calls.
 
 ## Primary Helper
 
@@ -34,6 +34,8 @@ uv run "$HELPER" problems --repo "$PWD" --severity error
 
 `run` is the default inspection loop: resolve route, trigger, wait, fetch
 problems, and exit non-zero for unresolved findings or inconclusive states.
+Use `--include-stale` only when explicitly diagnosing cached stale findings;
+stale results still exit non-zero and are not clean.
 
 ## When To Run
 
@@ -78,6 +80,9 @@ worktree, treat that as a blocker unless the user explicitly approves it.
 - `stale_results`, `capture_incomplete`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean; retry, narrow scope, open the
   project in the preferred IDE, or report the blocker.
+- Stale findings are withheld by default. Use `--include-stale` or
+  `--allow-stale` only for explicit diagnostics, and do not treat returned
+  cached findings as current inspection results.
 - Existing broad noise is not invisible. Fix straightforward findings in the
   affected area or track a cleanup item.
 

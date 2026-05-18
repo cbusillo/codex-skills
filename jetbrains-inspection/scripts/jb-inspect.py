@@ -108,6 +108,13 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--file-pattern", default="all")
         subparsers.choices[name].add_argument("--limit", type=int, default=100)
         subparsers.choices[name].add_argument("--offset", type=int, default=0)
+        subparsers.choices[name].add_argument(
+            "--include-stale",
+            "--allow-stale",
+            dest="include_stale",
+            action="store_true",
+            help="Return cached stale findings for diagnostics. Stale results still exit non-zero.",
+        )
     return parser
 
 
@@ -225,6 +232,8 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
 def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     body = call_endpoint(route, "problems", problems_params(args, context, route))
+    if getattr(args, "include_stale", False):
+        body.setdefault("include_stale", True)
     return summarize_problems(context, body.get("route") or route, body)
 
 
@@ -238,6 +247,8 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
     }, timeout=wait_http_timeout(timeout_ms))
     problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
+    if getattr(args, "include_stale", False):
+        problems.setdefault("include_stale", True)
     summary = summarize_problems(context, problems.get("route") or active_route, problems)
     summary["trigger"] = trigger
     summary["wait"] = wait
@@ -416,6 +427,8 @@ def problems_params(args: argparse.Namespace, context: dict[str, Any], route: di
         "limit": getattr(args, "limit", 100),
         "offset": getattr(args, "offset", 0),
     })
+    if getattr(args, "include_stale", False):
+        params["include_stale"] = "true"
     return params
 
 
@@ -426,18 +439,37 @@ def wait_http_timeout(timeout_ms: int) -> float:
 def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
     problems = body.get("problems") or []
     status = body.get("status", "unknown")
-    return {
+    results_may_be_stale = body.get("results_may_be_stale", False) or status == "stale_results"
+    summary: dict[str, Any] = {
         "status": status,
-        "clean": status == "results_available" and len(problems) == 0 and not body.get("capture_incomplete") and not body.get("results_may_be_stale"),
+        "clean": status == "results_available" and len(problems) == 0 and not body.get("capture_incomplete") and not results_may_be_stale,
         "context": context,
         "route": route,
-        "total_problems": body.get("total_problems", len(problems)),
-        "problems_shown": body.get("problems_shown", len(problems)),
         "capture_incomplete": body.get("capture_incomplete", False),
-        "results_may_be_stale": body.get("results_may_be_stale", False),
+        "results_may_be_stale": results_may_be_stale,
         "problems": problems,
         "raw": body,
     }
+    if "total_problems" in body:
+        summary["total_problems"] = body["total_problems"]
+    elif not results_may_be_stale:
+        summary["total_problems"] = len(problems)
+    if "problems_shown" in body:
+        summary["problems_shown"] = body["problems_shown"]
+    elif not results_may_be_stale:
+        summary["problems_shown"] = len(problems)
+    for key in (
+        "cached_total_problems",
+        "cached_problems_shown",
+        "include_stale",
+        "snapshot_outcome",
+        "results_source",
+        "results_timestamp_ms",
+        "stale_reasons",
+    ):
+        if key in body:
+            summary[key] = body[key]
+    return summary
 
 
 def classify_run_status(wait: dict[str, Any], problems: dict[str, Any]) -> str:
@@ -555,6 +587,12 @@ def print_human(payload: dict[str, Any]) -> None:
         shown = payload.get("problems_shown", len(payload.get("problems") or []))
         clean = payload.get("clean")
         print(f"SUMMARY: clean={clean} total_problems={total} problems_shown={shown}")
+    if "cached_total_problems" in payload or "cached_problems_shown" in payload:
+        total = payload.get("cached_total_problems", "unknown")
+        shown = payload.get("cached_problems_shown", len(payload.get("problems") or []))
+        print(f"CACHED: total_problems={total} problems_shown={shown}")
+    if payload.get("status") == "stale_results" and not payload.get("include_stale"):
+        print("STALE: cached findings withheld; re-run inspection or pass --include-stale for diagnostics.")
     problems = payload.get("problems") or []
     if problems:
         print("\nFINDINGS:")
