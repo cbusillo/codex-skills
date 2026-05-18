@@ -393,7 +393,10 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
         )
         calls = log_path.read_text()
     assert json.loads(view.stdout)["pr"]["number"] == 12
-    assert json.loads(checks.stdout)["summary"]["combinedState"] is None
+    checks_summary = json.loads(checks.stdout)["summary"]
+    assert checks_summary["combinedState"] is None
+    assert checks_summary["combinedStateRaw"] == "success"
+    assert checks_summary["legacyStatusesPresent"] is False
     assert json.loads(merge.stdout)["merge"]["merged"] is True
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
@@ -448,6 +451,9 @@ def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
     assert payload["summary"]["checkRunCount"] == 2, payload
     assert payload["summary"]["statusCount"] == 2, payload
     assert payload["summary"]["failingCount"] == 2, payload
+    assert payload["summary"]["combinedState"] == "failure", payload
+    assert payload["summary"]["combinedStateRaw"] == "failure", payload
+    assert payload["summary"]["legacyStatusesPresent"] is True, payload
     assert "/repos/other/repo/pulls/44" in calls
     assert "/repos/owner/repo/pulls/44" not in calls
 

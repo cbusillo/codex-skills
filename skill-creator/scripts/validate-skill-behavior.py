@@ -351,6 +351,22 @@ def test_launchplane_write_action_helper_contract() -> None:
     )
 
 
+def test_stale_injected_override_paths_are_nonfatal() -> None:
+    validator_path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
+    injected = str(ROOT / ".system" / "plan" / "SKILL.md")
+    proc = subprocess.run(
+        ["uv", "run", str(validator_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CODEX_SKILLS_INJECTED_PATHS": injected},
+    )
+    require(
+        proc.returncode == 0,
+        "Skill repo validation must not fail only because injected runtime metadata names a stale .system override path",
+    )
+
+
 def test_github_plan_sweeps_stale_related_issues() -> None:
     plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
     github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
@@ -395,6 +411,7 @@ def main() -> None:
         test_launchplane_product_config_uses_operator_api_first,
         test_launchplane_operator_config_stays_private_and_optional,
         test_launchplane_write_action_helper_contract,
+        test_stale_injected_override_paths_are_nonfatal,
         test_github_plan_sweeps_stale_related_issues,
         test_github_cross_repo_pr_create_is_explicit,
     ]

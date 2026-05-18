@@ -85,6 +85,7 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     pending = [item for item in checks if item.get("status") != "completed"]
     failed_statuses = [item for item in status_checks if item.get("state") in {"failure", "error"}]
     pending_statuses = [item for item in status_checks if item.get("state") == "pending"]
+    combined_state = combined.get("state")
     return {
         "ok": True,
         "repo": repo,
@@ -95,7 +96,9 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
             "statusCount": len(status_checks),
             "failingCount": len(failing) + len(failed_statuses),
             "pendingCount": len(pending) + len(pending_statuses),
-            "combinedState": combined.get("state") if status_checks else None,
+            "combinedState": combined_state if status_checks else None,
+            "combinedStateRaw": combined_state,
+            "legacyStatusesPresent": bool(status_checks),
         },
         "checkRuns": checks,
         "statuses": status_checks,
