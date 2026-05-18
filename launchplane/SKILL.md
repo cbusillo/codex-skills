@@ -86,8 +86,18 @@ Use Launchplane's controller route as the default merge-train workflow.
   same-repo linear stack-collapse planning/execution when needed,
   collapsed-root admission, candidate plan/build/observe, landing-plan
   creation, PR-native landing, and child PR disposition.
+- **Stacked PRs**: For a same-repo linear stack, label only the root PR that
+  targets the protected base branch. Let Launchplane collapse child branches
+  into that root, wait for the root head SHA to satisfy checks, admit only the
+  root to the flat train, and resolve child PRs after the root lands according
+  to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
+  permission-limited stacks as blocked/unsupported instead of mutating by hand.
 - **Retry Model**: Repeated controller calls are expected. Stop and report
   blocked, stale, denied, or failed states with compact evidence and trace IDs.
+- **Evidence**: For stack runs, report the stack-collapse plan record id, any
+  batch candidate record id, the landing-plan record id, workflow run URLs, and
+  the final root merge commit. Include child disposition evidence when the root
+  lands.
 - **Troubleshooting**: Treat phase-specific merge-train endpoints as detail or
   recovery surfaces. They are not the default skill workflow.
 - **Boundaries**: Merge-train behavior is DB/policy-backed. Do not hardcode
