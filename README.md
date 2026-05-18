@@ -36,13 +36,17 @@ Some top-level skills intentionally use the same names as bundled system skills
 so they win by normal Code skill precedence:
 
 - `openai-docs`
+- `plan`
 - `plugin-creator`
 - `skill-creator`
 - `skill-installer`
 
-Keep that override list explicit in the repo validator. If Code adds or removes
-bundled system skills, update the top-level override skill or the validator
-allowlist intentionally instead of editing `.system/` directly.
+Keep that override allowlist explicit in the repo validator. Runtime `.system`
+caches can differ by Code build, so validation fails only when an active
+top-level skill overrides a bundled system skill that is not allowlisted. If Code
+adds a new bundled system skill with the same name as a top-level skill, update
+the top-level override skill or the validator allowlist intentionally instead of
+editing `.system/` directly.
 
 Preferred patterns:
 
