@@ -131,8 +131,8 @@ capture_pr_helper_json() {
   stdout="$(mktemp)"
   stderr="$(mktemp)"
   cleanup_paths+=("$stdout" "$stderr")
-  if "$pr_helper" "$@" >"$stdout" 2>"$stderr"; then
-    cat "$stdout"
+  if GH_PR_GH="$gh_bin" "$pr_helper" "$@" >"$stdout" 2>"$stderr"; then
+    jq 'if type == "object" and has("pr") then .pr else . end' "$stdout"
     return
   fi
   status=$?
