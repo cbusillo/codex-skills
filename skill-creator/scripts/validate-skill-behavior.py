@@ -427,6 +427,40 @@ def test_stale_injected_override_paths_are_nonfatal() -> None:
         "Skill repo validation must not fail only because injected runtime metadata names a stale .system override path",
     )
 
+    (ROOT / ".local").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=ROOT / ".local") as tmp:
+        tmp_root = Path(tmp)
+        for name in ("plan", "skill-creator", "skill-installer"):
+            (tmp_root / name).mkdir()
+        collect_missing = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--with",
+                "PyYAML>=6.0.0",
+                "python3",
+                "-c",
+                (
+                    "import importlib.util, json, pathlib; "
+                    f"path = pathlib.Path({str(validator_path)!r}); "
+                    "spec = importlib.util.spec_from_file_location('validator', path); "
+                    "module = importlib.util.module_from_spec(spec); "
+                    "spec.loader.exec_module(module); "
+                    f"root = pathlib.Path({str(tmp_root)!r}); "
+                    "print(json.dumps(module.validate_system_override_paths([root / 'plan', root / 'skill-creator', root / 'skill-installer'])))"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    require(collect_missing.returncode == 0, "Skill repo validator missing-override probe must run")
+    missing = json.loads(collect_missing.stdout)
+    require(
+        len(missing) == 3,
+        "Skill repo validation must report every missing override skill, not only the first",
+    )
+
 
 def test_github_plan_sweeps_stale_related_issues() -> None:
     plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
