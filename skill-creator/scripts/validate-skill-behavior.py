@@ -12,12 +12,13 @@ unavailable.
 
 from __future__ import annotations
 
-import json
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.error
 from pathlib import Path
 
@@ -242,6 +243,57 @@ def test_launchplane_write_action_helper_contract() -> None:
     require(
         "missing_operator_config" in json.dumps(payload),
         "Write-action helper must explain missing operator config compactly",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / "local-operator.env"
+        env_path.write_text(
+            "LAUNCHPLANE_OPERATOR_URL=https://launchplane.example.invalid\n"
+            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN=secret-token-never-render\n"
+            "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT=local-owner\n"
+            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL=local\n"
+            "IGNORED_KEY=ignored\n",
+            encoding="utf-8",
+        )
+        diagnostic = subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "--env-config",
+                str(env_path),
+                "operator-config-diagnostic",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("LAUNCHPLANE_")
+            },
+        )
+    require(diagnostic.returncode == 0, "Write-action helper diagnostic must succeed with private .env")
+    diagnostic_payload = json.loads(diagnostic.stdout)
+    rendered_diagnostic = json.dumps(diagnostic_payload)
+    require(
+        diagnostic_payload["summary"]["private_env_present"] is True,
+        "Write-action helper diagnostic must report private .env presence",
+    )
+    require(
+        diagnostic_payload["summary"]["token_source"] == "private_env",
+        "Write-action helper diagnostic must report token source without value",
+    )
+    require(
+        diagnostic_payload["summary"]["service_url_source"] == "private_env",
+        "Write-action helper diagnostic must report winning service URL source without value",
+    )
+    require(
+        "secret-token-never-render" not in rendered_diagnostic,
+        "Write-action helper diagnostic must not render token values",
+    )
+    require(
+        "local-owner" not in rendered_diagnostic and "https://launchplane.example.invalid" not in rendered_diagnostic,
+        "Write-action helper diagnostic must not render subject or service URL values",
     )
 
     spec = importlib.util.spec_from_file_location("launchplane_write_action", helper)

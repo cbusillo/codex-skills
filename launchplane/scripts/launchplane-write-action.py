@@ -22,7 +22,14 @@ from typing import Any
 SCHEMA_VERSION = "1.0"
 PROVIDER = "launchplane"
 DEFAULT_CONFIG_PATH = Path("~/.config/launchplane/local-operator.json").expanduser()
+DEFAULT_ENV_PATH = Path("~/.config/launchplane/local-operator.env").expanduser()
 WRITE_CONFIG_REQUIRED = "Launchplane operator config is required for this write action."
+LOCAL_OPERATOR_ENV_KEYS = {
+    "LAUNCHPLANE_OPERATOR_URL",
+    "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
+    "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
+    "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
+}
 TOKEN_PATTERNS = (
     re.compile(r"ghp_[A-Za-z0-9_]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
@@ -126,14 +133,48 @@ def load_config(path: str | None) -> dict[str, str]:
     return config
 
 
+def load_operator_env(path: str | None = None) -> dict[str, str]:
+    env_path = Path(path).expanduser() if path else DEFAULT_ENV_PATH
+    if not env_path.exists():
+        return {}
+    loaded: dict[str, str] = {}
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        raise ValueError("invalid_env_config") from None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[7:].strip()
+        key, separator, value = stripped.partition("=")
+        if separator != "=":
+            continue
+        key = key.strip()
+        if key not in LOCAL_OPERATOR_ENV_KEYS:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if value:
+            loaded[key] = value
+    return loaded
+
+
 def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
     config = load_config(args.config)
-    service_url = (
-        args.url
-        or os.environ.get("LAUNCHPLANE_OPERATOR_URL")
-        or config.get("service_url")
-        or ""
-    ).strip()
+    env_config = {} if args.config else load_operator_env(getattr(args, "env_config", None))
+    if args.config:
+        service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
+    else:
+        service_url = (
+            args.url
+            or os.environ.get("LAUNCHPLANE_OPERATOR_URL")
+            or env_config.get("LAUNCHPLANE_OPERATOR_URL")
+            or config.get("service_url")
+            or ""
+        ).strip()
     token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
     subject_env = (
         config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
@@ -143,9 +184,42 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
     ).strip()
     return {
         "service_url": service_url,
-        "token": os.environ.get(token_env, "").strip(),
-        "subject": os.environ.get(subject_env, "").strip(),
-        "token_label": os.environ.get(token_label_env, "").strip(),
+        "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
+        "subject": (os.environ.get(subject_env) or env_config.get(subject_env) or "").strip(),
+        "token_label": (os.environ.get(token_label_env) or env_config.get(token_label_env) or "").strip(),
+    }
+
+
+def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
+    config = load_config(args.config)
+    env_config = {} if args.config else load_operator_env(args.env_config)
+    token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
+    subject_env = (
+        config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
+    ).strip()
+    token_label_env = (
+        config.get("operator_token_label_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
+    ).strip()
+    service_url_candidates = (
+        ("argument", bool(args.url)),
+        ("json_config", bool(config.get("service_url"))),
+        ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
+    ) if args.config else (
+        ("argument", bool(args.url)),
+        ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
+        ("private_env", bool(env_config.get("LAUNCHPLANE_OPERATOR_URL"))),
+        ("json_config", bool(config.get("service_url"))),
+    )
+    service_url_sources = [source for source, present in service_url_candidates if present]
+    return {
+        "json_config_present": (Path(args.config).expanduser() if args.config else DEFAULT_CONFIG_PATH).exists(),
+        "private_env_present": (Path(args.env_config).expanduser() if args.env_config else DEFAULT_ENV_PATH).exists(),
+        "service_url_sources": service_url_sources,
+        "service_url_source": service_url_sources[0] if service_url_sources else "missing",
+        "token_present": bool(os.environ.get(token_env) or env_config.get(token_env)),
+        "token_source": "environment" if os.environ.get(token_env) else "private_env" if env_config.get(token_env) else "missing",
+        "subject_present": bool(os.environ.get(subject_env) or env_config.get(subject_env)),
+        "token_label_present": bool(os.environ.get(token_label_env) or env_config.get(token_label_env)),
     }
 
 
@@ -427,9 +501,15 @@ def execute_post(
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane write actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
+    parser.add_argument("--env-config", help="Optional private operator .env config path.")
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout seconds.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser(
+        "operator-config-diagnostic",
+        help="Report private operator credential source presence without printing values.",
+    )
 
     preflight = subparsers.add_parser(
         "product-config-preflight", help="Preflight product-config intent without plaintext."
@@ -470,6 +550,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        if args.command == "operator-config-diagnostic":
+            request: dict[str, object] = {"diagnostic": "operator_config"}
+            try:
+                diagnostic = settings_diagnostic(args)
+            except ValueError:
+                emit(
+                    unavailable_payload(
+                        operation=args.command,
+                        request=request,
+                        status="invalid",
+                        code="invalid_config",
+                        message="Launchplane operator config is invalid.",
+                    )
+                )
+                return 2
+            payload = base_payload(status="available", operation=args.command, request=request)
+            payload["summary"] = diagnostic
+            emit(payload)
+            return 0
         if args.command == "product-config-preflight":
             request = {
                 "product": args.product,
