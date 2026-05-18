@@ -12,17 +12,18 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 
 ### PRs And Rate Limits
 
-- `../github/scripts/gh-pr-rest.py view <pr>`: Show PR metadata via REST.
-- `../github/scripts/gh-pr-rest.py checks <pr>`: Show check runs and commit
-  statuses for the PR head via REST.
-- `../github/scripts/gh-pr-rest.py merge <pr> --method merge`: Merge a PR via
-  the REST merge endpoint.
-- `../github/scripts/gh-pr-rest.py rate-limit`: Show REST/core and GraphQL rate
+- `../github/scripts/gh-pr.py view <pr>`: Show PR metadata.
+- `../github/scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
+  for the PR head.
+- `../github/scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `../github/scripts/gh-pr.py rate-limit`: Show REST/core and GraphQL rate
   buckets.
 
 Use this helper for high-frequency PR polling, check polling, merge readiness,
-and merge execution. Keep GraphQL-backed `gh pr view`, Projects, sub-issues, and
-dependency operations for data REST cannot provide cleanly.
+and merge execution. Ask for the PR operation you need; the helper owns
+REST/GraphQL transport choice, quota-aware fallbacks, and degraded output.
+Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues, and dependency
+operations for data the helper cannot yet provide cleanly.
 
 ### Orientation
 

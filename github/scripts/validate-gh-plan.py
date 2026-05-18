@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
-PR_REST_SCRIPT = Path(__file__).with_name("gh-pr-rest.py")
+PR_SCRIPT = Path(__file__).with_name("gh-pr.py")
 REAL_SUBPROCESS_RUN = subprocess.run
 
 
@@ -332,7 +332,7 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     assert len(calls) == 1, calls
 
 
-def test_pr_rest_helper_uses_rest_endpoints() -> None:
+def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         log_path = tmp_path / "calls.log"
@@ -340,7 +340,7 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
             "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -358,9 +358,9 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
             "fi\n"
         )
         gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
         view = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "view", "12"],
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -368,7 +368,7 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
             check=True,
         )
         checks = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "checks", "12"],
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -376,7 +376,7 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
             check=True,
         )
         merge = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -384,7 +384,7 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
             check=True,
         )
         rate = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "rate-limit"],
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "rate-limit"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -404,7 +404,7 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
     assert "graphql" not in calls.lower()
 
 
-def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
+def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         log_path = tmp_path / "calls.log"
@@ -412,7 +412,7 @@ def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/other/repo/pulls/44'* ]]; then\n"
             "  printf '{\"number\":44,\"title\":\"Cross repo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/other/repo/pull/44\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"other/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"other/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/check-runs'* ]]; then\n"
@@ -428,11 +428,11 @@ def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
             "fi\n"
         )
         gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
         checks = REAL_SUBPROCESS_RUN(
             [
                 sys.executable,
-                str(PR_REST_SCRIPT),
+                str(PR_SCRIPT),
                 "--repo",
                 "owner/repo",
                 "checks",
@@ -458,7 +458,7 @@ def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
     assert "/repos/owner/repo/pulls/44" not in calls
 
 
-def test_pr_rest_helper_accepts_enterprise_pr_urls() -> None:
+def test_pr_helper_accepts_enterprise_pr_urls() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         log_path = tmp_path / "calls.log"
@@ -466,7 +466,7 @@ def test_pr_rest_helper_accepts_enterprise_pr_urls() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/enterprise/repo/pulls/5'* ]]; then\n"
             "  printf '{\"number\":5,\"title\":\"Enterprise\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://ghe.example.com/enterprise/repo/pull/5\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"enterprise/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"enterprise/repo\"}}}\\n'\n"
             "else\n"
@@ -474,9 +474,9 @@ def test_pr_rest_helper_accepts_enterprise_pr_urls() -> None:
             "fi\n"
         )
         gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
         view = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_REST_SCRIPT), "view", "https://ghe.example.com/enterprise/repo/pull/5"],
+            [sys.executable, str(PR_SCRIPT), "view", "https://ghe.example.com/enterprise/repo/pull/5"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -553,9 +553,9 @@ def main() -> None:
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
-        test_pr_rest_helper_uses_rest_endpoints,
-        test_pr_rest_helper_preserves_url_repo_and_paginates_checks,
-        test_pr_rest_helper_accepts_enterprise_pr_urls,
+        test_pr_helper_uses_rest_endpoints_for_common_pr_work,
+        test_pr_helper_preserves_url_repo_and_paginates_checks,
+        test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,
     ]
     for test in tests:

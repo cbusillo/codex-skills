@@ -25,17 +25,18 @@ Summarize only actionable state:
 - what is ours to do versus waiting on someone else
 
 If the current branch has a PR, inspect that PR before relying on repo-wide
-lists. Prefer the REST-first PR helper for repeated PR metadata, check, and
-merge-readiness reads so normal agent polling does not burn GraphQL quota:
+lists. Prefer the PR helper for repeated PR metadata, check, and
+merge-readiness reads so normal agent polling lets one maintained script manage
+transport choice, quota pressure, and degraded output:
 
 ```sh
-~/.code/skills/github/scripts/gh-pr-rest.py --repo OWNER/REPO view <pr-or-url>
-~/.code/skills/github/scripts/gh-pr-rest.py --repo OWNER/REPO checks <pr-or-url>
-~/.code/skills/github/scripts/gh-pr-rest.py --repo OWNER/REPO rate-limit
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO view <pr-or-url>
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO checks <pr-or-url>
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO rate-limit
 ```
 
-Use GraphQL-backed `gh pr view --json statusCheckRollup` only when the REST
-helper does not expose the data you need.
+Use GraphQL-backed `gh pr view --json statusCheckRollup` only when the PR helper
+does not expose the data you need.
 
 If a deploy health endpoint reports a revision or tag, compare it with the
 merge commit, PR head, or branch SHA the task cares about.
@@ -85,7 +86,7 @@ required checks, or release policy.
 Before merging any PR, do a fresh PR read and account for feedback:
 
 - confirm merge state, draft state, base/head branches, and required checks with
-  `scripts/gh-pr-rest.py view` and `scripts/gh-pr-rest.py checks`
+  `scripts/gh-pr.py view` and `scripts/gh-pr.py checks`
 - inspect review decision, PR comments, reviews, and review threads with raw
   `gh` only when needed; those surfaces may still require GraphQL
 - inspect PR comments, reviews, and review threads
@@ -95,15 +96,15 @@ Before merging any PR, do a fresh PR read and account for feedback:
 - proceed only after explicit user approval for the merge action
 
 When the user approves a merge and does not specify the method, use
-`scripts/gh-pr-rest.py merge <pr> --method merge` for a normal merge commit.
+`scripts/gh-pr.py merge <pr> --method merge` for a normal merge commit.
 Avoid squash merges by default because normal merge commits keep branch ancestry
 and cleanup mechanically provable. Use squash or rebase only when requested,
 required by repo policy, or explicitly confirmed.
 
 If GraphQL is exhausted but REST/core quota remains available, do not keep
-retrying GraphQL-backed `gh pr view` or `gh pr merge`. Use the REST helper and
+retrying GraphQL-backed `gh pr view` or `gh pr merge`. Use the PR helper and
 report GraphQL-only surfaces, such as Projects or native sub-issues, as deferred
-when they cannot be updated safely.
+when the helper cannot update or inspect them safely.
 
 For stacked PRs, consider a rollup/integration PR when the stack is more than
 two PRs deep or expensive checks would rerun at every layer.
