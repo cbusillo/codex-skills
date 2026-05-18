@@ -404,6 +404,44 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert "graphql" not in calls.lower()
 
 
+def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/topic'* ]]; then\n"
+            "  if [[ \"$*\" != *'--method DELETE'* ]]; then exit 2; fi\n"
+            "  exit 0\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
+        merge = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12", "--delete-branch"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(merge.stdout)
+    assert payload["merge"]["merged"] is True, payload
+    assert payload["deletedBranch"]["deleted"] is True, payload
+    assert "/repos/owner/repo/git/refs/heads/topic" in calls, calls
+
+
 def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -554,6 +592,7 @@ def main() -> None:
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
+        test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,

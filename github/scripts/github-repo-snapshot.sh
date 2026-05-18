@@ -136,7 +136,7 @@ capture_pr_helper_json() {
     return
   fi
   status=$?
-  if [[ "$*" == "view" ]] && grep -q "No open PR found for current branch" "$stderr"; then
+  if grep -q "No open PR found for current branch" "$stderr"; then
     jq -n 'null'
     return
   fi
