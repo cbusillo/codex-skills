@@ -346,6 +346,10 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Explicit --config service URL must win over ambient environment and explicit .env",
     )
     require(
+        "private_env" not in precedence_summary["service_url_sources"],
+        "Explicit --env-config must not be a service URL source when --config is set",
+    )
+    require(
         precedence_summary["token_source"] == "private_env",
         "Explicit --env-config must supply token values even when --config is set",
     )
