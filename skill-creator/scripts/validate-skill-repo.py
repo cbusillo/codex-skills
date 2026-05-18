@@ -21,7 +21,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
-SYSTEM_OVERRIDE_NAMES = {"plan", "skill-creator", "skill-installer"}
+SYSTEM_OVERRIDE_NAMES = {
+    "openai-docs",
+    "plugin-creator",
+    "skill-creator",
+    "skill-installer",
+}
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")

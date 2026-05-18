@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Collaboration"
+  short_description: "Issue-backed UI design collaboration"
+  default_prompt: "Use $design-collaboration to coordinate a UI design pass in GitHub issues."
