@@ -10,6 +10,20 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 
 ## Common Commands
 
+### PRs And Rate Limits
+
+- `../github/scripts/gh-pr-rest.py view <pr>`: Show PR metadata via REST.
+- `../github/scripts/gh-pr-rest.py checks <pr>`: Show check runs and commit
+  statuses for the PR head via REST.
+- `../github/scripts/gh-pr-rest.py merge <pr> --method merge`: Merge a PR via
+  the REST merge endpoint.
+- `../github/scripts/gh-pr-rest.py rate-limit`: Show REST/core and GraphQL rate
+  buckets.
+
+Use this helper for high-frequency PR polling, check polling, merge readiness,
+and merge execution. Keep GraphQL-backed `gh pr view`, Projects, sub-issues, and
+dependency operations for data REST cannot provide cleanly.
+
 ### Orientation
 
 - `index`: List compact plan issues (no bodies).

@@ -54,6 +54,8 @@ attention is needed now.
 Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 
 - `../github/scripts/gh-plan.py` for compact planning issue and Project operations.
+- `../github/scripts/gh-pr-rest.py` for PR status, checks, merge, and rate-limit
+  reads when planning work needs PR evidence without spending GraphQL quota.
 - `../github/scripts/gh-issue` and `../github/scripts/gh-comment` for safe
   multiline writes.
 - `../github/references/issue-templates.md` and
@@ -136,6 +138,13 @@ public safety.
 
 Prefer `../github/scripts/gh-plan.py` for planning state. It returns compact JSON
 and avoids loading issue bodies unless needed.
+
+Project v2, native sub-issues, and native dependency operations may require
+GraphQL. Before batching those operations, check rate limits when failures look
+quota-related. If GraphQL is exhausted but REST/core is available, keep issue
+body/status updates moving through REST-backed helpers and record Project or
+native relationship updates as waiting rather than retrying until the LLM
+workflow stalls.
 
 - Use `index` or `search` before creating.
 - Use `show` for selected sections; use `show --full` only when broad prose is

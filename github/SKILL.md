@@ -44,11 +44,11 @@ operation, and route those calls through `scripts/gh-with-env-token`.
   protected branch.
 - **Merges & Stacks**: When the user approves a merge and does not specify the
   method, state that you are using a normal merge commit and run
-  `scripts/gh-with-env-token pr merge <pr> --merge` when no merge helper exists.
-  Do not use `--squash` or `--rebase` unless the user explicitly asks, repo
-  policy requires it, or you ask and receive confirmation. For stacked PRs,
-  consider a rollup branch when merging each layer would rerun expensive checks
-  or create avoidable conflict churn.
+  `scripts/gh-pr-rest.py merge <pr> --method merge` for GitHub REST-backed merge
+  execution. Do not use `--squash` or `--rebase` unless the user explicitly
+  asks, repo policy requires it, or you ask and receive confirmation. For
+  stacked PRs, consider a rollup branch when merging each layer would rerun
+  expensive checks or create avoidable conflict churn.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `scripts/gh-with-env-token pr create` from that
   repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
@@ -89,6 +89,8 @@ consistent auth/retry behavior, and safe formatting:
   `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
+- `scripts/gh-pr-rest.py`: REST-first PR view, checks, merge, and rate-limit
+  diagnostics for GraphQL-light PR workflows.
 - `scripts/gh-issue`: Safe multiline issue create/edit bodies from stdin.
 - `scripts/gh-comment`: Safe multiline commenting.
 

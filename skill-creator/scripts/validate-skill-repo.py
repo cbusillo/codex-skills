@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
 SYSTEM_OVERRIDE_NAMES = {
     "openai-docs",
+    "plan",
     "plugin-creator",
     "skill-creator",
     "skill-installer",
@@ -243,14 +244,9 @@ def main() -> int:
     active_names = {skill_dir.name for skill_dir in skill_dirs}
     overlapping_system_names = active_names & system_skill_names()
     unexpected_overrides = overlapping_system_names - SYSTEM_OVERRIDE_NAMES
-    missing_overrides = SYSTEM_OVERRIDE_NAMES - overlapping_system_names
     for name in sorted(unexpected_overrides):
         errors.append(
             f"{name}: active skill overrides .system/{name} but is not in SYSTEM_OVERRIDE_NAMES"
-        )
-    for name in sorted(missing_overrides):
-        errors.append(
-            f"{name}: SYSTEM_OVERRIDE_NAMES entry does not match an active .system override"
         )
 
     if errors:

@@ -14,16 +14,21 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
+import tempfile
 import types
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
+PR_REST_SCRIPT = Path(__file__).with_name("gh-pr-rest.py")
+REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def load_plan_module() -> Any:
@@ -49,7 +54,7 @@ def normalized_gh_args(command: list[str]) -> list[str]:
 
 def test_issue_body_updates_use_rest_patch() -> None:
     plan = load_plan_module()
-    calls: list[tuple[list[str], str | None]] = []
+    calls: list[tuple[list[str], Optional[str]]] = []
     issues: dict[tuple[str, int], dict[str, Any]] = {
         ("owner/repo", 1): {
             "repo": "owner/repo",
@@ -73,29 +78,22 @@ def test_issue_body_updates_use_rest_patch() -> None:
         },
     }
 
-    def fake_run(
-        command: list[str],
-        input: str | None = None,
-        text: bool | None = None,
-        stdout: Any = None,
-        stderr: Any = None,
-        cwd: Any = None,
-    ) -> subprocess.CompletedProcess[str]:
-        del text, stdout, stderr, cwd
-        calls.append((command, input))
-        args = normalized_gh_args(command)
-        if not args or args[0] != "api":
-            raise AssertionError(f"unexpected command: {command}")
-        endpoint = next((arg for arg in args if arg.startswith("repos/")), "")
-        method = args[args.index("-X") + 1] if "-X" in args else "GET"
+    def fake_run(gh_command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        input_text = kwargs.get("input")
+        calls.append((gh_command, input_text))
+        normalized_args = normalized_gh_args(gh_command)
+        if not normalized_args or normalized_args[0] != "api":
+            raise AssertionError(f"unexpected command: {gh_command}")
+        endpoint = next((arg for arg in normalized_args if arg.startswith("repos/")), "")
+        method = normalized_args[normalized_args.index("-X") + 1] if "-X" in normalized_args else "GET"
         parts = endpoint.split("/")
         repo = "/".join(parts[1:3])
         number = int(parts[4])
         if method == "GET":
             return completed(json.dumps(issues[(repo, number)]))
         if method == "PATCH":
-            assert args[-2:] == ["--input", "-"], args
-            payload = json.loads(input or "{}")
+            assert normalized_args[-2:] == ["--input", "-"], normalized_args
+            payload = json.loads(input_text or "{}")
             assert set(payload) == {"body"}, payload
             issues[(repo, number)].update(payload)
             return completed(json.dumps(issues[(repo, number)]))
@@ -110,10 +108,10 @@ def test_issue_body_updates_use_rest_patch() -> None:
     patch_calls = [(cmd, body) for cmd, body in calls if "PATCH" in cmd]
     assert len(patch_calls) == 3, patch_calls
     for command, body in patch_calls:
-        args = normalized_gh_args(command)
-        assert args[0] == "api", command
-        assert "issue" not in args, command
-        assert "--input" in args and args[args.index("--input") + 1] == "-", command
+        gh_args = normalized_gh_args(command)
+        assert gh_args[0] == "api", command
+        assert "issue" not in gh_args, command
+        assert "--input" in gh_args and gh_args[gh_args.index("--input") + 1] == "-", command
         assert json.loads(body or "{}"), command
 
 
@@ -124,11 +122,10 @@ def test_project_commands_are_recoverable() -> None:
     def fake_gh_json(
         args: list[str],
         *,
-        input_text: str | None = None,
         prefer_active: bool = False,
         recoverable: bool = False,
+        **_kwargs: Any,
     ) -> tuple[str, Any]:
-        del input_text
         calls.append({"args": args, "prefer_active": prefer_active, "recoverable": recoverable})
         if args[:2] == ["project", "list"]:
             return "active-gh-user", {"projects": [{"title": "Roadmap", "number": 7, "id": "project-id"}]}
@@ -175,7 +172,7 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     def fake_gh_json(
         args: list[str],
         *,
-        input_text: str | None = None,
+        input_text: Optional[str] = None,
         prefer_active: bool = False,
         recoverable: bool = False,
     ) -> tuple[str, Any]:
@@ -196,12 +193,9 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     def fake_run_raw(
         args: list[str],
         *,
-        input_text: str | None = None,
-        check: bool = True,
-        prefer_active: bool = False,
         recoverable: bool = False,
+        **_kwargs: Any,
     ) -> tuple[str, str, str]:
-        del input_text, check, prefer_active
         if args[:2] == ["project", "item-add"] and recoverable:
             raise plan.PlanError("project sync throttled")
         raise AssertionError(f"unexpected run_raw args: {args}")
@@ -283,15 +277,7 @@ def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
 
-    def fake_run(
-        command: list[str],
-        input: str | None = None,
-        text: bool | None = None,
-        stdout: Any = None,
-        stderr: Any = None,
-        cwd: Any = None,
-    ) -> subprocess.CompletedProcess[str]:
-        del input, text, stdout, stderr, cwd
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         if command[0].endswith("gh-with-env-token"):
             return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
@@ -308,15 +294,7 @@ def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
 
     calls.clear()
 
-    def fake_non_rate_failure(
-        command: list[str],
-        input: str | None = None,
-        text: bool | None = None,
-        stdout: Any = None,
-        stderr: Any = None,
-        cwd: Any = None,
-    ) -> subprocess.CompletedProcess[str]:
-        del input, text, stdout, stderr, cwd
+    def fake_non_rate_failure(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         if command[0].endswith("gh-with-env-token"):
             return completed(stderr="HTTP 403: resource not accessible by integration", returncode=1)
@@ -336,15 +314,7 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
 
-    def fake_run(
-        command: list[str],
-        input: str | None = None,
-        text: bool | None = None,
-        stdout: Any = None,
-        stderr: Any = None,
-        cwd: Any = None,
-    ) -> subprocess.CompletedProcess[str]:
-        del input, text, stdout, stderr, cwd
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         if command[0].endswith("gh-with-env-token"):
             return completed(stdout='{"bot": true}')
@@ -357,6 +327,75 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     assert len(calls) == 1, calls
 
 
+def test_pr_rest_helper_uses_rest_endpoints() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/check-runs'* ]]; then\n"
+            "  printf '{\"check_runs\":[{\"name\":\"ci\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/statuses'* ]]; then\n"
+            "  printf '[]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/status'* ]]; then\n"
+            "  printf '{\"state\":\"success\"}\\n'\n"
+            "elif [[ \"$*\" == *'/rate_limit'* ]]; then\n"
+            "  printf '{\"resources\":{\"core\":{\"remaining\":4999},\"graphql\":{\"remaining\":0}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        view = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "view", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        checks = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "checks", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        merge = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        rate = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_REST_SCRIPT), "--repo", "owner/repo", "rate-limit"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+    assert json.loads(view.stdout)["pr"]["number"] == 12
+    assert json.loads(checks.stdout)["summary"]["combinedState"] == "success"
+    assert json.loads(merge.stdout)["merge"]["merged"] is True
+    assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
+    assert "/repos/owner/repo/pulls/12" in calls
+    assert "/repos/owner/repo/pulls/12/merge" in calls
+    assert "graphql" not in calls.lower()
+
+
 def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
@@ -365,6 +404,7 @@ def main() -> None:
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
+        test_pr_rest_helper_uses_rest_endpoints,
     ]
     for test in tests:
         test()
