@@ -35,7 +35,8 @@ top-level skill directories instead.
 Some top-level skills intentionally use the same names as bundled system skills
 so they win by normal Code skill precedence:
 
-- `plan`
+- `openai-docs`
+- `plugin-creator`
 - `skill-creator`
 - `skill-installer`
 

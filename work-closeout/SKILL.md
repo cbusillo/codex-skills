@@ -1,6 +1,6 @@
 ---
 name: work-closeout
-description: Use when the user asks to wrap up, clean up, close out a session or workstream, prepare handoff, determine what remains, update or remove stale plans, remove transient artifacts, or asks whether they can exit. Coordinates plan/handoff cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
+description: Use when the user asks to wrap up, clean up, close out a session or workstream, prepare handoff, determine what remains, update or remove stale plans, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
 ---
 
 # Work Closeout
@@ -21,7 +21,7 @@ Leave the user with a truthful closeout answer:
 - What is done?
 - What remains?
 - What cleanup happened?
-- What artifacts/plans/handoffs were removed or preserved?
+- What artifacts or plans were removed, preserved, or updated?
 - Is it safe to pause, exit, or hand off?
 
 ## Workflow
@@ -38,24 +38,24 @@ Leave the user with a truthful closeout answer:
    item before saying it is safe to exit.
 3. Inspect local state:
 
-```bash
-git status --short --branch
-git worktree list
-```
+   ```bash
+   git status --short --branch
+   git worktree list
+   ```
 
-If the shared Launchplane context helper is present and configured, call it once
-as optional closeout context for the repo/workstream:
+   If the shared Launchplane context helper is present and configured, call it
+   once as optional closeout context for the repo/workstream:
 
-```bash
-~/.code/skills/launchplane/scripts/launchplane-context.py --repo OWNER/REPO
-```
+   ```bash
+   ~/.code/skills/launchplane/scripts/launchplane-context.py --repo OWNER/REPO
+   ```
 
-Use `available` context to notice pending Every Code work, preview readiness,
-deploy/product evidence, or source-of-truth links that should be reflected in
-the closeout. Treat `no_context`, `unavailable`, `unauthorized`, `invalid`, or
-helper failure as normal absence. Do not block safe-to-exit only because
-Launchplane context is unavailable, and do not copy raw helper payloads into
-handoffs, issues, PRs, or final summaries.
+   Use `available` context to notice pending Every Code work, preview readiness,
+   deploy/product evidence, or source-of-truth links that should be reflected in
+   the closeout. Treat `no_context`, `unavailable`, `unauthorized`, `invalid`,
+   or helper failure as normal absence. Do not block safe-to-exit only because
+   Launchplane context is unavailable, and do not copy raw helper payloads into
+   issues, PRs, or final summaries.
 
 4. If GitHub state matters for closeout, use `github` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
@@ -63,13 +63,15 @@ handoffs, issues, PRs, or final summaries.
 5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project planning state. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
-6. Remove consumed `handoff*.md` files after durable planning decisions are
-   captured in GitHub or an explicit offline/local plan, and after implemented
-   behavior is reflected in repo docs when docs are actually stale, unless the
-   user asks to keep iterating.
+6. If design collaboration was part of the work, make sure accepted direction,
+   browser QA evidence, tradeoffs, and remaining design work are captured in the
+   relevant GitHub planning issue or PR.
 7. Clean only artifacts clearly created by the current work: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
-   test containers, or consumed handoff files.
+   test containers, or other consumed temporary files.
+   If the repo still has legacy `handoff*.md` files from the old workflow,
+   delete or migrate them once their content is captured in GitHub unless they
+   are intentionally preserved.
 8. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
 9. Report final state concisely.
