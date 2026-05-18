@@ -74,6 +74,22 @@ def system_skill_names() -> set[str]:
     return names
 
 
+def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
+    errors: list[str] = []
+    active_by_name = {skill_dir.name: skill_dir for skill_dir in skill_dirs}
+    for name in sorted(SYSTEM_OVERRIDE_NAMES & active_by_name.keys()):
+        local_skill = active_by_name[name] / "SKILL.md"
+        if not local_skill.is_file():
+            errors.append(f"{name}: override skill is missing {local_skill.relative_to(ROOT)}")
+            continue
+        stale_repo_path = ROOT / ".system" / name / "SKILL.md"
+        if str(stale_repo_path) in os.environ.get("CODEX_SKILLS_INJECTED_PATHS", "") and not stale_repo_path.exists():
+            errors.append(
+                f"{name}: injected skill path points at missing {stale_repo_path.relative_to(ROOT)}; use {local_skill.relative_to(ROOT)} for this override"
+            )
+    return errors
+
+
 def resolve_system_skills_root() -> Path:
     """Return the Code runtime system skill cache or the repo fallback.
 
@@ -240,6 +256,7 @@ def main() -> int:
 
     for skill_dir in skill_dirs:
         errors.extend(validate_skill_dir(skill_dir))
+    errors.extend(validate_system_override_paths(skill_dirs))
 
     active_names = {skill_dir.name for skill_dir in skill_dirs}
     overlapping_system_names = active_names & system_skill_names()

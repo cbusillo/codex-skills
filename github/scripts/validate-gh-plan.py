@@ -127,6 +127,8 @@ def test_project_commands_are_recoverable() -> None:
         **_kwargs: Any,
     ) -> tuple[str, Any]:
         calls.append({"args": args, "prefer_active": prefer_active, "recoverable": recoverable})
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "active-gh-user", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
         if args[:2] == ["project", "list"]:
             return "active-gh-user", {"projects": [{"title": "Roadmap", "number": 7, "id": "project-id"}]}
         if args[:2] == ["project", "item-add"]:
@@ -178,6 +180,8 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     ) -> tuple[str, Any]:
         if args[:2] == ["issue", "list"]:
             return "automation-gh", []
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
         return original_gh_json(
             args,
             input_text=input_text,
@@ -222,7 +226,8 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
     assert payload["issue"]["number"] == 10, payload
-    assert payload["project_fields"] == {"error": "project sync throttled"}, payload
+    assert payload["project_fields"]["error"] == "project sync throttled", payload
+    assert payload["project_fields"]["error_code"] == "project_update_failed", payload
 
 
 def test_create_supports_waiting_plan_status() -> None:
@@ -388,12 +393,150 @@ def test_pr_rest_helper_uses_rest_endpoints() -> None:
         )
         calls = log_path.read_text()
     assert json.loads(view.stdout)["pr"]["number"] == 12
-    assert json.loads(checks.stdout)["summary"]["combinedState"] == "success"
+    assert json.loads(checks.stdout)["summary"]["combinedState"] is None
     assert json.loads(merge.stdout)["merge"]["merged"] is True
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
     assert "/repos/owner/repo/pulls/12/merge" in calls
     assert "graphql" not in calls.lower()
+
+
+def test_pr_rest_helper_preserves_url_repo_and_paginates_checks() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/other/repo/pulls/44'* ]]; then\n"
+            "  printf '{\"number\":44,\"title\":\"Cross repo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/other/repo/pull/44\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"other/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"other/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/check-runs'* ]]; then\n"
+            "  if [[ \"$*\" != *'--paginate'* || \"$*\" != *'--slurp'* ]]; then exit 2; fi\n"
+            "  printf '[{\"check_runs\":[{\"name\":\"ci-1\",\"status\":\"completed\",\"conclusion\":\"success\"}]},{\"check_runs\":[{\"name\":\"ci-2\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/statuses'* ]]; then\n"
+            "  if [[ \"$*\" != *'--paginate'* || \"$*\" != *'--slurp'* ]]; then exit 2; fi\n"
+            "  printf '[[{\"context\":\"legacy-1\",\"state\":\"success\"}],[{\"context\":\"legacy-2\",\"state\":\"error\"}]]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/status'* ]]; then\n"
+            "  printf '{\"state\":\"failure\"}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        checks = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_REST_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "checks",
+                "https://github.com/other/repo/pull/44",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(checks.stdout)
+    assert checks.returncode == 0, checks.stderr
+    assert payload["repo"] == "other/repo", payload
+    assert payload["summary"]["checkRunCount"] == 2, payload
+    assert payload["summary"]["statusCount"] == 2, payload
+    assert payload["summary"]["failingCount"] == 2, payload
+    assert "/repos/other/repo/pulls/44" in calls
+    assert "/repos/owner/repo/pulls/44" not in calls
+
+
+def test_pr_rest_helper_accepts_enterprise_pr_urls() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_REST_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/enterprise/repo/pulls/5'* ]]; then\n"
+            "  printf '{\"number\":5,\"title\":\"Enterprise\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://ghe.example.com/enterprise/repo/pull/5\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"enterprise/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"enterprise/repo\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_REST_GH=str(gh_path), GH_PR_REST_TEST_LOG=str(log_path))
+        view = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_REST_SCRIPT), "view", "https://ghe.example.com/enterprise/repo/pull/5"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+    payload = json.loads(view.stdout)
+    assert payload["repo"] == "enterprise/repo", payload
+    assert payload["pr"]["number"] == 5, payload
+    assert "/repos/enterprise/repo/pulls/5" in calls, calls
+
+
+def test_project_set_accepts_item_id_and_classifies_low_graphql() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+
+    def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        calls.append({"kind": "gh_json", "args": args})
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
+        raise AssertionError(f"unexpected gh_json args: {args}")
+
+    def fake_run_raw(args: list[str], **kwargs: Any) -> tuple[str, str, str]:
+        calls.append({"kind": "run_raw", "args": args, "kwargs": kwargs})
+        return "automation-gh", "{}", ""
+
+    plan.gh_json = fake_gh_json
+    plan.run_raw = fake_run_raw
+    plan.project_meta = lambda owner, project_ref, recoverable=False: (
+        "automation-gh",
+        7,
+        {"id": "project-id", "title": "Roadmap"},
+    )
+    plan.project_fields = lambda owner, project_number, recoverable=False: {
+        "Focus": {
+            "id": "field-focus",
+            "name": "Focus",
+            "type": "ProjectV2SingleSelectField",
+            "options": [{"name": "Now", "id": "option-now"}],
+        }
+    }
+    result = plan.set_project_fields(
+        owner="owner",
+        project_ref="Roadmap",
+        issue_url="https://github.com/owner/repo/issues/90",
+        config={"project_fields": {"focus": "Focus"}},
+        focus="Now",
+        item_id="PVTI_item",
+        recoverable=True,
+    )
+    assert result["updated"] == {"Focus": "Now"}, result
+    assert not any(call["args"][:2] == ["project", "item-list"] for call in calls), calls
+    assert any("PVTI_item" in call["args"] for call in calls if call["kind"] == "run_raw"), calls
+
+    plan.gh_json = lambda args, **kwargs: (
+        "automation-gh",
+        {"resources": {"graphql": {"remaining": 0, "reset": 12345}}},
+    )
+    try:
+        plan.ensure_graphql_budget(recoverable=True)
+    except plan.ClassifiedPlanError as exc:
+        assert exc.code == "rate_limited", exc.code
+        assert exc.retry_at == 12345, exc.retry_at
+    else:
+        raise AssertionError("low GraphQL quota should be classified as rate_limited")
 
 
 def main() -> None:
@@ -405,6 +548,9 @@ def main() -> None:
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_rest_helper_uses_rest_endpoints,
+        test_pr_rest_helper_preserves_url_repo_and_paginates_checks,
+        test_pr_rest_helper_accepts_enterprise_pr_urls,
+        test_project_set_accepts_item_id_and_classifies_low_graphql,
     ]
     for test in tests:
         test()

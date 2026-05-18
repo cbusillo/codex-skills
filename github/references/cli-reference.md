@@ -43,8 +43,16 @@ dependency operations for data REST cannot provide cleanly.
 ### Projects
 
 - `project-list --owner <owner>`: List Projects.
-- `project-add <issue> --project <name>`: Add issue to a Project.
-- `project-set <issue>`: Update Project fields (`--focus`, `--manager`, `--finish-line`).
+- `project-add <issue> --project <name>`: Add issue to a Project and return the
+  Project item id when GitHub provides one.
+- `project-set <issue>`: Update Project fields (`--focus`, `--manager`,
+  `--finish-line`). Pass `--item-id <id>` when using the id returned by
+  `project-add` so the helper can skip lookup-sensitive rediscovery.
+
+Project commands preflight GraphQL quota, cache Project metadata within the run,
+and classify recoverable failures with `error_code` values such as
+`rate_limited`, `lookup_stale`, `not_in_project`, and
+`field_or_option_missing`.
 
 ## Formatting Tip
 

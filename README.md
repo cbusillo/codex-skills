@@ -48,6 +48,11 @@ adds a new bundled system skill with the same name as a top-level skill, update
 the top-level override skill or the validator allowlist intentionally instead of
 editing `.system/` directly.
 
+If an injected available-skills list points at a missing repo-local path such as
+`.system/plan/SKILL.md`, treat that as stale runtime metadata. For allowlisted
+overrides, the usable source path is the top-level override, for example
+`plan/SKILL.md`.
+
 Preferred patterns:
 
 ```text
