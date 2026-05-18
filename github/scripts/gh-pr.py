@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""REST-first PR helper for GitHub operations that should not burn GraphQL."""
+"""Intent-oriented PR helper that hides GitHub transport details from agents."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-GH = os.environ.get("GH_PR_REST_GH") or str(SCRIPT_DIR / "gh-with-env-token")
+GH = os.environ.get("GH_PR_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
 
 
@@ -39,7 +39,7 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Use GitHub REST endpoints for PR reads, checks, merge, and rate limits.",
+        description="Handle GitHub PR reads, checks, merge, and rate limits with transport-aware defaults.",
     )
     parser.add_argument("--repo", help="Repository in OWNER/REPO form.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -201,7 +201,7 @@ def resolve_repo(explicit: Optional[str]) -> str:
     raise HelperError("Could not resolve repository; pass --repo OWNER/REPO")
 
 
-def resolve_pr(explicit_repo: Optional[str], value: Optional[str]) -> tuple[str, int]:
+def resolve_pr(explicit_repo: Optional[str], value: Optional[str]) -> Tuple[str, int]:
     url_ref = parse_pr_url(value)
     if url_ref:
         return url_ref
@@ -209,7 +209,7 @@ def resolve_pr(explicit_repo: Optional[str], value: Optional[str]) -> tuple[str,
     return repo, resolve_pr_number(repo, value)
 
 
-def parse_pr_url(value: Optional[str]) -> tuple[str, int] | None:
+def parse_pr_url(value: Optional[str]):
     if not value:
         return None
     match = re.search(r"^(?:https?://|git@)?[^/:]+[:/]([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)(?:[/?#].*)?$", value)

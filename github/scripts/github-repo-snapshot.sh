@@ -11,6 +11,7 @@ health_urls=()
 cleanup_paths=()
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
+pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
 
 cleanup() {
   local path
@@ -125,6 +126,24 @@ capture_gh_json() {
     '{error: {exitCode: $exitCode, message: $message, stdout: $stdout}}'
 }
 
+capture_pr_helper_json() {
+  local stdout stderr status
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  cleanup_paths+=("$stdout" "$stderr")
+  if "$pr_helper" "$@" >"$stdout" 2>"$stderr"; then
+    cat "$stdout"
+    return
+  fi
+  status=$?
+  if [[ "$*" == "view" ]] && grep -q "No open PR found for current branch" "$stderr"; then
+    jq -n 'null'
+    return
+  fi
+  jq -n --argjson exitCode "$status" --arg message "$(cat "$stderr")" --arg stdout "$(cat "$stdout")" \
+    '{error: {exitCode: $exitCode, message: $message, stdout: $stdout}}'
+}
+
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "error: not inside a git repository" >&2
   exit 1
@@ -219,7 +238,11 @@ if [[ "$json_output" -eq 1 ]]; then
   if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
     gh_available=1
     if [[ -n "$current_branch" ]]; then
-      capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup >"$tmpdir/current-pr.json"
+      if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
+        capture_pr_helper_json view >"$tmpdir/current-pr.json"
+      else
+        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
+      fi
       capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
     else
       jq -n 'null' >"$tmpdir/current-pr.json"
@@ -317,7 +340,9 @@ fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
-  if [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,headRefName,baseRefName,headRefOid,labels,url,statusCheckRollup 2>/dev/null; then
+  if [[ -n "$current_branch" ]] && [[ -x "$pr_helper" ]] && "$pr_helper" view 2>/dev/null; then
+    :
+  elif [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,headRefOid,labels,url 2>/dev/null; then
     :
   else
     echo "no pull request associated with the current branch"
