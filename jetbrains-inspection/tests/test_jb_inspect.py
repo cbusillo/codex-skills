@@ -262,6 +262,114 @@ class ClassificationTest(unittest.TestCase):
 
 
 class EndpointUtilityTest(unittest.TestCase):
+    def test_problems_params_passes_include_stale_when_requested(self):
+        args = Namespace(
+            project_key=None,
+            session_id=None,
+            project_path=None,
+            worktree_path=None,
+            cwd=None,
+            project=None,
+            ide=None,
+            scope=None,
+            severity="all",
+            problem_type="all",
+            file_pattern="all",
+            limit=100,
+            offset=0,
+            include_stale=True,
+        )
+
+        params = jb_inspect.problems_params(args, {"scope": "changed_files"}, {})
+
+        self.assertEqual(params["include_stale"], "true")
+
+    def test_summarize_problems_withholds_normal_totals_for_stale_default(self):
+        body = {
+            "status": "stale_results",
+            "results_may_be_stale": True,
+            "cached_total_problems": 3,
+            "cached_problems_shown": 0,
+            "stale_reasons": ["project_changed_since_inspection"],
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body)
+
+        self.assertEqual(summary["status"], "stale_results")
+        self.assertFalse(summary["clean"])
+        self.assertTrue(summary["results_may_be_stale"])
+        self.assertEqual(summary["cached_total_problems"], 3)
+        self.assertEqual(summary["cached_problems_shown"], 0)
+        self.assertNotIn("total_problems", summary)
+        self.assertNotIn("problems_shown", summary)
+
+    def test_summarize_problems_keeps_cached_stale_findings_separate(self):
+        body = {
+            "status": "stale_results",
+            "results_may_be_stale": True,
+            "include_stale": True,
+            "cached_total_problems": 1,
+            "cached_problems_shown": 1,
+            "problems": [{"description": "Cached finding"}],
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body)
+
+        self.assertEqual(summary["status"], "stale_results")
+        self.assertFalse(summary["clean"])
+        self.assertTrue(summary["include_stale"])
+        self.assertEqual(summary["cached_total_problems"], 1)
+        self.assertEqual(summary["cached_problems_shown"], 1)
+        self.assertEqual(summary["problems"], [{"description": "Cached finding"}])
+        self.assertEqual(jb_inspect.classify_problems_exit(summary), 1)
+
+    def test_command_problems_preserves_requested_include_stale(self):
+        calls = []
+
+        def fake_resolve_route(args, context):
+            return {"port": 63343, "project_key": "path:/tmp/example"}
+
+        def fake_call_endpoint(route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            return {
+                "status": "stale_results",
+                "results_may_be_stale": True,
+                "cached_total_problems": 1,
+                "cached_problems_shown": 1,
+                "problems": [{"description": "Cached finding"}],
+            }
+
+        original_resolve_route = jb_inspect.resolve_route
+        original_call_endpoint = jb_inspect.call_endpoint
+        jb_inspect.resolve_route = fake_resolve_route
+        jb_inspect.call_endpoint = fake_call_endpoint
+        try:
+            result = jb_inspect.command_problems(
+                Namespace(
+                    project_key=None,
+                    session_id=None,
+                    project_path=None,
+                    worktree_path=None,
+                    cwd=None,
+                    project=None,
+                    ide=None,
+                    scope=None,
+                    severity="all",
+                    problem_type="all",
+                    file_pattern="all",
+                    limit=100,
+                    offset=0,
+                    include_stale=True,
+                ),
+                {},
+            )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+            jb_inspect.call_endpoint = original_call_endpoint
+
+        self.assertEqual(calls[0][1]["include_stale"], "true")
+        self.assertTrue(result["include_stale"])
+
     def test_wait_http_timeout_exceeds_plugin_timeout(self):
         self.assertEqual(jb_inspect.wait_http_timeout(60_000), 65.0)
 
