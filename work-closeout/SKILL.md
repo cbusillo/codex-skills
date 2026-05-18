@@ -136,11 +136,13 @@ when that improves continuity.
   assumptions in the GitHub plan issue.
 - Before declaring safe to exit after closing or merging implementation work,
   inspect the remaining open GitHub issues labeled `plan` and verify their
-  labels match their `Current Status`: `plan:active`, `plan:blocked`,
-  `plan:waiting`, `plan:stale`, or `plan:done`. The main LLM owns the final
-  label/status decision and any mutations. For large issue sets, a read-only
-  agent may summarize likely mismatches, but the main LLM must make and verify
-  the final updates.
+  labels and Project status/focus fields match their `Current Status`:
+  `plan:active`, `plan:blocked`, `plan:waiting`, `plan:stale`, or `plan:done`.
+  Re-read the issue or Project item after updating because labels and board
+  fields can drift independently. The main LLM owns the final label/status
+  decision and any mutations. For large issue sets, a read-only agent may
+  summarize likely mismatches, but the main LLM must make and verify the final
+  updates.
 - If workflow metadata changes are deferred, record the exact `.github/github.json`
   follow-up in the GitHub plan or closeout remaining items.
 - Delete or migrate finished local working plans once useful planning context
