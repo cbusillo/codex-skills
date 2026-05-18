@@ -30,10 +30,12 @@ plaintext secret entry.
 
 Source order for non-browser operator execution:
 
-1. Explicit command-line config path supplied by the caller, if the future
-   helper exposes one.
+1. Explicit command-line JSON config path supplied by the caller.
 2. Environment variables already present in the current process.
-3. An ignored Launchplane-local config file, such as
+3. An ignored Launchplane-local `.env` file at
+   `~/.config/launchplane/local-operator.env`, containing only the documented
+   Launchplane operator environment keys.
+4. An ignored Launchplane-local JSON config file at
    `~/.config/launchplane/local-operator.json`, using the fake shape in
    `references/launchplane-operator.local.example.json`.
 

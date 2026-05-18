@@ -9,12 +9,12 @@ The helper lives at `scripts/launchplane-write-action.py`.
 
 ## Configuration
 
-The helper uses the private operator config source order from
-`operator-contract.md`:
+The helper uses this private operator config source order:
 
 1. `--config /path/to/local-operator.json`
 2. environment variables in the current process
-3. `~/.config/launchplane/local-operator.json`
+3. `~/.config/launchplane/local-operator.env`
+4. `~/.config/launchplane/local-operator.json`
 
 The committed example is fake and public-safe:
 
@@ -31,6 +31,22 @@ Real token values stay in private environment or secret-manager state. The
 helper never prints token values, request headers, cookies, raw request bodies,
 plaintext runtime values, secret plaintext, ciphertext, provider env dumps, or
 private API base URLs.
+
+When `--config` is supplied, it is explicit and the helper does not also load
+the default `.env` file. When no explicit JSON config is supplied, the helper may
+load `~/.config/launchplane/local-operator.env` for these keys only:
+`LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
+`LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
+`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`.
+
+For public-safe diagnostics, use:
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py operator-config-diagnostic
+```
+
+The diagnostic reports source presence, token presence, and which source won. It
+does not print token values, subjects, labels, URLs, headers, or request bodies.
 
 ## Exit Behavior
 
