@@ -342,8 +342,8 @@ def test_launchplane_write_action_helper_contract() -> None:
     precedence_summary = precedence_payload["summary"]
     rendered_precedence = json.dumps(precedence_payload)
     require(
-        precedence_summary["service_url_source"] == "environment",
-        "Current LAUNCHPLANE_OPERATOR_URL must win over JSON config and explicit .env",
+        precedence_summary["service_url_source"] == "json_config",
+        "Explicit --config service URL must win over ambient environment and explicit .env",
     )
     require(
         precedence_summary["token_source"] == "private_env",

@@ -32,9 +32,11 @@ helper never prints token values, request headers, cookies, raw request bodies,
 plaintext runtime values, secret plaintext, ciphertext, provider env dumps, or
 private API base URLs.
 
-When `--config` is supplied, it is explicit and the helper does not also load
-the default `.env` file. When no explicit JSON config is supplied, the helper may
-load `~/.config/launchplane/local-operator.env` for these keys only:
+When `--config` is supplied, its `service_url` is the explicit write target
+unless `--url` is also supplied. The helper does not also load the default `.env`
+file in that case, but it does honor an explicit `--env-config` for token,
+subject, and label values. When no explicit JSON config is supplied, the helper
+may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
 `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`.
