@@ -164,17 +164,14 @@ def load_operator_env(path: str | None = None) -> dict[str, str]:
 
 def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
     config = load_config(args.config)
-    env_config = {} if args.config else load_operator_env(getattr(args, "env_config", None))
-    if args.config:
-        service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
-    else:
-        service_url = (
-            args.url
-            or os.environ.get("LAUNCHPLANE_OPERATOR_URL")
-            or env_config.get("LAUNCHPLANE_OPERATOR_URL")
-            or config.get("service_url")
-            or ""
-        ).strip()
+    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env(None)
+    service_url = (
+        args.url
+        or os.environ.get("LAUNCHPLANE_OPERATOR_URL")
+        or env_config.get("LAUNCHPLANE_OPERATOR_URL")
+        or config.get("service_url")
+        or ""
+    ).strip()
     token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
     subject_env = (
         config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
@@ -192,7 +189,7 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
 
 def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
     config = load_config(args.config)
-    env_config = {} if args.config else load_operator_env(args.env_config)
+    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env(None)
     token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
     subject_env = (
         config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
@@ -201,10 +198,6 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
         config.get("operator_token_label_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
     ).strip()
     service_url_candidates = (
-        ("argument", bool(args.url)),
-        ("json_config", bool(config.get("service_url"))),
-        ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
-    ) if args.config else (
         ("argument", bool(args.url)),
         ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
         ("private_env", bool(env_config.get("LAUNCHPLANE_OPERATOR_URL"))),

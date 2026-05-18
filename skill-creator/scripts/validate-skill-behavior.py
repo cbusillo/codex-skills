@@ -296,6 +296,67 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper diagnostic must not render subject or service URL values",
     )
 
+    with tempfile.TemporaryDirectory() as tmp:
+        json_path = Path(tmp) / "local-operator.json"
+        env_path = Path(tmp) / "local-operator.env"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "service_url": "https://json-config.example.invalid",
+                    "operator_token_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
+                    "operator_subject_env": "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
+                    "operator_token_label_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env_path.write_text(
+            "LAUNCHPLANE_OPERATOR_URL=https://env-file.example.invalid\n"
+            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN=env-file-token-never-render\n",
+            encoding="utf-8",
+        )
+        precedence = subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "--config",
+                str(json_path),
+                "--env-config",
+                str(env_path),
+                "operator-config-diagnostic",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if not key.startswith("LAUNCHPLANE_")
+                },
+                "LAUNCHPLANE_OPERATOR_URL": "https://process-env.example.invalid",
+            },
+        )
+    require(precedence.returncode == 0, "Write-action helper diagnostic must accept --config with --env-config")
+    precedence_payload = json.loads(precedence.stdout)
+    precedence_summary = precedence_payload["summary"]
+    rendered_precedence = json.dumps(precedence_payload)
+    require(
+        precedence_summary["service_url_source"] == "environment",
+        "Current LAUNCHPLANE_OPERATOR_URL must win over JSON config and explicit .env",
+    )
+    require(
+        precedence_summary["token_source"] == "private_env",
+        "Explicit --env-config must supply token values even when --config is set",
+    )
+    require(
+        "process-env.example.invalid" not in rendered_precedence
+        and "json-config.example.invalid" not in rendered_precedence
+        and "env-file.example.invalid" not in rendered_precedence
+        and "env-file-token-never-render" not in rendered_precedence,
+        "Write-action helper precedence diagnostic must not render URL or token values",
+    )
+
     spec = importlib.util.spec_from_file_location("launchplane_write_action", helper)
     require(spec is not None and spec.loader is not None, "Write-action helper must be importable")
     module = importlib.util.module_from_spec(spec)
