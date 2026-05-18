@@ -147,14 +147,20 @@ FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "
 
 
 def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
+    labels = pr.get("labels")
+    if not isinstance(labels, list):
+        labels = []
     return {
         "number": pr.get("number"),
         "title": pr.get("title"),
         "state": pr.get("state"),
         "draft": pr.get("draft"),
+        "isDraft": pr.get("draft"),
         "merged": pr.get("merged"),
         "mergeable": pr.get("mergeable"),
         "mergeable_state": pr.get("mergeable_state"),
+        "mergeStateStatus": pr.get("mergeable_state"),
+        "labels": labels,
         "url": pr.get("html_url"),
         "baseRefName": (pr.get("base") or {}).get("ref"),
         "headRefName": (pr.get("head") or {}).get("ref"),

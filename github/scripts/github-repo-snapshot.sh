@@ -241,7 +241,7 @@ if [[ "$json_output" -eq 1 ]]; then
       if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
         capture_pr_helper_json view >"$tmpdir/current-pr.json"
       else
-        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
+        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
       fi
       capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
     else
