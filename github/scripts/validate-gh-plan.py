@@ -392,7 +392,11 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             check=True,
         )
         calls = log_path.read_text()
-    assert json.loads(view.stdout)["pr"]["number"] == 12
+    view_pr = json.loads(view.stdout)["pr"]
+    assert view_pr["number"] == 12
+    assert view_pr["labels"] == []
+    assert view_pr["isDraft"] is False
+    assert view_pr["mergeStateStatus"] == "clean"
     checks_summary = json.loads(checks.stdout)["summary"]
     assert checks_summary["combinedState"] is None
     assert checks_summary["combinedStateRaw"] == "success"
