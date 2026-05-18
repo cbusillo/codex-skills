@@ -32,18 +32,26 @@ current behavior, configuration, or operational policy.
 
 Use PRs for all non-trivial code changes.
 
+Use the bundled `gh-*` and `github-*` helper scripts first for GitHub work. The
+helpers are the agent-facing interface for this skill: they keep common flows
+ergonomic, normalize output for LLM consumption, protect Markdown/body
+formatting, centralize retry and auth behavior, and give us one controlled place
+to improve GitHub workflows. Reach for raw `gh` only when no helper covers the
+operation, and route those calls through `scripts/gh-with-env-token`.
+
 - **Branch Discipline**: Protect default, shared, release, and production
   branches. Create focused task branches before editing when currently on a
   protected branch.
 - **Merges & Stacks**: When the user approves a merge and does not specify the
   method, state that you are using a normal merge commit and run
-  `gh pr merge <pr> --merge`. Do not use `--squash` or `--rebase` unless the
-  user explicitly asks, repo policy requires it, or you ask and receive
-  confirmation. For stacked PRs, consider a rollup branch when merging each
-  layer would rerun expensive checks or create avoidable conflict churn.
+  `scripts/gh-with-env-token pr merge <pr> --merge` when no merge helper exists.
+  Do not use `--squash` or `--rebase` unless the user explicitly asks, repo
+  policy requires it, or you ask and receive confirmation. For stacked PRs,
+  consider a rollup branch when merging each layer would rerun expensive checks
+  or create avoidable conflict churn.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
-  working directory, run `gh pr create` from that repository or pass both
-  `--repo OWNER/REPO` and an explicit `--head` branch.
+  working directory, run `scripts/gh-with-env-token pr create` from that
+  repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
 - **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
   targeted JetBrains inspections on changed files or touched directories before
   pushing a branch or updating a PR whenever the repo has an IDE project
@@ -52,15 +60,15 @@ Use PRs for all non-trivial code changes.
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,
   `scripts/gh-comment` for issue and PR timeline comments, and
-  `gh pr review --body-file` for PR review feedback. Avoid unquoted heredocs
-  for Markdown bodies because shell command substitution runs inside backticks.
-- **Authentication**: Prefer bundled GitHub scripts and route ad hoc `gh`
-  calls through `scripts/gh-with-env-token` so `.env` / `CODEX_GITHUB_TOKEN`
-  auth overrides any exhausted inherited `GH_TOKEN`. If no automation token is
-  configured, the wrapper uses the active local `gh` account and warns on
-  stderr. Use `scripts/gh-with-env-token --print-auth-account ...` when the
-  acting account should be visible; it writes the account receipt to stderr so
-  JSON stdout remains parseable.
+  `scripts/gh-with-env-token pr review --body-file` for PR review feedback when
+  no review helper exists. Avoid unquoted heredocs for Markdown bodies because
+  shell command substitution runs inside backticks.
+- **Authentication**: The helpers own token selection, fallback behavior,
+  consistent warnings, and parseable output. If no automation token is
+  configured, `scripts/gh-with-env-token` uses the active local `gh` account and
+  warns on stderr. Use `scripts/gh-with-env-token --print-auth-account ...` when
+  the acting account should be visible; it writes the account receipt to stderr
+  so JSON stdout remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 
@@ -74,7 +82,8 @@ Use PRs for all non-trivial code changes.
 
 ## Tools & Scripts
 
-Always prefer the bundled scripts for structured state and safe formatting:
+Always prefer the bundled scripts for structured state, ergonomic workflows,
+consistent auth/retry behavior, and safe formatting:
 
 - `scripts/gh-plan.py`: Issue and Project management (see
   `references/cli-reference.md`).

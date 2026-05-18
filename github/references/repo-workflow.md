@@ -29,12 +29,18 @@ lists. Prefer `statusCheckRollup` for the active PR and branch-specific runs.
 If a deploy health endpoint reports a revision or tag, compare it with the
 merge commit, PR head, or branch SHA the task cares about.
 
+Use the bundled GitHub helpers before raw `gh`. They are intentionally shaped
+for agent use: stable command ergonomics, structured output, safer multiline
+body handling, centralized auth and retry behavior, and one maintained place to
+improve workflows. For raw PR, run, or review commands that do not yet have a
+dedicated helper, route through `gh-with-env-token`.
+
 Do not guess GitHub CLI JSON field names. If needed, ask `gh` for available
 fields before composing a large query:
 
 ```sh
-gh pr view <number> --repo OWNER/REPO --json 2>&1 | sed -n '/Available fields:/,$p'
-gh pr view <number> --repo OWNER/REPO --json number,title,url,comments,reviews,statusCheckRollup
+~/.code/skills/github/scripts/gh-with-env-token pr view <number> --repo OWNER/REPO --json 2>&1 | sed -n '/Available fields:/,$p'
+~/.code/skills/github/scripts/gh-with-env-token pr view <number> --repo OWNER/REPO --json number,title,url,comments,reviews,statusCheckRollup
 ```
 
 ## PR And Issue Workflow
@@ -112,9 +118,10 @@ inline threads before deciding what to change.
   proposed fix.
 - Ask before posting GitHub replies, resolving threads, or dismissing feedback
   unless the user explicitly asked to handle review comments end-to-end.
-- For issue and PR timeline comments, use `scripts/gh-comment` or
-  `--body-file`; never pass escaped `\n` through `--body`.
-- For PR review submissions, use `gh pr review --body-file`.
+- For issue and PR timeline comments, use `scripts/gh-comment`; never pass
+  escaped `\n` through `--body`.
+- For PR review submissions without a dedicated helper, use
+  `scripts/gh-with-env-token pr review --body-file`.
 
 If both review feedback and CI failures are present, address actionable review
 feedback first when the fix will create a new SHA.
