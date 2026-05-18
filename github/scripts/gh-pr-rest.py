@@ -67,15 +67,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
-    repo = resolve_repo(args.repo)
-    number = resolve_pr_number(repo, args.pr)
+    repo, number = resolve_pr(args.repo, args.pr)
     pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {"ok": True, "repo": repo, "pr": normalize_pr(pr)}
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
-    repo = resolve_repo(args.repo)
-    number = resolve_pr_number(repo, args.pr)
+    repo, number = resolve_pr(args.repo, args.pr)
     pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     sha = pr["head"]["sha"]
     check_runs = paged_rest_json("GET", f"/repos/{repo}/commits/{sha}/check-runs")
@@ -97,7 +95,7 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
             "statusCount": len(status_checks),
             "failingCount": len(failing) + len(failed_statuses),
             "pendingCount": len(pending) + len(pending_statuses),
-            "combinedState": combined.get("state"),
+            "combinedState": combined.get("state") if status_checks else None,
         },
         "checkRuns": checks,
         "statuses": status_checks,
@@ -105,8 +103,7 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
-    repo = resolve_repo(args.repo)
-    number = resolve_pr_number(repo, args.pr)
+    repo, number = resolve_pr(args.repo, args.pr)
     pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     payload: dict[str, Any] = {"merge_method": args.method, "sha": pr["head"]["sha"]}
     if args.commit_title:
@@ -201,11 +198,25 @@ def resolve_repo(explicit: Optional[str]) -> str:
     raise HelperError("Could not resolve repository; pass --repo OWNER/REPO")
 
 
+def resolve_pr(explicit_repo: Optional[str], value: Optional[str]) -> tuple[str, int]:
+    url_ref = parse_pr_url(value)
+    if url_ref:
+        return url_ref
+    repo = resolve_repo(explicit_repo)
+    return repo, resolve_pr_number(repo, value)
+
+
+def parse_pr_url(value: Optional[str]) -> tuple[str, int] | None:
+    if not value:
+        return None
+    match = re.search(r"^(?:https?://|git@)?[^/:]+[:/]([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)(?:[/?#].*)?$", value)
+    if not match:
+        return None
+    return f"{match.group(1)}/{match.group(2)}", int(match.group(3))
+
+
 def resolve_pr_number(repo: str, value: Optional[str]) -> int:
     if value:
-        match = re.search(r"/(?:pull|pulls)/(\d+)", value)
-        if match:
-            return int(match.group(1))
         if value.isdigit():
             return int(value)
         raise HelperError(f"Could not parse PR number: {value}")
@@ -238,15 +249,27 @@ def rest_json(
 
 def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
     separator = "&" if "?" in path else "?"
-    data = gh_json(["api", "--method", method, *API_VERSION_ARGS, f"{path}{separator}per_page=100"])
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        for key in ("check_runs", "statuses"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    return []
+    data = gh_json([
+        "api",
+        "--method",
+        method,
+        *API_VERSION_ARGS,
+        "--paginate",
+        "--slurp",
+        f"{path}{separator}per_page=100",
+    ])
+    pages = data if isinstance(data, list) else [data]
+    items: list[dict[str, Any]] = []
+    for page in pages:
+        if isinstance(page, list):
+            items.extend(item for item in page if isinstance(item, dict))
+            continue
+        if isinstance(page, dict):
+            for key in ("check_runs", "statuses"):
+                value = page.get(key)
+                if isinstance(value, list):
+                    items.extend(item for item in value if isinstance(item, dict))
+    return items
 
 
 def delete_ref(repo: str, ref: str) -> dict[str, Any]:

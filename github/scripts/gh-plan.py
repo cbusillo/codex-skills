@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -60,8 +60,26 @@ class PlanError(Exception):
     pass
 
 
-def die(message: str, *, detail: str | None = None, code: int = 1) -> None:
+class ClassifiedPlanError(PlanError):
+    def __init__(self, code: str, message: str, *, retry_at: Optional[int] = None):
+        super().__init__(message)
+        self.code = code
+        self.retry_at = retry_at
+
+
+def die(
+    message: str,
+    *,
+    detail: str | None = None,
+    code: int = 1,
+    error_code: str | None = None,
+    retry_at: int | None = None,
+) -> None:
     payload = {"ok": False, "error": message}
+    if error_code:
+        payload["error_code"] = error_code
+    if retry_at is not None:
+        payload["retry_at"] = retry_at
     if detail:
         payload["detail"] = detail.strip()
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -160,6 +178,60 @@ def is_graphql_rate_limited(stderr: str) -> bool:
     return "rate limit" in lowered and (
         "graphql" in lowered or "api rate" in lowered or "secondary rate" in lowered
     )
+
+
+PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}
+GRAPHQL_PREFLIGHT_MINIMUM = 25
+
+
+def classify_project_error(message: str) -> str:
+    lowered = message.lower()
+    if "rate limit" in lowered or "graphql" in lowered or "secondary rate" in lowered:
+        return "rate_limited"
+    if "not in project" in lowered:
+        return "not_in_project"
+    if "field not found" in lowered or "unknown option" in lowered or "no such field" in lowered:
+        return "field_or_option_missing"
+    if "could not resolve" in lowered or "not found" in lowered or "lookup" in lowered:
+        return "lookup_stale"
+    return "project_update_failed"
+
+
+def project_error(message: str, *, retry_at: int | None = None) -> ClassifiedPlanError:
+    return ClassifiedPlanError(classify_project_error(message), message, retry_at=retry_at)
+
+
+def project_failure_payload(exc: PlanError) -> dict[str, Any]:
+    payload: dict[str, Any] = {"error": str(exc), "error_code": classify_project_error(str(exc))}
+    if isinstance(exc, ClassifiedPlanError):
+        payload["error_code"] = exc.code
+        if exc.retry_at is not None:
+            payload["retry_at"] = exc.retry_at
+    return payload
+
+
+def ensure_graphql_budget(*, recoverable: bool = False, minimum: int = GRAPHQL_PREFLIGHT_MINIMUM) -> None:
+    try:
+        actor, data = gh_json(["api", *API_VERSION_ARGS, "rate_limit"], recoverable=recoverable)
+    except PlanError as exc:
+        if isinstance(exc, ClassifiedPlanError):
+            raise
+        if recoverable:
+            raise project_error(f"rate_limit preflight failed: {exc}") from exc
+        raise
+    del actor
+    resources = data.get("resources") if isinstance(data, dict) else None
+    graphql = resources.get("graphql") if isinstance(resources, dict) else None
+    if not isinstance(graphql, dict):
+        return
+    remaining = graphql.get("remaining")
+    reset = graphql.get("reset")
+    if isinstance(remaining, int) and remaining < minimum:
+        raise ClassifiedPlanError(
+            "rate_limited",
+            f"GraphQL quota too low for Project operation: remaining={remaining}, minimum={minimum}",
+            retry_at=reset if isinstance(reset, int) else None,
+        )
 
 
 def gh_json(
@@ -669,7 +741,10 @@ def cmd_create(args: argparse.Namespace) -> None:
         try:
             owner = project_config.get("owner") or repo.split("/", 1)[0]
             _, number, _ = resolve_project(owner, project, recoverable=True)
-            run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"], prefer_active=True, recoverable=True)
+            ensure_graphql_budget(recoverable=True)
+            _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"], prefer_active=True, recoverable=True)
+            added_item = json.loads(added_stdout) if added_stdout.strip() else {}
+            added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
             project_fields_set = set_project_fields(
                 owner=owner,
                 project_ref=project,
@@ -678,10 +753,11 @@ def cmd_create(args: argparse.Namespace) -> None:
                 focus=args.focus,
                 manager=args.manager or manager_for_repo(config, repo),
                 finish_line=args.finish_line,
+                item_id=added_item_id,
                 recoverable=True,
             )
         except PlanError as exc:
-            project_fields_set = {"error": str(exc)}
+            project_fields_set = project_failure_payload(exc)
     emit({
         "ok": True,
         "actor": actor,
@@ -773,6 +849,10 @@ def cmd_deps(args: argparse.Namespace) -> None:
 def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any] | None]:
     if title_or_number.isdigit():
         return "unknown", int(title_or_number), None
+    cache_key = ("project", owner, title_or_number)
+    if cache_key in PROJECT_CACHE:
+        return PROJECT_CACHE[cache_key]
+    ensure_graphql_budget(recoverable=recoverable)
     actor, data = gh_json(
         ["project", "list", "--owner", owner, "--format", "json", "--limit", "100"],
         prefer_active=True,
@@ -781,26 +861,46 @@ def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = Fal
     projects = data.get("projects", data) if isinstance(data, dict) else data
     for item in projects or []:
         if item.get("title") == title_or_number:
-            return actor, int(item.get("number")), item
-    raise PlanError(f"Project not found for {owner}: {title_or_number}")
+            result = (actor, int(item.get("number")), item)
+            PROJECT_CACHE[cache_key] = result
+            PROJECT_CACHE[("project", owner, str(result[1]))] = result
+            return result
+    raise project_error(f"Project not found for {owner}: {title_or_number}")
 
 
 def project_meta(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any]]:
     actor, number, project_data = resolve_project(owner, title_or_number, recoverable=recoverable)
     if project_data:
         return actor, number, project_data
+    cache_key = ("project", owner, str(number))
+    if cache_key in PROJECT_CACHE and PROJECT_CACHE[cache_key][2]:
+        return PROJECT_CACHE[cache_key]
+    ensure_graphql_budget(recoverable=recoverable)
     actor, data = gh_json(["project", "view", str(number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
+    PROJECT_CACHE[cache_key] = (actor, number, data)
     return actor, number, data
 
 
 def project_fields(owner: str, project_number: int, *, recoverable: bool = False) -> dict[str, dict[str, Any]]:
+    cache_key = ("fields", owner, project_number)
+    if cache_key in PROJECT_CACHE:
+        return PROJECT_CACHE[cache_key]
+    ensure_graphql_budget(recoverable=recoverable)
     _, data = gh_json(["project", "field-list", str(project_number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
-    return {item["name"]: item for item in data.get("fields", [])}
+    fields = {item["name"]: item for item in data.get("fields", [])}
+    PROJECT_CACHE[cache_key] = fields
+    return fields
 
 
 def project_items(owner: str, project_number: int, *, recoverable: bool = False) -> list[dict[str, Any]]:
+    cache_key = ("items", owner, project_number)
+    if cache_key in PROJECT_CACHE:
+        return PROJECT_CACHE[cache_key]
+    ensure_graphql_budget(recoverable=recoverable)
     _, data = gh_json(["project", "item-list", str(project_number), "--owner", owner, "--format", "json", "--limit", "200"], prefer_active=True, recoverable=recoverable)
-    return data.get("items", [])
+    items = data.get("items", [])
+    PROJECT_CACHE[cache_key] = items
+    return items
 
 
 def find_project_item(
@@ -808,17 +908,21 @@ def find_project_item(
     project_number: int,
     issue_url: str,
     *,
+    item_id: str | None = None,
     recoverable: bool = False,
     attempts: int = 3,
 ) -> dict[str, Any]:
+    if item_id:
+        return {"id": item_id}
     for attempt in range(attempts):
         for item in project_items(owner, project_number, recoverable=recoverable):
             content = item.get("content") or {}
             if content.get("url") == issue_url:
                 return item
         if attempt + 1 < attempts:
+            PROJECT_CACHE.pop(("items", owner, project_number), None)
             time.sleep(1)
-    raise PlanError(f"Issue is not in project {owner}/{project_number}: {issue_url}")
+    raise project_error(f"Issue is not in project {owner}/{project_number}: {issue_url}")
 
 
 def set_project_field(
@@ -846,12 +950,17 @@ def set_project_field(
     if field.get("type") == "ProjectV2SingleSelectField":
         option = next((opt for opt in field.get("options", []) if opt.get("name") == value), None)
         if not option:
-            raise PlanError(f"Unknown option for {field['name']}: {value}")
+            raise project_error(f"Unknown option for {field['name']}: {value}")
         args.extend(["--single-select-option-id", option["id"]])
     else:
         args.extend(["--text", value])
-    actor, _, _ = run_raw(args, prefer_active=True, recoverable=recoverable)
-    return actor
+    try:
+        actor, _, _ = run_raw(args, prefer_active=True, recoverable=recoverable)
+        return actor
+    except PlanError as exc:
+        if isinstance(exc, ClassifiedPlanError):
+            raise
+        raise project_error(str(exc)) from exc
 
 
 def clear_project_field(
@@ -861,20 +970,25 @@ def clear_project_field(
     field: dict[str, Any],
     recoverable: bool = False,
 ) -> str:
-    actor, _, _ = run_raw([
-        "project",
-        "item-edit",
-        "--id",
-        item["id"],
-        "--project-id",
-        project["id"],
-        "--field-id",
-        field["id"],
-        "--clear",
-        "--format",
-        "json",
-    ], prefer_active=True, recoverable=recoverable)
-    return actor
+    try:
+        actor, _, _ = run_raw([
+            "project",
+            "item-edit",
+            "--id",
+            item["id"],
+            "--project-id",
+            project["id"],
+            "--field-id",
+            field["id"],
+            "--clear",
+            "--format",
+            "json",
+        ], prefer_active=True, recoverable=recoverable)
+        return actor
+    except PlanError as exc:
+        if isinstance(exc, ClassifiedPlanError):
+            raise
+        raise project_error(str(exc)) from exc
 
 
 def set_project_fields(
@@ -886,11 +1000,12 @@ def set_project_fields(
     focus: str | None = None,
     manager: str | None = None,
     finish_line: str | None = None,
+    item_id: str | None = None,
     recoverable: bool = False,
 ) -> dict[str, Any]:
     actor, project_number, project = project_meta(owner, project_ref, recoverable=recoverable)
     fields = project_fields(owner, project_number, recoverable=recoverable)
-    item = find_project_item(owner, project_number, issue_url, recoverable=recoverable)
+    item = find_project_item(owner, project_number, issue_url, item_id=item_id, recoverable=recoverable)
     field_names = config.get("project_fields") or {}
     updates = {
         field_names.get("focus", "Focus"): focus,
@@ -903,7 +1018,7 @@ def set_project_fields(
             continue
         field = fields.get(field_name)
         if not field:
-            raise PlanError(f"Project field not found: {field_name}")
+            raise project_error(f"Project field not found: {field_name}")
         actor = set_project_field(owner=owner, project=project, project_number=project_number, item=item, field=field, value=value, recoverable=recoverable)
         updated[field_name] = value
     return {"actor": actor, "project": project.get("title"), "updated": updated}
@@ -919,6 +1034,7 @@ def cmd_project_add(args: argparse.Namespace) -> None:
     if not project:
         raise PlanError("Pass --project or set planning.projects.default_project")
     _, number, project_data = resolve_project(owner, project, recoverable=True)
+    ensure_graphql_budget(recoverable=True)
     actor, data = gh_json([
         "project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"
     ], prefer_active=True, recoverable=True)
@@ -942,6 +1058,7 @@ def cmd_project_set(args: argparse.Namespace) -> None:
         focus=args.focus,
         manager=args.manager,
         finish_line=args.finish_line,
+        item_id=args.item_id,
         recoverable=True,
     )
     emit({"ok": True, **result})
@@ -1002,7 +1119,7 @@ def cmd_close(args: argparse.Namespace) -> None:
                 updated["Focus"] = None
             project_result = {"project": project_data.get("title"), "updated": updated}
         except PlanError as exc:
-            project_result = {"error": str(exc)}
+            project_result = project_failure_payload(exc)
 
     emit({
         "ok": True,
@@ -1116,6 +1233,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"])
     p.add_argument("--manager")
     p.add_argument("--finish-line")
+    p.add_argument("--item-id", help="Project item id returned by project-add; avoids rediscovery")
     p.set_defaults(func=cmd_project_set)
 
     p = sub.add_parser("project-list", help="List Projects for an owner")
@@ -1135,8 +1253,10 @@ def main() -> None:
     args = parser.parse_args()
     try:
         args.func(args)
+    except ClassifiedPlanError as exc:
+        die(str(exc), error_code=exc.code, retry_at=exc.retry_at)
     except PlanError as exc:
-        die(str(exc))
+        die(str(exc), error_code=classify_project_error(str(exc)))
     except KeyboardInterrupt:
         die("Interrupted", code=130)
 
