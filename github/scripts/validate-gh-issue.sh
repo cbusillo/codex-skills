@@ -154,6 +154,12 @@ cat >"$tmpdir/gh-noisy-json" <<'EOF'
 set -euo pipefail
 printf 'warning: automation gh token failed; retrying with active gh auth\n' >&2
 case "${1:-} ${2:-}" in
+	'api --method')
+		case "$*" in
+			*'/pulls?state=open'*) printf '[[{"number":1,"title":"open"}]]\n' ;;
+			*) printf '[]\n' ;;
+		esac
+		;;
 	'pr view') printf '{"number":123,"title":"demo"}\n' ;;
 	'pr list') printf '[{"number":1,"title":"open"}]\n' ;;
 	'issue list') printf '[{"number":2,"title":"issue"}]\n' ;;

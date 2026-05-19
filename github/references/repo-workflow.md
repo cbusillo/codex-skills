@@ -26,17 +26,21 @@ Summarize only actionable state:
 
 If the current branch has a PR, inspect that PR before relying on repo-wide
 lists. Prefer the PR helper for repeated PR metadata, check, and
-merge-readiness reads so normal agent polling lets one maintained script manage
-transport choice, quota pressure, and degraded output:
+merge-readiness reads. Normal agent polling should let one maintained script
+manage REST-first defaults, quota pressure, and degraded output:
 
 ```sh
 ~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO view <pr-or-url>
+~/.code/skills/github/scripts/gh-pr.py \
+  --repo OWNER/REPO list --state open --limit 20
 ~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO checks <pr-or-url>
 ~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO rate-limit
 ```
 
-Use GraphQL-backed `gh pr view --json statusCheckRollup` only when the PR helper
-does not expose the data you need.
+The PR helper is REST-first for normal orientation. Its snapshot-compatible
+`reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
+ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
+--json statusCheckRollup,reviewDecision` only when that exact data is needed.
 
 If a deploy health endpoint reports a revision or tag, compare it with the
 merge commit, PR head, or branch SHA the task cares about.

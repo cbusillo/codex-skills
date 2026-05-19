@@ -13,6 +13,7 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 ### PRs And Rate Limits
 
 - `../github/scripts/gh-pr.py view <pr>`: Show PR metadata.
+- `../github/scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
 - `../github/scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `../github/scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
@@ -20,10 +21,12 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
   buckets.
 
 Use this helper for high-frequency PR polling, check polling, merge readiness,
-and merge execution. Ask for the PR operation you need; the helper owns
-REST/GraphQL transport choice, quota-aware fallbacks, and degraded output.
-Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues, and dependency
-operations for data the helper cannot yet provide cleanly.
+and merge execution. Ask for the PR operation you need; the helper is
+REST-first for normal PR orientation and owns quota-aware degraded output.
+GraphQL-only fields such as `reviewDecision` and `statusCheckRollup` are
+intentionally nullable in helper output unless a future command explicitly opts
+into enrichment. Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues,
+and dependency operations for data the helper cannot yet provide cleanly.
 
 ### Orientation
 

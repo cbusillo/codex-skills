@@ -89,8 +89,9 @@ consistent auth/retry behavior, and safe formatting:
   `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
-- `scripts/gh-pr.py`: PR view, checks, merge, and rate-limit diagnostics. The
-  helper owns REST/GraphQL transport choice and degraded behavior.
+- `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
+  diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
+  fields remain nullable unless a future command explicitly opts into them.
 - `scripts/gh-issue`: Safe multiline issue create/edit bodies from stdin.
 - `scripts/gh-comment`: Safe multiline commenting.
 

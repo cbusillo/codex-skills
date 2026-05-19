@@ -55,8 +55,8 @@ Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 
 - `../github/scripts/gh-plan.py` for compact planning issue and Project operations.
 - `../github/scripts/gh-pr.py` for PR status, checks, merge, and rate-limit
-  reads when planning work needs PR evidence. The helper owns transport and
-  quota-aware degraded behavior.
+  reads when planning work needs PR evidence. The helper is REST-first for
+  normal PR orientation and owns quota-aware degraded behavior.
 - `../github/scripts/gh-issue` and `../github/scripts/gh-comment` for safe
   multiline writes.
 - `../github/references/issue-templates.md` and

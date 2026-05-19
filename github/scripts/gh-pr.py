@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
     p.set_defaults(func=cmd_view)
 
+    p = sub.add_parser("list", help="List pull requests via REST.")
+    p.add_argument("--state", choices=("open", "closed", "all"), default="open")
+    p.add_argument("--limit", type=int, default=20, help="Maximum PRs to return.")
+    p.set_defaults(func=cmd_list)
+
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
     p.set_defaults(func=cmd_checks)
@@ -70,6 +75,13 @@ def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {"ok": True, "repo": repo, "pr": normalize_pr(pr)}
+
+
+def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
+    repo = resolve_repo(args.repo)
+    pulls = paged_rest_json("GET", f"/repos/{repo}/pulls?state={args.state}")
+    limit = max(args.limit, 0)
+    return {"ok": True, "repo": repo, "pullRequests": [normalize_pr(item) for item in pulls[:limit]]}
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
