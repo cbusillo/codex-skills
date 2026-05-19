@@ -145,11 +145,23 @@ def cmd_rate_limit(_args: argparse.Namespace) -> dict[str, Any]:
 
 FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}
 
+MERGE_STATE_STATUS = {
+    "behind": "BEHIND",
+    "blocked": "BLOCKED",
+    "clean": "CLEAN",
+    "dirty": "DIRTY",
+    "draft": "DRAFT",
+    "has_hooks": "HAS_HOOKS",
+    "unknown": "UNKNOWN",
+    "unstable": "UNSTABLE",
+}
+
 
 def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
     labels = pr.get("labels")
     if not isinstance(labels, list):
         labels = []
+    mergeable_state = pr.get("mergeable_state")
     return {
         "number": pr.get("number"),
         "title": pr.get("title"),
@@ -158,8 +170,10 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
         "isDraft": pr.get("draft"),
         "merged": pr.get("merged"),
         "mergeable": pr.get("mergeable"),
-        "mergeable_state": pr.get("mergeable_state"),
-        "mergeStateStatus": pr.get("mergeable_state"),
+        "mergeable_state": mergeable_state,
+        "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,
+        "reviewDecision": pr.get("reviewDecision"),
+        "statusCheckRollup": pr.get("statusCheckRollup"),
         "labels": labels,
         "url": pr.get("html_url"),
         "baseRefName": (pr.get("base") or {}).get("ref"),

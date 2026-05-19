@@ -396,7 +396,9 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert view_pr["number"] == 12
     assert view_pr["labels"] == []
     assert view_pr["isDraft"] is False
-    assert view_pr["mergeStateStatus"] == "clean"
+    assert view_pr["mergeStateStatus"] == "CLEAN"
+    assert "reviewDecision" in view_pr and view_pr["reviewDecision"] is None
+    assert "statusCheckRollup" in view_pr and view_pr["statusCheckRollup"] is None
     checks_summary = json.loads(checks.stdout)["summary"]
     assert checks_summary["combinedState"] is None
     assert checks_summary["combinedStateRaw"] == "success"
