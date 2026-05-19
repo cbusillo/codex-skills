@@ -79,9 +79,9 @@ def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
     repo = resolve_repo(args.repo)
-    pulls = paged_rest_json("GET", f"/repos/{repo}/pulls?state={args.state}")
     limit = max(args.limit, 0)
-    return {"ok": True, "repo": repo, "pullRequests": [normalize_pr(item) for item in pulls[:limit]]}
+    pulls = limited_paged_rest_json("GET", f"/repos/{repo}/pulls?state={args.state}", limit)
+    return {"ok": True, "repo": repo, "pullRequests": [normalize_pr(item) for item in pulls]}
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
@@ -174,13 +174,16 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(labels, list):
         labels = []
     mergeable_state = pr.get("mergeable_state")
+    merged = pr.get("merged")
+    if merged is None and pr.get("merged_at"):
+        merged = True
     return {
         "number": pr.get("number"),
         "title": pr.get("title"),
         "state": pr.get("state"),
         "draft": pr.get("draft"),
         "isDraft": pr.get("draft"),
-        "merged": pr.get("merged"),
+        "merged": merged,
         "mergeable": pr.get("mergeable"),
         "mergeable_state": mergeable_state,
         "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,
@@ -283,6 +286,16 @@ def rest_json(
 
 
 def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
+    return collect_paged_rest_json(method, path, limit=None, per_page=100)
+
+
+def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    return collect_paged_rest_json(method, path, limit=limit, per_page=min(max(limit, 1), 100))
+
+
+def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per_page: int) -> list[dict[str, Any]]:
     separator = "&" if "?" in path else "?"
     data = gh_json([
         "api",
@@ -291,20 +304,24 @@ def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
         *API_VERSION_ARGS,
         "--paginate",
         "--slurp",
-        f"{path}{separator}per_page=100",
+        f"{path}{separator}per_page={per_page}",
     ])
     pages = data if isinstance(data, list) else [data]
     items: list[dict[str, Any]] = []
     for page in pages:
         if isinstance(page, list):
             items.extend(item for item in page if isinstance(item, dict))
+            if limit is not None and len(items) >= limit:
+                return items[:limit]
             continue
         if isinstance(page, dict):
             for key in ("check_runs", "statuses"):
                 value = page.get(key)
                 if isinstance(value, list):
                     items.extend(item for item in value if isinstance(item, dict))
-    return items
+                    if limit is not None and len(items) >= limit:
+                        return items[:limit]
+    return items if limit is None else items[:limit]
 
 
 def delete_ref(repo: str, ref: str) -> dict[str, Any]:
