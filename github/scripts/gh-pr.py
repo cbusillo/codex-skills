@@ -292,7 +292,17 @@ def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
 def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
-    return collect_paged_rest_json(method, path, limit=limit, per_page=min(max(limit, 1), 100))
+    return collect_single_rest_page(method, path, per_page=min(max(limit, 1), 100))[:limit]
+
+
+def collect_single_rest_page(method: str, path: str, *, per_page: int) -> list[dict[str, Any]]:
+    separator = "&" if "?" in path else "?"
+    data = gh_json(["api", "--method", method, *API_VERSION_ARGS, f"{path}{separator}per_page={per_page}"])
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
 
 
 def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per_page: int) -> list[dict[str, Any]]:

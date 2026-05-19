@@ -156,7 +156,7 @@ printf 'warning: automation gh token failed; retrying with active gh auth\n' >&2
 case "${1:-} ${2:-}" in
 	'api --method')
 		case "$*" in
-			*'/pulls?state=open'*) printf '[[{"number":1,"title":"open"}]]\n' ;;
+			*'/pulls?state=open'*) printf '[{"number":1,"title":"open"}]\n' ;;
 			*) printf '[]\n' ;;
 		esac
 		;;
