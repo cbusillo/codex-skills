@@ -453,7 +453,7 @@ def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
             "    *'per_page=20&page=1'*) printf '[{\"number\":20,\"title\":\"small\"}]\\n' ;;\n"
             "    *'per_page=100&page=1'*) emit_page 1 100 ;;\n"
             "    *'per_page=100&page=2'*) emit_page 101 100 ;;\n"
-            "    *'per_page=50&page=3'*) emit_page 201 50 ;;\n"
+            "    *'per_page=100&page=3'*) emit_page 201 100 ;;\n"
             "    *) exit 2 ;;\n"
             "  esac\n"
             "else\n"
@@ -486,7 +486,7 @@ def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
     assert any(re.search(r"per_page=20&page=1", line) for line in list_calls)
     assert any(re.search(r"per_page=100&page=1", line) for line in list_calls)
     assert any(re.search(r"per_page=100&page=2", line) for line in list_calls)
-    assert any(re.search(r"per_page=50&page=3", line) for line in list_calls)
+    assert any(re.search(r"per_page=100&page=3", line) for line in list_calls)
     assert "--paginate" not in calls
     assert "graphql" not in calls.lower()
 
