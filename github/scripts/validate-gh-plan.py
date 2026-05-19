@@ -341,7 +341,9 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[[{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}]]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
             "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
@@ -361,6 +363,14 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
         view = REAL_SUBPROCESS_RUN(
             [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        list_result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "20"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -399,6 +409,12 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert view_pr["mergeStateStatus"] == "CLEAN"
     assert "reviewDecision" in view_pr and view_pr["reviewDecision"] is None
     assert "statusCheckRollup" in view_pr and view_pr["statusCheckRollup"] is None
+    list_prs = json.loads(list_result.stdout)["pullRequests"]
+    assert len(list_prs) == 1
+    assert list_prs[0]["number"] == 12
+    assert list_prs[0]["mergeStateStatus"] == "CLEAN"
+    assert "reviewDecision" in list_prs[0] and list_prs[0]["reviewDecision"] is None
+    assert "statusCheckRollup" in list_prs[0] and list_prs[0]["statusCheckRollup"] is None
     checks_summary = json.loads(checks.stdout)["summary"]
     assert checks_summary["combinedState"] is None
     assert checks_summary["combinedStateRaw"] == "success"
@@ -406,6 +422,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert json.loads(merge.stdout)["merge"]["merged"] is True
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
+    assert "/repos/owner/repo/pulls?state=open" in calls
     assert "/repos/owner/repo/pulls/12/merge" in calls
     assert "graphql" not in calls.lower()
 

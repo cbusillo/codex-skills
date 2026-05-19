@@ -132,7 +132,7 @@ capture_pr_helper_json() {
   stderr="$(mktemp)"
   cleanup_paths+=("$stdout" "$stderr")
   if GH_PR_GH="$gh_bin" "$pr_helper" "$@" >"$stdout" 2>"$stderr"; then
-    jq 'if type == "object" and has("pr") then .pr else . end' "$stdout"
+    jq 'if type == "object" and has("pr") then .pr elif type == "object" and has("pullRequests") then .pullRequests else . end' "$stdout"
     return
   fi
   status=$?
@@ -241,14 +241,18 @@ if [[ "$json_output" -eq 1 ]]; then
       if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
         capture_pr_helper_json view >"$tmpdir/current-pr.json"
       else
-        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
+        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
       fi
       capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
     else
       jq -n 'null' >"$tmpdir/current-pr.json"
       jq -n '[]' >"$tmpdir/branch-runs.json"
     fi
-    capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,labels,url >"$tmpdir/open-prs.json"
+    if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
+      capture_pr_helper_json list --state open --limit 20 >"$tmpdir/open-prs.json"
+    else
+      capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,headRefName,baseRefName,labels,url >"$tmpdir/open-prs.json"
+    fi
     capture_gh_json "$gh_bin" issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
     capture_gh_json "$gh_bin" run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
   else
@@ -340,16 +344,20 @@ fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
-  if [[ -n "$current_branch" ]] && [[ -x "$pr_helper" ]] && "$pr_helper" view 2>/dev/null; then
+  if [[ -n "$current_branch" ]] && [[ -x "$pr_helper" ]] && GH_PR_GH="$gh_bin" "$pr_helper" view 2>/dev/null; then
     :
-  elif [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,mergeStateStatus,headRefName,baseRefName,headRefOid,labels,url 2>/dev/null; then
+  elif [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url 2>/dev/null; then
     :
   else
     echo "no pull request associated with the current branch"
   fi
 
   section "Open Pull Requests"
-  run_or_note "gh pr list" "$gh_bin" pr list --state open --limit 20
+  if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
+    run_or_note "gh-pr list" env GH_PR_GH="$gh_bin" "$pr_helper" list --state open --limit 20
+  else
+    run_or_note "gh pr list" "$gh_bin" pr list --state open --limit 20
+  fi
 
   section "Open Issues"
   run_or_note "gh issue list" "$gh_bin" issue list --state open --limit 30
