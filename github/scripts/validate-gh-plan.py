@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -430,6 +431,66 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert "graphql" not in calls.lower()
 
 
+def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'--paginate'* ]]; then exit 2; fi\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  emit_page() { python3 - \"$1\" \"$2\" <<'PY'\n"
+            "import json, sys\n"
+            "start = int(sys.argv[1])\n"
+            "count = int(sys.argv[2])\n"
+            "print(json.dumps([{\"number\": start + index, \"title\": f\"pr {start + index}\"} for index in range(count)]))\n"
+            "PY\n"
+            "  }\n"
+            "  case \"$*\" in\n"
+            "    *'per_page=20&page=1'*) printf '[{\"number\":20,\"title\":\"small\"}]\\n' ;;\n"
+            "    *'per_page=100&page=1'*) emit_page 1 100 ;;\n"
+            "    *'per_page=100&page=2'*) emit_page 101 100 ;;\n"
+            "    *'per_page=50&page=3'*) emit_page 201 50 ;;\n"
+            "    *) exit 2 ;;\n"
+            "  esac\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
+        small = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "20"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        large = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "250"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+    assert [item["number"] for item in json.loads(small.stdout)["pullRequests"]] == [20]
+    assert [item["number"] for item in json.loads(large.stdout)["pullRequests"]] == list(range(1, 251))
+    list_calls = [line for line in calls.splitlines() if "/repos/owner/repo/pulls?state=open" in line]
+    assert len(list_calls) == 4
+    assert any(re.search(r"per_page=20&page=1", line) for line in list_calls)
+    assert any(re.search(r"per_page=100&page=1", line) for line in list_calls)
+    assert any(re.search(r"per_page=100&page=2", line) for line in list_calls)
+    assert any(re.search(r"per_page=50&page=3", line) for line in list_calls)
+    assert "--paginate" not in calls
+    assert "graphql" not in calls.lower()
+
+
 def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -618,6 +679,7 @@ def main() -> None:
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
+        test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_accepts_enterprise_pr_urls,
