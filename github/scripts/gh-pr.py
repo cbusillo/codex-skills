@@ -14,6 +14,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.parse
 from typing import Any, Optional, Tuple
 
 
@@ -292,17 +293,33 @@ def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
 def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
-    return collect_single_rest_page(method, path, per_page=min(max(limit, 1), 100))[:limit]
+    items: list[dict[str, Any]] = []
+    page = 1
+    while len(items) < limit:
+        remaining = limit - len(items)
+        per_page = min(max(remaining, 1), 100)
+        page_items = collect_single_rest_page(method, path, per_page=per_page, page=page)
+        if not page_items:
+            break
+        items.extend(page_items)
+        if len(page_items) < per_page:
+            break
+        page += 1
+    return items[:limit]
 
 
-def collect_single_rest_page(method: str, path: str, *, per_page: int) -> list[dict[str, Any]]:
-    separator = "&" if "?" in path else "?"
-    data = gh_json(["api", "--method", method, *API_VERSION_ARGS, f"{path}{separator}per_page={per_page}"])
+def collect_single_rest_page(method: str, path: str, *, per_page: int, page: int) -> list[dict[str, Any]]:
+    data = gh_json(["api", "--method", method, *API_VERSION_ARGS, path_with_query(path, {"per_page": per_page, "page": page})])
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
         return [data]
     return []
+
+
+def path_with_query(path: str, params: dict[str, Any]) -> str:
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}{urllib.parse.urlencode(params)}"
 
 
 def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per_page: int) -> list[dict[str, Any]]:
