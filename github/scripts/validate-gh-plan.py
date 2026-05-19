@@ -342,7 +342,8 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "set -euo pipefail\n"
             "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
-            "  printf '[[{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}]]\\n'\n"
+            "  if [[ \"$*\" != *'per_page=20'* ]]; then exit 2; fi\n"
+            "  printf '[[{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"merged_at\":\"2026-05-19T01:23:52Z\",\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}]]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
             "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -412,6 +413,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     list_prs = json.loads(list_result.stdout)["pullRequests"]
     assert len(list_prs) == 1
     assert list_prs[0]["number"] == 12
+    assert list_prs[0]["merged"] is True
     assert list_prs[0]["mergeStateStatus"] == "CLEAN"
     assert "reviewDecision" in list_prs[0] and list_prs[0]["reviewDecision"] is None
     assert "statusCheckRollup" in list_prs[0] and list_prs[0]["statusCheckRollup"] is None
