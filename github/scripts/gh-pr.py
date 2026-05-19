@@ -295,9 +295,8 @@ def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str
         return []
     items: list[dict[str, Any]] = []
     page = 1
+    per_page = min(max(limit, 1), 100)
     while len(items) < limit:
-        remaining = limit - len(items)
-        per_page = min(max(remaining, 1), 100)
         page_items = collect_single_rest_page(method, path, per_page=per_page, page=page)
         if not page_items:
             break
