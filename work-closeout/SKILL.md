@@ -158,6 +158,9 @@ when that improves continuity.
 - Preserve unrelated user changes.
 - Do not run destructive git commands.
 - Do not force-delete branches or worktrees.
+- When the user asks to delete or remove a worktree, first preserve or confirm
+  disposal of any uncommitted changes. Removing a worktree is not approval to
+  lose its branch or local edits.
 - Use `github` for PR-backed branch/worktree cleanup and GitHub
   state.
 - After merged PRs, include relevant post-merge Actions and GitHub

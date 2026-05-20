@@ -97,6 +97,12 @@ For second-pass or implementation-prep work, convert the accepted design into
 concrete UI tasks, preserve backend/API constraints, and note any intentional
 departures from the draft in `Decisions`.
 
+When the user has asked to read or prepare from a design brief and then
+explicitly says to implement it, start coding, or move to implementation, move
+into the work instead of asking for another confirmation unless a real blocker
+or scope ambiguity remains. Do not treat a bare "go" or "go ahead" as
+implementation approval by itself.
+
 ## Consuming Returned Design
 
 Do not blindly trust returned UI/design output.
@@ -139,9 +145,11 @@ issue.
 4. Add the design request or critique prompt to the issue or an issue comment.
 5. Evaluate returned design against acceptance criteria, constraints, and
    required states.
-6. Implement when the user asks for implementation directly, when the accepted
-   direction is already captured, or after an explicitly requested external
-   design pass has been accepted.
+6. Implement when the user explicitly asks for implementation, when the
+   accepted direction is already captured and execution is the requested next
+   step, or after an explicitly requested external design pass has been
+   accepted. Do not treat a bare "go" or "go ahead" as sufficient approval to
+   switch into implementation.
 7. Validate with `browser-ui-review` across relevant interactions and viewports.
 8. Update the issue with accepted decisions, evidence, PR links, and remaining
    work before closeout.
