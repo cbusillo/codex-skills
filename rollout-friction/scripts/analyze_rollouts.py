@@ -217,18 +217,30 @@ def parse_args() -> argparse.Namespace:
 
 
 def iter_candidate_files(paths: list[Path], max_files: int) -> list[Path]:
-    candidates: list[Path] = []
+    explicit_files: list[Path] = []
+    discovered_files: list[Path] = []
     for path in paths:
         expanded = path.expanduser()
         if expanded.is_file():
-            candidates.append(expanded)
+            explicit_files.append(expanded)
         elif expanded.is_dir():
             for child in expanded.rglob("*"):
                 if is_candidate_file(child):
-                    candidates.append(child)
+                    discovered_files.append(child)
 
-    candidates = sorted(set(candidates), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-    return candidates[:max_files]
+    explicit = sorted(unique_paths(explicit_files), key=path_mtime, reverse=True)
+    explicit_set = set(explicit)
+    discovered = [path for path in unique_paths(discovered_files) if path not in explicit_set]
+    discovered = sorted(discovered, key=path_mtime, reverse=True)[:max_files]
+    return explicit + discovered
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    return list(dict.fromkeys(paths))
+
+
+def path_mtime(path: Path) -> float:
+    return path.stat().st_mtime if path.exists() else 0.0
 
 
 def is_candidate_file(path: Path) -> bool:

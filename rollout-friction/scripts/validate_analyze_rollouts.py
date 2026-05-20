@@ -101,11 +101,27 @@ def test_nested_json_fragments_count_once_per_line() -> None:
         raise AssertionError("duplicate nested fragments should not satisfy repeated failure threshold")
 
 
+def test_explicit_files_are_not_capped_by_directory_limit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        directory_trace = root / "session-directory.jsonl"
+        explicit_trace = root / "explicit-note.txt"
+        directory_trace.write_text('{"message":"directory trace"}\n', encoding="utf-8")
+        explicit_trace.write_text("explicit trace without rollout name\n", encoding="utf-8")
+
+        files = module.iter_candidate_files([root, explicit_trace], max_files=0)
+
+    if files != [explicit_trace]:
+        raise AssertionError(f"explicit files should bypass directory max_files cap, got {files!r}")
+
+
 def main() -> int:
     test_github_wait_and_rollup_signals()
     test_command_and_shell_friction_signals()
     test_auto_review_valid_finding_signal()
     test_nested_json_fragments_count_once_per_line()
+    test_explicit_files_are_not_capped_by_directory_limit()
     print("ok validate-analyze-rollouts")
     return 0
 
