@@ -10,3 +10,4 @@ python3 skill-creator/scripts/validate-skill-behavior.py
 uv run skill-creator/scripts/quick_validate.py --self-test
 uv run skill-creator/scripts/validate-skill-repo.py
 uv run skill-creator/scripts/quick_validate.py chronicle
+uv run rollout-friction/scripts/validate_analyze_rollouts.py
