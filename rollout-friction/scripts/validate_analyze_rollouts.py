@@ -101,6 +101,46 @@ def test_nested_json_fragments_count_once_per_line() -> None:
         raise AssertionError("duplicate nested fragments should not satisfy repeated failure threshold")
 
 
+def test_pretty_json_object_counts_as_one_record() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "session-pretty.json"
+        trace.write_text(
+            json.dumps(
+                {
+                    "message": "Process exited with code 1",
+                    "payload": {"aggregated_output": "Process exited with code 1"},
+                    "nested": [{"stderr": "Process exited with code 1"}],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" in findings:
+        raise AssertionError("one pretty JSON object should count as one logical record")
+
+
+def test_pretty_json_array_counts_top_level_records() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "session-array.json"
+        trace.write_text(
+            json.dumps(
+                [
+                    {"message": "Process exited with code 1"},
+                    {"message": "Process exited with code 1"},
+                    {"message": "Process exited with code 1"},
+                ],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" not in findings:
+        raise AssertionError("three top-level JSON records should satisfy repeated failure threshold")
+
+
 def test_explicit_files_are_not_capped_by_directory_limit() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -121,6 +161,8 @@ def main() -> int:
     test_command_and_shell_friction_signals()
     test_auto_review_valid_finding_signal()
     test_nested_json_fragments_count_once_per_line()
+    test_pretty_json_object_counts_as_one_record()
+    test_pretty_json_array_counts_top_level_records()
     test_explicit_files_are_not_capped_by_directory_limit()
     print("ok validate-analyze-rollouts")
     return 0

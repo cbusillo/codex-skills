@@ -17,7 +17,6 @@ import json
 import re
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -40,29 +39,66 @@ URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@[^\s]+", re.I)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
 
 
-@dataclass(frozen=True, slots=True)
 class Signal:
+    __slots__ = (
+        "name",
+        "severity",
+        "category",
+        "pattern",
+        "destination",
+        "likely_cause",
+        "threshold",
+    )
+
     name: str
     severity: str
     category: str
     pattern: re.Pattern[str]
     destination: str
     likely_cause: str
-    threshold: int = 1
+    threshold: int
+
+    def __init__(
+        self,
+        name: str,
+        severity: str,
+        category: str,
+        pattern: re.Pattern[str],
+        destination: str,
+        likely_cause: str,
+        threshold: int = 1,
+    ) -> None:
+        self.name = name
+        self.severity = severity
+        self.category = category
+        self.pattern = pattern
+        self.destination = destination
+        self.likely_cause = likely_cause
+        self.threshold = threshold
 
 
-@dataclass(slots=True)
 class Hit:
+    __slots__ = ("file", "line", "snippet")
+
     file: Path
     line: int
     snippet: str
 
+    def __init__(self, file: Path, line: int, snippet: str) -> None:
+        self.file = file
+        self.line = line
+        self.snippet = snippet
 
-@dataclass(slots=True)
+
 class Finding:
+    __slots__ = ("signal", "hits", "files")
+
     signal: Signal
-    hits: list[Hit] = field(default_factory=list)
-    files: Counter[str] = field(default_factory=Counter)
+
+    def __init__(self, signal: Signal) -> None:
+        self.signal = signal
+        self.hits: list[Hit] = []
+        self.files: Counter[str] = Counter()
 
     def add(self, hit: Hit) -> None:
         self.hits.append(hit)
@@ -303,6 +339,14 @@ def json_fragments(value: Any) -> Iterable[str]:
         yield json.dumps(value, sort_keys=True, default=str)
 
 
+def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
+    if isinstance(value, list):
+        for idx, item in enumerate(value, start=1):
+            yield idx, item
+    else:
+        yield 1, value
+
+
 def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
     try:
         with path.open("rb") as handle:
@@ -320,8 +364,9 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
         except json.JSONDecodeError:
             pass
         else:
-            for idx, fragment in enumerate(json_fragments(parsed), start=1):
-                yield idx, fragment
+            for idx, record in top_level_json_records(parsed):
+                for fragment in json_fragments(record):
+                    yield idx, fragment
             return
 
     for idx, raw in enumerate(text.splitlines(), start=1):
