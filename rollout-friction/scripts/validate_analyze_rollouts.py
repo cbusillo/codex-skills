@@ -121,6 +121,26 @@ def test_pretty_json_object_counts_as_one_record() -> None:
         raise AssertionError("one pretty JSON object should count as one logical record")
 
 
+def test_structured_json_record_counts_distinct_repeated_hits() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "session-distinct.json"
+        trace.write_text(
+            json.dumps(
+                {
+                    "message": "Process exited with code 1",
+                    "payload": {"aggregated_output": "Command failed in build"},
+                    "nested": [{"stderr": "error: lint failed"}],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" not in findings:
+        raise AssertionError("distinct repeated failures inside one JSON record should satisfy threshold")
+
+
 def test_pretty_json_array_counts_top_level_records() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -174,10 +194,33 @@ def test_skill_docs_are_not_directory_candidates() -> None:
         raise AssertionError("non-doc trace markdown should remain discoverable")
 
 
+def test_neutral_structured_traces_are_directory_candidates() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        neutral_jsonl = root / "2026-05-20T12-00-00.jsonl"
+        neutral_log = root / "worker-output.log"
+        neutral_md = root / "notes.md"
+        neutral_jsonl.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
+        neutral_log.write_text("GraphQL rate limit\n", encoding="utf-8")
+        neutral_md.write_text("GraphQL rate limit\n", encoding="utf-8")
+
+        files = module.iter_candidate_files([root], max_files=10)
+
+    if neutral_jsonl not in files:
+        raise AssertionError("neutral .jsonl traces should be discoverable from a root directory")
+    if neutral_log not in files:
+        raise AssertionError("neutral .log traces should be discoverable from a root directory")
+    if neutral_md in files:
+        raise AssertionError("neutral markdown notes should not be discovered without trace context")
+
+
 def test_redaction_covers_local_path_shapes() -> None:
     module = load_module()
     snippet = module.redacted(
-        "paths: ~/Library/token ./relative/path ../parent/path rollout-friction/scripts/analyze_rollouts.py",
+        "paths: ~/Library/token ./relative/path ../parent/path "
+        "rollout-friction/scripts/analyze_rollouts.py /etc/service/token "
+        "/workspace/app/session.jsonl localhost host.docker.internal api.service.local",
         context_chars=500,
     )
     leaked = [
@@ -187,6 +230,11 @@ def test_redaction_covers_local_path_shapes() -> None:
             "./relative/path",
             "../parent/path",
             "rollout-friction/scripts/analyze_rollouts.py",
+            "/etc/service/token",
+            "/workspace/app/session.jsonl",
+            "localhost",
+            "host.docker.internal",
+            "api.service.local",
         )
         if fragment in snippet
     ]
@@ -209,9 +257,11 @@ def main() -> int:
     test_auto_review_valid_finding_signal()
     test_nested_json_fragments_count_once_per_line()
     test_pretty_json_object_counts_as_one_record()
+    test_structured_json_record_counts_distinct_repeated_hits()
     test_pretty_json_array_counts_top_level_records()
     test_explicit_files_are_not_capped_by_directory_limit()
     test_skill_docs_are_not_directory_candidates()
+    test_neutral_structured_traces_are_directory_candidates()
     test_redaction_covers_local_path_shapes()
     test_scanner_io_errors_do_not_count_as_command_failures()
     print("ok validate-analyze-rollouts")

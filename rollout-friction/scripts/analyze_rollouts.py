@@ -26,6 +26,7 @@ DEFAULT_MAX_BYTES = 3_000_000
 DEFAULT_CONTEXT_CHARS = 180
 
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
+STRUCTURED_TRACE_SUFFIXES = {".jsonl", ".log"}
 ROLL_OUT_NAME_RE = re.compile(r"(rollout|session|runout|thread|trace|transcript)", re.I)
 SKILL_DOC_NAMES = {"SKILL.md", "README.md"}
 SECRET_RE = re.compile(
@@ -36,7 +37,10 @@ SECRET_RE = re.compile(
 PATH_RE = re.compile(
     r"(?:"
     r"~(?:/[^\s,'\"]+)?|"
-    r"/(?:Users|home|var|tmp|private|Volumes|opt)/[^\s,'\"]+|"
+    r"/(?:"
+    r"Users|home|var|tmp|private|Volumes|opt|etc|usr|bin|sbin|lib|lib64|"
+    r"srv|run|mnt|media|dev|proc|sys|workspace|workspaces|app"
+    r")/[^\s,'\"]+|"
     r"(?:\.\.?/)+[^\s,'\"]+|"
     r"(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
     r"[A-Za-z]:\\[^\s,'\"]+"
@@ -44,6 +48,35 @@ PATH_RE = re.compile(
 )
 URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@[^\s]+", re.I)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
+LOCAL_HOST_RE = re.compile(
+    r"\b(?:localhost|host\.docker\.internal|[a-z0-9-]+\.(?:local|localhost|internal|test))\b",
+    re.I,
+)
+INTERESTING_JSON_KEYS = (
+    "type",
+    "message",
+    "text",
+    "content",
+    "aggregated_output",
+    "stdout",
+    "stderr",
+    "formatted_output",
+    "error",
+    "exit_code",
+    "status",
+    "command",
+)
+DEDUP_VALUE_PREFIXES = (
+    "message=",
+    "text=",
+    "content=",
+    "aggregated_output=",
+    "stdout=",
+    "stderr=",
+    "formatted_output=",
+    "error=",
+    "command=",
+)
 
 
 class Signal:
@@ -291,8 +324,11 @@ def is_candidate_file(path: Path) -> bool:
         return False
     if path.name in SKILL_DOC_NAMES:
         return False
-    if path.suffix.lower() not in ROLL_OUT_SUFFIXES:
+    suffix = path.suffix.lower()
+    if suffix not in ROLL_OUT_SUFFIXES:
         return False
+    if suffix in STRUCTURED_TRACE_SUFFIXES:
+        return True
     return bool(ROLL_OUT_NAME_RE.search(path.name) or ROLL_OUT_NAME_RE.search(str(path.parent)))
 
 
@@ -301,6 +337,7 @@ def redacted(text: str, context_chars: int) -> str:
     scrubbed = URL_AUTH_RE.sub("[REDACTED_URL_AUTH]", single_line)
     scrubbed = SECRET_RE.sub("[REDACTED_SECRET]", scrubbed)
     scrubbed = PATH_RE.sub("[REDACTED_PATH]", scrubbed)
+    scrubbed = LOCAL_HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     scrubbed = HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     if len(scrubbed) > context_chars:
         return scrubbed[: context_chars - 3] + "..."
@@ -312,20 +349,7 @@ def line_text_from_json(value: Any) -> str:
         return value
     if isinstance(value, dict):
         interesting: list[str] = []
-        for key in (
-            "type",
-            "message",
-            "text",
-            "content",
-            "aggregated_output",
-            "stdout",
-            "stderr",
-            "formatted_output",
-            "error",
-            "exit_code",
-            "status",
-            "command",
-        ):
+        for key in INTERESTING_JSON_KEYS:
             if key in value:
                 interesting.append(f"{key}={value[key]}")
         return " ".join(interesting) if interesting else json.dumps(value, sort_keys=True, default=str)
@@ -334,10 +358,10 @@ def line_text_from_json(value: Any) -> str:
 
 def json_fragments(value: Any) -> Iterable[str]:
     if isinstance(value, dict):
-        summary = line_text_from_json(value)
-        if summary != json.dumps(value, sort_keys=True, default=str):
-            yield summary
-        for child in value.values():
+        for key, child in value.items():
+            if key in INTERESTING_JSON_KEYS and not isinstance(child, dict | list):
+                yield f"{key}={child}"
+                continue
             yield from json_fragments(child)
     elif isinstance(value, list):
         for child in value:
@@ -394,12 +418,13 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
 
 def scan(files: list[Path], max_bytes: int, context_chars: int) -> dict[str, Finding]:
     findings: dict[str, Finding] = {signal.name: Finding(signal) for signal in SIGNALS}
-    seen_hits: set[tuple[Path, int, str]] = set()
+    seen_hits: set[tuple[Path, int, str, str, int]] = set()
     for path in files:
         for line_no, text in iter_lines(path, max_bytes):
             for signal in SIGNALS:
-                if signal.pattern.search(text):
-                    hit_key = (path, line_no, signal.name)
+                canonical_text = canonical_hit_text(text)
+                for occurrence, _match in enumerate(signal.pattern.finditer(text)):
+                    hit_key = (path, line_no, signal.name, canonical_text, occurrence)
                     if hit_key in seen_hits:
                         continue
                     seen_hits.add(hit_key)
@@ -411,6 +436,15 @@ def scan(files: list[Path], max_bytes: int, context_chars: int) -> dict[str, Fin
         for name, finding in findings.items()
         if finding.count >= finding.signal.threshold
     }
+
+
+def canonical_hit_text(text: str) -> str:
+    normalized = " ".join(text.strip().split())
+    lowered = normalized.lower()
+    for prefix in DEDUP_VALUE_PREFIXES:
+        if lowered.startswith(prefix):
+            return normalized[len(prefix) :]
+    return normalized
 
 
 def stable_file_id(path: Path) -> str:
