@@ -1,0 +1,10 @@
+---
+interface:
+  display_name: "Rollout Friction"
+  short_description: "Audit rollout traces for workflow friction"
+  default_prompt: >-
+    Use $rollout-friction to audit recent rollout/session traces and propose
+    human-approved workflow improvements.
+
+policy:
+  allow_implicit_invocation: false
