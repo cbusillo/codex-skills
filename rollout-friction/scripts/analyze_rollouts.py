@@ -40,7 +40,7 @@ URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@[^\s]+", re.I)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Signal:
     name: str
     severity: str
@@ -51,14 +51,14 @@ class Signal:
     threshold: int = 1
 
 
-@dataclass
+@dataclass(slots=True)
 class Hit:
     file: Path
     line: int
     snippet: str
 
 
-@dataclass
+@dataclass(slots=True)
 class Finding:
     signal: Signal
     hits: list[Hit] = field(default_factory=list)
@@ -128,10 +128,60 @@ SIGNALS: list[Signal] = [
         "repeated_command_failure",
         "medium",
         "execution-friction",
-        re.compile(r"exit_code\s*[=:]\s*[1-9]|\"exit_code\"\s*:\s*[1-9]|Command failed|error:", re.I),
+        re.compile(
+            r"exit_code\s*[=:]\s*[1-9]|\"exit_code\"\s*:\s*[1-9]|Command failed|"
+            r"process exited with code [1-9]|error:",
+            re.I,
+        ),
         "fix-script-or-helper",
         "Commands or tools failed repeatedly; repeated failures often deserve a helper, guardrail, or clearer skill instruction.",
         threshold=3,
+    ),
+    Signal(
+        "github_workflow_wait_miss",
+        "medium",
+        "tool-pressure",
+        re.compile(r"No runs found for workflow|gh_run_wait[^\n]{0,120}No runs found", re.I),
+        "fix-script-or-helper",
+        "A workflow wait helper could not resolve the intended Actions run; prefer PR/check-run oriented waiting when workflow names are unstable.",
+    ),
+    Signal(
+        "github_pr_rollup_lag",
+        "medium",
+        "tool-pressure",
+        re.compile(
+            r"mergeable[\"'=:\s]+UNKNOWN|mergeable_state[\"'=:\s]+unknown|"
+            r"statusCheckRollup[^\n]{0,240}(IN_PROGRESS|QUEUED|in_progress|queued)|"
+            r"CodeQL[^\n]{0,240}(IN_PROGRESS|QUEUED|in_progress|queued)",
+            re.I,
+        ),
+        "fix-script-or-helper",
+        "PR readiness depended on lagging mergeability or check-rollup state; a PR-aware wait path may reduce manual polling.",
+        threshold=2,
+    ),
+    Signal(
+        "blocked_git_safety_prompt",
+        "low",
+        "execution-friction",
+        re.compile(r"Blocked git (switch|checkout)|Resend with 'confirm:'|confirm: git", re.I),
+        "investigate-repo-workflow",
+        "Git safety prompts protected worktrees but added retry friction; inspect whether branch setup can be more deliberate before command execution.",
+    ),
+    Signal(
+        "shell_quoting_or_parse_error",
+        "low",
+        "execution-friction",
+        re.compile(r"zsh:[^\n]*(unmatched|parse error)|shell quoting|unexpected EOF", re.I),
+        "fix-script-or-helper",
+        "A shell command failed before doing useful work; structured helper arguments or safer quoting could avoid the retry.",
+    ),
+    Signal(
+        "auto_review_valid_finding",
+        "low",
+        "review-friction",
+        re.compile(r"auto-review[^\n]{0,240}(legitimate|valid|applied|fix)|Auto Review: [1-9] issue", re.I),
+        "ignore-noise",
+        "Auto-review created an extra decision point but produced useful feedback; usually no durable change is needed unless loops recur.",
     ),
     Signal(
         "missing_dependency_or_tool",
@@ -230,7 +280,6 @@ def json_fragments(value: Any) -> Iterable[str]:
         summary = line_text_from_json(value)
         if summary != json.dumps(value, sort_keys=True, default=str):
             yield summary
-            return
         for child in value.values():
             yield from json_fragments(child)
     elif isinstance(value, list):
@@ -269,7 +318,8 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
             continue
         if raw.startswith("{"):
             try:
-                yield idx, line_text_from_json(json.loads(raw))
+                for fragment in json_fragments(json.loads(raw)):
+                    yield idx, fragment
                 continue
             except json.JSONDecodeError:
                 pass
@@ -278,10 +328,15 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
 
 def scan(files: list[Path], max_bytes: int, context_chars: int) -> dict[str, Finding]:
     findings: dict[str, Finding] = {signal.name: Finding(signal) for signal in SIGNALS}
+    seen_hits: set[tuple[Path, int, str]] = set()
     for path in files:
         for line_no, text in iter_lines(path, max_bytes):
             for signal in SIGNALS:
                 if signal.pattern.search(text):
+                    hit_key = (path, line_no, signal.name)
+                    if hit_key in seen_hits:
+                        continue
+                    seen_hits.add(hit_key)
                     findings[signal.name].add(
                         Hit(file=path, line=line_no, snippet=redacted(text, context_chars))
                     )

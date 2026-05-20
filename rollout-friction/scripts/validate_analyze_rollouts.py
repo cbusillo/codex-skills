@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Focused validation for analyze_rollouts.py signal detection."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+
+
+SCRIPT = Path(__file__).with_name("analyze_rollouts.py")
+
+
+def load_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("analyze_rollouts", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load analyze_rollouts.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_trace(root: Path, lines: list[dict[str, object]]) -> Path:
+    path = root / "rollout-test.jsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(json.dumps(line) + "\n")
+    return path
+
+
+def assert_signals(texts: list[str], expected: set[str]) -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [{"type": "event_msg", "payload": {"aggregated_output": text}} for text in texts],
+        )
+        files = module.iter_candidate_files([trace], max_files=10)
+        findings = module.scan(files, max_bytes=100_000, context_chars=240)
+    actual = set(findings)
+    missing = expected - actual
+    if missing:
+        raise AssertionError(f"missing signals {sorted(missing)} from {sorted(actual)}")
+
+
+def test_github_wait_and_rollup_signals() -> None:
+    assert_signals(
+        [
+            "No runs found for workflow 'CodeQL' on feature/example",
+            '{"mergeable":"UNKNOWN","statusCheckRollup":[{"name":"Analyze","status":"IN_PROGRESS"}]}',
+            '{"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"CodeQL","status":"QUEUED"}]}',
+        ],
+        {"github_workflow_wait_miss", "github_pr_rollup_lag"},
+    )
+
+
+def test_command_and_shell_friction_signals() -> None:
+    assert_signals(
+        [
+            "Blocked git switch creating or detaching a branch. Resend with 'confirm:' if requested.",
+            "confirm: git switch -c feature/example",
+            "zsh:1: unmatched \"",
+            "Process exited with code 1",
+            "Process exited with code 1",
+            "Process exited with code 1",
+        ],
+        {"blocked_git_safety_prompt", "shell_quoting_or_parse_error", "repeated_command_failure"},
+    )
+
+
+def test_auto_review_valid_finding_signal() -> None:
+    assert_signals(
+        ["Auto Review: 1 issue found. The finding was legitimate and the fix was applied."],
+        {"auto_review_valid_finding"},
+    )
+
+
+def test_nested_json_fragments_count_once_per_line() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "message": "Process exited with code 1",
+                    "payload": {"aggregated_output": "Process exited with code 1"},
+                }
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" in findings:
+        raise AssertionError("duplicate nested fragments should not satisfy repeated failure threshold")
+
+
+def main() -> int:
+    test_github_wait_and_rollup_signals()
+    test_command_and_shell_friction_signals()
+    test_auto_review_valid_finding_signal()
+    test_nested_json_fragments_count_once_per_line()
+    print("ok validate-analyze-rollouts")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
