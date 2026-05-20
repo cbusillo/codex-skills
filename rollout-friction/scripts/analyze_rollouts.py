@@ -27,13 +27,20 @@ DEFAULT_CONTEXT_CHARS = 180
 
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
 ROLL_OUT_NAME_RE = re.compile(r"(rollout|session|runout|thread|trace|transcript)", re.I)
+SKILL_DOC_NAMES = {"SKILL.md", "README.md"}
 SECRET_RE = re.compile(
     r"(?i)(ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-ant-[A-Za-z0-9_-]+|"
     r"sk-[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]+|"
     r"(?:export\s+)?(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
 PATH_RE = re.compile(
-    r"(?:/(?:Users|home|var|tmp|private|Volumes|opt)/[^\s,'\"]+|[A-Za-z]:\\[^\s,'\"]+)"
+    r"(?:"
+    r"~(?:/[^\s,'\"]+)?|"
+    r"/(?:Users|home|var|tmp|private|Volumes|opt)/[^\s,'\"]+|"
+    r"(?:\.\.?/)+[^\s,'\"]+|"
+    r"(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
+    r"[A-Za-z]:\\[^\s,'\"]+"
+    r")"
 )
 URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@[^\s]+", re.I)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
@@ -282,6 +289,8 @@ def path_mtime(path: Path) -> float:
 def is_candidate_file(path: Path) -> bool:
     if not path.is_file():
         return False
+    if path.name in SKILL_DOC_NAMES:
+        return False
     if path.suffix.lower() not in ROLL_OUT_SUFFIXES:
         return False
     return bool(ROLL_OUT_NAME_RE.search(path.name) or ROLL_OUT_NAME_RE.search(str(path.parent)))
@@ -352,7 +361,7 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
         with path.open("rb") as handle:
             data = handle.read(max_bytes + 1)
     except OSError as exc:
-        yield 0, f"error: unable to read file: {exc}"
+        yield 0, f"scanner_io_error unable to read file: {exc}"
         return
 
     if len(data) > max_bytes:
