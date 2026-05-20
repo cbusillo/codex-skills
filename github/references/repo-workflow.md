@@ -41,6 +41,10 @@ The PR helper is REST-first for normal orientation. Its snapshot-compatible
 `reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
 ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
 --json statusCheckRollup,reviewDecision` only when that exact data is needed.
+If a workflow wait by name reports no runs found, or GitHub returns transient
+mergeability/rollup states such as `mergeable: UNKNOWN` or queued
+`statusCheckRollup` entries, switch to `gh-pr.py checks <pr-or-url>` for PR-head
+check state instead of repeatedly polling workflow names or GraphQL rollups.
 When `github-repo-snapshot.sh --json` cannot use `gh-pr.py`, PR entries are
 explicitly degraded with `snapshotReadiness.degraded: true` and no merge
 readiness. Do not make readiness or merge decisions from that fallback shape;
