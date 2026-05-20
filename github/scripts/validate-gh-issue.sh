@@ -160,8 +160,8 @@ case "${1:-} ${2:-}" in
 			*) printf '[]\n' ;;
 		esac
 		;;
-	'pr view') printf '{"number":123,"title":"demo"}\n' ;;
-	'pr list') printf '[{"number":1,"title":"open"}]\n' ;;
+	'pr view') printf '{"number":123,"title":"demo","isDraft":false}\n' ;;
+	'pr list') printf '[{"number":1,"title":"open","isDraft":false}]\n' ;;
 	'issue list') printf '[{"number":2,"title":"issue"}]\n' ;;
 	'run list') printf '[{"databaseId":3,"workflowName":"ci"}]\n' ;;
 	*) printf '[]\n' ;;
@@ -170,7 +170,16 @@ EOF
 chmod +x "$tmpdir/gh-noisy-json"
 
 GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
 	"$repo_root/github/scripts/github-repo-snapshot.sh" --json |
-	jq -e '.github.openPullRequests[0].number == 1 and .github.ghAvailable == 1' >/dev/null
+	jq -e '
+		.github.openPullRequests[0].number == 1 and
+		.github.ghAvailable == 1 and
+		.github.openPullRequests[0].isDraft == false and
+		.github.openPullRequests[0].draft == false and
+		.github.openPullRequests[0].mergeStateStatus == null and
+		.github.openPullRequests[0].snapshotReadiness.degraded == true and
+		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false
+	' >/dev/null
 
 echo "ok validate-gh-issue"

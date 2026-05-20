@@ -144,6 +144,34 @@ capture_pr_helper_json() {
     '{error: {exitCode: $exitCode, message: $message, stdout: $stdout}}'
 }
 
+normalize_raw_pr_snapshot_json() {
+  jq '
+    def field_or_null($name): if has($name) then .[$name] else null end;
+    def normalize_pr:
+      . + {
+        draft: (if has("draft") then .draft elif has("isDraft") then .isDraft else null end),
+        isDraft: (if has("isDraft") then .isDraft elif has("draft") then .draft else null end),
+        merged: field_or_null("merged"),
+        mergeable: field_or_null("mergeable"),
+        mergeable_state: field_or_null("mergeable_state"),
+        mergeStateStatus: field_or_null("mergeStateStatus"),
+        reviewDecision: field_or_null("reviewDecision"),
+        statusCheckRollup: field_or_null("statusCheckRollup"),
+        snapshotReadiness: {
+          source: "gh-fallback",
+          degraded: true,
+          mergeReadinessAvailable: false,
+          message: "gh-pr.py unavailable; merge readiness was not queried. Use gh-pr.py view/checks before readiness or merge decisions."
+        }
+      };
+    if type == "array" then map(normalize_pr)
+    elif type == "object" and has("error") then .
+    elif type == "object" then normalize_pr
+    else .
+    end
+  '
+}
+
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "error: not inside a git repository" >&2
   exit 1
@@ -241,7 +269,8 @@ if [[ "$json_output" -eq 1 ]]; then
       if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
         capture_pr_helper_json view >"$tmpdir/current-pr.json"
       else
-        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url >"$tmpdir/current-pr.json"
+        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url \
+          | normalize_raw_pr_snapshot_json >"$tmpdir/current-pr.json"
       fi
       capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
     else
@@ -251,7 +280,8 @@ if [[ "$json_output" -eq 1 ]]; then
     if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
       capture_pr_helper_json list --state open --limit 20 >"$tmpdir/open-prs.json"
     else
-      capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,headRefName,baseRefName,labels,url >"$tmpdir/open-prs.json"
+      capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,headRefName,baseRefName,labels,url \
+        | normalize_raw_pr_snapshot_json >"$tmpdir/open-prs.json"
     fi
     capture_gh_json "$gh_bin" issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
     capture_gh_json "$gh_bin" run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
