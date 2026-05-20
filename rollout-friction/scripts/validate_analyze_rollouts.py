@@ -251,6 +251,75 @@ def test_scanner_io_errors_do_not_count_as_command_failures() -> None:
         raise AssertionError("scanner I/O errors should not be classified as command failures")
 
 
+def test_meta_echoes_do_not_create_findings() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "message": "Review only the provided code change scope. Identify critical bugs, regressions, security risks, or incorrect assumptions.",
+                },
+                {
+                    "message": '{"signal":"github_graphql_rate_limit","severity":"high","recommended_destination":"fix-script-or-helper","likely_cause":"GraphQL rate limit"}',
+                },
+                {
+                    "message": "---\\nname: github\\ndescription: GitHub skill docs mention REST rate limit and GraphQL rate limit.",
+                },
+                {
+                    "message": "(error|failed|blocked|timeout|timed out|rate limit|GraphQL|retry|rerun|stale)",
+                },
+                {
+                    "message": "I used `rollout-friction` read-only. Recent bounded scan found GraphQL rate limit findings.",
+                },
+                {
+                    "message": "1. Patch `rollout-friction/scripts/analyze_rollouts.py` so it catches GraphQL rate limit and No runs found signals.",
+                },
+                {
+                    "message": "@@ -10,4 +10,2 @@ -Command failed in copied diff text",
+                },
+                {
+                    "message": "exit_code=2",
+                },
+                {
+                    "message": '<user_action> <context>User initiated a review task.</context> <action>review</action>',
+                },
+                {
+                    "message": '{"findings":[{"title":"[P2] Recurse into nested JSON fields","body":"GraphQL rate limit"}]}',
+                },
+                {
+                    "message": "❌ Validate New Code: 2 issue(s) shellcheck error",
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if findings:
+        raise AssertionError(f"meta echoes should not create findings, got {sorted(findings)}")
+
+
+def test_real_trace_evidence_survives_meta_echo_filter() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "GraphQL API returned secondary rate limit while polling projects"},
+                {"message": "No runs found for workflow 'CodeQL' on feature/example"},
+                {"message": "Process exited with code 1"},
+                {"message": "Process exited with code 1"},
+                {"message": "Process exited with code 1"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    for expected in (
+        "github_graphql_rate_limit",
+        "github_workflow_wait_miss",
+        "repeated_command_failure",
+    ):
+        if expected not in findings:
+            raise AssertionError(f"real trace evidence should still report {expected}")
+
+
 def main() -> int:
     test_github_wait_and_rollup_signals()
     test_command_and_shell_friction_signals()
@@ -264,6 +333,8 @@ def main() -> int:
     test_neutral_structured_traces_are_directory_candidates()
     test_redaction_covers_local_path_shapes()
     test_scanner_io_errors_do_not_count_as_command_failures()
+    test_meta_echoes_do_not_create_findings()
+    test_real_trace_evidence_survives_meta_echo_filter()
     print("ok validate-analyze-rollouts")
     return 0
 

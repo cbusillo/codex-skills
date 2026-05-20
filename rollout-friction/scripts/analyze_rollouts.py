@@ -52,6 +52,24 @@ LOCAL_HOST_RE = re.compile(
     r"\b(?:localhost|host\.docker\.internal|[a-z0-9-]+\.(?:local|localhost|internal|test))\b",
     re.I,
 )
+META_ECHO_RE = re.compile(
+    r"Review only the provided code change scope\. Identify critical bugs|"
+    r"<user_action>\s*<context>User initiated a review task\.|"
+    r"^Auto Review$|"
+    r"^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@|"
+    r"^exit_code=(?:1|2|128)$|"
+    r"^\u274c Validate New Code:|"
+    r"^Traceback \(most recent call last\):|"
+    r"\"findings\"\s*:\s*\[\s*\{\s*\"title\"\s*:\s*\"\[P\d\]|"
+    r"\b(recommended_destination|likely_cause|scanned_files)\b|"
+    r"\b(signal|severity|category|evidence)\b[^\n]{0,160}\b(recommended_destination|likely_cause)\b|"
+    r"^\s*---\s*(?:\\n|\s)+name:\s+[a-z0-9_-]+\s*(?:\\n|\s)+description:|"
+    r"^\s*\([^\n]{0,80}error\|failed\|blocked\|timeout\|timed out\|rate limit\|GraphQL\|retry|"
+    r"^I used `rollout-friction` read-only\.|"
+    r"^\d+\.\s+(?:Patch|Add tests|Add regression|Document|Investigate)\b[^\n]{0,240}"
+    r"(?:GraphQL|rate limit|No runs found|mergeable UNKNOWN|blocked|Auto Review)",
+    re.I,
+)
 INTERESTING_JSON_KEYS = (
     "type",
     "message",
@@ -421,6 +439,8 @@ def scan(files: list[Path], max_bytes: int, context_chars: int) -> dict[str, Fin
     seen_hits: set[tuple[Path, int, str, str, int]] = set()
     for path in files:
         for line_no, text in iter_lines(path, max_bytes):
+            if is_meta_echo(text):
+                continue
             for signal in SIGNALS:
                 canonical_text = canonical_hit_text(text)
                 for occurrence, _match in enumerate(signal.pattern.finditer(text)):
@@ -445,6 +465,11 @@ def canonical_hit_text(text: str) -> str:
         if lowered.startswith(prefix):
             return normalized[len(prefix) :]
     return normalized
+
+
+def is_meta_echo(text: str) -> bool:
+    normalized = canonical_hit_text(" ".join(text.strip().split()))
+    return bool(META_ECHO_RE.search(normalized))
 
 
 def stable_file_id(path: Path) -> str:
