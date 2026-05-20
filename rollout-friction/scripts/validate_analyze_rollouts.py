@@ -62,6 +62,33 @@ def test_github_wait_and_rollup_signals() -> None:
     )
 
 
+def test_json_object_summary_preserves_multi_field_signals() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "tool_result",
+                    "content": {
+                        "mergeable": "UNKNOWN",
+                        "statusCheckRollup": [{"name": "Analyze", "status": "IN_PROGRESS"}],
+                    },
+                },
+                {
+                    "type": "tool_result",
+                    "content": {
+                        "mergeable": "MERGEABLE",
+                        "statusCheckRollup": [{"name": "CodeQL", "status": "QUEUED"}],
+                    },
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "github_pr_rollup_lag" not in findings:
+        raise AssertionError("structured JSON PR rollup records should preserve combined-field matches")
+
+
 def test_command_and_shell_friction_signals() -> None:
     assert_signals(
         [
@@ -322,6 +349,7 @@ def test_real_trace_evidence_survives_meta_echo_filter() -> None:
 
 def main() -> int:
     test_github_wait_and_rollup_signals()
+    test_json_object_summary_preserves_multi_field_signals()
     test_command_and_shell_friction_signals()
     test_auto_review_valid_finding_signal()
     test_nested_json_fragments_count_once_per_line()

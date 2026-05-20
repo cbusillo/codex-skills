@@ -18,7 +18,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 
 DEFAULT_MAX_FILES = 25
@@ -83,6 +83,9 @@ INTERESTING_JSON_KEYS = (
     "exit_code",
     "status",
     "command",
+    "mergeable",
+    "mergeable_state",
+    "statusCheckRollup",
 )
 DEDUP_VALUE_PREFIXES = (
     "message=",
@@ -165,6 +168,11 @@ class Finding:
     @property
     def count(self) -> int:
         return len(self.hits)
+
+
+class Fragment(NamedTuple):
+    text: str
+    summary: bool
 
 
 SIGNALS: list[Signal] = [
@@ -374,20 +382,23 @@ def line_text_from_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
-def json_fragments(value: Any) -> Iterable[str]:
+def json_fragments(value: Any) -> Iterable[Fragment]:
     if isinstance(value, dict):
+        summary = line_text_from_json(value)
         for key, child in value.items():
             if key in INTERESTING_JSON_KEYS and not isinstance(child, dict | list):
-                yield f"{key}={child}"
+                yield Fragment(f"{key}={child}", False)
                 continue
             yield from json_fragments(child)
+        if summary != json.dumps(value, sort_keys=True, default=str):
+            yield Fragment(summary, True)
     elif isinstance(value, list):
         for child in value:
             yield from json_fragments(child)
     elif isinstance(value, str):
-        yield value
+        yield Fragment(value, False)
     elif value is not None:
-        yield json.dumps(value, sort_keys=True, default=str)
+        yield Fragment(json.dumps(value, sort_keys=True, default=str), False)
 
 
 def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
@@ -398,12 +409,12 @@ def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
         yield 1, value
 
 
-def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
+def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str, bool]]:
     try:
         with path.open("rb") as handle:
             data = handle.read(max_bytes + 1)
     except OSError as exc:
-        yield 0, f"scanner_io_error unable to read file: {exc}"
+        yield 0, f"scanner_io_error unable to read file: {exc}", False
         return
 
     if len(data) > max_bytes:
@@ -417,7 +428,7 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
         else:
             for idx, record in top_level_json_records(parsed):
                 for fragment in json_fragments(record):
-                    yield idx, fragment
+                    yield idx, fragment.text, fragment.summary
             return
 
     for idx, raw in enumerate(text.splitlines(), start=1):
@@ -427,27 +438,33 @@ def iter_lines(path: Path, max_bytes: int) -> Iterable[tuple[int, str]]:
         if raw.startswith("{"):
             try:
                 for fragment in json_fragments(json.loads(raw)):
-                    yield idx, fragment
+                    yield idx, fragment.text, fragment.summary
                 continue
             except json.JSONDecodeError:
                 pass
-        yield idx, raw
+        yield idx, raw, False
 
 
 def scan(files: list[Path], max_bytes: int, context_chars: int) -> dict[str, Finding]:
     findings: dict[str, Finding] = {signal.name: Finding(signal) for signal in SIGNALS}
     seen_hits: set[tuple[Path, int, str, str, int]] = set()
     for path in files:
-        for line_no, text in iter_lines(path, max_bytes):
+        line_signal_texts: dict[tuple[Path, int, str], set[str]] = {}
+        for line_no, text, is_summary in iter_lines(path, max_bytes):
             if is_meta_echo(text):
                 continue
             for signal in SIGNALS:
                 canonical_text = canonical_hit_text(text)
                 for occurrence, _match in enumerate(signal.pattern.finditer(text)):
+                    line_signal_key = (path, line_no, signal.name)
+                    line_texts = line_signal_texts.setdefault(line_signal_key, set())
+                    if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
+                        continue
                     hit_key = (path, line_no, signal.name, canonical_text, occurrence)
                     if hit_key in seen_hits:
                         continue
                     seen_hits.add(hit_key)
+                    line_texts.add(canonical_text)
                     findings[signal.name].add(
                         Hit(file=path, line=line_no, snippet=redacted(text, context_chars))
                     )
@@ -465,6 +482,13 @@ def canonical_hit_text(text: str) -> str:
         if lowered.startswith(prefix):
             return normalized[len(prefix) :]
     return normalized
+
+
+def summary_only_repeats_seen_values(summary: str, seen_texts: set[str]) -> bool:
+    if not seen_texts:
+        return False
+    summary_lower = summary.lower()
+    return all(seen.lower() in summary_lower for seen in seen_texts)
 
 
 def is_meta_echo(text: str) -> bool:
