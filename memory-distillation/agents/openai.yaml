@@ -1,0 +1,10 @@
+---
+interface:
+  display_name: "Memory Distillation"
+  short_description: "Audit memories into durable sources"
+  default_prompt: >-
+    Use $memory-distillation to audit memories and propose durable promotions
+    into skills, repo docs/issues, or local config.
+
+policy:
+  allow_implicit_invocation: false
