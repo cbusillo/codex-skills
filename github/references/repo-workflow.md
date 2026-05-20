@@ -41,6 +41,10 @@ The PR helper is REST-first for normal orientation. Its snapshot-compatible
 `reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
 ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
 --json statusCheckRollup,reviewDecision` only when that exact data is needed.
+When `github-repo-snapshot.sh --json` cannot use `gh-pr.py`, PR entries are
+explicitly degraded with `snapshotReadiness.degraded: true` and no merge
+readiness. Do not make readiness or merge decisions from that fallback shape;
+run `gh-pr.py view` and `gh-pr.py checks` first.
 
 If a deploy health endpoint reports a revision or tag, compare it with the
 merge commit, PR head, or branch SHA the task cares about.
