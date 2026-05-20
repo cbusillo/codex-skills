@@ -156,6 +156,53 @@ def test_explicit_files_are_not_capped_by_directory_limit() -> None:
         raise AssertionError(f"explicit files should bypass directory max_files cap, got {files!r}")
 
 
+def test_skill_docs_are_not_directory_candidates() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "rollout-friction"
+        root.mkdir()
+        skill_doc = root / "SKILL.md"
+        real_trace = root / "session-trace.md"
+        skill_doc.write_text("GraphQL rate limit docs example\n", encoding="utf-8")
+        real_trace.write_text("GraphQL rate limit real trace\n", encoding="utf-8")
+
+        files = module.iter_candidate_files([root], max_files=10)
+
+    if skill_doc in files:
+        raise AssertionError("skill docs should not be discovered as rollout trace candidates")
+    if real_trace not in files:
+        raise AssertionError("non-doc trace markdown should remain discoverable")
+
+
+def test_redaction_covers_local_path_shapes() -> None:
+    module = load_module()
+    snippet = module.redacted(
+        "paths: ~/Library/token ./relative/path ../parent/path rollout-friction/scripts/analyze_rollouts.py",
+        context_chars=500,
+    )
+    leaked = [
+        fragment
+        for fragment in (
+            "~/Library/token",
+            "./relative/path",
+            "../parent/path",
+            "rollout-friction/scripts/analyze_rollouts.py",
+        )
+        if fragment in snippet
+    ]
+    if leaked:
+        raise AssertionError(f"local path fragments leaked after redaction: {leaked!r} in {snippet!r}")
+
+
+def test_scanner_io_errors_do_not_count_as_command_failures() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "missing-rollout.jsonl"
+        findings = module.scan([missing, missing, missing], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" in findings:
+        raise AssertionError("scanner I/O errors should not be classified as command failures")
+
+
 def main() -> int:
     test_github_wait_and_rollup_signals()
     test_command_and_shell_friction_signals()
@@ -164,6 +211,9 @@ def main() -> int:
     test_pretty_json_object_counts_as_one_record()
     test_pretty_json_array_counts_top_level_records()
     test_explicit_files_are_not_capped_by_directory_limit()
+    test_skill_docs_are_not_directory_candidates()
+    test_redaction_covers_local_path_shapes()
+    test_scanner_io_errors_do_not_count_as_command_failures()
     print("ok validate-analyze-rollouts")
     return 0
 
