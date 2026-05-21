@@ -76,6 +76,12 @@ Avoid storing tokens or passwords even in ignored files. Prefer environment
 variables, credential helpers, or secret managers, and document only the variable
 names a skill expects.
 
+Keep local overrides out of skill instructions. Public `SKILL.md` files should
+describe reusable behavior, while ignored local files hold machine-specific
+defaults, account names, private repository routing, or temporary rollout notes.
+If a local convention becomes broadly useful, promote only the public-safe
+procedure and leave private values in the local overlay.
+
 ## GitHub Automation Token
 
 The GitHub workflow skill includes `github/scripts/gh-with-env-token`,
