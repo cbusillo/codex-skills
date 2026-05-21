@@ -26,7 +26,7 @@ DEFAULT_MAX_BYTES = 3_000_000
 DEFAULT_CONTEXT_CHARS = 180
 
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
-STRUCTURED_TRACE_SUFFIXES = {".jsonl", ".log"}
+STRUCTURED_TRACE_SUFFIXES = {".json", ".jsonl", ".log"}
 ROLL_OUT_NAME_RE = re.compile(r"(rollout|session|runout|thread|trace|transcript)", re.I)
 SKILL_DOC_NAMES = {"SKILL.md", "README.md"}
 SECRET_RE = re.compile(

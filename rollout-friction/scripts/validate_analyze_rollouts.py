@@ -225,15 +225,19 @@ def test_neutral_structured_traces_are_directory_candidates() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        neutral_json = root / "2026-05-20T12-00-00.json"
         neutral_jsonl = root / "2026-05-20T12-00-00.jsonl"
         neutral_log = root / "worker-output.log"
         neutral_md = root / "notes.md"
+        neutral_json.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
         neutral_jsonl.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
         neutral_log.write_text("GraphQL rate limit\n", encoding="utf-8")
         neutral_md.write_text("GraphQL rate limit\n", encoding="utf-8")
 
         files = module.iter_candidate_files([root], max_files=10)
 
+    if neutral_json not in files:
+        raise AssertionError("neutral .json traces should be discoverable from a root directory")
     if neutral_jsonl not in files:
         raise AssertionError("neutral .jsonl traces should be discoverable from a root directory")
     if neutral_log not in files:
