@@ -463,6 +463,9 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
         "cached_problems_shown",
         "include_stale",
         "snapshot_outcome",
+        "snapshot_change_kind",
+        "snapshot_run_id",
+        "snapshot_trigger_time_ms",
         "results_source",
         "results_timestamp_ms",
         "stale_reasons",
@@ -593,6 +596,8 @@ def print_human(payload: dict[str, Any]) -> None:
         print(f"CACHED: total_problems={total} problems_shown={shown}")
     if payload.get("status") == "stale_results" and not payload.get("include_stale"):
         print("STALE: cached findings withheld; re-run inspection or pass --include-stale for diagnostics.")
+    if payload.get("snapshot_change_kind"):
+        print(f"SNAPSHOT: change_kind={payload['snapshot_change_kind']}")
     problems = payload.get("problems") or []
     if problems:
         print("\nFINDINGS:")

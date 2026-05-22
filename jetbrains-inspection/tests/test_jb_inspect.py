@@ -291,6 +291,8 @@ class EndpointUtilityTest(unittest.TestCase):
             "cached_total_problems": 3,
             "cached_problems_shown": 0,
             "stale_reasons": ["project_changed_since_inspection"],
+            "snapshot_change_kind": "snapshot_predates_current_trigger",
+            "snapshot_run_id": 41,
         }
 
         summary = jb_inspect.summarize_problems({}, {}, body)
@@ -300,6 +302,8 @@ class EndpointUtilityTest(unittest.TestCase):
         self.assertTrue(summary["results_may_be_stale"])
         self.assertEqual(summary["cached_total_problems"], 3)
         self.assertEqual(summary["cached_problems_shown"], 0)
+        self.assertEqual(summary["snapshot_change_kind"], "snapshot_predates_current_trigger")
+        self.assertEqual(summary["snapshot_run_id"], 41)
         self.assertNotIn("total_problems", summary)
         self.assertNotIn("problems_shown", summary)
 
