@@ -469,6 +469,7 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
         "results_source",
         "results_timestamp_ms",
         "stale_reasons",
+        "capture_diagnostic",
     ):
         if key in body:
             summary[key] = body[key]
@@ -598,6 +599,10 @@ def print_human(payload: dict[str, Any]) -> None:
         print("STALE: cached findings withheld; re-run inspection or pass --include-stale for diagnostics.")
     if payload.get("snapshot_change_kind"):
         print(f"SNAPSHOT: change_kind={payload['snapshot_change_kind']}")
+    print_capture_diagnostic(payload.get("capture_diagnostic"))
+    wait = payload.get("wait") or {}
+    if wait:
+        print_capture_diagnostic(wait.get("capture_diagnostic"))
     problems = payload.get("problems") or []
     if problems:
         print("\nFINDINGS:")
@@ -609,6 +614,28 @@ def print_human(payload: dict[str, Any]) -> None:
             print(f"- [{problem.get('severity', 'unknown')}] {location} {problem.get('description', '')}")
     if not route and not status:
         print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def print_capture_diagnostic(diagnostic: Any) -> None:
+    if not isinstance(diagnostic, dict) or not diagnostic:
+        return
+    parts: list[str] = []
+    for key in (
+        "exit_reason",
+        "view_ready_ok",
+        "observed_inspection_view",
+        "inspection_view_updating",
+        "observed_settled_empty_inspection_view",
+        "observed_stable_readable_empty_inspection_view",
+        "observed_stable_empty_results_without_inspection_view",
+        "successful_extraction_count",
+        "extraction_failure_count",
+        "polling_elapsed_ms",
+    ):
+        if key in diagnostic:
+            parts.append(f"{key}={diagnostic[key]}")
+    if parts:
+        print(f"CAPTURE_DIAGNOSTIC: {' '.join(parts)}")
 
 
 def print_result_flags(payload: dict[str, Any]) -> None:

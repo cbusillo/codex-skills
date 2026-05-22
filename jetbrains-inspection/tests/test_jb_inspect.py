@@ -307,6 +307,22 @@ class EndpointUtilityTest(unittest.TestCase):
         self.assertNotIn("total_problems", summary)
         self.assertNotIn("problems_shown", summary)
 
+    def test_summarize_problems_carries_capture_diagnostic(self):
+        diagnostic = {
+            "exit_reason": "deadline",
+            "view_ready_ok": False,
+            "successful_extraction_count": 2,
+        }
+        body = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_diagnostic": diagnostic,
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body)
+
+        self.assertEqual(summary["capture_diagnostic"], diagnostic)
+
     def test_summarize_problems_keeps_cached_stale_findings_separate(self):
         body = {
             "status": "stale_results",
@@ -503,6 +519,32 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("STATUS: unknown", text)
         self.assertIn("FLAGS: capture_incomplete", text)
         self.assertNotIn('"raw"', text)
+
+    def test_human_output_summarizes_capture_diagnostic(self):
+        payload = {
+            "status": "capture_incomplete",
+            "clean": False,
+            "capture_incomplete": True,
+            "capture_diagnostic": {
+                "exit_reason": "deadline",
+                "view_ready_ok": False,
+                "observed_inspection_view": True,
+                "inspection_view_updating": True,
+                "successful_extraction_count": 3,
+                "extraction_failure_count": 1,
+                "polling_elapsed_ms": 60012,
+            },
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("CAPTURE_DIAGNOSTIC:", text)
+        self.assertIn("exit_reason=deadline", text)
+        self.assertIn("view_ready_ok=False", text)
+        self.assertIn("successful_extraction_count=3", text)
 
 
 if __name__ == "__main__":
