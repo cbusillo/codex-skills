@@ -71,6 +71,40 @@ fi
 EOF
 chmod +x "$tmpdir/env-gh"
 
+cat >"$tmpdir/path-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
+printf 'ok\n'
+EOF
+chmod +x "$tmpdir/path-gh"
+
+workspace_env_dir="$tmpdir/.code"
+mkdir -p "$workspace_env_dir"
+printf 'CODEX_GITHUB_TOKEN=workspace-token\n' >"$workspace_env_dir/local.env"
+generated_worktree="$tmpdir/.code/working/codex-skills/branches/review"
+mkdir -p "$generated_worktree/github/scripts"
+cp "$repo_root/github/scripts/gh-with-env-token" "$generated_worktree/github/scripts/gh-with-env-token"
+
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$generated_worktree/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx 'workspace-token' "$env_log"
+
+: >"$env_log"
+env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx '' "$env_log"
+
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_TOKEN=exhausted-token GITHUB_TOKEN=github-token CODEX_GITHUB_TOKEN=codex-token \
 	GH_ISSUE_ENV_LOG="$env_log" \
