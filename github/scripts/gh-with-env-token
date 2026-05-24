@@ -1,9 +1,13 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
-env_file=${CODEX_SKILLS_ENV_FILE:-$repo_root/.env}
+if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
+	env_file=$CODEX_SKILLS_ENV_FILE
+elif [ -n "${HOME:-}" ]; then
+	env_file=$HOME/.code/local.env
+else
+	env_file=
+fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
 stdout_file=$(mktemp)
