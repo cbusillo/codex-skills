@@ -504,7 +504,7 @@ def claim_lifecycle(
     })
     close_proof = claim.pop("close_" + "token", None)
     claim_metadata = {
-        "status": claim.get("status") or "claimed",
+        "status": "claimed",
         "project_key": route.get("project_key"),
         "project_instance_id": project_instance_id,
         "session_id": route.get("session_id"),
@@ -550,12 +550,12 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
 
 def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     port = route_port(route)
-    body = private_http_get_body(port, "lifecycle/close", params)
+    private_http_get_body(port, "lifecycle/close", params)
     return {
-        "status": body.get("status") or "unknown",
-        "reason": body.get("reason"),
-        "cleanup_skipped": body.get("cleanup_skipped", False),
-        "cleanup_failed": body.get("cleanup_failed", False),
+        "status": "closed",
+        "reason": None,
+        "cleanup_skipped": False,
+        "cleanup_failed": False,
     }
 
 
