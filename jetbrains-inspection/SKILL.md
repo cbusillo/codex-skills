@@ -28,6 +28,7 @@ HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
 uv run "$HELPER" list
 uv run "$HELPER" route --repo "$PWD"
 uv run "$HELPER" run --repo "$PWD" --scope changed_files
+uv run "$HELPER" closeout --repo "$PWD" --scope changed_files
 uv run "$HELPER" status --repo "$PWD"
 uv run "$HELPER" problems --repo "$PWD" --severity error
 ```
@@ -36,6 +37,48 @@ uv run "$HELPER" problems --repo "$PWD" --severity error
 problems, and exit non-zero for unresolved findings or inconclusive states.
 Use `--include-stale` only when explicitly diagnosing cached stale findings;
 stale results still exit non-zero and are not clean.
+
+`closeout` is the readiness/hand-off command. It creates a local lease,
+serializes helper-owned IDE opens, opens the exact current worktree only when no
+exact route exists, waits for indexing/scanning to settle, runs the same
+inspection loop, and calls the plugin lifecycle close endpoint only for projects
+the helper opened. Projects that were already open before `closeout` must remain
+open. Lifecycle opens use macOS background activation by default to reduce focus
+stealing; use `--foreground-open` only when debugging IDE launch behavior.
+Lifecycle closeouts are serialized by a bounded local lock. If another closeout
+is already opening, inspecting, or cleaning up a project, wait for it or increase
+`--lifecycle-lock-timeout-ms`; do not start parallel auto-open closeouts and
+expect independent IDE windows to race safely.
+
+Auto-open is allowed only for worktrees under globally trusted roots. Before a
+lifecycle auto-open, the helper adds the matching trusted root to the selected
+JetBrains product's Trusted Locations config, ensures project opening is set to
+new-window/no-prompt, then asks the running inspection plugin to schedule the
+exact worktree open. The helper polls until the exact route appears before it
+inspects; a lifecycle open response alone is not proof that the IDE finished
+opening the project.
+Configure trusted roots in `${CODEX_HOME:-$HOME/.code}/jetbrains-inspection.json`:
+
+```json
+{
+  "jetbrains": {
+    "trustedAutoOpenRoots": ["/Users/me/Developer", "/Users/me/.code/working"]
+  }
+}
+```
+
+If an exact worktree is not already open and is outside those roots, `closeout`
+must fail before opening the IDE. Do not use random temp directories for agent
+inspection worktrees.
+
+If multiple JetBrains products are installed, repo config or CLI arguments must
+select the intended IDE so the helper updates the right Trusted Locations file.
+If a first-time open still stalls after trusted-location and project-opening
+policy seeding, treat it as a blocker: check for unsupported IDE config layout,
+settings sync overwriting the config, a missing inspection plugin, or a product
+that accepted the scheduled open but never registered the worktree. Real-session
+smokes have validated unattended closeout on IntelliJ IDEA, PyCharm, and
+WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
 
 ## When To Run
 
@@ -70,10 +113,17 @@ Inspect the worktree being edited. Do not silently inspect the main worktree
 when Code is operating in a linked worktree. If routing resolves to another
 worktree, treat that as a blocker unless the user explicitly approves it.
 
+For closeout/readiness, require an exact worktree route. A containing main
+checkout is not enough; `closeout` may open the linked worktree in the preferred
+IDE and must clean it up afterward when it owns the open.
+
 ## Result Policy
 
 - `clean`: inspection passed for the selected scope.
 - findings: fix real findings in touched code before calling work ready.
+- readiness closeouts should use `closeout`, not plain `status`. If lifecycle
+  cleanup is skipped or fails for a helper-opened project, the closeout is not
+  clean; report both the inspection result and cleanup reason.
 - `status` is informational and exits zero only when the helper can retrieve a
   route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
