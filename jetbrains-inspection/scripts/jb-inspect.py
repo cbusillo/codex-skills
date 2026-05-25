@@ -535,8 +535,11 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token:
         })
     except InspectError as error:
         mark_lease_state(lease, "cleanup_failed")
-        reason = error.payload.get("reason") or error.payload.get("status") or "close_failed"
-        return {"status": "failed", "cleanup_failed": True, "reason": reason, "error": str(error), **error.payload}
+        return {
+            "status": "failed",
+            "cleanup_failed": True,
+            "reason": public_cleanup_reason(error),
+        }
     status = str(close_result.get("status") or "")
     mark_lease_state(lease, "closed" if status == "closed" else "cleanup_skipped")
     if status == "closed":
@@ -553,6 +556,13 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
         "cleanup_skipped": body.get("cleanup_skipped", False),
         "cleanup_failed": body.get("cleanup_failed", False),
     }
+
+
+def public_cleanup_reason(error: InspectError) -> str:
+    reason = error.payload.get("reason") or error.payload.get("status")
+    if isinstance(reason, str) and reason:
+        return reason
+    return "close_failed"
 
 
 def route_port(route: dict[str, Any]) -> int:
