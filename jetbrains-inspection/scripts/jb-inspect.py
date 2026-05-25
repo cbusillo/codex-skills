@@ -338,7 +338,6 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
     lease = create_local_lease(context, state="preparing")
     exact_route = find_exact_route(args, context)
     opened_by_helper = False
-    trust: dict[str, Any] | None = None
     if exact_route is None:
         if not getattr(args, "open", False):
             raise InspectError(
@@ -347,7 +346,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
                 {"context": public_context(context), "lease": public_lease(lease)},
             )
         ensure_trusted_auto_open_root(context)
-        trust = ensure_jetbrains_trusted_locations(context)
+        ensure_jetbrains_trusted_locations(context)
         open_via_running_ide(args, context) or open_in_ide(context, background=getattr(args, "background_open", False))
         opened_by_helper = True
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
@@ -374,7 +373,6 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         "lease": public_lease(lease),
         "opened_by_helper": opened_by_helper,
         "claim": claim_metadata,
-        "trust": public_trust_result(trust),
     }
     return prepared, lease, close_proof
 
@@ -417,7 +415,6 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
-        "trusted_auto_open_root_count": trusted_auto_open_root_count(),
         "global_config": str(global_config_path()),
         "background_open": getattr(args, "background_open", False),
         "prepare_timeout_ms": timeout_ms,
@@ -1032,28 +1029,7 @@ def public_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def public_context(context: dict[str, Any]) -> dict[str, Any]:
     public = dict(context)
-    public["trusted_auto_open_root_count"] = trusted_auto_open_root_count()
     return public
-
-
-def public_trust_result(trust: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not trust:
-        return trust
-    updates = trust.get("config_updates") or []
-    changed = 0
-    if isinstance(updates, list):
-        for update in updates:
-            if not isinstance(update, dict):
-                continue
-            trusted_locations = update.get("trusted_locations") or {}
-            project_opening = update.get("project_opening") or {}
-            if trusted_locations.get("changed") or project_opening.get("changed"):
-                changed += 1
-    return {
-        "status": trust.get("status"),
-        "config_update_count": len(updates) if isinstance(updates, list) else 0,
-        "changed_count": changed,
-    }
 
 
 def strip_private_fields(value: Any) -> Any:
