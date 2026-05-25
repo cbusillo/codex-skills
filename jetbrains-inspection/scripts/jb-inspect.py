@@ -352,16 +352,19 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     claim = claim_lifecycle(args, context, exact_route, lease)
+    close_token = claim.get("close_token")
+    public_claim = dict(claim)
+    public_claim.pop("close_token", None)
     lease.update(
         {
             "state": "prepared",
             "opened_by_helper": opened_by_helper,
             "route": exact_route,
-            "plugin_claim": claim,
+            "plugin_claim": public_claim,
             "project_instance_id": exact_route.get("project_instance_id"),
             "project_key": exact_route.get("project_key"),
             "session_id": exact_route.get("session_id"),
-            "close_token": claim.get("close_token"),
+            "_close_token": close_token,
             "prepared_at_ms": now_ms(),
         }
     )
@@ -373,7 +376,7 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
         "lease": public_lease(lease),
         "_lease": lease,
         "opened_by_helper": opened_by_helper,
-        "claim": claim,
+        "claim": public_claim,
         "trust": trust,
     }
 
@@ -502,7 +505,7 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any]) -> dict[str,
         mark_lease_state(lease, "released")
         remove_lease(lease)
         return {"status": "not_needed", "reason": "project_preexisted"}
-    close_token = lease.get("close_token")
+    close_token = lease.get("_close_token")
     project_instance_id = lease.get("project_instance_id")
     if not close_token or not project_instance_id:
         mark_lease_state(lease, "cleanup_skipped")
@@ -861,9 +864,9 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
-    payload = redact_payload(payload)
+    payload = public_payload(payload)
     if json_only:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(public_payload(payload), indent=2, sort_keys=True))
         return exit_code
     print_human(payload)
     return exit_code
@@ -928,6 +931,22 @@ def redact_payload(value: Any) -> Any:
 def is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
     return any(part in lowered for part in SENSITIVE_KEY_PARTS)
+
+
+def public_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return redact_payload(strip_private_fields(payload))
+
+
+def strip_private_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): strip_private_fields(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, list):
+        return [strip_private_fields(item) for item in value]
+    return value
 
 
 def print_capture_diagnostic(diagnostic: Any) -> None:
@@ -1417,7 +1436,7 @@ def write_lease(lease: dict[str, Any]) -> None:
     lease["updated_at_ms"] = now_ms()
     path = lease_path(lease)
     temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(redact_payload(lease), indent=2, sort_keys=True), encoding="utf-8")
+    temp.write_text(json.dumps(public_lease(lease), indent=2, sort_keys=True), encoding="utf-8")
     temp.replace(path)
 
 
@@ -1441,7 +1460,7 @@ def public_lease(lease: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in lease.items()
-        if key not in {"close_token"}
+        if not str(key).startswith("_")
     }
 
 

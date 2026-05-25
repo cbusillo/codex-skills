@@ -121,13 +121,25 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotIn("secret-token", output.getvalue())
         self.assertNotIn("hunter2", output.getvalue())
 
-    def test_write_lease_redacts_sensitive_keys_on_disk(self):
+    def test_emit_strips_private_fields_from_json(self):
+        payload = {"status": "prepared", "_close_token": "secret-token"}
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0)
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(output.getvalue())
+        self.assertNotIn("_close_token", body)
+        self.assertNotIn("secret-token", output.getvalue())
+
+    def test_write_lease_strips_private_fields_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
             os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
             try:
                 lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
-                lease["close_token"] = "secret-token"
+                lease["_close_token"] = "secret-token"
                 jb_inspect.write_lease(lease)
                 body = json.loads(jb_inspect.lease_path(lease).read_text(encoding="utf-8"))
             finally:
@@ -136,7 +148,7 @@ class LifecycleTest(unittest.TestCase):
                 else:
                     os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
 
-            self.assertEqual(body["close_token"], jb_inspect.REDACTED)
+            self.assertNotIn("_close_token", body)
             self.assertNotIn("secret-token", json.dumps(body))
 
     def test_claim_creates_local_lease_without_opening_ide(self):
@@ -253,7 +265,7 @@ class LifecycleTest(unittest.TestCase):
                 lease.update(
                     {
                         "opened_by_helper": True,
-                        "close_token": "token",
+                        "_close_token": "token",
                         "project_instance_id": "session:1",
                     }
                 )
