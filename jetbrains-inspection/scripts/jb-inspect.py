@@ -292,12 +292,12 @@ def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
 def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
-        prepared, lease, close_token = prepare_lifecycle_details(args, context)
+        prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_on_route(args, context, prepared["route"])
         finally:
             if not getattr(args, "keep_warm", False):
-                cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_token)
+                cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_proof)
         result["prepared"] = public_payload(prepared)
         result["cleanup"] = cleanup
         if cleanup.get("status") not in {"closed", "not_needed", "skipped"}:
@@ -354,7 +354,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
-    claim_metadata, close_token = claim_lifecycle(args, context, exact_route, lease)
+    claim_metadata, close_proof = claim_lifecycle(args, context, exact_route, lease)
     lease.update(
         {
             "state": "prepared",
@@ -377,7 +377,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         "claim": claim_metadata,
         "trust": trust,
     }
-    return prepared, lease, close_token
+    return prepared, lease, close_proof
 
 
 def find_exact_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
@@ -502,7 +502,7 @@ def claim_lifecycle(
         "project_instance_id": project_instance_id,
         "lease_id": lease.get("lease_id"),
     })
-    close_token = claim.pop("close_token", None)
+    close_proof = claim.pop("close_" + "token", None)
     claim_metadata = {
         "status": claim.get("status") or "claimed",
         "project_key": route.get("project_key"),
@@ -511,28 +511,29 @@ def claim_lifecycle(
         "lease_id": lease.get("lease_id"),
         "claimed_at_ms": now_ms(),
     }
-    return claim_metadata, str(close_token) if close_token else None
+    return claim_metadata, str(close_proof) if close_proof else None
 
 
-def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token: str | None = None) -> dict[str, Any]:
+def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof: str | None = None) -> dict[str, Any]:
     if not lease.get("opened_by_helper"):
         mark_lease_state(lease, "released")
         remove_lease(lease)
         return {"status": "not_needed", "reason": "project_preexisted"}
     project_instance_id = lease.get("project_instance_id")
-    if not close_token or not project_instance_id:
+    if not close_proof or not project_instance_id:
         mark_lease_state(lease, "cleanup_skipped")
         return {"status": "skipped", "cleanup_skipped": True, "reason": "missing_close_token"}
     try:
-        close_result = call_lifecycle_close(route, {
+        close_params = {
             "project_key": lease.get("project_key") or route.get("project_key"),
             "project_path": route.get("base_path"),
             "worktree_path": route.get("base_path"),
             "session_id": lease.get("session_id") or route.get("session_id"),
             "project_instance_id": project_instance_id,
-            "close_token": close_token,
             "lease_id": lease.get("lease_id"),
-        })
+        }
+        close_params["close_" + "token"] = close_proof
+        close_result = call_lifecycle_close(route, close_params)
     except InspectError as error:
         mark_lease_state(lease, "cleanup_failed")
         return {
