@@ -2,12 +2,15 @@
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
@@ -88,6 +91,316 @@ class WorktreeSafetyTest(unittest.TestCase):
         args = Namespace(no_worktree_check=True)
 
         jb_inspect.ensure_worktree_safe(route, context, args)
+
+    def test_exact_worktree_rejects_containing_project(self):
+        route = {"base_path": "/tmp/main-checkout"}
+        context = {"worktree_root": "/tmp/main-checkout/packages/app"}
+        args = Namespace(no_worktree_check=False)
+
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.ensure_exact_worktree(route, context, args)
+
+
+class LifecycleTest(unittest.TestCase):
+    def test_claim_creates_local_lease_without_opening_ide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                context = {"repo_path": "/tmp/repo", "worktree_root": "/tmp/repo"}
+                result = jb_inspect.command_claim(Namespace(), context)
+            finally:
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+            self.assertEqual(result["status"], "claimed")
+            self.assertEqual(result["lease"]["state"], "claimed")
+
+    def test_cleanup_skips_preexisting_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
+                lease["opened_by_helper"] = False
+                result = jb_inspect.cleanup_lifecycle(lease, {"project_key": "path:/tmp/repo"})
+            finally:
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+            self.assertEqual(result["status"], "not_needed")
+            self.assertEqual(result["reason"], "project_preexisted")
+
+    def test_find_exact_route_returns_none_for_containing_project(self):
+        original_resolve_route = jb_inspect.resolve_route
+        jb_inspect.resolve_route = lambda args, context: {"base_path": "/tmp/repo"}
+        try:
+            route = jb_inspect.find_exact_route(
+                Namespace(no_worktree_check=False, open=False),
+                {"worktree_root": "/tmp/repo/packages/app"},
+            )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+
+        self.assertIsNone(route)
+
+    def test_closeout_runs_inspection_on_prepared_route(self):
+        calls = []
+
+        def fake_prepare(args, context):
+            return {
+                "status": "prepared",
+                "route": {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"},
+                "lease": {"opened_by_helper": False},
+                "_lease": {"opened_by_helper": False},
+            }
+
+        def fake_run(args, context, route):
+            calls.append(route)
+            return {"status": "clean", "clean": True, "route": route}
+
+        original_prepare = jb_inspect.prepare_lifecycle
+        original_run = jb_inspect.run_inspection_on_route
+        jb_inspect.prepare_lifecycle = fake_prepare
+        jb_inspect.run_inspection_on_route = fake_run
+        try:
+            result = jb_inspect.command_closeout(Namespace(keep_warm=True), {})
+        finally:
+            jb_inspect.prepare_lifecycle = original_prepare
+            jb_inspect.run_inspection_on_route = original_run
+
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(calls, [{"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}])
+        self.assertNotIn("_lease", result["prepared"])
+
+    def test_open_in_ide_uses_background_flag_on_macos(self):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.open_in_ide({"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"}, background=True)
+
+        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/worktree"], check=False, capture_output=True, text=True)
+
+    def test_open_in_ide_reports_failed_macos_open(self):
+        completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run", return_value=completed):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.open_in_ide({"ide": "Missing IDE", "worktree_root": "/tmp/worktree"}, background=True)
+
+        self.assertIn("Failed to ask macOS", str(raised.exception))
+        self.assertEqual(raised.exception.payload["returncode"], 1)
+        self.assertIn("Unable to find application", raised.exception.payload["stderr"])
+
+    def test_auto_open_timeout_payload_names_trust_and_modal_causes(self):
+        args = Namespace(background_open=True)
+        payload = jb_inspect.auto_open_timeout_payload(
+            args,
+            {"ide": "PyCharm", "worktree_root": "/tmp/worktree", "trusted_auto_open_roots": ["/tmp"]},
+            300_000,
+        )
+
+        self.assertTrue(payload["background_open"])
+        self.assertIn("JetBrains trust", payload["likely_causes"][0])
+        self.assertIn("new window", " ".join(payload["likely_causes"]))
+
+    def test_cleanup_failure_surfaces_close_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            original_call_endpoint = jb_inspect.call_endpoint
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
+                lease.update(
+                    {
+                        "opened_by_helper": True,
+                        "close_token": "token",
+                        "project_instance_id": "session:1",
+                    }
+                )
+
+                def fake_call_endpoint(route, endpoint, params, timeout=None):
+                    raise jb_inspect.InspectError("IDE session changed", 4, {"reason": "session_drift", "session_drift": True})
+
+                jb_inspect.call_endpoint = fake_call_endpoint
+                result = jb_inspect.cleanup_lifecycle(lease, {"project_key": "path:/tmp/repo"})
+            finally:
+                jb_inspect.call_endpoint = original_call_endpoint
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "session_drift")
+        self.assertTrue(result["cleanup_failed"])
+
+    def test_lifecycle_lock_times_out_when_already_held(self):
+        if jb_inspect.fcntl is None:
+            self.skipTest("fcntl locking is unavailable on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            holder = None
+            try:
+                path = jb_inspect.lifecycle_lock_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                holder = path.open("a+", encoding="utf-8")
+                jb_inspect.fcntl.flock(holder.fileno(), jb_inspect.fcntl.LOCK_EX | jb_inspect.fcntl.LOCK_NB)
+
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    with jb_inspect.lifecycle_lock(1):
+                        pass
+            finally:
+                if holder is not None:
+                    jb_inspect.fcntl.flock(holder.fileno(), jb_inspect.fcntl.LOCK_UN)
+                    holder.close()
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+        self.assertIn("lifecycle lock", str(raised.exception))
+        self.assertEqual(raised.exception.payload["timeout_ms"], 1)
+
+    def test_trusted_auto_open_allows_worktree_under_global_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "trusted"
+            worktree = root / "repo"
+            worktree.mkdir(parents=True)
+            jb_inspect.ensure_trusted_auto_open_root(
+                {"worktree_root": str(worktree), "trusted_auto_open_roots": [str(root)]}
+            )
+
+    def test_trusted_auto_open_rejects_untrusted_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted = Path(tmp) / "trusted"
+            worktree = Path(tmp) / "untrusted" / "repo"
+            trusted.mkdir()
+            worktree.mkdir(parents=True)
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.ensure_trusted_auto_open_root(
+                    {"worktree_root": str(worktree), "trusted_auto_open_roots": [str(trusted)]}
+                )
+
+        self.assertIn("outside trusted auto-open roots", str(raised.exception))
+
+    def test_ensure_jetbrains_trusted_locations_updates_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "PyCharm2026.1"
+            options_dir = config_dir / "options"
+            options_dir.mkdir(parents=True)
+            trusted_file = options_dir / "trusted-paths.xml"
+            trusted_file.write_text(
+                '<application><component name="Trusted.Paths.Settings"><option name="TRUSTED_PATHS"><list /></option></component></application>',
+                encoding="utf-8",
+            )
+            worktree = Path(tmp) / "trusted" / "repo"
+            worktree.mkdir(parents=True)
+            original_config = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
+            os.environ["JETBRAINS_INSPECTION_IDE_CONFIG_DIR"] = str(config_dir)
+            try:
+                result = jb_inspect.ensure_jetbrains_trusted_locations(
+                    {"ide": "PyCharm", "worktree_root": str(worktree), "trusted_auto_open_roots": [str(worktree.parent)]}
+                )
+                updated = trusted_file.read_text(encoding="utf-8")
+            finally:
+                if original_config is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_IDE_CONFIG_DIR"] = original_config
+
+        self.assertEqual(result["status"], "trusted")
+        self.assertTrue(result["config_updates"][0]["trusted_locations"]["changed"])
+        self.assertIn("/trusted", updated)
+        self.assertIn("Trusted.Paths.Settings", updated)
+        self.assertIn("Trusted.Paths", updated)
+
+    def test_ensure_project_opening_policy_sets_new_window_without_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "PyCharm2026.1"
+            options_dir = config_dir / "options"
+            options_dir.mkdir(parents=True)
+            general_file = options_dir / "ide.general.xml"
+            general_file.write_text(
+                '<application><component name="GeneralSettings"><option name="confirmOpenNewProject2" value="0" /></component></application>',
+                encoding="utf-8",
+            )
+
+            result = jb_inspect.ensure_project_opening_policy(config_dir)
+            updated = general_file.read_text(encoding="utf-8")
+
+        self.assertTrue(result["changed"])
+        self.assertIn('name="confirmOpenNewProject2" value="-1"', updated)
+
+    def test_open_via_running_ide_calls_matching_lifecycle_open(self):
+        calls = []
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "IntelliJ IDEA", "session_id": "s1"}]
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            calls.append((port, endpoint, params))
+            return jb_inspect.HttpResult(200, {"status": "opened"}, "url")
+
+        jb_inspect.http_get = fake_http_get
+        try:
+            result = jb_inspect.open_via_running_ide(
+                Namespace(port=None),
+                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+            )
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
+
+        self.assertTrue(result)
+        self.assertEqual(calls[0][1], "lifecycle/open")
+        self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
+
+    def test_open_via_running_ide_ignores_other_ide_products(self):
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "WebStorm", "session_id": "s1"}]
+        jb_inspect.http_get = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not call"))
+        try:
+            result = jb_inspect.open_via_running_ide(Namespace(port=None), {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"})
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
+
+        self.assertFalse(result)
+
+    def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Library" / "Application Support" / "JetBrains"
+            for name in ("PyCharm2026.1", "IntelliJIdea2026.1"):
+                (base / name / "options").mkdir(parents=True)
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
+                patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=Path(tmp)):
+                os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    jb_inspect.jetbrains_config_dirs({})
+
+        self.assertIn("multiple IDE config directories", str(raised.exception))
+
+    def test_jetbrains_config_dirs_matches_requested_ide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Library" / "Application Support" / "JetBrains"
+            pycharm = base / "PyCharm2026.1"
+            idea = base / "IntelliJIdea2026.1"
+            (pycharm / "options").mkdir(parents=True)
+            (idea / "options").mkdir(parents=True)
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
+                patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=Path(tmp)):
+                os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
+                result = jb_inspect.jetbrains_config_dirs({"ide": "IntelliJ IDEA"})
+
+        self.assertEqual(result, [idea])
 
 
 class ClassificationTest(unittest.TestCase):
