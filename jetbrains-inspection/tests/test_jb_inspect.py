@@ -102,6 +102,43 @@ class WorktreeSafetyTest(unittest.TestCase):
 
 
 class LifecycleTest(unittest.TestCase):
+    def test_emit_redacts_sensitive_keys_from_json(self):
+        payload = {
+            "status": "prepared",
+            "close_token": "secret-token",
+            "nested": {"password": "hunter2", "project_key": "path:/tmp/repo"},
+        }
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0)
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(output.getvalue())
+        self.assertEqual(body["close_token"], jb_inspect.REDACTED)
+        self.assertEqual(body["nested"]["password"], jb_inspect.REDACTED)
+        self.assertEqual(body["nested"]["project_key"], "path:/tmp/repo")
+        self.assertNotIn("secret-token", output.getvalue())
+        self.assertNotIn("hunter2", output.getvalue())
+
+    def test_write_lease_redacts_sensitive_keys_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
+                lease["close_token"] = "secret-token"
+                jb_inspect.write_lease(lease)
+                body = json.loads(jb_inspect.lease_path(lease).read_text(encoding="utf-8"))
+            finally:
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+            self.assertEqual(body["close_token"], jb_inspect.REDACTED)
+            self.assertNotIn("secret-token", json.dumps(body))
+
     def test_claim_creates_local_lease_without_opening_ide(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")

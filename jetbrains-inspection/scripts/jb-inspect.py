@@ -42,6 +42,8 @@ DEFAULT_PREPARE_TIMEOUT_MS = 300_000
 DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
+REDACTED = "<redacted>"
+SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 
 
 class InspectError(Exception):
@@ -859,6 +861,7 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
+    payload = redact_payload(payload)
     if json_only:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
@@ -909,6 +912,22 @@ def print_human(payload: dict[str, Any]) -> None:
             print(f"- [{problem.get('severity', 'unknown')}] {location} {problem.get('description', '')}")
     if not route and not status:
         print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def redact_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): REDACTED if is_sensitive_key(str(key)) else redact_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_payload(item) for item in value]
+    return value
+
+
+def is_sensitive_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in SENSITIVE_KEY_PARTS)
 
 
 def print_capture_diagnostic(diagnostic: Any) -> None:
@@ -1398,7 +1417,7 @@ def write_lease(lease: dict[str, Any]) -> None:
     lease["updated_at_ms"] = now_ms()
     path = lease_path(lease)
     temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(lease, indent=2, sort_keys=True), encoding="utf-8")
+    temp.write_text(json.dumps(redact_payload(lease), indent=2, sort_keys=True), encoding="utf-8")
     temp.replace(path)
 
 
