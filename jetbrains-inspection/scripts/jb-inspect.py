@@ -629,7 +629,7 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             continue
         if not candidates:
             raise InspectError("No open JetBrains project matched this repo/worktree.", 3, {"selector": selector_params(args, context)})
-        route = sorted(candidates, key=lambda item: item.get("score", 0), reverse=True)[0]
+        route = sorted(candidates, key=lambda item: route_sort_key(item, context), reverse=True)[0]
         ensure_worktree_safe(route, context, args)
         return route
 
@@ -1653,6 +1653,21 @@ def ensure_worktree_safe(route: dict[str, Any], context: dict[str, Any], args: a
         3,
         {"route_base_path": str(route_path), "worktree_root": str(worktree_path), "hint": "Open the current worktree in the preferred IDE or rerun with --no-worktree-check after approval."},
     )
+
+
+def route_sort_key(route: dict[str, Any], context: dict[str, Any]) -> tuple[int, int, int]:
+    route_base = route.get("base_path")
+    worktree_root = context.get("worktree_root")
+    try:
+        route_path = Path(str(route_base)).resolve() if route_base else None
+        worktree_path = Path(str(worktree_root)).resolve() if worktree_root else None
+    except OSError:
+        route_path = None
+        worktree_path = None
+
+    exact = int(route_path is not None and worktree_path is not None and route_path == worktree_path)
+    depth = len(route_path.parts) if route_path is not None else 0
+    return (int(route.get("score") or 0), exact, depth)
 
 
 def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: argparse.Namespace) -> None:
