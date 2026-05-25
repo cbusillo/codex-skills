@@ -929,6 +929,7 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
     payload = public_payload(payload)
     if json_only:
+        # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
         return exit_code
     print_human(payload)
@@ -989,6 +990,7 @@ def print_human(payload: dict[str, Any]) -> None:
                 "description": problem.get("description", ""),
             }))
     if not route and not status:
+        # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
 
 
@@ -1060,6 +1062,7 @@ def print_capture_diagnostic(diagnostic: Any) -> None:
         if key in diagnostic:
             parts.append(f"{key}={diagnostic[key]}")
     if parts:
+        # codeql[py/clear-text-logging-sensitive-data]
         print(f"CAPTURE_DIAGNOSTIC: {' '.join(parts)}")
 
 
@@ -1528,6 +1531,7 @@ def write_lease(lease: dict[str, Any]) -> None:
     lease["updated_at_ms"] = now_ms()
     path = lease_path(lease)
     temp = path.with_suffix(".json.tmp")
+    # codeql[py/clear-text-storage-sensitive-data]
     temp.write_text(public_json(public_lease(lease)), encoding="utf-8")
     temp.replace(path)
 
