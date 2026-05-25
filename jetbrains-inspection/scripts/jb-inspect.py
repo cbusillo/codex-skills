@@ -524,7 +524,7 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token:
         mark_lease_state(lease, "cleanup_skipped")
         return {"status": "skipped", "cleanup_skipped": True, "reason": "missing_close_token"}
     try:
-        body = call_endpoint(route, "lifecycle/close", {
+        close_result = call_lifecycle_close(route, {
             "project_key": lease.get("project_key") or route.get("project_key"),
             "project_path": route.get("base_path"),
             "worktree_path": route.get("base_path"),
@@ -537,10 +537,21 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token:
         mark_lease_state(lease, "cleanup_failed")
         reason = error.payload.get("reason") or error.payload.get("status") or "close_failed"
         return {"status": "failed", "cleanup_failed": True, "reason": reason, "error": str(error), **error.payload}
-    mark_lease_state(lease, "closed" if body.get("status") == "closed" else "cleanup_skipped")
-    if body.get("status") == "closed":
+    status = str(close_result.get("status") or "")
+    mark_lease_state(lease, "closed" if status == "closed" else "cleanup_skipped")
+    if status == "closed":
         remove_lease(lease)
-    return body
+    return close_result
+
+
+def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    body = call_endpoint(route, "lifecycle/close", params)
+    return {
+        "status": body.get("status") or "unknown",
+        "reason": body.get("reason"),
+        "cleanup_skipped": body.get("cleanup_skipped", False),
+        "cleanup_failed": body.get("cleanup_failed", False),
+    }
 
 
 def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
