@@ -106,8 +106,8 @@ class LifecycleTest(unittest.TestCase):
     def test_emit_redacts_sensitive_keys_from_json(self):
         payload = {
             "status": "prepared",
-            "close_token": "secret-token",
-            "nested": {"password": "hunter2", "project_key": "path:/tmp/repo"},
+            "close_token": "value-that-must-not-print",
+            "nested": {"password": "another-value-that-must-not-print", "project_key": "path:/tmp/repo"},
         }
 
         output = io.StringIO()
@@ -119,11 +119,11 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(body["close_token"], jb_inspect.REDACTED)
         self.assertEqual(body["nested"]["password"], jb_inspect.REDACTED)
         self.assertEqual(body["nested"]["project_key"], "path:/tmp/repo")
-        self.assertNotIn("secret-token", output.getvalue())
-        self.assertNotIn("hunter2", output.getvalue())
+        self.assertNotIn("value-that-must-not-print", output.getvalue())
+        self.assertNotIn("another-value-that-must-not-print", output.getvalue())
 
     def test_emit_strips_private_fields_from_json(self):
-        payload = {"status": "prepared", "_control": {"secret": "secret-value"}}
+        payload = {"status": "prepared", "_control": {"secret": "private-value"}}
 
         output = io.StringIO()
         with redirect_stdout(output):
@@ -132,7 +132,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         body = json.loads(output.getvalue())
         self.assertNotIn("_control", body)
-        self.assertNotIn("secret-value", output.getvalue())
+        self.assertNotIn("private-value", output.getvalue())
 
     def test_prepare_lifecycle_does_not_return_private_close_control(self):
         original_create = jb_inspect.create_local_lease
@@ -152,7 +152,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.find_exact_route = lambda args, context: route
             jb_inspect.ensure_exact_worktree = lambda route, context, args: None
             jb_inspect.wait_until_route_ready = lambda args, context, route, timeout_ms: None
-            jb_inspect.claim_lifecycle = lambda args, context, route, lease: ({"status": "claimed"}, "secret-token")
+            jb_inspect.claim_lifecycle = lambda args, context, route, lease: ({"status": "claimed"}, "private-close-proof")
             jb_inspect.write_lease = lambda lease: None
 
             prepared = jb_inspect.prepare_lifecycle(Namespace(prepare_timeout_ms=1), {"worktree_root": "/tmp/repo"})
@@ -166,7 +166,7 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(prepared["status"], "prepared")
         self.assertNotIn("_control", prepared)
-        self.assertNotIn("secret-token", json.dumps(prepared))
+        self.assertNotIn("private-close-proof", json.dumps(prepared))
 
     def test_write_lease_strips_private_fields_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -174,7 +174,7 @@ class LifecycleTest(unittest.TestCase):
             os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
             try:
                 lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
-                lease["_private_data"] = "secret-token"
+                lease["_private_data"] = "private-lease-value"
                 jb_inspect.write_lease(lease)
                 body = json.loads(jb_inspect.lease_path(lease).read_text(encoding="utf-8"))
             finally:
@@ -184,7 +184,7 @@ class LifecycleTest(unittest.TestCase):
                     os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
 
             self.assertNotIn("_private_data", body)
-            self.assertNotIn("secret-token", json.dumps(body))
+            self.assertNotIn("private-lease-value", json.dumps(body))
 
     def test_claim_creates_local_lease_without_opening_ide(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -283,12 +283,12 @@ class LifecycleTest(unittest.TestCase):
 
         jb_inspect.urllib.request.urlopen = fake_urlopen
         try:
-            result = jb_inspect.http_get(63342, "lifecycle/close", {"close_token": "secret-token", "project_key": "path:/tmp/repo"})
+            result = jb_inspect.http_get(63342, "lifecycle/close", {"close_token": "private-close-proof", "project_key": "path:/tmp/repo"})
         finally:
             jb_inspect.urllib.request.urlopen = original_urlopen
 
-        self.assertIn("secret-token", captured["url"])
-        self.assertNotIn("secret-token", result.url)
+        self.assertIn("private-close-proof", captured["url"])
+        self.assertNotIn("private-close-proof", result.url)
         self.assertIn(urllib.parse.quote(jb_inspect.REDACTED), result.url)
 
     def test_open_in_ide_uses_background_flag_on_macos(self):
