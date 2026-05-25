@@ -101,6 +101,24 @@ class WorktreeSafetyTest(unittest.TestCase):
         with self.assertRaises(jb_inspect.InspectError):
             jb_inspect.ensure_exact_worktree(route, context, args)
 
+    def test_route_sort_key_prefers_exact_worktree_for_equal_scores(self):
+        context = {"worktree_root": "/tmp/repo/packages/app"}
+        parent = {"score": 930, "base_path": "/tmp/repo"}
+        child = {"score": 930, "base_path": "/tmp/repo/packages/app"}
+
+        routes = sorted([parent, child], key=lambda route: jb_inspect.route_sort_key(route, context), reverse=True)
+
+        self.assertEqual(routes[0], child)
+
+    def test_route_sort_key_prefers_deeper_containing_project_for_equal_scores(self):
+        context = {"worktree_root": "/tmp/repo/packages/app/src/main"}
+        parent = {"score": 930, "base_path": "/tmp/repo"}
+        child = {"score": 930, "base_path": "/tmp/repo/packages/app"}
+
+        routes = sorted([parent, child], key=lambda route: jb_inspect.route_sort_key(route, context), reverse=True)
+
+        self.assertEqual(routes[0], child)
+
 
 class LifecycleTest(unittest.TestCase):
     def test_emit_redacts_sensitive_keys_from_json(self):
