@@ -354,13 +354,13 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
-    claim, close_token = claim_lifecycle(args, context, exact_route, lease)
+    claim_metadata, close_token = claim_lifecycle(args, context, exact_route, lease)
     lease.update(
         {
             "state": "prepared",
             "opened_by_helper": opened_by_helper,
             "route": exact_route,
-            "plugin_claim": claim,
+            "plugin_claim": claim_metadata,
             "project_instance_id": exact_route.get("project_instance_id"),
             "project_key": exact_route.get("project_key"),
             "session_id": exact_route.get("session_id"),
@@ -374,7 +374,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         "route": exact_route,
         "lease": public_lease(lease),
         "opened_by_helper": opened_by_helper,
-        "claim": claim,
+        "claim": claim_metadata,
         "trust": trust,
     }
     return prepared, lease, close_token
@@ -503,7 +503,15 @@ def claim_lifecycle(
         "lease_id": lease.get("lease_id"),
     })
     close_token = claim.pop("close_token", None)
-    return claim, str(close_token) if close_token else None
+    claim_metadata = {
+        "status": claim.get("status") or "claimed",
+        "project_key": route.get("project_key"),
+        "project_instance_id": project_instance_id,
+        "session_id": route.get("session_id"),
+        "lease_id": lease.get("lease_id"),
+        "claimed_at_ms": now_ms(),
+    }
+    return claim_metadata, str(close_token) if close_token else None
 
 
 def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token: str | None = None) -> dict[str, Any]:
