@@ -228,13 +228,13 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    return {"status": "resolved", "context": context, "route": route}
+    return {"status": "resolved", "context": public_context(context), "route": route}
 
 
 def command_trigger(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     body = call_endpoint(route, "trigger", trigger_params(args, context, route))
-    return {"status": body.get("status", "triggered"), "context": context, "route": body.get("route") or route, "trigger": body}
+    return {"status": body.get("status", "triggered"), "context": public_context(context), "route": body.get("route") or route, "trigger": body}
 
 
 def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -244,7 +244,7 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
         "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
     }, timeout=wait_http_timeout(timeout_ms))
-    return {"status": body.get("completion_reason") or body.get("status", "unknown"), "context": context, "route": body.get("route") or route, "wait": body}
+    return {"status": body.get("completion_reason") or body.get("status", "unknown"), "context": public_context(context), "route": body.get("route") or route, "wait": body}
 
 
 def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -254,7 +254,7 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
     return {
         "status": status,
         "clean": classify_status_body_clean(body),
-        "context": context,
+        "context": public_context(context),
         "route": body.get("route") or route,
         "is_scanning": body.get("is_scanning", False),
         "indexing": body.get("indexing", False),
@@ -281,7 +281,7 @@ def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[
 
 def command_claim(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     lease = create_local_lease(context, state="claimed")
-    return {"status": "claimed", "context": context, "lease": public_lease(lease)}
+    return {"status": "claimed", "context": public_context(context), "lease": public_lease(lease)}
 
 
 def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -345,7 +345,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             raise InspectError(
                 "Exact worktree is not open in a JetBrains IDE.",
                 3,
-                {"context": context, "lease": public_lease(lease)},
+                {"context": public_context(context), "lease": public_lease(lease)},
             )
         ensure_trusted_auto_open_root(context)
         trust = ensure_jetbrains_trusted_locations(context)
@@ -370,12 +370,12 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
     write_lease(lease)
     prepared = {
         "status": "prepared",
-        "context": context,
+        "context": public_context(context),
         "route": exact_route,
         "lease": public_lease(lease),
         "opened_by_helper": opened_by_helper,
         "claim": claim_metadata,
-        "trust": trust,
+        "trust": public_trust_result(trust),
     }
     return prepared, lease, close_proof
 
@@ -415,10 +415,10 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "The inspection plugin is disabled, missing, or has not written its registry heartbeat yet.",
     ]
     return {
-        "context": context,
+        "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
-        "trusted_auto_open_roots": context.get("trusted_auto_open_roots") or [],
+        "trusted_auto_open_root_count": len(context.get("trusted_auto_open_roots") or []),
         "global_config": str(global_config_path()),
         "background_open": getattr(args, "background_open", False),
         "prepare_timeout_ms": timeout_ms,
@@ -793,7 +793,7 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
     summary: dict[str, Any] = {
         "status": status,
         "clean": status == "results_available" and len(problems) == 0 and not body.get("capture_incomplete") and not results_may_be_stale,
-        "context": context,
+        "context": public_context(context),
         "route": route,
         "capture_incomplete": body.get("capture_incomplete", False),
         "results_may_be_stale": results_may_be_stale,
@@ -1031,6 +1031,33 @@ def public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return redact_payload(strip_private_fields(payload))
 
 
+def public_context(context: dict[str, Any]) -> dict[str, Any]:
+    public = dict(context)
+    public.pop("trusted_auto_open_roots", None)
+    public["trusted_auto_open_root_count"] = len(context.get("trusted_auto_open_roots") or [])
+    return public
+
+
+def public_trust_result(trust: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not trust:
+        return trust
+    updates = trust.get("config_updates") or []
+    changed = 0
+    if isinstance(updates, list):
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            trusted_locations = update.get("trusted_locations") or {}
+            project_opening = update.get("project_opening") or {}
+            if trusted_locations.get("changed") or project_opening.get("changed"):
+                changed += 1
+    return {
+        "status": trust.get("status"),
+        "config_update_count": len(updates) if isinstance(updates, list) else 0,
+        "changed_count": changed,
+    }
+
+
 def strip_private_fields(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -1196,7 +1223,7 @@ def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
         3,
         {
             "worktree_root": str(worktree_path),
-            "trusted_auto_open_roots": trusted,
+        "trusted_auto_open_root_count": len(trusted),
             "global_config": str(global_config_path()),
             "hint": "Move the worktree under a trusted root, add a trusted root globally, or open/trust the project manually once.",
         },
@@ -1656,12 +1683,12 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
     route_base = route.get("base_path")
     worktree_root = context.get("worktree_root")
     if not route_base or not worktree_root:
-        raise InspectError("Cannot verify exact worktree route; route or worktree path is missing.", 3, {"route": route, "context": context})
+        raise InspectError("Cannot verify exact worktree route; route or worktree path is missing.", 3, {"route": route, "context": public_context(context)})
     try:
         route_path = Path(route_base).resolve()
         worktree_path = Path(worktree_root).resolve()
     except OSError as error:
-        raise InspectError(f"Cannot verify exact worktree route: {error}", 3, {"route": route, "context": context}) from error
+        raise InspectError(f"Cannot verify exact worktree route: {error}", 3, {"route": route, "context": public_context(context)}) from error
     if route_path != worktree_path:
         raise InspectError(
             "Lifecycle closeout requires the exact current worktree to be open in the IDE.",
