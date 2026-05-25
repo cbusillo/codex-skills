@@ -212,7 +212,6 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "ide": ide,
         "scope": scope,
         "worktree_strategy": worktree_strategy,
-        "trusted_auto_open_roots": trusted_auto_open_roots(),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
 
@@ -418,7 +417,7 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
-        "trusted_auto_open_root_count": len(context.get("trusted_auto_open_roots") or []),
+        "trusted_auto_open_root_count": trusted_auto_open_root_count(),
         "global_config": str(global_config_path()),
         "background_open": getattr(args, "background_open", False),
         "prepare_timeout_ms": timeout_ms,
@@ -1033,8 +1032,7 @@ def public_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def public_context(context: dict[str, Any]) -> dict[str, Any]:
     public = dict(context)
-    public.pop("trusted_auto_open_roots", None)
-    public["trusted_auto_open_root_count"] = len(context.get("trusted_auto_open_roots") or [])
+    public["trusted_auto_open_root_count"] = trusted_auto_open_root_count()
     return public
 
 
@@ -1196,9 +1194,13 @@ def trusted_auto_open_roots() -> list[str]:
     return roots
 
 
+def trusted_auto_open_root_count() -> int:
+    return len(trusted_auto_open_roots())
+
+
 def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
     worktree = context.get("worktree_root")
-    roots = context.get("trusted_auto_open_roots") or []
+    roots = trusted_auto_open_roots()
     if not worktree:
         raise InspectError("Cannot auto-open IDE because the worktree path is unknown.", 3)
     if not roots:
@@ -1267,7 +1269,7 @@ def ensure_jetbrains_trusted_locations(context: dict[str, Any]) -> dict[str, Any
 def trusted_root_for_worktree(context: dict[str, Any]) -> Path:
     worktree_path = Path(str(context.get("worktree_root"))).expanduser().resolve()
     matches: list[Path] = []
-    for root in context.get("trusted_auto_open_roots") or []:
+    for root in trusted_auto_open_roots():
         root_path = Path(str(root)).expanduser().resolve()
         if worktree_path == root_path or worktree_path.is_relative_to(root_path):
             matches.append(root_path)

@@ -384,9 +384,8 @@ class LifecycleTest(unittest.TestCase):
             root = Path(tmp) / "trusted"
             worktree = root / "repo"
             worktree.mkdir(parents=True)
-            jb_inspect.ensure_trusted_auto_open_root(
-                {"worktree_root": str(worktree), "trusted_auto_open_roots": [str(root)]}
-            )
+            with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(root)]):
+                jb_inspect.ensure_trusted_auto_open_root({"worktree_root": str(worktree)})
 
     def test_trusted_auto_open_rejects_untrusted_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -396,9 +395,8 @@ class LifecycleTest(unittest.TestCase):
             worktree.mkdir(parents=True)
 
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.ensure_trusted_auto_open_root(
-                    {"worktree_root": str(worktree), "trusted_auto_open_roots": [str(trusted)]}
-                )
+                with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
+                    jb_inspect.ensure_trusted_auto_open_root({"worktree_root": str(worktree)})
 
         self.assertIn("outside trusted auto-open roots", str(raised.exception))
 
@@ -417,9 +415,8 @@ class LifecycleTest(unittest.TestCase):
             original_config = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
             os.environ["JETBRAINS_INSPECTION_IDE_CONFIG_DIR"] = str(config_dir)
             try:
-                result = jb_inspect.ensure_jetbrains_trusted_locations(
-                    {"ide": "PyCharm", "worktree_root": str(worktree), "trusted_auto_open_roots": [str(worktree.parent)]}
-                )
+                with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(worktree.parent)]):
+                    result = jb_inspect.ensure_jetbrains_trusted_locations({"ide": "PyCharm", "worktree_root": str(worktree)})
                 updated = trusted_file.read_text(encoding="utf-8")
             finally:
                 if original_config is None:
