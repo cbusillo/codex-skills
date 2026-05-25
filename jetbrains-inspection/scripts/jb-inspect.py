@@ -929,7 +929,7 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
     payload = public_payload(payload)
     if json_only:
-        print(json.dumps(public_payload(payload), indent=2, sort_keys=True))
+        print(public_json(payload))
         return exit_code
     print_human(payload)
     return exit_code
@@ -938,31 +938,39 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
 def print_human(payload: dict[str, Any]) -> None:
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
-        print(
-            f"ROUTE: {route.get('ide', {}).get('name') or 'JetBrains IDE'} "
-            f"project={route.get('project_name')} project_key={route.get('project_key')} "
-            f"base_path={route.get('base_path')}"
-        )
+        print(safe_text("ROUTE: {ide_name} project={project_name} project_key={project_key} base_path={base_path}", {
+            "ide_name": route.get("ide", {}).get("name") or "JetBrains IDE",
+            "project_name": route.get("project_name"),
+            "project_key": route.get("project_key"),
+            "base_path": route.get("base_path"),
+        }))
     status = payload.get("status")
     if status:
-        print(f"STATUS: {status}")
+        print(safe_text("STATUS: {status}", {"status": status}))
     print_result_flags(payload)
     if "total_problems" in payload or "problems_shown" in payload:
         total = payload.get("total_problems", 0)
         shown = payload.get("problems_shown", len(payload.get("problems") or []))
         clean = payload.get("clean")
-        print(f"SUMMARY: clean={clean} total_problems={total} problems_shown={shown}")
+        print(safe_text("SUMMARY: clean={clean} total_problems={total} problems_shown={shown}", {
+            "clean": clean,
+            "total": total,
+            "shown": shown,
+        }))
     if "cached_total_problems" in payload or "cached_problems_shown" in payload:
         total = payload.get("cached_total_problems", "unknown")
         shown = payload.get("cached_problems_shown", len(payload.get("problems") or []))
-        print(f"CACHED: total_problems={total} problems_shown={shown}")
+        print(safe_text("CACHED: total_problems={total} problems_shown={shown}", {"total": total, "shown": shown}))
     cleanup = payload.get("cleanup") or {}
     if cleanup:
-        print(f"CLEANUP: status={cleanup.get('status')} reason={cleanup.get('reason')}")
+        print(safe_text("CLEANUP: status={status} reason={reason}", {
+            "status": cleanup.get("status"),
+            "reason": cleanup.get("reason"),
+        }))
     if payload.get("status") == "stale_results" and not payload.get("include_stale"):
         print("STALE: cached findings withheld; re-run inspection or pass --include-stale for diagnostics.")
     if payload.get("snapshot_change_kind"):
-        print(f"SNAPSHOT: change_kind={payload['snapshot_change_kind']}")
+        print(safe_text("SNAPSHOT: change_kind={kind}", {"kind": payload["snapshot_change_kind"]}))
     print_capture_diagnostic(payload.get("capture_diagnostic"))
     wait = payload.get("wait") or {}
     if wait:
@@ -975,9 +983,30 @@ def print_human(payload: dict[str, Any]) -> None:
             line = problem.get("line")
             if line:
                 location = f"{location}:{line}"
-            print(f"- [{problem.get('severity', 'unknown')}] {location} {problem.get('description', '')}")
+            print(safe_text("- [{severity}] {location} {description}", {
+                "severity": problem.get("severity", "unknown"),
+                "location": location,
+                "description": problem.get("description", ""),
+            }))
     if not route and not status:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(public_json(payload))
+
+
+def public_json(payload: dict[str, Any]) -> str:
+    return json.dumps(public_payload(payload), indent=2, sort_keys=True)
+
+
+def safe_text(template: str, values: dict[str, Any]) -> str:
+    clean_values = {key: safe_scalar(value) for key, value in public_payload(values).items()}
+    return template.format(**clean_values)
+
+
+def safe_scalar(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return json.dumps(public_payload({"value": value})["value"], sort_keys=True)
 
 
 def redact_payload(value: Any) -> Any:
@@ -1499,7 +1528,7 @@ def write_lease(lease: dict[str, Any]) -> None:
     lease["updated_at_ms"] = now_ms()
     path = lease_path(lease)
     temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(public_lease(lease), indent=2, sort_keys=True), encoding="utf-8")
+    temp.write_text(public_json(public_lease(lease)), encoding="utf-8")
     temp.replace(path)
 
 
