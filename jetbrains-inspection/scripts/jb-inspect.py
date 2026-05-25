@@ -545,13 +545,46 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token:
 
 
 def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-    body = call_endpoint(route, "lifecycle/close", params)
+    port = route_port(route)
+    body = private_http_get_body(port, "lifecycle/close", params)
     return {
         "status": body.get("status") or "unknown",
         "reason": body.get("reason"),
         "cleanup_skipped": body.get("cleanup_skipped", False),
         "cleanup_failed": body.get("cleanup_failed", False),
     }
+
+
+def route_port(route: dict[str, Any]) -> int:
+    port = int(route.get("port") or route.get("ide", {}).get("port") or 0)
+    if port:
+        return port
+    base_url = route.get("base_url") or ""
+    parsed = urllib.parse.urlparse(base_url)
+    port = parsed.port or 0
+    if not port:
+        raise InspectError("Route did not include an IDE port.", 3, {"route": route})
+    return port
+
+
+def private_http_get_body(port: int, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+    clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
+    query = urllib.parse.urlencode(clean_params, doseq=True)
+    base_url = f"http://localhost:{port}/api/inspection/{endpoint}"
+    request_url = f"{base_url}?{query}" if query else base_url
+    request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=max(DEFAULT_TIMEOUT_SECONDS, 10.0)) as response:
+            return parse_json(response.read())
+    except urllib.error.HTTPError as error:
+        body = parse_json(error.read())
+        if error.code == 409 and body.get("session_drift"):
+            raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, body)
+        if error.code == 400:
+            raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
+        raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise InspectError(f"Inspection API unavailable on port {port}: {error}", 3)
 
 
 def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -672,13 +705,7 @@ def call_endpoint(
     params: dict[str, Any],
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    port = int(route.get("port") or route.get("ide", {}).get("port") or 0)
-    if not port:
-        base_url = route.get("base_url") or ""
-        parsed = urllib.parse.urlparse(base_url)
-        port = parsed.port or 0
-    if not port:
-        raise InspectError("Route did not include an IDE port.", 3, {"route": route})
+    port = route_port(route)
     return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
 
 

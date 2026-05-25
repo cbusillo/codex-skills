@@ -323,7 +323,7 @@ class LifecycleTest(unittest.TestCase):
     def test_cleanup_failure_surfaces_close_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
-            original_call_endpoint = jb_inspect.call_endpoint
+            original_private_http = jb_inspect.private_http_get_body
             os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
             try:
                 lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
@@ -331,16 +331,17 @@ class LifecycleTest(unittest.TestCase):
                     {
                         "opened_by_helper": True,
                         "project_instance_id": "session:1",
+                        "project_key": "path:/tmp/repo",
                     }
                 )
 
-                def fake_call_endpoint(route, endpoint, params, timeout=None):
+                def fake_private_http(port, endpoint, params):
                     raise jb_inspect.InspectError("IDE session changed", 4, {"reason": "session_drift", "session_drift": True})
 
-                jb_inspect.call_endpoint = fake_call_endpoint
-                result = jb_inspect.cleanup_lifecycle(lease, {"project_key": "path:/tmp/repo"}, "token")
+                jb_inspect.private_http_get_body = fake_private_http
+                result = jb_inspect.cleanup_lifecycle(lease, {"port": 63342, "project_key": "path:/tmp/repo"}, "token")
             finally:
-                jb_inspect.call_endpoint = original_call_endpoint
+                jb_inspect.private_http_get_body = original_private_http
                 if original_cache is None:
                     os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
                 else:
