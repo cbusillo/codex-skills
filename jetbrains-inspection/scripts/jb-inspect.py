@@ -292,15 +292,13 @@ def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
 def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
-        prepared = prepare_lifecycle(args, context)
+        prepared, lease, close_token = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_on_route(args, context, prepared["route"])
         finally:
-            lease = prepared.get("_lease") or prepared.get("lease") or {}
             if not getattr(args, "keep_warm", False):
-                cleanup = cleanup_lifecycle(lease, prepared.get("route") or {})
-            prepared.pop("_lease", None)
-        result["prepared"] = prepared
+                cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_token)
+        result["prepared"] = public_payload(prepared)
         result["cleanup"] = cleanup
         if cleanup.get("status") not in {"closed", "not_needed", "skipped"}:
             result["cleanup_failed"] = True
@@ -333,6 +331,11 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
 
 
 def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    prepared, _, _ = prepare_lifecycle_details(args, context)
+    return prepared
+
+
+def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     lease = create_local_lease(context, state="preparing")
     exact_route = find_exact_route(args, context)
     opened_by_helper = False
@@ -351,34 +354,30 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
-    claim = claim_lifecycle(args, context, exact_route, lease)
-    close_token = claim.get("close_token")
-    public_claim = dict(claim)
-    public_claim.pop("close_token", None)
+    claim, close_token = claim_lifecycle(args, context, exact_route, lease)
     lease.update(
         {
             "state": "prepared",
             "opened_by_helper": opened_by_helper,
             "route": exact_route,
-            "plugin_claim": public_claim,
+            "plugin_claim": claim,
             "project_instance_id": exact_route.get("project_instance_id"),
             "project_key": exact_route.get("project_key"),
             "session_id": exact_route.get("session_id"),
-            "_close_token": close_token,
             "prepared_at_ms": now_ms(),
         }
     )
     write_lease(lease)
-    return {
+    prepared = {
         "status": "prepared",
         "context": context,
         "route": exact_route,
         "lease": public_lease(lease),
-        "_lease": lease,
         "opened_by_helper": opened_by_helper,
-        "claim": public_claim,
+        "claim": claim,
         "trust": trust,
     }
+    return prepared, lease, close_token
 
 
 def find_exact_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
@@ -486,7 +485,12 @@ def identity_matches_context(identity: dict[str, Any], context: dict[str, Any]) 
     return any(needle in value for needle in needles for value in values)
 
 
-def claim_lifecycle(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any], lease: dict[str, Any]) -> dict[str, Any]:
+def claim_lifecycle(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    lease: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
     project_instance_id = route.get("project_instance_id")
     if not project_instance_id:
         raise InspectError(
@@ -494,18 +498,19 @@ def claim_lifecycle(args: argparse.Namespace, context: dict[str, Any], route: di
             3,
             {"route": route},
         )
-    return call_endpoint(route, "lifecycle/claim", route_params(args, context, route) | {
+    claim = call_endpoint(route, "lifecycle/claim", route_params(args, context, route) | {
         "project_instance_id": project_instance_id,
         "lease_id": lease.get("lease_id"),
     })
+    close_token = claim.pop("close_token", None)
+    return claim, str(close_token) if close_token else None
 
 
-def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_token: str | None = None) -> dict[str, Any]:
     if not lease.get("opened_by_helper"):
         mark_lease_state(lease, "released")
         remove_lease(lease)
         return {"status": "not_needed", "reason": "project_preexisted"}
-    close_token = lease.get("_close_token")
     project_instance_id = lease.get("project_instance_id")
     if not close_token or not project_instance_id:
         mark_lease_state(lease, "cleanup_skipped")
@@ -623,13 +628,14 @@ def identity_for_port(port: int) -> dict[str, Any]:
 def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> HttpResult:
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
     query = urllib.parse.urlencode(clean_params, doseq=True)
-    url = f"http://localhost:{port}/api/inspection/{endpoint}"
-    if query:
-        url = f"{url}?{query}"
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    display_query = urllib.parse.urlencode(redact_payload(clean_params), doseq=True)
+    base_url = f"http://localhost:{port}/api/inspection/{endpoint}"
+    request_url = f"{base_url}?{query}" if query else base_url
+    display_url = f"{base_url}?{display_query}" if display_query else base_url
+    request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return HttpResult(response.status, parse_json(response.read()), url)
+            return HttpResult(response.status, parse_json(response.read()), display_url)
     except urllib.error.HTTPError as error:
         body = parse_json(error.read())
         if error.code == 409 and body.get("session_drift"):

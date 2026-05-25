@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -122,7 +123,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotIn("hunter2", output.getvalue())
 
     def test_emit_strips_private_fields_from_json(self):
-        payload = {"status": "prepared", "_close_token": "secret-token"}
+        payload = {"status": "prepared", "_control": {"secret": "secret-value"}}
 
         output = io.StringIO()
         with redirect_stdout(output):
@@ -130,8 +131,42 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         body = json.loads(output.getvalue())
-        self.assertNotIn("_close_token", body)
-        self.assertNotIn("secret-token", output.getvalue())
+        self.assertNotIn("_control", body)
+        self.assertNotIn("secret-value", output.getvalue())
+
+    def test_prepare_lifecycle_does_not_return_private_close_control(self):
+        original_create = jb_inspect.create_local_lease
+        original_find = jb_inspect.find_exact_route
+        original_ensure = jb_inspect.ensure_exact_worktree
+        original_wait_ready = jb_inspect.wait_until_route_ready
+        original_claim = jb_inspect.claim_lifecycle
+        original_write = jb_inspect.write_lease
+        try:
+            route = {
+                "project_key": "path:/tmp/repo",
+                "base_path": "/tmp/repo",
+                "project_instance_id": "session:1",
+                "session_id": "session",
+            }
+            jb_inspect.create_local_lease = lambda context, state="preparing": {"lease_id": "lease-1", "state": state}
+            jb_inspect.find_exact_route = lambda args, context: route
+            jb_inspect.ensure_exact_worktree = lambda route, context, args: None
+            jb_inspect.wait_until_route_ready = lambda args, context, route, timeout_ms: None
+            jb_inspect.claim_lifecycle = lambda args, context, route, lease: ({"status": "claimed"}, "secret-token")
+            jb_inspect.write_lease = lambda lease: None
+
+            prepared = jb_inspect.prepare_lifecycle(Namespace(prepare_timeout_ms=1), {"worktree_root": "/tmp/repo"})
+        finally:
+            jb_inspect.create_local_lease = original_create
+            jb_inspect.find_exact_route = original_find
+            jb_inspect.ensure_exact_worktree = original_ensure
+            jb_inspect.wait_until_route_ready = original_wait_ready
+            jb_inspect.claim_lifecycle = original_claim
+            jb_inspect.write_lease = original_write
+
+        self.assertEqual(prepared["status"], "prepared")
+        self.assertNotIn("_control", prepared)
+        self.assertNotIn("secret-token", json.dumps(prepared))
 
     def test_write_lease_strips_private_fields_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,7 +174,7 @@ class LifecycleTest(unittest.TestCase):
             os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
             try:
                 lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
-                lease["_close_token"] = "secret-token"
+                lease["_private_data"] = "secret-token"
                 jb_inspect.write_lease(lease)
                 body = json.loads(jb_inspect.lease_path(lease).read_text(encoding="utf-8"))
             finally:
@@ -148,7 +183,7 @@ class LifecycleTest(unittest.TestCase):
                 else:
                     os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
 
-            self.assertNotIn("_close_token", body)
+            self.assertNotIn("_private_data", body)
             self.assertNotIn("secret-token", json.dumps(body))
 
     def test_claim_creates_local_lease_without_opening_ide(self):
@@ -212,19 +247,49 @@ class LifecycleTest(unittest.TestCase):
             calls.append(route)
             return {"status": "clean", "clean": True, "route": route}
 
-        original_prepare = jb_inspect.prepare_lifecycle
+        original_prepare = jb_inspect.prepare_lifecycle_details
         original_run = jb_inspect.run_inspection_on_route
-        jb_inspect.prepare_lifecycle = fake_prepare
+        jb_inspect.prepare_lifecycle_details = lambda args, context: (fake_prepare(args, context), {"opened_by_helper": False}, None)
         jb_inspect.run_inspection_on_route = fake_run
         try:
             result = jb_inspect.command_closeout(Namespace(keep_warm=True), {})
         finally:
-            jb_inspect.prepare_lifecycle = original_prepare
+            jb_inspect.prepare_lifecycle_details = original_prepare
             jb_inspect.run_inspection_on_route = original_run
 
         self.assertEqual(result["status"], "clean")
         self.assertEqual(calls, [{"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}])
         self.assertNotIn("_lease", result["prepared"])
+
+    def test_http_get_redacts_sensitive_query_in_result_url(self):
+        captured = {}
+        original_urlopen = jb_inspect.urllib.request.urlopen
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            return FakeResponse()
+
+        jb_inspect.urllib.request.urlopen = fake_urlopen
+        try:
+            result = jb_inspect.http_get(63342, "lifecycle/close", {"close_token": "secret-token", "project_key": "path:/tmp/repo"})
+        finally:
+            jb_inspect.urllib.request.urlopen = original_urlopen
+
+        self.assertIn("secret-token", captured["url"])
+        self.assertNotIn("secret-token", result.url)
+        self.assertIn(urllib.parse.quote(jb_inspect.REDACTED), result.url)
 
     def test_open_in_ide_uses_background_flag_on_macos(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
@@ -265,7 +330,6 @@ class LifecycleTest(unittest.TestCase):
                 lease.update(
                     {
                         "opened_by_helper": True,
-                        "_close_token": "token",
                         "project_instance_id": "session:1",
                     }
                 )
@@ -274,7 +338,7 @@ class LifecycleTest(unittest.TestCase):
                     raise jb_inspect.InspectError("IDE session changed", 4, {"reason": "session_drift", "session_drift": True})
 
                 jb_inspect.call_endpoint = fake_call_endpoint
-                result = jb_inspect.cleanup_lifecycle(lease, {"project_key": "path:/tmp/repo"})
+                result = jb_inspect.cleanup_lifecycle(lease, {"project_key": "path:/tmp/repo"}, "token")
             finally:
                 jb_inspect.call_endpoint = original_call_endpoint
                 if original_cache is None:
