@@ -15,7 +15,7 @@ Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
 In the common user-skill install, that path is:
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py run --repo "$PWD"
+uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py closeout --repo "$PWD" --scope changed_files
 ```
 
 If this skill was loaded from a repo-local or temporary path, use that loaded
@@ -27,18 +27,14 @@ Useful commands:
 HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
 uv run "$HELPER" list
 uv run "$HELPER" route --repo "$PWD"
-uv run "$HELPER" run --repo "$PWD" --scope changed_files
 uv run "$HELPER" closeout --repo "$PWD" --scope changed_files
+uv run "$HELPER" run --repo "$PWD" --scope changed_files
 uv run "$HELPER" status --repo "$PWD"
 uv run "$HELPER" problems --repo "$PWD" --severity error
 ```
 
-`run` is the default inspection loop: resolve route, trigger, wait, fetch
-problems, and exit non-zero for unresolved findings or inconclusive states.
-Use `--include-stale` only when explicitly diagnosing cached stale findings;
-stale results still exit non-zero and are not clean.
-
-`closeout` is the readiness/hand-off command. It creates a local lease,
+`closeout` is the readiness/hand-off command and must be used before saying a
+change is ready, safe to push, safe to merge, or safe to exit. It creates a local lease,
 serializes helper-owned IDE opens, opens the exact current worktree only when no
 exact route exists, waits for indexing/scanning to settle, runs the same
 inspection loop, and calls the plugin lifecycle close endpoint only for projects
@@ -79,6 +75,12 @@ settings sync overwriting the config, a missing inspection plugin, or a product
 that accepted the scheduled open but never registered the worktree. Real-session
 smokes have validated unattended closeout on IntelliJ IDEA, PyCharm, and
 WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
+
+`run` is retained as an iterative/backward-compatible inspection loop: prepare
+the exact worktree when needed, trigger, wait, fetch problems, and clean up any
+project it opened. Prefer `closeout` in final validation notes so cleanup status
+is explicit. Use `--include-stale` only when explicitly diagnosing cached stale
+findings; stale results still exit non-zero and are not clean.
 
 ## When To Run
 

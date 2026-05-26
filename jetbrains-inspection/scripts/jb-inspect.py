@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("wait", "run", "closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
-    for name in ("prepare", "closeout"):
+    for name in ("prepare", "run", "closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--no-open", dest="open", action="store_false", help="Do not open the IDE if the exact worktree is not already open.")
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Ask macOS to open the IDE without activating it. Default for lifecycle opens.")
@@ -285,10 +285,19 @@ def command_claim(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
 
 def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
-        return prepare_lifecycle(args, context)
+        prepared = prepare_lifecycle(args, context)
+    return prepared
 
 
 def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    return run_prepared_inspection(args, context)
+
+
+def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    return run_prepared_inspection(args, context)
+
+
+def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
@@ -303,12 +312,7 @@ def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[
             result["cleanup_failed"] = True
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
-        return result
-
-
-def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    route = resolve_route(args, context)
-    return run_inspection_on_route(args, context, route)
+    return result
 
 
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
