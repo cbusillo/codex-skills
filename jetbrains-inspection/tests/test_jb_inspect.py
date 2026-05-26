@@ -279,6 +279,47 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(calls, [{"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}])
         self.assertNotIn("_lease", result["prepared"])
 
+    def test_run_uses_lifecycle_prepare_and_cleanup(self):
+        calls = []
+        cleanups = []
+
+        prepared = {
+            "status": "prepared",
+            "route": {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"},
+            "lease": {"opened_by_helper": True},
+        }
+        lease = {"opened_by_helper": True, "lease_id": "lease-1"}
+
+        def fake_run(args, context, route):
+            calls.append(route)
+            return {"status": "clean", "clean": True, "route": route}
+
+        def fake_cleanup(cleanup_lease, route, close_proof):
+            cleanups.append((cleanup_lease, route, close_proof))
+            return {"status": "closed"}
+
+        original_prepare = jb_inspect.prepare_lifecycle_details
+        original_run = jb_inspect.run_inspection_on_route
+        original_cleanup = jb_inspect.cleanup_lifecycle
+        jb_inspect.prepare_lifecycle_details = lambda args, context: (prepared, lease, "proof-1")
+        jb_inspect.run_inspection_on_route = fake_run
+        jb_inspect.cleanup_lifecycle = fake_cleanup
+        try:
+            args = Namespace(
+                keep_warm=False,
+                lifecycle_lock_timeout_ms=0,
+            )
+            result = jb_inspect.command_run(args, {})
+        finally:
+            jb_inspect.prepare_lifecycle_details = original_prepare
+            jb_inspect.run_inspection_on_route = original_run
+            jb_inspect.cleanup_lifecycle = original_cleanup
+
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["cleanup"], {"status": "closed"})
+        self.assertEqual(calls, [prepared["route"]])
+        self.assertEqual(cleanups, [(lease, prepared["route"], "proof-1")])
+
     def test_http_get_redacts_sensitive_query_in_result_url(self):
         captured = {}
         original_urlopen = jb_inspect.urllib.request.urlopen
