@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reason", help="Optional reason to include in the superseded PR comment.")
     p.add_argument("--keep-open", action="store_true", help="Comment and neutralize closing keywords without closing the PR.")
     p.add_argument("--no-neutralize", action="store_true", help="Do not rewrite closing keywords in the superseded PR body.")
+    p.add_argument("--delete-branch", action="store_true", help="Delete the superseded PR's same-repo remote branch when safe.")
     p.add_argument("--dry-run", action="store_true", help="Return the planned operations without changing GitHub state.")
     p.set_defaults(func=cmd_supersede)
 
@@ -199,6 +200,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
         keep_open=args.keep_open,
     )
     planned_close = not args.keep_open
+    planned_branch_delete = superseded_branch_delete_plan(pr, repo) if args.delete_branch and planned_close else None
 
     if args.dry_run:
         return {
@@ -211,6 +213,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
                 "updateBody": bool(replacements),
                 "commentBody": comment_body,
                 "close": planned_close,
+                "deleteBranch": planned_branch_delete,
             },
             "neutralizedClosingReferences": replacements,
         }
@@ -223,6 +226,9 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     close_result = None
     if planned_close and pr.get("state") != "closed":
         close_result = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"})
+    deleted = None
+    if planned_branch_delete:
+        deleted = delete_ref(repo, planned_branch_delete["ref"])
 
     final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {
@@ -233,6 +239,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
         "bodyUpdated": body_update is not None,
         "commentUrl": comment.get("html_url") if isinstance(comment, dict) else None,
         "closed": bool(close_result) or pr.get("state") == "closed",
+        "deletedBranch": deleted,
         "neutralizedClosingReferences": replacements,
     }
 
@@ -293,6 +300,18 @@ def superseded_comment_body(*, winner_ref: str, reason: Optional[str], body_neut
     if body_neutralized:
         parts.append("Issue-closing references in this PR body were changed to `Refs` so the canonical PR owns issue closure.")
     return "\n\n".join(parts)
+
+
+def superseded_branch_delete_plan(pr: dict[str, Any], repo: str) -> Optional[dict[str, str]]:
+    head = pr.get("head") or {}
+    head_repo = head.get("repo") or {}
+    base = pr.get("base") or {}
+    head_full_name = head_repo.get("full_name")
+    head_ref = head.get("ref")
+    base_ref = base.get("ref")
+    if head_full_name != repo or not head_ref or head_ref == base_ref:
+        return None
+    return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}
 
 
 FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}

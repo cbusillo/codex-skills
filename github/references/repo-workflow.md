@@ -122,6 +122,20 @@ Use `--dry-run` first when validating the comment, closure, and body rewrite
 that would happen. Use `--keep-open` only when a PR should remain open for
 comparison or follow-up, and say why in the comment.
 
+When a superseded PR is closed and its remote task branch is no longer needed,
+delete the unused remote branch after confirming the branch belongs to the same
+repository, is not the base branch, and no active issue, PR, worktree, or
+review still depends on it. `gh-pr.py supersede --delete-branch` performs this
+same-repo/base-branch safety check for the remote ref; otherwise report the
+branch as a cleanup candidate.
+
+Clean local worker and review worktrees for completed or superseded PRs can be
+removed when they have no uncommitted work, no unpushed commits, and no active
+issue or PR still depends on them. Remove the associated local branch with
+`git branch -d <branch>` after the worktree is gone and Git can prove the
+branch is merged or otherwise unnecessary. Ask before deleting any dirty
+worktree, branch with unmerged commits, or ambiguous review/automation worktree.
+
 Issue closeout belongs to the winning PR. After the canonical PR merges, update
 stale planning state, duplicate issues, or workstream comments so future agents
 can see which PR was selected and which PRs were superseded.

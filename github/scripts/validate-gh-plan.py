@@ -653,6 +653,9 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
             "  if [[ \"$*\" != *'superseded by #13'* ]]; then exit 2; fi\n"
             "  if [[ \"$*\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
             "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
+            "  if [[ \"$*\" != *'--method DELETE'* ]]; then exit 2; fi\n"
+            "  exit 0\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
             "    printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
@@ -688,6 +691,7 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
                 "13",
                 "--reason",
                 "New PR has the agreed tests.",
+                "--delete-branch",
             ],
             text=True,
             stdout=subprocess.PIPE,
@@ -700,12 +704,14 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
     payload = json.loads(result.stdout)
     assert payload["bodyUpdated"] is True, payload
     assert payload["closed"] is True, payload
+    assert payload["deletedBranch"] == {"deleted": True, "ref": "heads/old-topic", "stderr": ""}, payload
     assert payload["commentUrl"].endswith("#issuecomment-1"), payload
     assert payload["neutralizedClosingReferences"] == [
         {"from": "Closes #144", "to": "Refs #144"},
         {"from": "Fixes owner/repo#145", "to": "Refs owner/repo#145"},
     ], payload
     assert "/repos/owner/repo/issues/12/comments" in calls, calls
+    assert "/repos/owner/repo/git/refs/heads/old-topic" in calls, calls
     assert "state=closed" in calls, calls
 
 
