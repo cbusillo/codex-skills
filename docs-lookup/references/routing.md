@@ -32,9 +32,12 @@ move that guidance into `AGENTS.md` or workflow metadata.
 
 ## Local Infrastructure Docs
 
-For local Mac, home-lab, network, Proxmox/LXC, backup, or private service
-questions, read `~/.code/local-context.toml` and use
-`[docs].local_infra` as the local docs path. Treat it as private local context:
+For questions whose correct answer depends on how this specific private/local
+environment is configured or accessed, read `~/.code/local-context.toml` and
+use `[docs].local_infra` as the local docs path. Route by source of truth, not
+provider name: public docs answer generic behavior, while local context answers
+this environment's setup, access path, or operator source of truth. Treat the
+local docs path as private local context:
 
 - start read-only unless the user explicitly approves mutation
 - do not copy private hostnames, paths, secrets, or topology into public issues,

@@ -1,12 +1,16 @@
 ---
 name: launchplane
-description: Unified Launchplane Expert for inspecting runtime context and performing operator mutations. Use to orient on product state, manage secrets, sync runtime config, and orchestrate deployments.
+description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, and audited operator mutations. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
 ---
 
 # Launchplane Expert
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.
+
+Use `docs-lookup` first when a task is discovering the source of truth or access
+path for external/private infrastructure and it is not already clear that
+Launchplane manages that resource.
 
 ## Core Goal
 
