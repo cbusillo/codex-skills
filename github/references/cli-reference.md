@@ -17,6 +17,12 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 - `../github/scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `../github/scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `../github/scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
+  superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
+  `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo
+  remote task branch after the PR is closed and the helper verifies it is not
+  the base branch. Use `--dry-run` to preview the body rewrite, comment,
+  closure, and branch cleanup before mutating GitHub state.
 - `../github/scripts/gh-pr.py rate-limit`: Show REST/core and GraphQL rate
   buckets.
 
@@ -27,6 +33,13 @@ GraphQL-only fields such as `reviewDecision` and `statusCheckRollup` are
 intentionally nullable in helper output unless a future command explicitly opts
 into enrichment. Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues,
 and dependency operations for data the helper cannot yet provide cleanly.
+
+Use `supersede` after a canonical PR has been selected for a duplicate or
+competing implementation. It is intentionally focused on the stale PR: it posts
+the canonical PR link, neutralizes `Closes`/`Fixes`/`Resolves` references in the
+stale body, closes the PR so future agents do not treat it as mergeable, and can
+delete the unused remote task branch when `--delete-branch` is explicitly
+requested.
 
 ### Orientation
 

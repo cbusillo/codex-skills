@@ -624,6 +624,522 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
     assert "token scope" in payload["hint"], payload
 
 
+def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144\\nFixes owner/repo#145\\nResolves https://github.com/owner/repo/issues/146",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  if [[ \"$*\" != *'superseded by #13'* ]]; then exit 2; fi\n"
+            "  if [[ \"$*\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[{\"number\":12}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+            "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
+            "  if [[ \"$*\" != *'--method DELETE'* ]]; then exit 2; fi\n"
+            "  exit 0\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "    printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "  else\n"
+            "    if [[ \"$*\" != *'body=Refs #144'* || \"$*\" != *'Refs owner/repo#145'* ]]; then exit 2; fi\n"
+            "    printf '%s\\n' \"$PR_JSON\"\n"
+            "  fi\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GH_PR_TEST_LOG=str(log_path),
+            PR_JSON=pr_json,
+            WINNER_JSON=winner_json,
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "supersede",
+                "12",
+                "--by",
+                "13",
+                "--reason",
+                "New PR has the agreed tests.",
+                "--delete-branch",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert payload["bodyUpdated"] is True, payload
+    assert payload["closed"] is True, payload
+    assert payload["deletedBranch"] == {"deleted": True, "ref": "heads/old-topic", "stderr": ""}, payload
+    assert payload["commentUrl"].endswith("#issuecomment-1"), payload
+    assert payload["neutralizedClosingReferences"] == [
+        {"from": "Resolves https://github.com/owner/repo/issues/146", "to": "Refs owner/repo#146"},
+        {"from": "Closes #144", "to": "Refs #144"},
+        {"from": "Fixes owner/repo#145", "to": "Refs owner/repo#145"},
+    ], payload
+    assert "/repos/owner/repo/issues/12/comments" in calls, calls
+    assert "/repos/owner/repo/git/refs/heads/old-topic" in calls, calls
+    assert "state=closed" in calls, calls
+
+
+def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  exit 3\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  exit 4\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+        calls = log_path.read_text()
+
+    assert result.returncode == 1, result
+    payload = json.loads(result.stderr)
+    assert payload["ok"] is False, payload
+    assert payload["error"] == "gh: Forbidden (HTTP 403)", payload
+    assert not any("/repos/owner/repo/issues/12/comments" in line for line in calls.splitlines()), calls
+    assert not any(
+        "/repos/owner/repo/pulls/12" in line and "--method PATCH" in line and "body=" in line
+        for line in calls.splitlines()
+    ), calls
+
+
+def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'body=Refs #144'* ]]; then\n"
+            "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True, payload
+    assert payload["closed"] is True, payload
+    assert payload["bodyUpdated"] is False, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "body_update_failed",
+            "reason": "Supersede close/comment succeeded, but the PR body could not be rewritten to neutralize closing keywords.",
+            "stderr": "gh: Forbidden (HTTP 403)",
+        }
+    ], payload
+
+
+def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Refs #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
+            "  printf 'remote ref could not be deleted\\n' >&2\n"
+            "  exit 1\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[{\"number\":12}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+            "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "supersede",
+                "12",
+                "--by",
+                "13",
+                "--delete-branch",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+
+    payload = json.loads(result.stdout)
+    assert payload["closed"] is True, payload
+    assert payload["deletedBranch"] == {
+        "deleted": False,
+        "ref": "heads/old-topic",
+        "stderr": "remote ref could not be deleted",
+    }, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "remote_branch_delete_failed",
+            "ref": "heads/old-topic",
+            "stderr": "remote ref could not be deleted",
+        }
+    ], payload
+
+
+def test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Refs #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"shared-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"shared-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/shared-topic'* ]]; then\n"
+            "  exit 2\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[{\"number\":12}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+            "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"shared-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "supersede",
+                "12",
+                "--by",
+                "13",
+                "--delete-branch",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert payload["deletedBranch"] is None, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "remote_branch_delete_skipped_active_pr",
+            "ref": "heads/shared-topic",
+            "reason": "Superseded and canonical PRs share the same head branch.",
+        }
+    ], payload
+    assert "/repos/owner/repo/git/refs/heads/shared-topic" not in calls, calls
+
+
+def test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Refs #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
+            "  exit 2\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[{\"number\":12},{\"number\":14}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+            "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert payload["deletedBranch"] is None, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "remote_branch_delete_skipped_active_pr",
+            "ref": "heads/old-topic",
+            "reason": "Another open PR uses the superseded PR head branch.",
+            "pullRequests": "14",
+        }
+    ], payload
+    assert "/repos/owner/repo/git/refs/heads/old-topic" not in calls, calls
+
+
+def test_pr_helper_supersede_skips_branch_delete_for_default_branch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Refs #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"release","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/release'* ]]; then\n"
+            "  exit 2\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+            "  printf '[{\"number\":12}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+            "  printf '{\"default_branch\":\"release\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"release\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert payload["deletedBranch"] is None, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "remote_branch_delete_skipped_shared_ref",
+            "ref": "heads/release",
+            "reason": "Superseded PR head branch is the repository default branch.",
+        }
+    ], payload
+    assert "/repos/owner/repo/git/refs/heads/release" not in calls, calls
+
+
 def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -778,6 +1294,13 @@ def main() -> None:
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
+        test_pr_helper_supersede_comments_neutralizes_and_closes,
+        test_pr_helper_supersede_does_not_comment_when_close_fails,
+        test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close,
+        test_pr_helper_supersede_warns_when_branch_delete_fails,
+        test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch,
+        test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch,
+        test_pr_helper_supersede_skips_branch_delete_for_default_branch,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,

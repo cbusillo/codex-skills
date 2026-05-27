@@ -76,6 +76,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--delete-branch", action="store_true")
     p.set_defaults(func=cmd_merge)
 
+    p = sub.add_parser("supersede", help="Mark one PR as superseded by another PR.")
+    p.add_argument("pr", help="Superseded PR number or URL.")
+    p.add_argument("--by", required=True, help="Canonical replacement PR number or URL.")
+    p.add_argument("--reason", help="Optional reason to include in the superseded PR comment.")
+    p.add_argument("--keep-open", action="store_true", help="Comment and neutralize closing keywords without closing the PR.")
+    p.add_argument("--no-neutralize", action="store_true", help="Do not rewrite closing keywords in the superseded PR body.")
+    p.add_argument("--delete-branch", action="store_true", help="Delete the superseded PR's same-repo remote branch when safe.")
+    p.add_argument("--dry-run", action="store_true", help="Return the planned operations without changing GitHub state.")
+    p.set_defaults(func=cmd_supersede)
+
     p = sub.add_parser("rate-limit", help="Show REST and GraphQL rate-limit buckets.")
     p.set_defaults(func=cmd_rate_limit)
 
@@ -168,6 +178,100 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
+    repo, number = resolve_pr(args.repo, args.pr)
+    winner_repo, winner_number = resolve_pr(args.repo, args.by)
+    if repo == winner_repo and number == winner_number:
+        raise PrHelperError("A PR cannot supersede itself", repo=repo, pr=number)
+
+    pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    winner = rest_json("GET", f"/repos/{winner_repo}/pulls/{winner_number}")
+    original_body = pr.get("body") or ""
+    updated_body = original_body
+    replacements: list[dict[str, str]] = []
+    if not args.no_neutralize:
+        updated_body, replacements = neutralize_issue_closing_keywords(original_body)
+
+    winner_ref = pr_reference(repo, winner_repo, winner_number, winner.get("html_url"))
+    comment_body = superseded_comment_body(
+        winner_ref=winner_ref,
+        reason=args.reason,
+        body_neutralized=bool(replacements),
+        keep_open=args.keep_open,
+    )
+    planned_close = not args.keep_open
+    cleanup_warnings: list[dict[str, str]] = []
+    planned_branch_delete = None
+    if args.delete_branch and planned_close:
+        repo_metadata = rest_json("GET", f"/repos/{repo}")
+        same_head_open_prs = same_head_open_pull_requests(repo, pr)
+        planned_branch_delete, cleanup_warnings = superseded_branch_delete_plan(
+            pr,
+            winner,
+            repo,
+            repo_metadata,
+            same_head_open_prs,
+        )
+
+    if args.dry_run:
+        return {
+            "ok": True,
+            "dryRun": True,
+            "repo": repo,
+            "pr": normalize_pr(pr),
+            "supersededBy": {"repo": winner_repo, "number": winner_number, "url": winner.get("html_url")},
+            "planned": {
+                "updateBody": bool(replacements),
+                "commentBody": comment_body,
+                "close": planned_close,
+                "deleteBranch": planned_branch_delete,
+            },
+            "cleanupWarnings": cleanup_warnings,
+            "neutralizedClosingReferences": replacements,
+        }
+
+    close_result = None
+    if planned_close and pr.get("state") != "closed":
+        close_result = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"})
+
+    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": comment_body})
+
+    body_update = None
+    body_update_error = None
+    if replacements:
+        try:
+            body_update = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"body": updated_body})
+        except HelperError as exc:
+            body_update_error = str(exc)
+
+    deleted = None
+    if planned_branch_delete:
+        deleted = delete_ref(repo, planned_branch_delete["ref"])
+    cleanup_warnings.extend(cleanup_warnings_for_deleted_branch(deleted))
+    if body_update_error:
+        cleanup_warnings.append(
+            {
+                "kind": "body_update_failed",
+                "reason": "Supersede close/comment succeeded, but the PR body could not be rewritten to neutralize closing keywords.",
+                "stderr": body_update_error,
+            }
+        )
+
+    final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    return {
+        "ok": True,
+        "repo": repo,
+        "pr": normalize_pr(final_pr),
+        "supersededBy": {"repo": winner_repo, "number": winner_number, "url": winner.get("html_url")},
+        "bodyUpdated": body_update is not None,
+        "commentUrl": comment.get("html_url") if isinstance(comment, dict) else None,
+        "closed": bool(close_result) or pr.get("state") == "closed",
+        "deletedBranch": deleted,
+        "cleanupWarnings": cleanup_warnings,
+        "neutralizedClosingReferences": replacements,
+    }
+
+
 def cmd_rate_limit(_args: argparse.Namespace) -> dict[str, Any]:
     data = rest_json("GET", "/rate_limit")
     resources = data.get("resources") or {}
@@ -178,6 +282,142 @@ def cmd_rate_limit(_args: argparse.Namespace) -> dict[str, Any]:
         "search": resources.get("search"),
         "raw": data,
     }
+
+
+CLOSING_KEYWORDS = (
+    "close",
+    "closes",
+    "closed",
+    "fix",
+    "fixes",
+    "fixed",
+    "resolve",
+    "resolves",
+    "resolved",
+)
+
+CLOSING_REFERENCE_RE = re.compile(
+    r"\b(" + "|".join(CLOSING_KEYWORDS) + r")\s+((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+)\b",
+    re.IGNORECASE,
+)
+
+CLOSING_ISSUE_URL_RE = re.compile(
+    r"\b("
+    + "|".join(CLOSING_KEYWORDS)
+    + r")\s+(https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+))(?:\b|(?=[?#]))",
+    re.IGNORECASE,
+)
+
+
+def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, str]]]:
+    replacements: list[dict[str, str]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        original = match.group(0)
+        replacement = f"Refs {match.group(2)}"
+        replacements.append({"from": original, "to": replacement})
+        return replacement
+
+    def replace_url(match: re.Match[str]) -> str:
+        original = match.group(0)
+        replacement = f"Refs {match.group(3)}#{match.group(4)}"
+        replacements.append({"from": original, "to": replacement})
+        return replacement
+
+    body = CLOSING_ISSUE_URL_RE.sub(replace_url, body)
+    return CLOSING_REFERENCE_RE.sub(replace, body), replacements
+
+
+def pr_reference(current_repo: str, winner_repo: str, winner_number: int, winner_url: Optional[str]) -> str:
+    if current_repo == winner_repo:
+        return f"#{winner_number}"
+    return winner_url or f"{winner_repo}#{winner_number}"
+
+
+def superseded_comment_body(*, winner_ref: str, reason: Optional[str], body_neutralized: bool, keep_open: bool) -> str:
+    verb = "Marking" if keep_open else "Closing"
+    parts = [f"{verb} this PR as superseded by {winner_ref}."]
+    if reason:
+        parts.append(reason.strip())
+    if body_neutralized:
+        parts.append("Issue-closing references in this PR body were changed to `Refs` so the canonical PR owns issue closure.")
+    return "\n\n".join(parts)
+
+
+def superseded_branch_delete_plan(
+    pr: dict[str, Any],
+    winner: dict[str, Any],
+    repo: str,
+    repo_metadata: dict[str, Any],
+    same_head_open_prs: list[dict[str, Any]],
+) -> tuple[Optional[dict[str, str]], list[dict[str, str]]]:
+    head = pr.get("head") or {}
+    head_repo = head.get("repo") or {}
+    winner_head = winner.get("head") or {}
+    winner_head_repo = winner_head.get("repo") or {}
+    base = pr.get("base") or {}
+    head_full_name = head_repo.get("full_name")
+    head_ref = head.get("ref")
+    winner_head_full_name = winner_head_repo.get("full_name")
+    winner_head_ref = winner_head.get("ref")
+    base_ref = base.get("ref")
+    default_branch = repo_metadata.get("default_branch")
+    if head_full_name != repo or not head_ref or head_ref == base_ref:
+        return None, []
+    if head_ref == default_branch:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_shared_ref",
+                "ref": f"heads/{head_ref}",
+                "reason": "Superseded PR head branch is the repository default branch.",
+            }
+        ]
+    if head_full_name == winner_head_full_name and head_ref == winner_head_ref:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_active_pr",
+                "ref": f"heads/{head_ref}",
+                "reason": "Superseded and canonical PRs share the same head branch.",
+            }
+        ]
+    dependent_prs = [item for item in same_head_open_prs if item.get("number") != pr.get("number")]
+    if dependent_prs:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_active_pr",
+                "ref": f"heads/{head_ref}",
+                "reason": "Another open PR uses the superseded PR head branch.",
+                "pullRequests": ",".join(str(item.get("number")) for item in dependent_prs if item.get("number")),
+            }
+        ]
+    return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}, []
+
+
+def same_head_open_pull_requests(repo: str, pr: dict[str, Any]) -> list[dict[str, Any]]:
+    head = pr.get("head") or {}
+    head_repo = head.get("repo") or {}
+    head_full_name = head_repo.get("full_name")
+    head_ref = head.get("ref")
+    if head_full_name != repo or not head_ref:
+        return []
+    owner = repo.split("/", 1)[0]
+    return limited_paged_rest_json(
+        "GET",
+        f"/repos/{repo}/pulls?state=open&head={urllib.parse.quote(f'{owner}:{head_ref}', safe='')}",
+        100,
+    )
+
+
+def cleanup_warnings_for_deleted_branch(deleted: Optional[dict[str, Any]]) -> list[dict[str, str]]:
+    if not deleted or deleted.get("deleted"):
+        return []
+    return [
+        {
+            "kind": "remote_branch_delete_failed",
+            "ref": str(deleted.get("ref") or ""),
+            "stderr": str(deleted.get("stderr") or ""),
+        }
+    ]
 
 
 FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}
