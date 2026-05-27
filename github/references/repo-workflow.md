@@ -59,6 +59,21 @@ body handling, centralized auth and retry behavior, and one maintained place to
 improve workflows. For raw PR, run, or review commands that do not yet have a
 dedicated helper, route through `gh-with-env-token`.
 
+Raw `gh pr create`, `gh pr edit`, and `gh pr comment` author writes as the
+active local `gh` account. Normal PR write flows should use the PR helper so the
+configured automation token is used first:
+
+```sh
+github/scripts/gh-pr.py --repo OWNER/REPO create \
+  --title "Short imperative title" \
+  --body-file /path/to/pr-body.md \
+  --base main --head feature-branch
+github/scripts/gh-pr.py --repo OWNER/REPO edit <pr> \
+  --body-file /path/to/pr-body.md
+github/scripts/gh-pr.py --repo OWNER/REPO comment <pr> \
+  --body-file /path/to/comment.md
+```
+
 Do not guess GitHub CLI JSON field names. If needed, ask `gh` for available
 fields before composing a large query:
 
@@ -89,6 +104,56 @@ Default to PR-backed implementation work.
 - Do not close externally reported issues just because a fix PR merged. Leave a
   validation comment and close only after the reporter/current user confirms or
   explicitly asks.
+
+### Superseded Or Competing PRs
+
+When two or more PRs target the same issue, title, branch prefix, or workstream,
+choose one canonical implementation before merge or closeout. The canonical PR
+owns issue-closing language; competing PRs should use `Refs #123`, not
+`Closes #123` or `Fixes #123`, unless they become the selected implementation.
+
+Before opening a new PR, and again before merging or closing out a PR, sweep for
+open competing PRs that reference the same issue number, title phrase, branch
+prefix, Launchplane request id, or workstream. At minimum, inspect:
+
+```sh
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO list \
+  --state open --limit 50
+gh search prs 'repo:OWNER/REPO is:pr is:open 123 OR "workstream phrase"'
+```
+
+If a competing PR is superseded, comment on the stale PR with the canonical PR
+link and close it when it is no longer a viable implementation. Use the helper
+when available because it also rewrites issue-closing keywords to `Refs` on the
+superseded PR body:
+
+```sh
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
+  --by 71 \
+  --reason 'PR #71 matches the agreed taxonomy and includes the missing tests.'
+```
+
+Use `--dry-run` first when validating the comment, closure, and body rewrite
+that would happen. Use `--keep-open` only when a PR should remain open for
+comparison or follow-up, and say why in the comment.
+
+When a superseded PR is closed and its remote task branch is no longer needed,
+delete the unused remote branch after confirming the branch belongs to the same
+repository, is not the base branch, and no active issue, PR, worktree, or
+review still depends on it. `gh-pr.py supersede --delete-branch` performs this
+same-repo/base-branch safety check for the remote ref; otherwise report the
+branch as a cleanup candidate.
+
+Clean local worker and review worktrees for completed or superseded PRs can be
+removed when they have no uncommitted work, no unpushed commits, and no active
+issue or PR still depends on them. Remove the associated local branch with
+`git branch -d <branch>` after the worktree is gone and Git can prove the
+branch is merged or otherwise unnecessary. Ask before deleting any dirty
+worktree, branch with unmerged commits, or ambiguous review/automation worktree.
+
+Issue closeout belongs to the winning PR. After the canonical PR merges, update
+stale planning state, duplicate issues, or workstream comments so future agents
+can see which PR was selected and which PRs were superseded.
 
 Use repo-specific instructions for exceptions, deploy labels, preview behavior,
 required checks, or release policy.
@@ -153,8 +218,9 @@ inline threads before deciding what to change.
   proposed fix.
 - Ask before posting GitHub replies, resolving threads, or dismissing feedback
   unless the user explicitly asked to handle review comments end-to-end.
-- For issue and PR timeline comments, use `scripts/gh-comment`; never pass
-  escaped `\n` through `--body`.
+- For issue and PR timeline comments, use `scripts/gh-comment` or
+  `scripts/gh-pr.py comment --body-file`; never pass escaped `\n` through
+  `--body`.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

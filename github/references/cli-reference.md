@@ -14,19 +14,39 @@ Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 
 - `../github/scripts/gh-pr.py view <pr>`: Show PR metadata.
 - `../github/scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
+- `../github/scripts/gh-pr.py create --title TITLE --body-file BODY.md`:
+  Create a PR through the automation-token wrapper.
+- `../github/scripts/gh-pr.py edit <pr> --body-file BODY.md`: Replace a PR
+  body through the automation-token wrapper.
+- `../github/scripts/gh-pr.py comment <pr> --body-file COMMENT.md`: Add a PR
+  timeline comment through the automation-token wrapper.
 - `../github/scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `../github/scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `../github/scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
+  superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
+  `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo
+  remote task branch after the PR is closed and the helper verifies it is not
+  the base branch. Use `--dry-run` to preview the body rewrite, comment,
+  closure, and branch cleanup before mutating GitHub state.
 - `../github/scripts/gh-pr.py rate-limit`: Show REST/core and GraphQL rate
   buckets.
 
-Use this helper for high-frequency PR polling, check polling, merge readiness,
-and merge execution. Ask for the PR operation you need; the helper is
-REST-first for normal PR orientation and owns quota-aware degraded output.
+Use this helper for high-frequency PR polling, check polling,
+PR create/edit/comment writes, merge readiness, and merge execution. Ask for
+the PR operation you need; the helper is REST-first for normal PR orientation
+and owns quota-aware degraded output.
 GraphQL-only fields such as `reviewDecision` and `statusCheckRollup` are
 intentionally nullable in helper output unless a future command explicitly opts
 into enrichment. Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues,
 and dependency operations for data the helper cannot yet provide cleanly.
+
+Use `supersede` after a canonical PR has been selected for a duplicate or
+competing implementation. It is intentionally focused on the stale PR: it posts
+the canonical PR link, neutralizes `Closes`/`Fixes`/`Resolves` references in the
+stale body, closes the PR so future agents do not treat it as mergeable, and can
+delete the unused remote task branch when `--delete-branch` is explicitly
+requested.
 
 ### Orientation
 
@@ -77,8 +97,14 @@ State: Active
 EOF
 ```
 
-For timeline comments, use `scripts/gh-comment`. For PR review feedback, use
-`gh pr review --body-file`.
+For timeline comments, use `scripts/gh-comment` or
+`scripts/gh-pr.py comment --body-file`. For PR review feedback, use
+`scripts/gh-with-env-token pr review --body-file`.
+
+Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
+account. Prefer the PR helper write subcommands above so PR creation, PR body
+edits, and PR timeline comments route through `scripts/gh-with-env-token` and
+use the configured automation token by default.
 
 `scripts/gh-issue` routes through `scripts/gh-with-env-token` by default so it
 uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
