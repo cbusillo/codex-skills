@@ -229,6 +229,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     deleted = None
     if planned_branch_delete:
         deleted = delete_ref(repo, planned_branch_delete["ref"])
+    cleanup_warnings = cleanup_warnings_for_deleted_branch(deleted)
 
     final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {
@@ -240,6 +241,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
         "commentUrl": comment.get("html_url") if isinstance(comment, dict) else None,
         "closed": bool(close_result) or pr.get("state") == "closed",
         "deletedBranch": deleted,
+        "cleanupWarnings": cleanup_warnings,
         "neutralizedClosingReferences": replacements,
     }
 
@@ -312,6 +314,18 @@ def superseded_branch_delete_plan(pr: dict[str, Any], repo: str) -> Optional[dic
     if head_full_name != repo or not head_ref or head_ref == base_ref:
         return None
     return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}
+
+
+def cleanup_warnings_for_deleted_branch(deleted: Optional[dict[str, Any]]) -> list[dict[str, str]]:
+    if not deleted or deleted.get("deleted"):
+        return []
+    return [
+        {
+            "kind": "remote_branch_delete_failed",
+            "ref": str(deleted.get("ref") or ""),
+            "stderr": str(deleted.get("stderr") or ""),
+        }
+    ]
 
 
 FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}
