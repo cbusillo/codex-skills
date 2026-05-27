@@ -27,10 +27,20 @@ class HelperError(Exception):
     pass
 
 
+class PrHelperError(HelperError):
+    def __init__(self, message: str, **payload: Any):
+        super().__init__(message)
+        self.payload = payload
+
+
 def main() -> int:
     args = parse_args()
     try:
         payload = args.func(args)
+    except PrHelperError as exc:
+        error_payload = {"ok": False, "error": str(exc), **exc.payload}
+        print(json.dumps(error_payload, sort_keys=True), file=sys.stderr)
+        return 1
     except HelperError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True), file=sys.stderr)
         return 1
@@ -126,7 +136,21 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         payload["commit_title"] = args.commit_title
     if args.commit_message:
         payload["commit_message"] = args.commit_message
-    result = rest_json("PUT", f"/repos/{repo}/pulls/{number}/merge", payload)
+    merge_path = f"/repos/{repo}/pulls/{number}/merge"
+    try:
+        result = rest_json("PUT", merge_path, payload)
+    except HelperError as exc:
+        raise PrHelperError(
+            "PR merge failed",
+            detail=str(exc),
+            operation="merge",
+            repo=repo,
+            pr=number,
+            endpoint=merge_path,
+            method=args.method,
+            headSha=pr["head"]["sha"],
+            hint=merge_failure_hint(str(exc)),
+        ) from exc
     deleted = None
     if args.delete_branch and result.get("merged"):
         head_repo = pr.get("head", {}).get("repo") or {}
@@ -168,6 +192,17 @@ MERGE_STATE_STATUS = {
     "unknown": "UNKNOWN",
     "unstable": "UNSTABLE",
 }
+
+
+def merge_failure_hint(message: str) -> str:
+    lowered = message.lower()
+    if "not found" in lowered or "404" in lowered:
+        return "GitHub may mask missing merge permission as 404; compare helper token scope with active gh auth."
+    if "resource not accessible" in lowered or "forbidden" in lowered or "403" in lowered:
+        return "Merge endpoint was denied; check token permissions, branch protection, and required checks."
+    if "sha was not found" in lowered or "head branch was modified" in lowered:
+        return "PR head changed before merge; refresh PR state and retry with the current head SHA."
+    return "Inspect PR state, required checks, branch protection, and helper auth context."
 
 
 def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
