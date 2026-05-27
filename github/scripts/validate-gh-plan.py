@@ -624,6 +624,91 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
     assert "token scope" in payload["hint"], payload
 
 
+def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144\\nFixes owner/repo#145",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  if [[ \"$*\" != *'superseded by #13'* ]]; then exit 2; fi\n"
+            "  if [[ \"$*\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "    printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "  else\n"
+            "    if [[ \"$*\" != *'body=Refs #144'* || \"$*\" != *'Refs owner/repo#145'* ]]; then exit 2; fi\n"
+            "    printf '%s\\n' \"$PR_JSON\"\n"
+            "  fi\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GH_PR_TEST_LOG=str(log_path),
+            PR_JSON=pr_json,
+            WINNER_JSON=winner_json,
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "supersede",
+                "12",
+                "--by",
+                "13",
+                "--reason",
+                "New PR has the agreed tests.",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert payload["bodyUpdated"] is True, payload
+    assert payload["closed"] is True, payload
+    assert payload["commentUrl"].endswith("#issuecomment-1"), payload
+    assert payload["neutralizedClosingReferences"] == [
+        {"from": "Closes #144", "to": "Refs #144"},
+        {"from": "Fixes owner/repo#145", "to": "Refs owner/repo#145"},
+    ], payload
+    assert "/repos/owner/repo/issues/12/comments" in calls, calls
+    assert "state=closed" in calls, calls
+
+
 def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -778,6 +863,7 @@ def main() -> None:
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
+        test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,

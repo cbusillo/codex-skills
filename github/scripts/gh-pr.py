@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--delete-branch", action="store_true")
     p.set_defaults(func=cmd_merge)
 
+    p = sub.add_parser("supersede", help="Mark one PR as superseded by another PR.")
+    p.add_argument("pr", help="Superseded PR number or URL.")
+    p.add_argument("--by", required=True, help="Canonical replacement PR number or URL.")
+    p.add_argument("--reason", help="Optional reason to include in the superseded PR comment.")
+    p.add_argument("--keep-open", action="store_true", help="Comment and neutralize closing keywords without closing the PR.")
+    p.add_argument("--no-neutralize", action="store_true", help="Do not rewrite closing keywords in the superseded PR body.")
+    p.add_argument("--dry-run", action="store_true", help="Return the planned operations without changing GitHub state.")
+    p.set_defaults(func=cmd_supersede)
+
     p = sub.add_parser("rate-limit", help="Show REST and GraphQL rate-limit buckets.")
     p.set_defaults(func=cmd_rate_limit)
 
@@ -168,6 +177,66 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
+    repo, number = resolve_pr(args.repo, args.pr)
+    winner_repo, winner_number = resolve_pr(args.repo, args.by)
+    if repo == winner_repo and number == winner_number:
+        raise PrHelperError("A PR cannot supersede itself", repo=repo, pr=number)
+
+    pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    winner = rest_json("GET", f"/repos/{winner_repo}/pulls/{winner_number}")
+    original_body = pr.get("body") or ""
+    updated_body = original_body
+    replacements: list[dict[str, str]] = []
+    if not args.no_neutralize:
+        updated_body, replacements = neutralize_issue_closing_keywords(original_body)
+
+    winner_ref = pr_reference(repo, winner_repo, winner_number, winner.get("html_url"))
+    comment_body = superseded_comment_body(
+        winner_ref=winner_ref,
+        reason=args.reason,
+        body_neutralized=bool(replacements),
+        keep_open=args.keep_open,
+    )
+    planned_close = not args.keep_open
+
+    if args.dry_run:
+        return {
+            "ok": True,
+            "dryRun": True,
+            "repo": repo,
+            "pr": normalize_pr(pr),
+            "supersededBy": {"repo": winner_repo, "number": winner_number, "url": winner.get("html_url")},
+            "planned": {
+                "updateBody": bool(replacements),
+                "commentBody": comment_body,
+                "close": planned_close,
+            },
+            "neutralizedClosingReferences": replacements,
+        }
+
+    body_update = None
+    if replacements:
+        body_update = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"body": updated_body})
+
+    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": comment_body})
+    close_result = None
+    if planned_close and pr.get("state") != "closed":
+        close_result = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"})
+
+    final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    return {
+        "ok": True,
+        "repo": repo,
+        "pr": normalize_pr(final_pr),
+        "supersededBy": {"repo": winner_repo, "number": winner_number, "url": winner.get("html_url")},
+        "bodyUpdated": body_update is not None,
+        "commentUrl": comment.get("html_url") if isinstance(comment, dict) else None,
+        "closed": bool(close_result) or pr.get("state") == "closed",
+        "neutralizedClosingReferences": replacements,
+    }
+
+
 def cmd_rate_limit(_args: argparse.Namespace) -> dict[str, Any]:
     data = rest_json("GET", "/rate_limit")
     resources = data.get("resources") or {}
@@ -178,6 +247,52 @@ def cmd_rate_limit(_args: argparse.Namespace) -> dict[str, Any]:
         "search": resources.get("search"),
         "raw": data,
     }
+
+
+CLOSING_KEYWORDS = (
+    "close",
+    "closes",
+    "closed",
+    "fix",
+    "fixes",
+    "fixed",
+    "resolve",
+    "resolves",
+    "resolved",
+)
+
+CLOSING_REFERENCE_RE = re.compile(
+    r"\b(" + "|".join(CLOSING_KEYWORDS) + r")\s+((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, str]]]:
+    replacements: list[dict[str, str]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        original = match.group(0)
+        replacement = f"Refs {match.group(2)}"
+        replacements.append({"from": original, "to": replacement})
+        return replacement
+
+    return CLOSING_REFERENCE_RE.sub(replace, body), replacements
+
+
+def pr_reference(current_repo: str, winner_repo: str, winner_number: int, winner_url: Optional[str]) -> str:
+    if current_repo == winner_repo:
+        return f"#{winner_number}"
+    return winner_url or f"{winner_repo}#{winner_number}"
+
+
+def superseded_comment_body(*, winner_ref: str, reason: Optional[str], body_neutralized: bool, keep_open: bool) -> str:
+    verb = "Marking" if keep_open else "Closing"
+    parts = [f"{verb} this PR as superseded by {winner_ref}."]
+    if reason:
+        parts.append(reason.strip())
+    if body_neutralized:
+        parts.append("Issue-closing references in this PR body were changed to `Refs` so the canonical PR owns issue closure.")
+    return "\n\n".join(parts)
 
 
 FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}

@@ -90,6 +90,42 @@ Default to PR-backed implementation work.
   validation comment and close only after the reporter/current user confirms or
   explicitly asks.
 
+### Superseded Or Competing PRs
+
+When two or more PRs target the same issue, title, branch prefix, or workstream,
+choose one canonical implementation before merge or closeout. The canonical PR
+owns issue-closing language; competing PRs should use `Refs #123`, not
+`Closes #123` or `Fixes #123`, unless they become the selected implementation.
+
+Before opening a new PR, and again before merging or closing out a PR, sweep for
+open competing PRs that reference the same issue number, title phrase, branch
+prefix, Launchplane request id, or workstream. At minimum, inspect:
+
+```sh
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO list \
+  --state open --limit 50
+gh search prs 'repo:OWNER/REPO is:pr is:open 123 OR "workstream phrase"'
+```
+
+If a competing PR is superseded, comment on the stale PR with the canonical PR
+link and close it when it is no longer a viable implementation. Use the helper
+when available because it also rewrites issue-closing keywords to `Refs` on the
+superseded PR body:
+
+```sh
+~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
+  --by 71 \
+  --reason 'PR #71 matches the agreed taxonomy and includes the missing tests.'
+```
+
+Use `--dry-run` first when validating the comment, closure, and body rewrite
+that would happen. Use `--keep-open` only when a PR should remain open for
+comparison or follow-up, and say why in the comment.
+
+Issue closeout belongs to the winning PR. After the canonical PR merges, update
+stale planning state, duplicate issues, or workstream comments so future agents
+can see which PR was selected and which PRs were superseded.
+
 Use repo-specific instructions for exceptions, deploy labels, preview behavior,
 required checks, or release policy.
 

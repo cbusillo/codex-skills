@@ -71,6 +71,10 @@ operation, and route those calls through `scripts/gh-with-env-token`.
   so JSON stdout remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
+- **Superseded PRs**: When multiple PRs target the same issue or workstream,
+  pick a canonical PR, ensure stale PRs use `Refs` instead of closing keywords,
+  comment with the winning PR, and close superseded PRs with
+  `scripts/gh-pr.py supersede` when appropriate.
 
 ## Diagnostics & Hygiene
 
