@@ -200,7 +200,10 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
         keep_open=args.keep_open,
     )
     planned_close = not args.keep_open
-    planned_branch_delete = superseded_branch_delete_plan(pr, repo) if args.delete_branch and planned_close else None
+    cleanup_warnings: list[dict[str, str]] = []
+    planned_branch_delete = None
+    if args.delete_branch and planned_close:
+        planned_branch_delete, cleanup_warnings = superseded_branch_delete_plan(pr, winner, repo)
 
     if args.dry_run:
         return {
@@ -215,6 +218,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
                 "close": planned_close,
                 "deleteBranch": planned_branch_delete,
             },
+            "cleanupWarnings": cleanup_warnings,
             "neutralizedClosingReferences": replacements,
         }
 
@@ -229,7 +233,7 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     deleted = None
     if planned_branch_delete:
         deleted = delete_ref(repo, planned_branch_delete["ref"])
-    cleanup_warnings = cleanup_warnings_for_deleted_branch(deleted)
+    cleanup_warnings.extend(cleanup_warnings_for_deleted_branch(deleted))
 
     final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {
@@ -275,6 +279,13 @@ CLOSING_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+CLOSING_ISSUE_URL_RE = re.compile(
+    r"\b("
+    + "|".join(CLOSING_KEYWORDS)
+    + r")\s+(https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+))(?:\b|(?=[?#]))",
+    re.IGNORECASE,
+)
+
 
 def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, str]]]:
     replacements: list[dict[str, str]] = []
@@ -285,6 +296,13 @@ def neutralize_issue_closing_keywords(body: str) -> tuple[str, list[dict[str, st
         replacements.append({"from": original, "to": replacement})
         return replacement
 
+    def replace_url(match: re.Match[str]) -> str:
+        original = match.group(0)
+        replacement = f"Refs {match.group(3)}#{match.group(4)}"
+        replacements.append({"from": original, "to": replacement})
+        return replacement
+
+    body = CLOSING_ISSUE_URL_RE.sub(replace_url, body)
     return CLOSING_REFERENCE_RE.sub(replace, body), replacements
 
 
@@ -304,16 +322,32 @@ def superseded_comment_body(*, winner_ref: str, reason: Optional[str], body_neut
     return "\n\n".join(parts)
 
 
-def superseded_branch_delete_plan(pr: dict[str, Any], repo: str) -> Optional[dict[str, str]]:
+def superseded_branch_delete_plan(
+    pr: dict[str, Any],
+    winner: dict[str, Any],
+    repo: str,
+) -> tuple[Optional[dict[str, str]], list[dict[str, str]]]:
     head = pr.get("head") or {}
     head_repo = head.get("repo") or {}
+    winner_head = winner.get("head") or {}
+    winner_head_repo = winner_head.get("repo") or {}
     base = pr.get("base") or {}
     head_full_name = head_repo.get("full_name")
     head_ref = head.get("ref")
+    winner_head_full_name = winner_head_repo.get("full_name")
+    winner_head_ref = winner_head.get("ref")
     base_ref = base.get("ref")
     if head_full_name != repo or not head_ref or head_ref == base_ref:
-        return None
-    return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}
+        return None, []
+    if head_full_name == winner_head_full_name and head_ref == winner_head_ref:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_active_pr",
+                "ref": f"heads/{head_ref}",
+                "reason": "Superseded and canonical PRs share the same head branch.",
+            }
+        ]
+    return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}, []
 
 
 def cleanup_warnings_for_deleted_branch(deleted: Optional[dict[str, Any]]) -> list[dict[str, str]]:
