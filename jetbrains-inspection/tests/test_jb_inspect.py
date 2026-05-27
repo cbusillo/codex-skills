@@ -427,6 +427,15 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["reason"], "session_drift")
         self.assertTrue(result["cleanup_failed"])
 
+    def test_cleanup_reason_prefers_error_reason_over_status(self):
+        error = jb_inspect.InspectError(
+            "Timed out waiting for lifecycle close.",
+            3,
+            {"status": {"status": "indexing"}, "error_reason": "timeout"},
+        )
+
+        self.assertEqual(jb_inspect.public_cleanup_reason(error), "timeout")
+
     def test_lifecycle_lock_times_out_when_already_held(self):
         if jb_inspect.fcntl is None:
             self.skipTest("fcntl locking is unavailable on this platform")
@@ -1151,6 +1160,31 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("CONTEXT: repo=/tmp/repo worktree=/tmp/repo ide=PyCharm", text)
         self.assertIn("HINT: Open the repo in PyCharm.", text)
 
+    def test_human_output_explains_status_bearing_timeout_errors(self):
+        payload = jb_inspect.error_payload(
+            jb_inspect.InspectError(
+                "Timed out waiting for JetBrains indexing/scanning to settle.",
+                3,
+                {
+                    "status": {"status": "indexing", "indexing": True, "is_scanning": False},
+                    "route": {"ide": {"name": "PyCharm"}, "project_name": "repo"},
+                },
+            ),
+            Namespace(command="closeout"),
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error_reason"], "timeout")
+        self.assertEqual(payload["last_status"]["status"], "indexing")
+        self.assertIn("STATUS: error", text)
+        self.assertIn("ERROR: reason=timeout", text)
+        self.assertIn("HINT: Increase the timeout", text)
+
     def test_inspect_error_payload_adds_reason_and_command(self):
         error = jb_inspect.InspectError("No JetBrains inspection plugin instances discovered.", 3)
         args = Namespace(command="closeout")
@@ -1163,6 +1197,30 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["command"], "closeout")
         self.assertEqual(payload["exit_code"], 3)
         self.assertIn("Open the repo", payload["hint"])
+
+    def test_inspect_error_payload_moves_structured_status_to_last_status(self):
+        error = jb_inspect.InspectError(
+            "Timed out waiting for JetBrains indexing/scanning to settle.",
+            3,
+            {"status": {"status": "indexing", "indexing": True}},
+        )
+
+        payload = jb_inspect.error_payload(error, Namespace(command="closeout"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["last_status"], {"status": "indexing", "indexing": True})
+        self.assertEqual(payload["error_reason"], "timeout")
+        self.assertIn("Increase the timeout", payload["hint"])
+
+    def test_inspect_error_payload_turns_scalar_status_into_reason(self):
+        error = jb_inspect.InspectError("Lifecycle lock timed out.", 3, {"status": "timeout"})
+
+        payload = jb_inspect.error_payload(error, Namespace(command="closeout"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["reason"], "timeout")
+        self.assertEqual(payload["error_reason"], "timeout")
+        self.assertNotIn("last_status", payload)
 
     def test_json_error_payload_is_structured(self):
         payload = jb_inspect.error_payload(
