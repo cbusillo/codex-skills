@@ -1,14 +1,14 @@
 ---
 name: docs-lookup
-description: Use when a task depends on current documentation, API references, SDK behavior, framework configuration, CLI usage, version migrations, or external service integration details. Prefer primary/official sources and cite the docs used instead of relying on memory for unstable API or product facts.
+description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering the source of truth or access path for private operations.
 ---
 
 # Docs Lookup
 
-Use this skill when correctness depends on current documentation rather than
-training memory. This is especially important for APIs, SDKs, CLIs, frameworks,
-cloud services, deployment platforms, package managers, and version-specific
-behavior.
+Use this skill when correctness depends on current documentation or routed
+operational context rather than training memory. This is especially important
+for APIs, SDKs, CLIs, frameworks, cloud services, deployment platforms, package
+managers, access paths, and version-specific behavior.
 
 ## Trigger Examples
 
@@ -24,8 +24,8 @@ Use this skill for:
 - tasks that mention Odoo, JetBrains APIs, Next.js, React, Prisma, Mantine,
   Docker, GitHub Actions, uv, PyPI, Dokploy, Launchplane, Stripe, Shopify,
   RepairShopr, Fishbowl, or similar tools.
-- tasks involving local/private infrastructure docs; use the local context
-  routing from `references/routing.md` when configured.
+- tasks where the answer depends on environment-specific operational context or
+  discovering the source of truth/access path for private operations.
 
 Do not use this skill for stable local repo facts that can be answered directly
 from checked-in code or docs.
@@ -44,6 +44,11 @@ Prefer sources in this order:
 
 For OpenAI products and APIs, use `openai-docs`; it supersedes this general
 docs workflow for OpenAI-specific questions.
+
+For provider or infrastructure tasks, route by source of truth rather than
+provider name. Use official docs for generic behavior, local context routing for
+this environment's setup or access path, and the owning operator skill for
+managed product/runtime state or mutations.
 
 ## Workflow
 
