@@ -720,6 +720,135 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
     assert "state=closed" in calls, calls
 
 
+def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  exit 3\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  exit 4\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+        calls = log_path.read_text()
+
+    assert result.returncode == 1, result
+    payload = json.loads(result.stderr)
+    assert payload["ok"] is False, payload
+    assert payload["error"] == "gh: Forbidden (HTTP 403)", payload
+    assert not any("/repos/owner/repo/issues/12/comments" in line for line in calls.splitlines()), calls
+    assert not any(
+        "/repos/owner/repo/pulls/12" in line and "--method PATCH" in line and "body=" in line
+        for line in calls.splitlines()
+    ), calls
+
+
+def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Closes #144",'
+            '"mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  if [[ \"$*\" == *'body=Refs #144'* ]]; then\n"
+            "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True, payload
+    assert payload["closed"] is True, payload
+    assert payload["bodyUpdated"] is False, payload
+    assert payload["cleanupWarnings"] == [
+        {
+            "kind": "body_update_failed",
+            "reason": "Supersede close/comment succeeded, but the PR body could not be rewritten to neutralize closing keywords.",
+            "stderr": "gh: Forbidden (HTTP 403)",
+        }
+    ], payload
+
+
 def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -1166,6 +1295,8 @@ def main() -> None:
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
+        test_pr_helper_supersede_does_not_comment_when_close_fails,
+        test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close,
         test_pr_helper_supersede_warns_when_branch_delete_fails,
         test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch,
         test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch,

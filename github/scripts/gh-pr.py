@@ -230,18 +230,32 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
             "neutralizedClosingReferences": replacements,
         }
 
-    body_update = None
-    if replacements:
-        body_update = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"body": updated_body})
-
-    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": comment_body})
     close_result = None
     if planned_close and pr.get("state") != "closed":
         close_result = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"})
+
+    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": comment_body})
+
+    body_update = None
+    body_update_error = None
+    if replacements:
+        try:
+            body_update = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"body": updated_body})
+        except HelperError as exc:
+            body_update_error = str(exc)
+
     deleted = None
     if planned_branch_delete:
         deleted = delete_ref(repo, planned_branch_delete["ref"])
     cleanup_warnings.extend(cleanup_warnings_for_deleted_branch(deleted))
+    if body_update_error:
+        cleanup_warnings.append(
+            {
+                "kind": "body_update_failed",
+                "reason": "Supersede close/comment succeeded, but the PR body could not be rewritten to neutralize closing keywords.",
+                "stderr": body_update_error,
+            }
+        )
 
     final_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
     return {
