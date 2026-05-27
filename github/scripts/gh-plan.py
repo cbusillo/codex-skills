@@ -201,12 +201,27 @@ def project_error(message: str, *, retry_at: int | None = None) -> ClassifiedPla
     return ClassifiedPlanError(classify_project_error(message), message, retry_at=retry_at)
 
 
-def project_failure_payload(exc: PlanError) -> dict[str, Any]:
+def project_failure_payload(
+    exc: PlanError,
+    *,
+    owner: str | None = None,
+    project: str | None = None,
+    operation: str | None = None,
+    non_blocking: bool = False,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"error": str(exc), "error_code": classify_project_error(str(exc))}
     if isinstance(exc, ClassifiedPlanError):
         payload["error_code"] = exc.code
         if exc.retry_at is not None:
             payload["retry_at"] = exc.retry_at
+    if owner or project:
+        payload["target"] = {"owner": owner, "project": project}
+    if operation:
+        payload["operation"] = operation
+    if non_blocking:
+        payload["warning"] = True
+        payload["blocking"] = False
+        payload["message"] = "Issue operation completed; Project reconciliation needs follow-up."
     return payload
 
 
@@ -1119,7 +1134,13 @@ def cmd_close(args: argparse.Namespace) -> None:
                 updated["Focus"] = None
             project_result = {"project": project_data.get("title"), "updated": updated}
         except PlanError as exc:
-            project_result = project_failure_payload(exc)
+            project_result = project_failure_payload(
+                exc,
+                owner=owner,
+                project=project,
+                operation="close_project_sync",
+                non_blocking=True,
+            )
 
     emit({
         "ok": True,

@@ -231,6 +231,61 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     assert payload["project_fields"]["error_code"] == "project_update_failed", payload
 
 
+def test_close_reports_stale_project_as_non_blocking_warning() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[list[str]] = []
+
+    plan.load_config = lambda repo: {
+        "labels": {"active": "plan:active", "done": "plan:done"},
+        "projects": {"owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus"},
+    }
+    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+
+    def fake_run_raw(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+        calls.append(args)
+        if args[:2] in (["issue", "edit"], ["issue", "close"]):
+            return "automation-gh", "", ""
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    plan.run_raw = fake_run_raw
+    plan.project_meta = lambda owner, project, recoverable=False: (_ for _ in ()).throw(
+        plan.project_error(f"Project not found for {owner}: {project}")
+    )
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_close(types.SimpleNamespace(
+            repo="owner/repo",
+            issue="10",
+            reason="completed",
+            body=None,
+            body_file=None,
+            owner=None,
+            project=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert payload["closed"]["number"] == 10, payload
+    assert payload["project"]["warning"] is True, payload
+    assert payload["project"]["blocking"] is False, payload
+    assert payload["project"]["operation"] == "close_project_sync", payload
+    assert payload["project"]["error_code"] == "lookup_stale", payload
+    assert payload["project"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
+    assert any(call[:2] == ["issue", "close"] for call in calls), calls
+
+
 def test_create_supports_waiting_plan_status() -> None:
     plan = load_plan_module()
     captured: dict[str, Any] = {}
@@ -675,6 +730,7 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_create_reports_issue_when_project_sync_fails,
+        test_close_reports_stale_project_as_non_blocking_warning,
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
