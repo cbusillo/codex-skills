@@ -115,7 +115,13 @@ def main() -> int:
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
     payload = dict(error.payload)
     message = str(error)
-    payload.setdefault("status", "error")
+    prior_status = payload.pop("status", None)
+    if prior_status and prior_status != "error":
+        if isinstance(prior_status, dict):
+            payload.setdefault("last_status", prior_status)
+        else:
+            payload.setdefault("reason", prior_status)
+    payload["status"] = "error"
     payload.setdefault("error", message)
     payload.setdefault("error_message", message)
     payload.setdefault("error_reason", infer_error_reason(error, payload))
@@ -498,7 +504,11 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
         if not body.get("indexing") and not body.get("is_scanning"):
             return
         time.sleep(max(DEFAULT_POLL_MS, 1_000) / 1000.0)
-    raise InspectError("Timed out waiting for JetBrains indexing/scanning to settle.", 3, {"status": last_status or {}, "route": route})
+    raise InspectError(
+        "Timed out waiting for JetBrains indexing/scanning to settle.",
+        3,
+        {"status": "timeout", "last_status": last_status or {}, "route": route},
+    )
 
 
 def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> bool:
@@ -654,7 +664,7 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
 
 
 def public_cleanup_reason(error: InspectError) -> str:
-    reason = error.payload.get("reason") or error.payload.get("status")
+    reason = error.payload.get("reason") or error.payload.get("error_reason") or error.payload.get("status")
     if isinstance(reason, str) and reason:
         return reason
     return "close_failed"
