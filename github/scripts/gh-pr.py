@@ -50,7 +50,7 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Handle GitHub PR reads, checks, merge, and rate limits with transport-aware defaults.",
+        description="Handle GitHub PR reads, writes, checks, merge, and rate limits with transport-aware defaults.",
     )
     parser.add_argument("--repo", help="Repository in OWNER/REPO form.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -63,6 +63,47 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--state", choices=("open", "closed", "all"), default="open")
     p.add_argument("--limit", type=int, default=20, help="Maximum PRs to return.")
     p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("create", help="Create a PR through gh-with-env-token.")
+    p.add_argument("--title", help="PR title. Required unless --fill, --fill-first, or --fill-verbose is used.")
+    p.add_argument("--body-file", help="Read PR body text from this file. Use '-' to read from stdin.")
+    p.add_argument("--base", help="Base branch for the PR.")
+    p.add_argument("--head", help="Head branch for the PR.")
+    p.add_argument("--draft", action="store_true", help="Open the PR as a draft.")
+    p.add_argument("--dry-run", action="store_true", help="Print details instead of creating the PR.")
+    p.add_argument("--fill", action="store_true", help="Use commit info for title and body.")
+    p.add_argument("--fill-first", action="store_true", help="Use first commit info for title and body.")
+    p.add_argument("--fill-verbose", action="store_true", help="Use commits message and body for PR content.")
+    p.add_argument("--label", action="append", default=[], help="Add a label by name. Repeat for multiple labels.")
+    p.add_argument("--reviewer", action="append", default=[], help="Request a reviewer. Repeat for multiple reviewers.")
+    p.add_argument("--assignee", action="append", default=[], help="Assign a user. Repeat for multiple assignees.")
+    p.add_argument("--milestone", help="Add the PR to a milestone by name.")
+    p.add_argument("--project", action="append", default=[], help="Add the PR to a project. Repeat for multiple projects.")
+    p.add_argument("--template", help="Template file to use as starting body text.")
+    p.add_argument("--no-maintainer-edit", action="store_true", help="Disable maintainer edits on the head branch.")
+    p.set_defaults(func=cmd_create)
+
+    p = sub.add_parser("edit", help="Edit PR metadata or body through gh-with-env-token.")
+    p.add_argument("pr", nargs="?", help="PR number, URL, or branch. Defaults to current branch PR.")
+    p.add_argument("--title", help="Set the PR title.")
+    p.add_argument("--body-file", help="Read the replacement PR body from this file. Use '-' to read from stdin.")
+    p.add_argument("--base", help="Change the PR base branch.")
+    p.add_argument("--add-label", action="append", default=[], help="Add labels by name. Repeat for multiple entries.")
+    p.add_argument("--remove-label", action="append", default=[], help="Remove labels by name. Repeat for multiple entries.")
+    p.add_argument("--add-reviewer", action="append", default=[], help="Add or re-request reviewers. Repeat for multiple entries.")
+    p.add_argument("--remove-reviewer", action="append", default=[], help="Remove reviewers. Repeat for multiple entries.")
+    p.add_argument("--add-assignee", action="append", default=[], help="Add assignees. Repeat for multiple entries.")
+    p.add_argument("--remove-assignee", action="append", default=[], help="Remove assignees. Repeat for multiple entries.")
+    p.add_argument("--milestone", help="Set the PR milestone by name.")
+    p.add_argument("--remove-milestone", action="store_true", help="Remove the PR milestone.")
+    p.add_argument("--add-project", action="append", default=[], help="Add the PR to projects. Repeat for multiple entries.")
+    p.add_argument("--remove-project", action="append", default=[], help="Remove the PR from projects. Repeat for multiple entries.")
+    p.set_defaults(func=cmd_edit)
+
+    p = sub.add_parser("comment", help="Add a PR timeline comment through gh-with-env-token.")
+    p.add_argument("pr", help="PR number, URL, or branch.")
+    p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
+    p.set_defaults(func=cmd_comment)
 
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
@@ -103,6 +144,70 @@ def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
     limit = max(args.limit, 0)
     pulls = limited_paged_rest_json("GET", f"/repos/{repo}/pulls?state={args.state}", limit)
     return {"ok": True, "repo": repo, "pullRequests": [normalize_pr(item) for item in pulls]}
+
+
+def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
+    repo = resolve_repo(args.repo)
+    fill_flags = [args.fill, args.fill_first, args.fill_verbose]
+    if not args.title and not any(fill_flags):
+        raise PrHelperError("PR create requires --title unless a --fill variant is used", operation="create", repo=repo)
+    if not args.body_file and not any(fill_flags):
+        raise PrHelperError("PR create requires --body-file unless a --fill variant is used", operation="create", repo=repo)
+    if sum(1 for value in fill_flags if value) > 1:
+        raise PrHelperError("Use only one of --fill, --fill-first, or --fill-verbose", operation="create", repo=repo)
+    gh_args = ["pr", "create", "--repo", repo]
+    append_flag(gh_args, "--title", args.title)
+    append_flag(gh_args, "--body-file", args.body_file)
+    append_flag(gh_args, "--base", args.base)
+    append_flag(gh_args, "--head", args.head)
+    append_bool(gh_args, "--draft", args.draft)
+    append_bool(gh_args, "--dry-run", args.dry_run)
+    append_bool(gh_args, "--fill", args.fill)
+    append_bool(gh_args, "--fill-first", args.fill_first)
+    append_bool(gh_args, "--fill-verbose", args.fill_verbose)
+    append_repeated_flag(gh_args, "--label", args.label)
+    append_repeated_flag(gh_args, "--reviewer", args.reviewer)
+    append_repeated_flag(gh_args, "--assignee", args.assignee)
+    append_flag(gh_args, "--milestone", args.milestone)
+    append_repeated_flag(gh_args, "--project", args.project)
+    append_flag(gh_args, "--template", args.template)
+    append_bool(gh_args, "--no-maintainer-edit", args.no_maintainer_edit)
+    proc = run_pr_write(gh_args, operation="create", repo=repo)
+    stdout = proc.stdout.strip()
+    return {"ok": True, "operation": "create", "repo": repo, "url": extract_url(stdout), "stdout": stdout}
+
+
+def cmd_edit(args: argparse.Namespace) -> dict[str, Any]:
+    repo = resolve_repo(args.repo)
+    gh_args = ["pr", "edit"]
+    if args.pr:
+        gh_args.append(args.pr)
+    gh_args.extend(["--repo", repo])
+    append_flag(gh_args, "--title", args.title)
+    append_flag(gh_args, "--body-file", args.body_file)
+    append_flag(gh_args, "--base", args.base)
+    append_repeated_flag(gh_args, "--add-label", args.add_label)
+    append_repeated_flag(gh_args, "--remove-label", args.remove_label)
+    append_repeated_flag(gh_args, "--add-reviewer", args.add_reviewer)
+    append_repeated_flag(gh_args, "--remove-reviewer", args.remove_reviewer)
+    append_repeated_flag(gh_args, "--add-assignee", args.add_assignee)
+    append_repeated_flag(gh_args, "--remove-assignee", args.remove_assignee)
+    append_flag(gh_args, "--milestone", args.milestone)
+    append_bool(gh_args, "--remove-milestone", args.remove_milestone)
+    append_repeated_flag(gh_args, "--add-project", args.add_project)
+    append_repeated_flag(gh_args, "--remove-project", args.remove_project)
+    if len(gh_args) <= (5 if args.pr else 4):
+        raise PrHelperError("PR edit requires at least one edit flag", operation="edit", repo=repo, pr=args.pr)
+    proc = run_pr_write(gh_args, operation="edit", repo=repo, pr=args.pr)
+    return {"ok": True, "operation": "edit", "repo": repo, "pr": args.pr, "stdout": proc.stdout.strip()}
+
+
+def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
+    repo = resolve_repo(args.repo)
+    gh_args = ["pr", "comment", args.pr, "--repo", repo, "--body-file", args.body_file]
+    proc = run_pr_write(gh_args, operation="comment", repo=repo, pr=args.pr)
+    stdout = proc.stdout.strip()
+    return {"ok": True, "operation": "comment", "repo": repo, "pr": args.pr, "url": extract_url(stdout), "stdout": stdout}
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
@@ -628,6 +733,38 @@ def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per
 def delete_ref(repo: str, ref: str) -> dict[str, Any]:
     proc = run_gh(["api", "--method", "DELETE", *API_VERSION_ARGS, f"/repos/{repo}/git/refs/{ref}"])
     return {"ref": ref, "deleted": proc.returncode == 0, "stderr": proc.stderr.strip()}
+
+
+def append_flag(args: list[str], flag: str, value: Optional[str]) -> None:
+    if value is not None:
+        args.extend([flag, value])
+
+
+def append_bool(args: list[str], flag: str, enabled: bool) -> None:
+    if enabled:
+        args.append(flag)
+
+
+def append_repeated_flag(args: list[str], flag: str, values: list[str]) -> None:
+    for value in values:
+        args.extend([flag, value])
+
+
+def run_pr_write(args: list[str], **payload: Any) -> subprocess.CompletedProcess[str]:
+    proc = run_gh(args)
+    if proc.returncode != 0:
+        raise PrHelperError(
+            "PR write failed",
+            detail=(proc.stderr or proc.stdout or "gh pr write failed").strip(),
+            command=args[:3],
+            **payload,
+        )
+    return proc
+
+
+def extract_url(value: str) -> Optional[str]:
+    match = re.search(r"https?://\S+", value)
+    return match.group(0) if match else None
 
 
 def gh_json(args: list[str]) -> Any:
