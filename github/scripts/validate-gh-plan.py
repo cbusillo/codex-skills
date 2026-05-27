@@ -544,13 +544,33 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
             env=env,
             check=True,
         )
+        create_without_body = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "create", "--title", "Missing body"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        edit_without_changes = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "edit", "9"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
         calls = log_path.read_text().splitlines()
     assert json.loads(create.stdout)["url"] == "https://github.com/owner/repo/pull/9"
     assert json.loads(edit.stdout)["operation"] == "edit"
     assert json.loads(comment.stdout)["url"] == "https://github.com/owner/repo/pull/9#issuecomment-1"
+    assert create_without_body.returncode == 1
+    assert "requires --body-file" in create_without_body.stderr
+    assert edit_without_changes.returncode == 1
+    assert "requires at least one edit flag" in edit_without_changes.stderr
     assert f"pr create --repo owner/repo --title Bot write path --body-file {body_path} --base main --head feature" in calls
     assert f"pr edit 9 --repo owner/repo --body-file {body_path}" in calls
     assert f"pr comment 9 --repo owner/repo --body-file {body_path}" in calls
+    assert "pr create --repo owner/repo --title Missing body" not in calls
+    assert "pr edit 9 --repo owner/repo" not in calls
 
 
 def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:

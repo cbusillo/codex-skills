@@ -141,6 +141,8 @@ def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
     fill_flags = [args.fill, args.fill_first, args.fill_verbose]
     if not args.title and not any(fill_flags):
         raise PrHelperError("PR create requires --title unless a --fill variant is used", operation="create", repo=repo)
+    if not args.body_file and not any(fill_flags):
+        raise PrHelperError("PR create requires --body-file unless a --fill variant is used", operation="create", repo=repo)
     if sum(1 for value in fill_flags if value) > 1:
         raise PrHelperError("Use only one of --fill, --fill-first, or --fill-verbose", operation="create", repo=repo)
     gh_args = ["pr", "create", "--repo", repo]
@@ -184,7 +186,7 @@ def cmd_edit(args: argparse.Namespace) -> dict[str, Any]:
     append_bool(gh_args, "--remove-milestone", args.remove_milestone)
     append_repeated_flag(gh_args, "--add-project", args.add_project)
     append_repeated_flag(gh_args, "--remove-project", args.remove_project)
-    if len(gh_args) <= (4 if args.pr else 3):
+    if len(gh_args) <= (5 if args.pr else 4):
         raise PrHelperError("PR edit requires at least one edit flag", operation="edit", repo=repo, pr=args.pr)
     proc = run_pr_write(gh_args, operation="edit", repo=repo, pr=args.pr)
     return {"ok": True, "operation": "edit", "repo": repo, "pr": args.pr, "stdout": proc.stdout.strip()}
