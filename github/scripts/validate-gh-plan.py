@@ -584,6 +584,46 @@ def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
     assert "/repos/owner/repo/git/refs/heads/topic" in calls, calls
 
 
+def test_pr_helper_merge_404_includes_recovery_context() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  printf 'gh: Not Found (HTTP 404)\\n' >&2\n"
+            "  exit 1\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path))
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 1, result
+    payload = json.loads(result.stderr)
+    assert payload["ok"] is False, payload
+    assert payload["error"] == "PR merge failed", payload
+    assert payload["detail"] == "gh: Not Found (HTTP 404)", payload
+    assert payload["operation"] == "merge", payload
+    assert payload["repo"] == "owner/repo", payload
+    assert payload["pr"] == 12, payload
+    assert payload["endpoint"] == "/repos/owner/repo/pulls/12/merge", payload
+    assert payload["headSha"] == "head-sha", payload
+    assert "token scope" in payload["hint"], payload
+
+
 def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -737,6 +777,7 @@ def main() -> None:
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
+        test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,
