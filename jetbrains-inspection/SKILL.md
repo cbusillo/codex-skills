@@ -40,7 +40,9 @@ exact route exists, waits for indexing/scanning to settle, runs the same
 inspection loop, and calls the plugin lifecycle close endpoint only for projects
 the helper opened. Projects that were already open before `closeout` must remain
 open. Lifecycle opens use macOS background activation by default to reduce focus
-stealing; use `--foreground-open` only when debugging IDE launch behavior.
+stealing; when the target IDE is not already running, the helper launches the app
+hidden first and then asks the plugin to open the exact worktree. Use
+`--foreground-open` only when debugging IDE launch behavior.
 Lifecycle closeouts are serialized by a bounded local lock. If another closeout
 is already opening, inspecting, or cleaning up a project, wait for it or increase
 `--lifecycle-lock-timeout-ms`; do not start parallel auto-open closeouts and
@@ -49,8 +51,9 @@ expect independent IDE windows to race safely.
 Auto-open is allowed only for worktrees under globally trusted roots. Before a
 lifecycle auto-open, the helper adds the matching trusted root to the selected
 JetBrains product's Trusted Locations config, ensures project opening is set to
-new-window/no-prompt, then asks the running inspection plugin to schedule the
-exact worktree open. The helper polls until the exact route appears before it
+new-window/no-prompt, launches the selected IDE hidden if no matching plugin is
+already running, then asks the running inspection plugin to schedule the exact
+worktree open. The helper polls until the exact route appears before it
 inspects; a lifecycle open response alone is not proof that the IDE finished
 opening the project.
 Configure trusted roots in `${CODEX_HOME:-$HOME/.code}/jetbrains-inspection.json`:
