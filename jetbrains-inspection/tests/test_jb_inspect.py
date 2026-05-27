@@ -1124,6 +1124,63 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("view_ready_ok=False", text)
         self.assertIn("successful_extraction_count=3", text)
 
+    def test_human_output_explains_errors(self):
+        payload = {
+            "status": "error",
+            "error_reason": "inspection_api_unavailable",
+            "error_message": "No JetBrains inspection plugin instances discovered.",
+            "command": "closeout",
+            "exit_code": 3,
+            "context": {
+                "repo_path": "/tmp/repo",
+                "worktree_root": "/tmp/repo",
+                "ide": "PyCharm",
+            },
+            "hint": "Open the repo in PyCharm.",
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("STATUS: error", text)
+        self.assertIn("ERROR: reason=inspection_api_unavailable", text)
+        self.assertIn("message=No JetBrains inspection plugin instances discovered.", text)
+        self.assertIn("command=closeout", text)
+        self.assertIn("CONTEXT: repo=/tmp/repo worktree=/tmp/repo ide=PyCharm", text)
+        self.assertIn("HINT: Open the repo in PyCharm.", text)
+
+    def test_inspect_error_payload_adds_reason_and_command(self):
+        error = jb_inspect.InspectError("No JetBrains inspection plugin instances discovered.", 3)
+        args = Namespace(command="closeout")
+
+        payload = jb_inspect.error_payload(error, args)
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error_reason"], "inspection_api_unavailable")
+        self.assertEqual(payload["error_message"], "No JetBrains inspection plugin instances discovered.")
+        self.assertEqual(payload["command"], "closeout")
+        self.assertEqual(payload["exit_code"], 3)
+        self.assertIn("Open the repo", payload["hint"])
+
+    def test_json_error_payload_is_structured(self):
+        payload = jb_inspect.error_payload(
+            jb_inspect.InspectError("Inspection API returned invalid JSON: boom", 3),
+            Namespace(command="problems"),
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = jb_inspect.emit(payload, json_only=True, exit_code=3)
+
+        self.assertEqual(exit_code, 3)
+        body = json.loads(output.getvalue())
+        self.assertEqual(body["status"], "error")
+        self.assertEqual(body["error_reason"], "invalid_api_response")
+        self.assertEqual(body["command"], "problems")
+        self.assertEqual(body["exit_code"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

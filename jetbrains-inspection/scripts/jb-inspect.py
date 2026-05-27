@@ -107,9 +107,67 @@ def main() -> int:
             result = command_run(args, context)
             return emit(result, args.json, classify_run_exit(result))
     except InspectError as error:
-        payload = {"status": "error", "error": str(error), **error.payload}
+        payload = error_payload(error, args)
         return emit(payload, getattr(args, "json", False), error.exit_code)
     return 2
+
+
+def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    payload = dict(error.payload)
+    message = str(error)
+    payload.setdefault("status", "error")
+    payload.setdefault("error", message)
+    payload.setdefault("error_message", message)
+    payload.setdefault("error_reason", infer_error_reason(error, payload))
+    payload.setdefault("exit_code", error.exit_code)
+    command = getattr(args, "command", None)
+    if command:
+        payload.setdefault("command", command)
+    if "hint" not in payload:
+        hint = hint_for_error_reason(str(payload.get("error_reason") or ""))
+        if hint:
+            payload["hint"] = hint
+    return payload
+
+
+def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
+    for key in ("error_reason", "reason", "status"):
+        value = payload.get(key)
+        if value and value != "error":
+            return normalize_reason(value)
+    message = str(error).lower()
+    if "invalid json" in message or "non-object json" in message:
+        return "invalid_api_response"
+    if "http " in message and "inspection api" in message:
+        return "inspection_api_http_error"
+    if "unavailable" in message or "no jetbrains inspection plugin" in message:
+        return "inspection_api_unavailable"
+    if "timed out" in message or "timeout" in message:
+        return "timeout"
+    if "wrong tree" in message or "exact current worktree" in message:
+        return "worktree_route_mismatch"
+    if "trusted" in message:
+        return "untrusted_auto_open_root"
+    if "launch" in message or "open" in message:
+        return "ide_open_failed"
+    return "inspection_helper_error"
+
+
+def normalize_reason(value: Any) -> str:
+    reason = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return reason or "inspection_helper_error"
+
+
+def hint_for_error_reason(reason: str) -> str | None:
+    return {
+        "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or allow lifecycle open to start it.",
+        "invalid_api_response": "Check the installed inspection plugin version and IDE logs; the helper could not parse the API response.",
+        "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
+        "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
+        "worktree_route_mismatch": "Open the exact worktree in the IDE or use lifecycle closeout so the helper can claim the correct project.",
+        "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
+        "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
+    }.get(reason)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -984,6 +1042,8 @@ def print_human(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    if status == "error":
+        print_error_details(payload)
     print_result_flags(payload)
     if "total_problems" in payload or "problems_shown" in payload:
         total = payload.get("total_problems", 0)
@@ -1028,6 +1088,30 @@ def print_human(payload: dict[str, Any]) -> None:
     if not route and not status:
         # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
+
+
+def print_error_details(payload: dict[str, Any]) -> None:
+    details = {
+        "reason": payload.get("error_reason") or payload.get("reason"),
+        "message": payload.get("error_message") or payload.get("error"),
+        "command": payload.get("command"),
+        "exit_code": payload.get("exit_code"),
+    }
+    print(safe_text("ERROR: reason={reason} message={message} command={command} exit_code={exit_code}", details))
+    context = payload.get("context") or {}
+    route = payload.get("route") or {}
+    identity = payload.get("identity") or {}
+    context_details = {
+        "repo": context.get("repo_path") or payload.get("repo_path"),
+        "worktree": context.get("worktree_root") or payload.get("worktree_root"),
+        "ide": context.get("ide") or identity.get("name") or route.get("ide", {}).get("name") or payload.get("ide"),
+        "endpoint": payload.get("endpoint"),
+        "url": payload.get("url"),
+    }
+    if any(value is not None for value in context_details.values()):
+        print(safe_text("CONTEXT: repo={repo} worktree={worktree} ide={ide} endpoint={endpoint} url={url}", context_details))
+    if payload.get("hint"):
+        print(safe_text("HINT: {hint}", {"hint": payload.get("hint")}))
 
 
 def public_json(payload: dict[str, Any]) -> str:
