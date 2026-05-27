@@ -367,6 +367,23 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(raised.exception.payload["returncode"], 1)
         self.assertIn("Unable to find application", raised.exception.payload["stderr"])
 
+    def test_bootstrap_ide_app_uses_hidden_launch_on_macos(self):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
+
+        run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], check=False, capture_output=True, text=True)
+
+    def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
+        completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run", return_value=completed):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.bootstrap_ide_app({"ide": "Missing IDE", "worktree_root": "/tmp/worktree"}, background=True)
+
+        self.assertIn("Failed to launch", str(raised.exception))
+        self.assertEqual(raised.exception.payload["command"], ["open", "-g", "-j", "-a", "Missing IDE"])
+        self.assertIn("Unable to find application", raised.exception.payload["stderr"])
+
     def test_auto_open_timeout_payload_names_trust_and_modal_causes(self):
         args = Namespace(background_open=True)
         payload = jb_inspect.auto_open_timeout_payload(
@@ -542,6 +559,84 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.http_get = original_http_get
 
         self.assertFalse(result)
+
+    def test_wait_for_matching_ide_identity_returns_target_product(self):
+        original_discover = jb_inspect.discover_identities
+        original_sleep = jb_inspect.time.sleep
+        jb_inspect.discover_identities = lambda port: [
+            {"port": 63341, "ide_name": "WebStorm", "session_id": "s1"},
+            {"port": 63342, "ide_name": "PyCharm", "session_id": "s2"},
+        ]
+        jb_inspect.time.sleep = lambda seconds: None
+        try:
+            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.time.sleep = original_sleep
+
+        self.assertEqual(result["session_id"], "s2")
+
+    def test_open_project_for_lifecycle_uses_running_ide_without_bootstrap(self):
+        calls = []
+        original_running = jb_inspect.open_via_running_ide
+        original_bootstrap = jb_inspect.bootstrap_ide_app
+        original_wait = jb_inspect.wait_for_matching_ide_identity
+        jb_inspect.open_via_running_ide = lambda args, context: calls.append("running") or True
+        jb_inspect.bootstrap_ide_app = lambda *args, **kwargs: calls.append("bootstrap")
+        jb_inspect.wait_for_matching_ide_identity = lambda *args, **kwargs: calls.append("wait")
+        try:
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True), {"ide": "IntelliJ IDEA"})
+        finally:
+            jb_inspect.open_via_running_ide = original_running
+            jb_inspect.bootstrap_ide_app = original_bootstrap
+            jb_inspect.wait_for_matching_ide_identity = original_wait
+
+        self.assertEqual(result, "running_ide")
+        self.assertEqual(calls, ["running"])
+
+    def test_open_project_for_lifecycle_bootstraps_then_lifecycle_opens(self):
+        calls = []
+        original_running = jb_inspect.open_via_running_ide
+        original_bootstrap = jb_inspect.bootstrap_ide_app
+        original_wait = jb_inspect.wait_for_matching_ide_identity
+
+        def fake_running(args, context):
+            calls.append("running")
+            return calls.count("running") == 2
+
+        jb_inspect.open_via_running_ide = fake_running
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background))
+        jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
+        try:
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1234), {"ide": "IntelliJ IDEA"})
+        finally:
+            jb_inspect.open_via_running_ide = original_running
+            jb_inspect.bootstrap_ide_app = original_bootstrap
+            jb_inspect.wait_for_matching_ide_identity = original_wait
+
+        self.assertEqual(result, "bootstrapped_ide")
+        self.assertEqual(calls, ["running", ("bootstrap", True), ("wait", 1234), "running"])
+
+    def test_open_project_for_lifecycle_errors_when_bootstrapped_ide_rejects_open(self):
+        original_running = jb_inspect.open_via_running_ide
+        original_bootstrap = jb_inspect.bootstrap_ide_app
+        original_wait = jb_inspect.wait_for_matching_ide_identity
+        jb_inspect.open_via_running_ide = lambda args, context: False
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: None
+        jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: {"port": 63342}
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.open_project_for_lifecycle(
+                    Namespace(port=None, background_open=True, prepare_timeout_ms=1234),
+                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
+                )
+        finally:
+            jb_inspect.open_via_running_ide = original_running
+            jb_inspect.bootstrap_ide_app = original_bootstrap
+            jb_inspect.wait_for_matching_ide_identity = original_wait
+
+        self.assertIn("did not accept", str(raised.exception))
+        self.assertEqual(raised.exception.payload["prepare_timeout_ms"], 1234)
 
     def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
         with tempfile.TemporaryDirectory() as tmp:

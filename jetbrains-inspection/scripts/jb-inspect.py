@@ -135,8 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("prepare", "run", "closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--no-open", dest="open", action="store_false", help="Do not open the IDE if the exact worktree is not already open.")
-        subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Ask macOS to open the IDE without activating it. Default for lifecycle opens.")
-        subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while opening.")
+        subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
+        subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after closeout.")
@@ -351,9 +351,11 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             )
         ensure_trusted_auto_open_root(context)
         ensure_jetbrains_trusted_locations(context)
-        open_via_running_ide(args, context) or open_in_ide(context, background=getattr(args, "background_open", False))
+        open_method = open_project_for_lifecycle(args, context)
         opened_by_helper = True
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+    else:
+        open_method = "preexisting"
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     claim_metadata, close_proof = claim_lifecycle(args, context, exact_route, lease)
@@ -361,6 +363,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         {
             "state": "prepared",
             "opened_by_helper": opened_by_helper,
+            "open_method": open_method,
             "route": exact_route,
             "plugin_claim": claim_metadata,
             "project_instance_id": exact_route.get("project_instance_id"),
@@ -376,6 +379,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         "route": exact_route,
         "lease": public_lease(lease),
         "opened_by_helper": opened_by_helper,
+        "open_method": open_method,
         "claim": claim_metadata,
     }
     return prepared, lease, close_proof
@@ -462,6 +466,38 @@ def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> b
         except InspectError:
             continue
     return False
+
+
+def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> str:
+    if open_via_running_ide(args, context):
+        return "running_ide"
+    bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    wait_for_matching_ide_identity(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+    if open_via_running_ide(args, context):
+        return "bootstrapped_ide"
+    raise InspectError(
+        "Bootstrapped JetBrains IDE did not accept the lifecycle open request.",
+        3,
+        auto_open_timeout_payload(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)),
+    )
+
+
+def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+    deadline = now_ms() + timeout_ms
+    last_error: InspectError | None = None
+    while now_ms() <= deadline:
+        try:
+            identities = discover_identities(args.port)
+            for identity in identities:
+                if identity_matches_context(identity, context):
+                    return identity
+        except InspectError as error:
+            last_error = error
+        time.sleep(1)
+    payload = auto_open_timeout_payload(args, context, timeout_ms)
+    if last_error:
+        payload["last_error"] = str(last_error)
+    raise InspectError("Timed out waiting for the target JetBrains IDE plugin after hidden bootstrap.", 3, payload)
 
 
 def identity_matches_context(identity: dict[str, Any], context: dict[str, Any]) -> bool:
@@ -606,7 +642,7 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             attempted_open = True
             ensure_trusted_auto_open_root(context)
             ensure_jetbrains_trusted_locations(context)
-            open_via_running_ide(args, context) or open_in_ide(context, background=getattr(args, "background_open", False))
+            open_project_for_lifecycle(args, context)
             time.sleep(4)
             continue
         if not identities:
@@ -628,7 +664,7 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             attempted_open = True
             ensure_trusted_auto_open_root(context)
             ensure_jetbrains_trusted_locations(context)
-            open_via_running_ide(args, context) or open_in_ide(context, background=getattr(args, "background_open", False))
+            open_project_for_lifecycle(args, context)
             time.sleep(4)
             continue
         if not candidates:
@@ -1707,6 +1743,32 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
     if completed.returncode != 0:
         raise InspectError(
             "Failed to ask macOS to open the JetBrains IDE.",
+            3,
+            {
+                "command": command,
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+                "ide": ide,
+                "worktree_root": context.get("worktree_root"),
+                "background_open": background,
+                "hint": "Check the configured JetBrains app name; macOS open -a requires the application bundle name, such as IntelliJ IDEA, PyCharm, or PyCharm CE.",
+            },
+        )
+
+
+def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
+    ide = context.get("ide")
+    if not ide or sys.platform != "darwin":
+        raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
+    command = ["open"]
+    if background:
+        command.extend(["-g", "-j"])
+    command.extend(["-a", str(ide)])
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise InspectError(
+            "Failed to launch the JetBrains IDE for lifecycle open.",
             3,
             {
                 "command": command,
