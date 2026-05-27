@@ -59,6 +59,21 @@ body handling, centralized auth and retry behavior, and one maintained place to
 improve workflows. For raw PR, run, or review commands that do not yet have a
 dedicated helper, route through `gh-with-env-token`.
 
+Raw `gh pr create`, `gh pr edit`, and `gh pr comment` author writes as the
+active local `gh` account. Normal PR write flows should use the PR helper so the
+configured automation token is used first:
+
+```sh
+github/scripts/gh-pr.py --repo OWNER/REPO create \
+  --title "Short imperative title" \
+  --body-file /path/to/pr-body.md \
+  --base main --head feature-branch
+github/scripts/gh-pr.py --repo OWNER/REPO edit <pr> \
+  --body-file /path/to/pr-body.md
+github/scripts/gh-pr.py --repo OWNER/REPO comment <pr> \
+  --body-file /path/to/comment.md
+```
+
 Do not guess GitHub CLI JSON field names. If needed, ask `gh` for available
 fields before composing a large query:
 
@@ -153,8 +168,9 @@ inline threads before deciding what to change.
   proposed fix.
 - Ask before posting GitHub replies, resolving threads, or dismissing feedback
   unless the user explicitly asked to handle review comments end-to-end.
-- For issue and PR timeline comments, use `scripts/gh-comment`; never pass
-  escaped `\n` through `--body`.
+- For issue and PR timeline comments, use `scripts/gh-comment` or
+  `scripts/gh-pr.py comment --body-file`; never pass escaped `\n` through
+  `--body`.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

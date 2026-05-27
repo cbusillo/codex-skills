@@ -32,6 +32,13 @@ current behavior, configuration, or operational policy.
 
 Use PRs for all non-trivial code changes.
 
+Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
+GitHub account. For normal agent PR writes, use `scripts/gh-pr.py create`,
+`scripts/gh-pr.py edit`, and `scripts/gh-pr.py comment`, or `scripts/gh-comment
+pr` for timeline comments. These helper-backed paths route through
+`scripts/gh-with-env-token` so the configured automation token authors the
+write by default.
+
 Use the bundled `gh-*` and `github-*` helper scripts first for GitHub work. The
 helpers are the agent-facing interface for this skill: they keep common flows
 ergonomic, normalize output for LLM consumption, protect Markdown/body
@@ -59,7 +66,9 @@ operation, and route those calls through `scripts/gh-with-env-token`.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,
-  `scripts/gh-comment` for issue and PR timeline comments, and
+  `scripts/gh-pr.py create --body-file` and `scripts/gh-pr.py edit --body-file`
+  for PR bodies, `scripts/gh-pr.py comment --body-file` or
+  `scripts/gh-comment pr` for PR timeline comments, and
   `scripts/gh-with-env-token pr review --body-file` for PR review feedback when
   no review helper exists. Avoid unquoted heredocs for Markdown bodies because
   shell command substitution runs inside backticks.

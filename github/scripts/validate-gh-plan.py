@@ -486,6 +486,73 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert "graphql" not in calls.lower()
 
 
+def test_pr_helper_write_commands_route_through_configured_gh() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        body_path = tmp_path / "body.md"
+        body_path.write_text("## Body\n\nCloses #146\n")
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "case \"$*\" in\n"
+            "  pr\\ create*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
+            "  pr\\ edit*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
+            "  pr\\ comment*) printf 'https://github.com/owner/repo/pull/9#issuecomment-1\\n' ;;\n"
+            "  *) printf '{}\\n' ;;\n"
+            "esac\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
+        create = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "create",
+                "--title",
+                "Bot write path",
+                "--body-file",
+                str(body_path),
+                "--base",
+                "main",
+                "--head",
+                "feature",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        edit = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "edit", "9", "--body-file", str(body_path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        comment = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "comment", "9", "--body-file", str(body_path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text().splitlines()
+    assert json.loads(create.stdout)["url"] == "https://github.com/owner/repo/pull/9"
+    assert json.loads(edit.stdout)["operation"] == "edit"
+    assert json.loads(comment.stdout)["url"] == "https://github.com/owner/repo/pull/9#issuecomment-1"
+    assert f"pr create --repo owner/repo --title Bot write path --body-file {body_path} --base main --head feature" in calls
+    assert f"pr edit 9 --repo owner/repo --body-file {body_path}" in calls
+    assert f"pr comment 9 --repo owner/repo --body-file {body_path}" in calls
+
+
 def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -775,6 +842,7 @@ def main() -> None:
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
+        test_pr_helper_write_commands_route_through_configured_gh,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
