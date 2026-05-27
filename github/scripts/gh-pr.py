@@ -203,7 +203,15 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     cleanup_warnings: list[dict[str, str]] = []
     planned_branch_delete = None
     if args.delete_branch and planned_close:
-        planned_branch_delete, cleanup_warnings = superseded_branch_delete_plan(pr, winner, repo)
+        repo_metadata = rest_json("GET", f"/repos/{repo}")
+        same_head_open_prs = same_head_open_pull_requests(repo, pr)
+        planned_branch_delete, cleanup_warnings = superseded_branch_delete_plan(
+            pr,
+            winner,
+            repo,
+            repo_metadata,
+            same_head_open_prs,
+        )
 
     if args.dry_run:
         return {
@@ -326,6 +334,8 @@ def superseded_branch_delete_plan(
     pr: dict[str, Any],
     winner: dict[str, Any],
     repo: str,
+    repo_metadata: dict[str, Any],
+    same_head_open_prs: list[dict[str, Any]],
 ) -> tuple[Optional[dict[str, str]], list[dict[str, str]]]:
     head = pr.get("head") or {}
     head_repo = head.get("repo") or {}
@@ -337,8 +347,17 @@ def superseded_branch_delete_plan(
     winner_head_full_name = winner_head_repo.get("full_name")
     winner_head_ref = winner_head.get("ref")
     base_ref = base.get("ref")
+    default_branch = repo_metadata.get("default_branch")
     if head_full_name != repo or not head_ref or head_ref == base_ref:
         return None, []
+    if head_ref == default_branch:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_shared_ref",
+                "ref": f"heads/{head_ref}",
+                "reason": "Superseded PR head branch is the repository default branch.",
+            }
+        ]
     if head_full_name == winner_head_full_name and head_ref == winner_head_ref:
         return None, [
             {
@@ -347,7 +366,32 @@ def superseded_branch_delete_plan(
                 "reason": "Superseded and canonical PRs share the same head branch.",
             }
         ]
+    dependent_prs = [item for item in same_head_open_prs if item.get("number") != pr.get("number")]
+    if dependent_prs:
+        return None, [
+            {
+                "kind": "remote_branch_delete_skipped_active_pr",
+                "ref": f"heads/{head_ref}",
+                "reason": "Another open PR uses the superseded PR head branch.",
+                "pullRequests": ",".join(str(item.get("number")) for item in dependent_prs if item.get("number")),
+            }
+        ]
     return {"repo": repo, "branch": head_ref, "ref": f"heads/{head_ref}"}, []
+
+
+def same_head_open_pull_requests(repo: str, pr: dict[str, Any]) -> list[dict[str, Any]]:
+    head = pr.get("head") or {}
+    head_repo = head.get("repo") or {}
+    head_full_name = head_repo.get("full_name")
+    head_ref = head.get("ref")
+    if head_full_name != repo or not head_ref:
+        return []
+    owner = repo.split("/", 1)[0]
+    return limited_paged_rest_json(
+        "GET",
+        f"/repos/{repo}/pulls?state=open&head={urllib.parse.quote(f'{owner}:{head_ref}', safe='')}",
+        100,
+    )
 
 
 def cleanup_warnings_for_deleted_branch(deleted: Optional[dict[str, Any]]) -> list[dict[str, str]]:
