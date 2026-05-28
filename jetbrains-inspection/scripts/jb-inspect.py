@@ -483,7 +483,7 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "The configured macOS app name did not launch the IDE product that has this plugin installed.",
         "The inspection plugin is disabled, missing, or has not written its registry heartbeat yet.",
     ]
-    return {
+    payload = {
         "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
@@ -493,6 +493,86 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "likely_causes": causes,
         "hint": "Run again with --foreground-open, trust the project if prompted, set JetBrains project opening to New Window, or open the worktree manually once.",
     }
+    payload.update(route_diagnostic_payload(args, context))
+    return payload
+
+
+def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    try:
+        identities = discover_identities(getattr(args, "port", None))
+    except InspectError as error:
+        return {"route_diagnostic": {"discovery_error": str(error)}}
+    target_ide = context.get("ide")
+    projects = [
+        flatten_project(identity, project)
+        for identity in identities
+        for project in identity.get("open_projects", []) or []
+    ]
+    matching_identities = [identity for identity in identities if identity_matches_context(identity, context)]
+    matching_projects = [
+        project
+        for project in projects
+        if flat_project_matches_context(project, context)
+    ]
+    other_projects = [
+        project
+        for project in projects
+        if project not in matching_projects
+    ]
+    diagnostic = {
+        "requested_ide": target_ide,
+        "target_worktree": context.get("worktree_root"),
+        "target_project_path": context.get("project_path"),
+        "discovered_identity_count": len(identities),
+        "matching_identity_count": len(matching_identities),
+        "discovered_project_count": len(projects),
+        "matching_project_count": len(matching_projects),
+        "identities": [public_identity_summary(identity) for identity in identities],
+        "matching_projects": matching_projects[:10],
+        "other_projects": other_projects[:10],
+    }
+    if identities and not matching_identities and target_ide:
+        diagnostic["reason"] = "different_jetbrains_product_running"
+        diagnostic["next_action"] = f"Open the worktree in {target_ide} with the inspection plugin installed and up to date for that IDE, or update repo config/--ide to one of the discovered JetBrains products."
+    elif matching_identities and not matching_projects:
+        diagnostic["reason"] = "target_ide_running_without_target_project"
+        diagnostic["next_action"] = "Open the exact worktree in the configured IDE, verify that IDE has the inspection plugin installed and up to date, or allow lifecycle closeout to open it under a trusted root."
+    elif not identities:
+        diagnostic["reason"] = "no_plugin_instances_discovered"
+        diagnostic["next_action"] = "Launch the configured JetBrains IDE with the inspection plugin installed."
+    return {"route_diagnostic": diagnostic}
+
+
+def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ide_name": identity.get("ide_name") or identity.get("name"),
+        "ide_product_code": identity.get("ide_product_code") or identity.get("product_code"),
+        "ide_version": identity.get("ide_version") or identity.get("version"),
+        "plugin_version": identity.get("plugin_version"),
+        "session_id": identity.get("session_id"),
+        "port": identity.get("port"),
+        "pid": identity.get("pid"),
+        "open_project_count": len(identity.get("open_projects", []) or []),
+    }
+
+
+def flat_project_matches_context(project: dict[str, Any], context: dict[str, Any]) -> bool:
+    if not identity_matches_context(
+        {
+            "ide_name": project.get("ide_name"),
+            "ide_product_code": project.get("ide_product_code"),
+        },
+        context,
+    ):
+        return False
+    target = context.get("worktree_root") or context.get("project_path")
+    base_path = project.get("base_path")
+    if not target or not base_path:
+        return False
+    try:
+        return Path(str(base_path)).resolve() == Path(str(target)).resolve()
+    except OSError:
+        return str(base_path) == str(target)
 
 
 def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any], timeout_ms: int) -> None:
@@ -736,7 +816,11 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             time.sleep(4)
             continue
         if not candidates:
-            raise InspectError("No open JetBrains project matched this repo/worktree.", 3, {"selector": selector_params(args, context)})
+            raise InspectError(
+                "No open JetBrains project matched this repo/worktree.",
+                3,
+                {"selector": selector_params(args, context)} | route_diagnostic_payload(args, context),
+            )
         route = sorted(candidates, key=lambda item: route_sort_key(item, context), reverse=True)[0]
         ensure_worktree_safe(route, context, args)
         return route
@@ -1120,8 +1204,56 @@ def print_error_details(payload: dict[str, Any]) -> None:
     }
     if any(value is not None for value in context_details.values()):
         print(safe_text("CONTEXT: repo={repo} worktree={worktree} ide={ide} endpoint={endpoint} url={url}", context_details))
+    print_route_diagnostic(payload.get("route_diagnostic"))
     if payload.get("hint"):
         print(safe_text("HINT: {hint}", {"hint": payload.get("hint")}))
+
+
+def print_route_diagnostic(diagnostic: Any) -> None:
+    if not isinstance(diagnostic, dict):
+        return
+    print(
+        safe_text(
+            "ROUTE_DIAGNOSTIC: requested_ide={requested_ide} target_worktree={target_worktree} identities={identities} matching_identities={matching_identities} projects={projects} matching_projects={matching_projects} reason={reason}",
+            {
+                "requested_ide": diagnostic.get("requested_ide"),
+                "target_worktree": diagnostic.get("target_worktree"),
+                "identities": diagnostic.get("discovered_identity_count"),
+                "matching_identities": diagnostic.get("matching_identity_count"),
+                "projects": diagnostic.get("discovered_project_count"),
+                "matching_projects": diagnostic.get("matching_project_count"),
+                "reason": diagnostic.get("reason"),
+            },
+        )
+    )
+    for identity in (diagnostic.get("identities") or [])[:5]:
+        print(
+            safe_text(
+                "ROUTE_IDENTITY: ide={ide} product={product} port={port} projects={projects} plugin={plugin}",
+                {
+                    "ide": identity.get("ide_name"),
+                    "product": identity.get("ide_product_code"),
+                    "port": identity.get("port"),
+                    "projects": identity.get("open_project_count"),
+                    "plugin": identity.get("plugin_version"),
+                },
+            )
+        )
+    for project in (diagnostic.get("other_projects") or [])[:5]:
+        print(
+            safe_text(
+                "ROUTE_OTHER_PROJECT: ide={ide} product={product} plugin={plugin} name={name} base_path={base_path}",
+                {
+                    "ide": project.get("ide_name"),
+                    "product": project.get("ide_product_code"),
+                    "name": project.get("project_name") or project.get("name"),
+                    "base_path": project.get("base_path"),
+                    "plugin": project.get("plugin_version"),
+                },
+            )
+        )
+    if diagnostic.get("next_action"):
+        print(safe_text("ROUTE_NEXT_ACTION: {next_action}", {"next_action": diagnostic.get("next_action")}))
 
 
 def public_json(payload: dict[str, Any]) -> str:
@@ -1754,6 +1886,7 @@ def flatten_project(identity: dict[str, Any], project: dict[str, Any]) -> dict[s
         "port": identity.get("port"),
         "ide_name": identity.get("ide_name"),
         "ide_product_code": identity.get("ide_product_code"),
+        "plugin_version": identity.get("plugin_version"),
         "project_key": project.get("project_key"),
         "project_instance_id": project.get("project_instance_id"),
         "name": project.get("name"),
