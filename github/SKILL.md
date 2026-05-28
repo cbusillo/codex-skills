@@ -1,6 +1,8 @@
 ---
 name: github
 description: "Comprehensive GitHub Expert persona for repository execution and hygiene: PRs, branches, Actions, reviews, merge/deploy state, issue comments, and safe cleanup. For durable planning, roadmaps, blockers, Projects, or workstream graphs, use github-plan."
+metadata:
+  short-description: Execute GitHub repo workflows
 ---
 
 # GitHub Expert

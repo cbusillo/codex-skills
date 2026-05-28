@@ -1,6 +1,8 @@
 ---
 name: launchplane
 description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, and audited operator mutations. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
+metadata:
+  short-description: Operate Launchplane-managed state
 ---
 
 # Launchplane Expert

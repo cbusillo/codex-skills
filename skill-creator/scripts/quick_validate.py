@@ -17,8 +17,9 @@ import yaml
 
 MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
-ALLOWED_PROPERTIES = {"name", "description", "metadata"}
+ALLOWED_PROPERTIES = {"name", "description", "metadata", "policy"}
 ALLOWED_METADATA_PROPERTIES = {"short-description"}
+ALLOWED_POLICY_PROPERTIES = {"allow_implicit_invocation"}
 
 
 def validate_skill(skill_path):
@@ -91,6 +92,27 @@ def validate_skill_content(content):
                     f"Maximum is {MAX_SKILL_DESCRIPTION_LENGTH} characters.",
                 )
 
+    policy = frontmatter.get("policy")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            return False, f"Policy must be a YAML dictionary, got {type(policy).__name__}"
+        unexpected_policy_keys = set(policy.keys()) - ALLOWED_POLICY_PROPERTIES
+        if unexpected_policy_keys:
+            allowed = ", ".join(sorted(ALLOWED_POLICY_PROPERTIES))
+            unexpected = ", ".join(sorted(unexpected_policy_keys))
+            return (
+                False,
+                f"Unexpected key(s) in policy: {unexpected}. Allowed policy properties are: {allowed}",
+            )
+
+        allow_implicit_invocation = policy.get("allow_implicit_invocation")
+        if allow_implicit_invocation is not None and not isinstance(allow_implicit_invocation, bool):
+            return (
+                False,
+                "policy.allow_implicit_invocation must be a boolean, "
+                f"got {type(allow_implicit_invocation).__name__}",
+            )
+
     if "name" not in frontmatter:
         return False, "Missing 'name' in frontmatter"
     if "description" not in frontmatter:
@@ -162,6 +184,24 @@ def run_self_tests():
             "---\nname: demo-skill\ndescription: Use for demo work.\nmetadata:\n  owner: Code\n---\n",
             False,
             "Unexpected key(s) in metadata",
+        ),
+        (
+            "manual-only-policy",
+            "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  allow_implicit_invocation: false\n---\n",
+            True,
+            "Skill is valid!",
+        ),
+        (
+            "invalid-policy-type",
+            "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  allow_implicit_invocation: no thanks\n---\n",
+            False,
+            "policy.allow_implicit_invocation must be a boolean",
+        ),
+        (
+            "unexpected-policy",
+            "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  owner: Code\n---\n",
+            False,
+            "Unexpected key(s) in policy",
         ),
     ]
 

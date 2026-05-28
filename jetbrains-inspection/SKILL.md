@@ -1,6 +1,8 @@
 ---
 name: jetbrains-inspection
 description: Use JetBrains IDE inspections through the local inspection plugin; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+metadata:
+  short-description: Run JetBrains IDE inspections safely
 ---
 
 # JetBrains Inspection

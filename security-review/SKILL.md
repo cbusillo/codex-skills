@@ -1,6 +1,8 @@
 ---
 name: security-review
 description: Use only when the user explicitly requests security work such as a security review, audit, threat model, secure-by-default guidance, auth/authorization review, secrets check, tenant isolation review, webhook safety review, supply-chain/release risk review, or asks whether code is safe from a security perspective. Do not trigger for ordinary code review, debugging, readiness checks, or non-security implementation work.
+metadata:
+  short-description: Review security and threat models
 ---
 
 # Security Review
