@@ -586,8 +586,8 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["session_id"], "s2")
 
     def test_route_diagnostic_reports_other_ide_projects(self):
-        original_discover = jb_inspect.discover_identities
-        jb_inspect.discover_identities = lambda port: [
+        original_discover = jb_inspect.discover_diagnostic_identities
+        jb_inspect.discover_diagnostic_identities = lambda port: [
             {
                 "port": 63341,
                 "ide_name": "IntelliJ IDEA 2026.1.2",
@@ -609,7 +609,7 @@ class LifecycleTest(unittest.TestCase):
                 {"ide": "PyCharm", "worktree_root": "/Users/me/Developer/codex-skills", "project_path": "/Users/me/Developer/codex-skills"},
             )
         finally:
-            jb_inspect.discover_identities = original_discover
+            jb_inspect.discover_diagnostic_identities = original_discover
 
         diagnostic = payload["route_diagnostic"]
         self.assertEqual(diagnostic["requested_ide"], "PyCharm")
@@ -622,6 +622,56 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(diagnostic["other_projects"][0]["plugin_version"], "1.12.10")
         self.assertIn("PyCharm", diagnostic["next_action"])
         self.assertIn("plugin installed and up to date", diagnostic["next_action"])
+
+    def test_route_diagnostic_merges_registry_and_port_scan(self):
+        original_registry = jb_inspect.registry_identities
+        original_ports = jb_inspect.configured_ports
+        original_identity = jb_inspect.identity_for_port
+        jb_inspect.registry_identities = lambda: [
+            {
+                "port": 63342,
+                "ide_name": "IntelliJ IDEA 2026.1.2",
+                "ide_product_code": "IU",
+                "session_id": "idea-session",
+                "open_projects": [],
+            }
+        ]
+        jb_inspect.configured_ports = lambda: [63342, 63344]
+
+        def fake_identity_for_port(port):
+            if port == 63342:
+                return {
+                    "port": 63342,
+                    "ide_name": "IntelliJ IDEA 2026.1.2",
+                    "ide_product_code": "IU",
+                    "session_id": "idea-session",
+                    "open_projects": [],
+                }
+            return {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.1.2",
+                "ide_product_code": "PY",
+                "session_id": "py-session",
+                "open_projects": [],
+            }
+
+        jb_inspect.identity_for_port = fake_identity_for_port
+        try:
+            payload = jb_inspect.route_diagnostic_payload(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/Users/me/Developer/mediaforce", "project_path": "/Users/me/Developer/mediaforce"},
+            )
+        finally:
+            jb_inspect.registry_identities = original_registry
+            jb_inspect.configured_ports = original_ports
+            jb_inspect.identity_for_port = original_identity
+
+        diagnostic = payload["route_diagnostic"]
+        self.assertEqual(diagnostic["discovered_identity_count"], 2)
+        self.assertEqual(diagnostic["matching_identity_count"], 1)
+        self.assertEqual(diagnostic["matching_project_count"], 0)
+        self.assertEqual(diagnostic["reason"], "target_ide_running_without_target_project")
+        self.assertIn("exact worktree", diagnostic["next_action"])
 
     def test_open_project_for_lifecycle_uses_running_ide_without_bootstrap(self):
         calls = []

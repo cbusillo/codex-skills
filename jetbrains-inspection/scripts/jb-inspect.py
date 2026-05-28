@@ -499,7 +499,7 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
 
 def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     try:
-        identities = discover_identities(getattr(args, "port", None))
+        identities = discover_diagnostic_identities(getattr(args, "port", None))
     except InspectError as error:
         return {"route_diagnostic": {"discovery_error": str(error)}}
     target_ide = context.get("ide")
@@ -541,6 +541,31 @@ def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) 
         diagnostic["reason"] = "no_plugin_instances_discovered"
         diagnostic["next_action"] = "Launch the configured JetBrains IDE with the inspection plugin installed."
     return {"route_diagnostic": diagnostic}
+
+
+def discover_diagnostic_identities(port: int | None) -> list[dict[str, Any]]:
+    if port:
+        return discover_identities(port)
+    identities_by_key: dict[str, dict[str, Any]] = {}
+    for identity in registry_identities():
+        identities_by_key[identity_key(identity)] = identity
+    for candidate_port in configured_ports():
+        try:
+            identity = identity_for_port(candidate_port)
+        except InspectError:
+            continue
+        identities_by_key[identity_key(identity)] = identity
+    return list(identities_by_key.values())
+
+
+def identity_key(identity: dict[str, Any]) -> str:
+    session_id = identity.get("session_id")
+    if session_id:
+        return f"session:{session_id}"
+    port = identity.get("port")
+    if port:
+        return f"port:{port}"
+    return json.dumps(public_identity_summary(identity), sort_keys=True)
 
 
 def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
