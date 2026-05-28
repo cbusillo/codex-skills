@@ -445,8 +445,12 @@ def json_fragments(value: Any, structured_context: bool = False) -> Iterable[Fra
         for key, child in value.items():
             if isinstance(child, str) and key in NESTED_JSON_STRING_KEYS:
                 nested = parse_nested_json_object(child)
-                if nested is not None and contains_structured_payload(nested):
-                    yield from json_fragments(nested, True)
+                if nested is not None:
+                    if structured:
+                        for fragment in json_fragments(nested, True):
+                            yield Fragment(fragment.text, fragment.summary, True)
+                    elif key in NESTED_JSON_STRING_KEYS and contains_structured_payload(nested):
+                        yield from json_fragments(nested, True)
                     continue
             if key in INTERESTING_JSON_KEYS and not isinstance(child, dict | list):
                 yield Fragment(f"{key}={child}", False, structured)

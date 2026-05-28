@@ -451,6 +451,44 @@ def test_investigation_noise_suppression_preserves_structured_payloads() -> None
         raise AssertionError("investigation noise should be suppressed without hiding structured payloads")
 
 
+def test_nested_wrapped_helper_payload_retains_structured_context() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "timestamp": "2026-05-28T18:00:00Z",
+                    "type": "function_call_output",
+                    "status": "error",
+                    "payload": {
+                        "error_reason": "GraphQL secondary rate limit",
+                        "reason": json.dumps(
+                            {"status": "error", "error_reason": "GraphQL secondary rate limit"}
+                        )
+                    },
+                }
+            ],
+        )
+        findings = module.scan(
+            [trace],
+            max_bytes=100_000,
+            context_chars=240,
+            suppress_investigation_noise=True,
+        )
+
+    finding = findings.get("github_graphql_rate_limit")
+    if finding is None:
+        raise AssertionError("nested wrapped helper payload should still produce a finding")
+    if finding.structured_count < 1:
+        raise AssertionError(f"nested wrapped helper payload should stay structured, got {finding.structured_count}")
+    payload = module.finding_to_json(finding)
+    if payload["structured_payload_count"] < 1 or payload["broad_context_count"] != 0:
+        raise AssertionError(f"nested wrapped helper payload should not become broad context: {payload}")
+    if payload["evidence"][0]["evidence_type"] != "structured_payload":
+        raise AssertionError(f"nested wrapped helper payload should be labeled structured: {payload}")
+
+
 def test_status_wrapper_does_not_make_discussion_structured() -> None:
     module = load_module()
     fragments = list(
@@ -486,6 +524,7 @@ def main() -> int:
     test_structured_payload_counts_are_separate_from_broad_context()
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
+    test_nested_wrapped_helper_payload_retains_structured_context()
     test_status_wrapper_does_not_make_discussion_structured()
     print("ok validate-analyze-rollouts")
     return 0
