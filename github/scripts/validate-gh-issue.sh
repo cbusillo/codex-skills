@@ -183,6 +183,33 @@ grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
 grep -q 'retrying with active gh auth' "$stderr_log"
 grep -q 'active-success' "$stdout_log"
 
+cat >"$tmpdir/record-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue comment 9 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
+	'issue close 9 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/record-gh"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 9 --repo owner/repo --reason completed \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'
+Closing with `literal markdown`.
+EOF
+
+grep -q '^issue comment 9 --body-file .*[[:space:]]--repo owner/repo$' "$log"
+grep -qx 'issue close 9 --repo owner/repo --reason completed' "$log"
+grep -qx 'commented' "$stdout_log"
+grep -qx 'closed' <(tail -n 1 "$stdout_log")
+
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
