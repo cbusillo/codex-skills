@@ -78,6 +78,10 @@ and classify recoverable failures with `error_code` values such as
 `rate_limited`, `lookup_stale`, `not_in_project`, and
 `field_or_option_missing`.
 
+When issue creation or close succeeds but optional Project sync fails, the
+helper returns `ok: true` with a non-blocking Project warning, target context,
+and the Project sync operation that needs follow-up.
+
 ## Formatting Tip
 
 For multiline issue create/edit bodies, prefer `scripts/gh-issue` so literal
