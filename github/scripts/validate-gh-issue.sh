@@ -210,6 +210,36 @@ grep -qx 'issue close 9 --repo owner/repo --reason completed' "$log"
 grep -qx 'commented' "$stdout_log"
 grep -qx 'closed' <(tail -n 1 "$stdout_log")
 
+cat >"$tmpdir/record-comment-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue comment 10 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
+	'issue close 10 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/record-comment-gh"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 10 --repo owner/repo \
+	--comment "duplicate comment" --reason completed \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'
+Closing with stdin body only.
+EOF
+
+grep -q '^issue comment 10 --body-file .*[[:space:]]--repo owner/repo$' "$log"
+grep -qx 'issue close 10 --repo owner/repo --reason completed' "$log"
+if grep -q -- '--comment' "$log"; then
+	echo "error: gh-issue close should strip caller --comment passthrough" >&2
+	exit 1
+fi
+
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

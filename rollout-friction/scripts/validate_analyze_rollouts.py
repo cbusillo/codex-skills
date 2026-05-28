@@ -489,6 +489,29 @@ def test_nested_wrapped_helper_payload_retains_structured_context() -> None:
         raise AssertionError(f"nested wrapped helper payload should be labeled structured: {payload}")
 
 
+def test_non_structured_nested_payload_strings_are_preserved() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "timestamp": "2026-05-28T18:00:00Z",
+                    "message": json.dumps(
+                        {"message": "GraphQL secondary rate limit inside wrapped helper output"}
+                    ),
+                }
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+
+    finding = findings.get("github_graphql_rate_limit")
+    if finding is None:
+        raise AssertionError("non-structured nested JSON message should still produce a finding")
+    if finding.structured_count != 0:
+        raise AssertionError(f"plain nested message should remain broad context: {finding.structured_count}")
+
+
 def test_status_wrapper_does_not_make_discussion_structured() -> None:
     module = load_module()
     fragments = list(
@@ -525,6 +548,7 @@ def main() -> int:
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
     test_nested_wrapped_helper_payload_retains_structured_context()
+    test_non_structured_nested_payload_strings_are_preserved()
     test_status_wrapper_does_not_make_discussion_structured()
     print("ok validate-analyze-rollouts")
     return 0
