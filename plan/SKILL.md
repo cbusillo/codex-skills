@@ -3,6 +3,8 @@ name: plan
 description: Legacy local plan files only. Use only when explicitly requested; use github-plan for GitHub-backed planning.
 metadata:
   short-description: Manage explicit local/offline plans
+policy:
+  allow_implicit_invocation: false
 ---
 
 # Local Plan Override

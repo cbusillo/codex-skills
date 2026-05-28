@@ -3,6 +3,8 @@ name: memory-distillation
 description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
 metadata:
   short-description: Audit memories into durable sources
+policy:
+  allow_implicit_invocation: false
 ---
 
 # Memory Distillation

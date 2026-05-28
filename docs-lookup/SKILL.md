@@ -1,6 +1,8 @@
 ---
 name: docs-lookup
 description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering the source of truth or access path for private operations.
+metadata:
+  short-description: Find external docs and ops context
 ---
 
 # Docs Lookup
