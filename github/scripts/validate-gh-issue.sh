@@ -213,7 +213,39 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.github.openPullRequests[0].draft == false and
 		.github.openPullRequests[0].mergeStateStatus == null and
 		.github.openPullRequests[0].snapshotReadiness.degraded == true and
-		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false
+		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false and
+		.launchplane.status == "configured" and
+		.launchplane.service.publicUrl == "https://launchplane.shinycomputers.com" and
+		.launchplane.mergeTrain.readyLabel == "ready-to-merge" and
+		.launchplane.mergeTrain.githubActionsRunner.workflow == "merge-train-runner.yml" and
+		(.launchplane.warnings | length) == 0
+	' >/dev/null
+
+cat >"$tmpdir/incomplete-launchplane.json" <<'EOF'
+{
+  "defaultBranch": "main",
+  "launchplane": {
+    "enabled": true,
+    "context": {"enabled": true},
+    "operator": {"enabled": true},
+    "mergeTrain": {"enabled": true}
+  }
+}
+EOF
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$tmpdir/incomplete-launchplane.json" |
+	jq -e '
+		.launchplane.status == "configured" and
+		.launchplane.enabled == true and
+		([.launchplane.warnings[].code] | sort) == [
+			"missing_actions_runner",
+			"missing_context_helper",
+			"missing_operator_helper",
+			"missing_public_url",
+			"missing_ready_label"
+		]
 	' >/dev/null
 
 echo "ok validate-gh-issue"
