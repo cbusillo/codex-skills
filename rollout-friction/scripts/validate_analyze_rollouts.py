@@ -351,6 +351,106 @@ def test_real_trace_evidence_survives_meta_echo_filter() -> None:
             raise AssertionError(f"real trace evidence should still report {expected}")
 
 
+def test_structured_payload_counts_are_separate_from_broad_context() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "timestamp": "2026-05-28T18:00:00Z",
+                    "type": "function_call_output",
+                    "payload": {
+                        "output": json.dumps(
+                            {
+                                "status": "error",
+                                "error_reason": "GraphQL secondary rate limit",
+                            }
+                        )
+                    },
+                },
+                {"message": "GraphQL secondary rate limit mentioned in discussion"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+
+    finding = findings.get("github_graphql_rate_limit")
+    if finding is None:
+        raise AssertionError("structured nested helper payload should produce GraphQL finding")
+    if finding.structured_count != 1:
+        raise AssertionError(f"expected one structured payload hit, got {finding.structured_count}")
+    payload = module.finding_to_json(finding)
+    if payload["structured_payload_count"] != 1 or payload["broad_context_count"] != 1:
+        raise AssertionError(f"structured and broad counts should be separate: {payload}")
+    if payload["evidence"][0]["evidence_type"] != "structured_payload":
+        raise AssertionError(f"structured evidence should be labeled: {payload}")
+
+
+def test_since_and_after_line_bound_scan_records() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"timestamp": "2026-05-28T17:00:00Z", "message": "GraphQL rate limit before checkpoint"},
+                {"timestamp": "2026-05-28T18:00:00Z", "message": "GraphQL rate limit after checkpoint"},
+                {"timestamp": "2026-05-28T19:00:00Z", "message": "No runs found for workflow CodeQL"},
+            ],
+        )
+        files = module.iter_candidate_files([trace], max_files=10)
+        findings = module.scan(
+            files,
+            max_bytes=100_000,
+            context_chars=240,
+            since_ts=module.parse_timestamp("2026-05-28T18:30:00Z"),
+        )
+        after_line_findings = module.scan(
+            files,
+            max_bytes=100_000,
+            context_chars=240,
+            after_file=trace,
+            after_line=1,
+        )
+
+    if "github_graphql_rate_limit" in findings:
+        raise AssertionError("--since should filter older GraphQL records")
+    if "github_workflow_wait_miss" not in findings:
+        raise AssertionError("--since should keep fresh records in the window")
+    graph = after_line_findings.get("github_graphql_rate_limit")
+    if graph is None or graph.count != 1:
+        raise AssertionError("--after-line should keep only records after the checkpoint")
+
+
+def test_investigation_noise_suppression_preserves_structured_payloads() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "grep GraphQL rate limit in rollout-friction/scripts/analyze_rollouts.py"},
+                {
+                    "payload": {
+                        "output": json.dumps(
+                            {"status": "error", "error_reason": "GraphQL rate limit from helper"}
+                        )
+                    }
+                },
+            ],
+        )
+        findings = module.scan(
+            [trace],
+            max_bytes=100_000,
+            context_chars=240,
+            suppress_investigation_noise=True,
+        )
+
+    finding = findings.get("github_graphql_rate_limit")
+    if finding is None:
+        raise AssertionError("structured helper payload should survive noise suppression")
+    if finding.count != 1 or finding.structured_count != 1:
+        raise AssertionError("investigation noise should be suppressed without hiding structured payloads")
+
+
 def main() -> int:
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
@@ -367,6 +467,9 @@ def main() -> int:
     test_scanner_io_errors_do_not_count_as_command_failures()
     test_meta_echoes_do_not_create_findings()
     test_real_trace_evidence_survives_meta_echo_filter()
+    test_structured_payload_counts_are_separate_from_broad_context()
+    test_since_and_after_line_bound_scan_records()
+    test_investigation_noise_suppression_preserves_structured_payloads()
     print("ok validate-analyze-rollouts")
     return 0
 
