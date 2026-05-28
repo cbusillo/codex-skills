@@ -67,7 +67,8 @@ operation, and route those calls through `scripts/gh-with-env-token`.
   available. If unavailable, record the not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
-- **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies,
+- **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies and
+  issue close comments,
   `scripts/gh-pr.py create --body-file` and `scripts/gh-pr.py edit --body-file`
   for PR bodies, `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment pr` for PR timeline comments, and
@@ -109,7 +110,7 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.
-- `scripts/gh-issue`: Safe multiline issue create/edit bodies from stdin.
+- `scripts/gh-issue`: Safe multiline issue create/edit/close bodies from stdin.
 - `scripts/gh-comment`: Safe multiline commenting.
 
 ## Workflow Loop

@@ -221,6 +221,9 @@ inline threads before deciding what to change.
 - For issue and PR timeline comments, use `scripts/gh-comment` or
   `scripts/gh-pr.py comment --body-file`; never pass escaped `\n` through
   `--body`.
+- For issue close comments, use `scripts/gh-issue close` with stdin. It posts
+  the close comment with `--body-file` before closing the issue because
+  `gh issue close` may only support `--comment string`.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

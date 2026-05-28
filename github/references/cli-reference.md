@@ -99,7 +99,15 @@ scripts/gh-issue edit 123 --repo OWNER/REPO <<'EOF'
 
 State: Active
 EOF
+
+scripts/gh-issue close 123 --repo OWNER/REPO --reason completed <<'EOF'
+Closing with a multiline Markdown comment before closing the issue.
+EOF
 ```
+
+`gh issue close` does not support `--body-file` in all installed `gh` versions;
+`scripts/gh-issue close` posts the stdin body as a comment first, then closes
+the issue.
 
 For timeline comments, use `scripts/gh-comment` or
 `scripts/gh-pr.py comment --body-file`. For PR review feedback, use
