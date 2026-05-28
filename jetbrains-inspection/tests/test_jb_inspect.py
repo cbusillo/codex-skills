@@ -558,13 +558,22 @@ class LifecycleTest(unittest.TestCase):
 
     def test_open_via_running_ide_ignores_other_ide_products(self):
         original_discover = jb_inspect.discover_identities
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
         original_http_get = jb_inspect.http_get
         jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "WebStorm", "session_id": "s1"}]
-        jb_inspect.http_get = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not call"))
+        jb_inspect.discover_diagnostic_identities = lambda port: [{"port": 63341, "ide_name": "WebStorm", "session_id": "s1"}]
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            if endpoint == "lifecycle/open":
+                raise AssertionError("should not call lifecycle/open for the wrong product")
+            return jb_inspect.HttpResult(200, {"status": "ok"}, "url")
+
+        jb_inspect.http_get = fake_http_get
         try:
             result = jb_inspect.open_via_running_ide(Namespace(port=None), {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"})
         finally:
             jb_inspect.discover_identities = original_discover
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
             jb_inspect.http_get = original_http_get
 
         self.assertFalse(result)
@@ -584,6 +593,115 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result["session_id"], "s2")
+
+    def test_wait_for_matching_ide_identity_uses_port_scan_when_registry_misses_target(self):
+        original_discover = jb_inspect.discover_identities
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        original_sleep = jb_inspect.time.sleep
+        jb_inspect.discover_identities = lambda port: [
+            {"port": 63342, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"},
+        ]
+        jb_inspect.discover_diagnostic_identities = lambda port: [
+            {"port": 63342, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"},
+            {"port": 63344, "ide_name": "PyCharm", "session_id": "py-session", "open_projects": []},
+        ]
+        jb_inspect.time.sleep = lambda seconds: None
+        try:
+            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
+            jb_inspect.time.sleep = original_sleep
+
+        self.assertEqual(result["session_id"], "py-session")
+
+    def test_route_diagnostic_reports_other_ide_projects(self):
+        original_discover = jb_inspect.discover_diagnostic_identities
+        jb_inspect.discover_diagnostic_identities = lambda port: [
+            {
+                "port": 63341,
+                "ide_name": "IntelliJ IDEA 2026.1.2",
+                "ide_product_code": "IU",
+                "plugin_version": "1.12.10",
+                "session_id": "idea-session",
+                "open_projects": [
+                    {
+                        "name": "jetbrains-inspection-api",
+                        "project_key": "path:/Users/me/Developer/jetbrains-inspection-api",
+                        "base_path": "/Users/me/Developer/jetbrains-inspection-api",
+                    }
+                ],
+            }
+        ]
+        try:
+            payload = jb_inspect.route_diagnostic_payload(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/Users/me/Developer/codex-skills", "project_path": "/Users/me/Developer/codex-skills"},
+            )
+        finally:
+            jb_inspect.discover_diagnostic_identities = original_discover
+
+        diagnostic = payload["route_diagnostic"]
+        self.assertEqual(diagnostic["requested_ide"], "PyCharm")
+        self.assertEqual(diagnostic["discovered_identity_count"], 1)
+        self.assertEqual(diagnostic["matching_identity_count"], 0)
+        self.assertEqual(diagnostic["discovered_project_count"], 1)
+        self.assertEqual(diagnostic["matching_project_count"], 0)
+        self.assertEqual(diagnostic["reason"], "different_jetbrains_product_running")
+        self.assertEqual(diagnostic["other_projects"][0]["ide_product_code"], "IU")
+        self.assertEqual(diagnostic["other_projects"][0]["plugin_version"], "1.12.10")
+        self.assertIn("PyCharm", diagnostic["next_action"])
+        self.assertIn("plugin installed and up to date", diagnostic["next_action"])
+
+    def test_route_diagnostic_merges_registry_and_port_scan(self):
+        original_registry = jb_inspect.registry_identities
+        original_ports = jb_inspect.configured_ports
+        original_identity = jb_inspect.identity_for_port
+        jb_inspect.registry_identities = lambda: [
+            {
+                "port": 63342,
+                "ide_name": "IntelliJ IDEA 2026.1.2",
+                "ide_product_code": "IU",
+                "session_id": "idea-session",
+                "open_projects": [],
+            }
+        ]
+        jb_inspect.configured_ports = lambda: [63342, 63344]
+
+        def fake_identity_for_port(port):
+            if port == 63342:
+                return {
+                    "port": 63342,
+                    "ide_name": "IntelliJ IDEA 2026.1.2",
+                    "ide_product_code": "IU",
+                    "session_id": "idea-session",
+                    "open_projects": [],
+                }
+            return {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.1.2",
+                "ide_product_code": "PY",
+                "session_id": "py-session",
+                "open_projects": [],
+            }
+
+        jb_inspect.identity_for_port = fake_identity_for_port
+        try:
+            payload = jb_inspect.route_diagnostic_payload(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/Users/me/Developer/mediaforce", "project_path": "/Users/me/Developer/mediaforce"},
+            )
+        finally:
+            jb_inspect.registry_identities = original_registry
+            jb_inspect.configured_ports = original_ports
+            jb_inspect.identity_for_port = original_identity
+
+        diagnostic = payload["route_diagnostic"]
+        self.assertEqual(diagnostic["discovered_identity_count"], 2)
+        self.assertEqual(diagnostic["matching_identity_count"], 1)
+        self.assertEqual(diagnostic["matching_project_count"], 0)
+        self.assertEqual(diagnostic["reason"], "target_ide_running_without_target_project")
+        self.assertIn("exact worktree", diagnostic["next_action"])
 
     def test_open_project_for_lifecycle_uses_running_ide_without_bootstrap(self):
         calls = []
@@ -1159,6 +1277,60 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("command=closeout", text)
         self.assertIn("CONTEXT: repo=/tmp/repo worktree=/tmp/repo ide=PyCharm", text)
         self.assertIn("HINT: Open the repo in PyCharm.", text)
+
+    def test_human_output_prints_route_diagnostic(self):
+        payload = {
+            "status": "error",
+            "error_reason": "timeout",
+            "error_message": "Timed out waiting for the target JetBrains IDE plugin after hidden bootstrap.",
+            "command": "closeout",
+            "exit_code": 3,
+            "context": {
+                "repo_path": "/tmp/repo",
+                "worktree_root": "/tmp/repo",
+                "ide": "PyCharm",
+            },
+            "route_diagnostic": {
+                "requested_ide": "PyCharm",
+                "target_worktree": "/tmp/repo",
+                "discovered_identity_count": 1,
+                "matching_identity_count": 0,
+                "discovered_project_count": 1,
+                "matching_project_count": 0,
+                "reason": "different_jetbrains_product_running",
+                "identities": [
+                    {
+                        "ide_name": "IntelliJ IDEA 2026.1.2",
+                        "ide_product_code": "IU",
+                        "port": 63342,
+                        "plugin_version": "1.12.10",
+                        "open_project_count": 1,
+                    }
+                ],
+                "other_projects": [
+                    {
+                        "ide_name": "IntelliJ IDEA 2026.1.2",
+                        "ide_product_code": "IU",
+                        "plugin_version": "1.12.10",
+                        "name": "jetbrains-inspection-api",
+                        "base_path": "/tmp/jetbrains-inspection-api",
+                    }
+                ],
+                "next_action": "Open the worktree in PyCharm with the inspection plugin installed and up to date.",
+            },
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("ROUTE_DIAGNOSTIC: requested_ide=PyCharm", text)
+        self.assertIn("matching_identities=0", text)
+        self.assertIn("reason=different_jetbrains_product_running", text)
+        self.assertIn("ROUTE_IDENTITY: ide=IntelliJ IDEA 2026.1.2 product=IU", text)
+        self.assertIn("ROUTE_OTHER_PROJECT: ide=IntelliJ IDEA 2026.1.2 product=IU plugin=1.12.10 name=jetbrains-inspection-api", text)
+        self.assertIn("ROUTE_NEXT_ACTION: Open the worktree in PyCharm with the inspection plugin installed and up to date", text)
 
     def test_human_output_explains_status_bearing_timeout_errors(self):
         payload = jb_inspect.error_payload(
