@@ -617,7 +617,7 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
 
 
 def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> bool:
-    identities = discover_identities(args.port)
+    identities = discover_open_identities(args, context)
     matching = [identity for identity in identities if identity_matches_context(identity, context)]
     for identity in matching:
         port = identity.get("port")
@@ -660,7 +660,7 @@ def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, 
     last_error: InspectError | None = None
     while now_ms() <= deadline:
         try:
-            identities = discover_identities(args.port)
+            identities = discover_open_identities(args, context)
             for identity in identities:
                 if identity_matches_context(identity, context):
                     return identity
@@ -671,6 +671,13 @@ def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, 
     if last_error:
         payload["last_error"] = str(last_error)
     raise InspectError("Timed out waiting for the target JetBrains IDE plugin after hidden bootstrap.", 3, payload)
+
+
+def discover_open_identities(args: argparse.Namespace, context: dict[str, Any]) -> list[dict[str, Any]]:
+    identities = discover_identities(args.port)
+    if args.port or not context.get("ide") or any(identity_matches_context(identity, context) for identity in identities):
+        return identities
+    return discover_diagnostic_identities(None)
 
 
 def identity_matches_context(identity: dict[str, Any], context: dict[str, Any]) -> bool:

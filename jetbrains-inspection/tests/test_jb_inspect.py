@@ -558,13 +558,22 @@ class LifecycleTest(unittest.TestCase):
 
     def test_open_via_running_ide_ignores_other_ide_products(self):
         original_discover = jb_inspect.discover_identities
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
         original_http_get = jb_inspect.http_get
         jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "WebStorm", "session_id": "s1"}]
-        jb_inspect.http_get = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not call"))
+        jb_inspect.discover_diagnostic_identities = lambda port: [{"port": 63341, "ide_name": "WebStorm", "session_id": "s1"}]
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            if endpoint == "lifecycle/open":
+                raise AssertionError("should not call lifecycle/open for the wrong product")
+            return jb_inspect.HttpResult(200, {"status": "ok"}, "url")
+
+        jb_inspect.http_get = fake_http_get
         try:
             result = jb_inspect.open_via_running_ide(Namespace(port=None), {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"})
         finally:
             jb_inspect.discover_identities = original_discover
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
             jb_inspect.http_get = original_http_get
 
         self.assertFalse(result)
@@ -584,6 +593,27 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result["session_id"], "s2")
+
+    def test_wait_for_matching_ide_identity_uses_port_scan_when_registry_misses_target(self):
+        original_discover = jb_inspect.discover_identities
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        original_sleep = jb_inspect.time.sleep
+        jb_inspect.discover_identities = lambda port: [
+            {"port": 63342, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"},
+        ]
+        jb_inspect.discover_diagnostic_identities = lambda port: [
+            {"port": 63342, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"},
+            {"port": 63344, "ide_name": "PyCharm", "session_id": "py-session", "open_projects": []},
+        ]
+        jb_inspect.time.sleep = lambda seconds: None
+        try:
+            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
+            jb_inspect.time.sleep = original_sleep
+
+        self.assertEqual(result["session_id"], "py-session")
 
     def test_route_diagnostic_reports_other_ide_projects(self):
         original_discover = jb_inspect.discover_diagnostic_identities
