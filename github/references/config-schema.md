@@ -22,6 +22,11 @@ Repo-local values override workspace defaults.
   },
   "healthUrls": [],
   "relatedRepos": [],
+  "githubSettings": {
+    "expected": {
+      "deleteBranchOnMerge": true
+    }
+  },
   "metadataFreshness": {
     "updateWhen": ["validation gates change", "important workflows change"]
   },
@@ -88,6 +93,8 @@ Common top-level keys:
   to open, `worktreeStrategy` for current-worktree safety, and
   `scopePreference` for the default inspection scope.
 - `githubSignals`: post-merge and security/quality signal expectations.
+- `githubSettings`: expected GitHub repository settings that snapshot helpers
+  report as `ok`, `warning`, or `unavailable` without silently mutating.
 - `cleanup`: repo-local cleanup policy for merged branches and worktrees.
 - `metadataFreshness`: events that should trigger metadata review.
 

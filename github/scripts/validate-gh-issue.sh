@@ -197,6 +197,7 @@ case "${1:-} ${2:-}" in
 	'pr view') printf '{"number":123,"title":"demo","isDraft":false}\n' ;;
 	'pr list') printf '[{"number":1,"title":"open","isDraft":false}]\n' ;;
 	'issue list') printf '[{"number":2,"title":"issue"}]\n' ;;
+	'repo view') printf '{"nameWithOwner":"owner/repo","defaultBranchRef":{"name":"main"},"deleteBranchOnMerge":false}\n' ;;
 	'run list') printf '[{"databaseId":3,"workflowName":"ci"}]\n' ;;
 	*) printf '[]\n' ;;
 esac
@@ -214,6 +215,28 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.github.openPullRequests[0].mergeStateStatus == null and
 		.github.openPullRequests[0].snapshotReadiness.degraded == true and
 		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false
+	' >/dev/null
+
+snapshot_config="$tmpdir/snapshot-config.json"
+cat >"$snapshot_config" <<'EOF'
+{
+  "githubSettings": {
+    "expected": {
+      "deleteBranchOnMerge": true
+    }
+  }
+}
+EOF
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$snapshot_config" |
+	jq -e '
+		.github.repositorySettings.available == true and
+		.github.repositorySettings.actual.deleteBranchOnMerge == false and
+		.github.repositorySettings.expected.deleteBranchOnMerge == true and
+		.github.repositorySettings.warnings[0].key == "deleteBranchOnMerge" and
+		.github.repositorySettings.warnings[0].severity == "warning"
 	' >/dev/null
 
 echo "ok validate-gh-issue"

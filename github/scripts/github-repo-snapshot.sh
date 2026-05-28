@@ -172,6 +172,75 @@ normalize_raw_pr_snapshot_json() {
   '
 }
 
+build_repo_settings_json() {
+  local raw_settings_path="$1"
+  local config_json_path="$2"
+
+  jq -n \
+    --slurpfile raw "$raw_settings_path" \
+    --slurpfile config "$config_json_path" \
+    '
+    def expected_settings:
+      ($config[0].data.githubSettings.expected // {});
+    def actual_settings:
+      if ($raw[0] | type) == "object" and ($raw[0] | has("error") | not) then
+        {
+          nameWithOwner: ($raw[0].nameWithOwner // null),
+          defaultBranch: ($raw[0].defaultBranchRef.name // null),
+          deleteBranchOnMerge: (if $raw[0] | has("deleteBranchOnMerge") then $raw[0].deleteBranchOnMerge else null end)
+        }
+      else
+        null
+      end;
+    def check($key; $actual; $expected; $message):
+      {
+        key: $key,
+        ok: ($actual == $expected),
+        expected: $expected,
+        actual: $actual,
+        severity: (if $actual == $expected then "ok" else "warning" end),
+        message: (if $actual == $expected then null else $message end)
+      };
+
+    (expected_settings) as $expected |
+    (actual_settings) as $actual |
+    if ($expected | length) == 0 then
+      {available: ($actual != null), actual: $actual, expected: $expected, checks: [], warnings: []}
+    elif $actual == null then
+      {
+        available: false,
+        actual: null,
+        expected: $expected,
+        checks: [],
+        warnings: [{
+          key: "repositorySettings",
+          severity: "unavailable",
+          message: "Repository settings could not be read; do not treat configured expectations as verified."
+        }],
+        error: ($raw[0].error // null)
+      }
+    else
+      ([
+        if $expected | has("deleteBranchOnMerge") then
+          check(
+            "deleteBranchOnMerge";
+            $actual.deleteBranchOnMerge;
+            $expected.deleteBranchOnMerge;
+            "Repository is not configured to delete PR branches after merge; merged branch cleanup may require manual follow-up."
+          )
+        else empty end
+      ]) as $checks |
+      {
+        available: true,
+        actual: $actual,
+        expected: $expected,
+        checks: $checks,
+        warnings: ($checks | map(select(.ok == false)))
+      }
+    end
+    '
+}
+
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "error: not inside a git repository" >&2
   exit 1
@@ -285,13 +354,16 @@ if [[ "$json_output" -eq 1 ]]; then
     fi
     capture_gh_json "$gh_bin" issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
     capture_gh_json "$gh_bin" run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
+    capture_gh_json "$gh_bin" repo view --json nameWithOwner,defaultBranchRef,deleteBranchOnMerge >"$tmpdir/repo-settings-raw.json"
   else
     jq -n 'null' >"$tmpdir/current-pr.json"
     jq -n '[]' >"$tmpdir/open-prs.json"
     jq -n '[]' >"$tmpdir/open-issues.json"
     jq -n '[]' >"$tmpdir/branch-runs.json"
     jq -n '[]' >"$tmpdir/recent-runs.json"
+    jq -n '{error: {message: "gh not found"}}' >"$tmpdir/repo-settings-raw.json"
   fi
+  build_repo_settings_json "$tmpdir/repo-settings-raw.json" "$tmpdir/config.json" >"$tmpdir/repo-settings.json"
 
   : >"$tmpdir/health.ndjson"
   for health_url in ${health_urls[@]+"${health_urls[@]}"}; do
@@ -322,6 +394,7 @@ if [[ "$json_output" -eq 1 ]]; then
     --slurpfile openIssues "$tmpdir/open-issues.json" \
     --slurpfile branchRuns "$tmpdir/branch-runs.json" \
     --slurpfile recentRuns "$tmpdir/recent-runs.json" \
+    --slurpfile repoSettings "$tmpdir/repo-settings.json" \
     --slurpfile health "$tmpdir/health.json" \
     '{
       repository: {
@@ -340,7 +413,8 @@ if [[ "$json_output" -eq 1 ]]; then
         openPullRequests: $openPrs[0],
         openIssues: $openIssues[0],
         currentBranchRuns: $branchRuns[0],
-        recentRuns: $recentRuns[0]
+        recentRuns: $recentRuns[0],
+        repositorySettings: $repoSettings[0]
       },
       deployHealth: $health[0]
     }'
@@ -399,6 +473,18 @@ if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
 
   section "Recent Actions"
   run_or_note "gh run list" "$gh_bin" run list --limit 10
+
+  if [[ -n "$config_path" ]] && jq -e '.githubSettings.expected // empty' "$effective_config_path" >/dev/null 2>&1; then
+    section "Repository Settings"
+    settings_tmp="$(mktemp)"
+    raw_settings_tmp="$(mktemp)"
+    cleanup_paths+=("$settings_tmp" "$raw_settings_tmp")
+    capture_gh_json "$gh_bin" repo view --json nameWithOwner,defaultBranchRef,deleteBranchOnMerge >"$raw_settings_tmp"
+    jq -n --arg path "$config_path" --slurpfile data "$effective_config_path" '{path: $path, data: $data[0]}' >"$settings_tmp.config"
+    cleanup_paths+=("$settings_tmp.config")
+    build_repo_settings_json "$raw_settings_tmp" "$settings_tmp.config" >"$settings_tmp"
+    jq -r '.checks[]? | if .ok then "ok: \(.key)=\(.actual)" else "warning: \(.key) expected \(.expected) but found \(.actual) - \(.message)" end' "$settings_tmp"
+  fi
 else
   section "GitHub CLI"
   echo "gh not found; skipping GitHub state."
