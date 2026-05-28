@@ -3,6 +3,8 @@ name: rollout-friction
 description: Use only when the user explicitly asks to audit rollout/session files, runout files, session traces, or agent workflow friction. Never use implicitly or for ordinary debugging.
 metadata:
   short-description: Audit rollout traces for workflow friction
+policy:
+  allow_implicit_invocation: false
 ---
 
 # Rollout Friction

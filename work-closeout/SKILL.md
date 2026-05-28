@@ -1,6 +1,8 @@
 ---
 name: work-closeout
 description: Use when the user asks to wrap up, clean up, close out a session or workstream, prepare handoff, determine what remains, update or remove stale plans, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
+metadata:
+  short-description: Close out workstreams cleanly
 ---
 
 # Work Closeout

@@ -1,6 +1,8 @@
 ---
 name: python-uv-workflow
 description: Use for Python repo tasks involving setup, commands, scripts, tests, dependencies, lockfiles, packaging, builds, releases, PyPI/TestPyPI, or environment management. Steer toward uv and repo-defined entrypoints instead of system Python, pip, or ad hoc virtualenv commands.
+metadata:
+  short-description: Run Python repo tasks with uv
 ---
 
 # Python uv Workflow

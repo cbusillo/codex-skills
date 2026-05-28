@@ -1,6 +1,8 @@
 ---
 name: repo-readiness
 description: Use when the user asks whether a change, branch, PR, or workstream is ready to review, merge, ship, pause, or hand off, or asks to run gates, validate changes, check CI/PR readiness, inspect IDE warnings, verify UI, or identify blockers. Orchestrates local, GitHub, inspection, and browser evidence into a concise readiness report.
+metadata:
+  short-description: Check repo readiness to ship
 ---
 
 # Repo Readiness

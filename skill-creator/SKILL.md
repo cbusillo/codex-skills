@@ -62,7 +62,9 @@ skill-name/
 ├── SKILL.md (required)
 │   ├── YAML frontmatter metadata (required)
 │   │   ├── name: (required)
-│   │   └── description: (required)
+│   │   ├── description: (required)
+│   │   ├── metadata.short-description: (optional)
+│   │   └── policy.allow_implicit_invocation: (optional)
 │   └── Markdown instructions (required)
 ├── agents/ (recommended)
 │   └── openai.yaml - UI metadata for skill lists and chips
@@ -76,7 +78,7 @@ skill-name/
 
 Every SKILL.md consists of:
 
-- **Frontmatter** (YAML): Contains `name` and `description` fields. These are the only fields that Codex reads to determine when the skill gets used, thus it is very important to be clear and comprehensive in describing what the skill is, and when it should be used.
+- **Frontmatter** (YAML): Contains `name` and `description` fields. `description` is the full model-visible trigger/routing text. Optional `metadata.short-description` provides compact human-facing listing text, and optional `policy.allow_implicit_invocation: false` marks a skill as manual-only.
 - **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
 
 #### Agents metadata (recommended)
@@ -373,11 +375,25 @@ Write the YAML frontmatter for Code with `name` and `description`:
   - Include both what the Skill does and specific triggers/contexts for when to use it.
   - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to Code.
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when Codex needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
+- `metadata.short-description`: Optional compact human-facing summary for UI/listing surfaces. Keep the full routing and trigger detail in `description`.
+- `policy.allow_implicit_invocation`: Optional boolean. Set to `false` only for skills that should be discoverable and explicitly invokable, but excluded from default implicit routing.
 
-Current Code loads only `name` and `description` from `SKILL.md`. This repo may
-also carry `metadata.short-description` as forward-compatible local metadata,
-but it is not a substitute for the full trigger description until Code supports
-it. Do not rely on any other frontmatter field for Code behavior.
+Example:
+
+```yaml
+---
+name: example-skill
+description: Full model-visible trigger/routing description. Use when ...
+metadata:
+  short-description: Compact human-facing summary
+policy:
+  allow_implicit_invocation: false
+---
+```
+
+Runtime config may also disable skills by name or `SKILL.md` path for a local
+installation. Use frontmatter policy when the skill's own contract is
+manual-only; use runtime config for environment-specific selection.
 
 ##### Body
 

@@ -1,6 +1,8 @@
 ---
 name: browser-ui-review
 description: Use a real browser to open pages, click, type, scroll, inspect visible UI state, and capture screenshots when evidence is useful. Use when a task depends on interacting with a webpage instead of guessing from code or HTML alone.
+metadata:
+  short-description: Review live browser UI state
 ---
 
 # Browser UI Review

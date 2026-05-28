@@ -10,6 +10,8 @@ description: |
 
   You must also use this skill if the user asks about any question regarding
   Chronicle or asks what you can see from the screen.
+metadata:
+  short-description: Inspect recent screen context
 ---
 
 # Chronicle

@@ -1,6 +1,8 @@
 ---
 name: design-collaboration
 description: Use when the user wants UI/UX design collaboration, Claude Design, Codex or Every Code design tools, first/second design passes, mockups, visual direction, critique, or an outside collaborator to draft or review UI before implementation. Use github-plan issues as the durable design record.
+metadata:
+  short-description: Issue-backed UI design collaboration
 ---
 
 # Design Collaboration
