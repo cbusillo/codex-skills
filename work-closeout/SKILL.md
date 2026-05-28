@@ -43,6 +43,12 @@ Leave the user with a truthful closeout answer:
    git worktree list
    ```
 
+   If the active branch is clean and behind its configured upstream, run
+   `git pull --ff-only` before final closeout and re-check status. Do this only
+   for clean fast-forwardable branches. If the branch is dirty, ahead, diverged,
+   lacks an upstream, or the fast-forward fails, do not pull further; report the
+   state and the next safe action instead.
+
    If the shared Launchplane context helper is present and configured, call it
    once as optional closeout context for the repo/workstream:
 
@@ -158,6 +164,10 @@ when that improves continuity.
 - Preserve unrelated user changes.
 - Do not run destructive git commands.
 - Do not force-delete branches or worktrees.
+- If `git status --short --branch` shows a clean branch behind its upstream,
+  fast-forward it with `git pull --ff-only` before saying the checkout is tidy.
+  Treat dirty, ahead, diverged, missing-upstream, or failed fast-forward states
+  as report-only unless the user explicitly asks for a specific git action.
 - When the user asks to delete or remove a worktree, first preserve or confirm
   disposal of any uncommitted changes. Removing a worktree is not approval to
   lose its branch or local edits.
