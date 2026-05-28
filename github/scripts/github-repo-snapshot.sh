@@ -483,7 +483,10 @@ if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
     jq -n --arg path "$config_path" --slurpfile data "$effective_config_path" '{path: $path, data: $data[0]}' >"$settings_tmp.config"
     cleanup_paths+=("$settings_tmp.config")
     build_repo_settings_json "$raw_settings_tmp" "$settings_tmp.config" >"$settings_tmp"
-    jq -r '.checks[]? | if .ok then "ok: \(.key)=\(.actual)" else "warning: \(.key) expected \(.expected) but found \(.actual) - \(.message)" end' "$settings_tmp"
+    jq -r '
+      (.warnings[]? | "warning: \(.key) - \(.message)"),
+      (.checks[]? | if .ok then "ok: \(.key)=\(.actual)" else "warning: \(.key) expected \(.expected) but found \(.actual) - \(.message)" end)
+    ' "$settings_tmp"
   fi
 else
   section "GitHub CLI"
