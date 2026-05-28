@@ -451,6 +451,22 @@ def test_investigation_noise_suppression_preserves_structured_payloads() -> None
         raise AssertionError("investigation noise should be suppressed without hiding structured payloads")
 
 
+def test_status_wrapper_does_not_make_discussion_structured() -> None:
+    module = load_module()
+    fragments = list(
+        module.json_fragments(
+            {
+                "status": "ok",
+                "message": "grep GraphQL rate limit in rollout-friction/scripts/analyze_rollouts.py",
+            }
+        )
+    )
+
+    for fragment in fragments:
+        if "GraphQL" in fragment.text and fragment.structured:
+            raise AssertionError(f"status-only wrapper should not mark discussion as structured: {fragments}")
+
+
 def main() -> int:
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
@@ -470,6 +486,7 @@ def main() -> int:
     test_structured_payload_counts_are_separate_from_broad_context()
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
+    test_status_wrapper_does_not_make_discussion_structured()
     print("ok validate-analyze-rollouts")
     return 0
 

@@ -111,7 +111,6 @@ DEDUP_VALUE_PREFIXES = (
     "command=",
 )
 STRUCTURED_PAYLOAD_KEYS = {
-    "status",
     "error_reason",
     "capture_incomplete",
     "cleanup",
