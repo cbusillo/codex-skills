@@ -47,3 +47,9 @@ local docs path as private local context:
 If the file or key is missing and local infrastructure context is required, say
 that the local docs source is not configured instead of guessing. Do not fall
 back to shell environment variables or repo `.env` files for this routing.
+
+When local operational context is missing, stale, misleading, or newly changed,
+route that discovery back to the configured local information source instead of
+leaving it only in chat. Keep public skills and public GitHub issues free of
+private facts; at most, record that the local information source needs a durable
+update or capture point.
