@@ -229,6 +229,65 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
     assert payload["issue"]["number"] == 10, payload
     assert payload["project_fields"]["error"] == "project sync throttled", payload
     assert payload["project_fields"]["error_code"] == "project_update_failed", payload
+    assert payload["project_fields"]["warning"] is True, payload
+    assert payload["project_fields"]["blocking"] is False, payload
+    assert payload["project_fields"]["operation"] == "create_project_sync", payload
+    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
+
+
+def test_create_reports_stale_project_as_non_blocking_warning() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "active": "plan:active"},
+        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": "Code", "repo_managers": {}},
+    }
+    plan.gh_json = lambda args, **kwargs: ("automation-gh", []) if args[:2] == ["issue", "list"] else (_ for _ in ()).throw(AssertionError(args))
+    plan.ensure_labels = lambda repo, wanted, config: ("automation-gh", [])
+    plan.rest_create_issue = lambda repo, title, body, labels, milestone: ("automation-gh", issue)
+    plan.resolve_project = lambda owner, project, recoverable=False: (_ for _ in ()).throw(
+        plan.project_error(f"Project not found for {owner}: {project}")
+    )
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Durable plan",
+            title_flag=None,
+            body="## Finish Line\n\nShip it.\n",
+            body_file=None,
+            label=None,
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="active",
+            focus="Now",
+            manager=None,
+            finish_line=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert payload["issue"]["number"] == 10, payload
+    assert payload["project_fields"]["warning"] is True, payload
+    assert payload["project_fields"]["blocking"] is False, payload
+    assert payload["project_fields"]["operation"] == "create_project_sync", payload
+    assert payload["project_fields"]["error_code"] == "lookup_stale", payload
+    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
+    assert "planning.projects" in payload["project_fields"]["recommended_action"], payload
 
 
 def test_close_reports_stale_project_as_non_blocking_warning() -> None:
@@ -1373,6 +1432,7 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_create_reports_issue_when_project_sync_fails,
+        test_create_reports_stale_project_as_non_blocking_warning,
         test_close_reports_stale_project_as_non_blocking_warning,
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,

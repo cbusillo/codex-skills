@@ -222,6 +222,11 @@ def project_failure_payload(
         payload["warning"] = True
         payload["blocking"] = False
         payload["message"] = "Issue operation completed; Project reconciliation needs follow-up."
+        if payload.get("error_code") == "lookup_stale":
+            payload["recommended_action"] = (
+                "Check planning.projects owner/default_project config, disable Projects, "
+                "create the Project, or verify auth can see it."
+            )
     return payload
 
 
@@ -772,7 +777,14 @@ def cmd_create(args: argparse.Namespace) -> None:
                 recoverable=True,
             )
         except PlanError as exc:
-            project_fields_set = project_failure_payload(exc)
+            owner = project_config.get("owner") or repo.split("/", 1)[0]
+            project_fields_set = project_failure_payload(
+                exc,
+                owner=owner,
+                project=project,
+                operation="create_project_sync",
+                non_blocking=True,
+            )
     emit({
         "ok": True,
         "actor": actor,
