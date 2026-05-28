@@ -34,12 +34,14 @@ from checked-in code or docs.
 
 Prefer sources in this order:
 
-1. Local repo docs and source for project-specific behavior.
-2. Official product or project docs.
-3. Official API references, release notes, migration guides, changelogs, and
+1. Configured local operational context when the task depends on this specific
+   private environment's setup, access path, or source of truth.
+2. Local repo docs and source for project-specific behavior.
+3. Official product or project docs.
+4. Official API references, release notes, migration guides, changelogs, and
    source repositories.
-4. Package registry pages only for package metadata or version facts.
-5. Trusted community sources only when official docs are missing, clearly
+5. Package registry pages only for package metadata or version facts.
+6. Trusted community sources only when official docs are missing, clearly
    incomplete, or the user explicitly wants ecosystem practice.
 
 For OpenAI products and APIs, use `openai-docs`; it supersedes this general
@@ -50,20 +52,41 @@ provider name. Use official docs for generic behavior, local context routing for
 this environment's setup or access path, and the owning operator skill for
 managed product/runtime state or mutations.
 
+## Local Operational Context
+
+Use local operational context when the task is about how this particular
+environment is configured, reached, mutated, verified, or owned. Do not infer
+that a product repo, cloud provider, dashboard, deployment platform, or browser
+session is the source of truth until the configured local context route has been
+checked or ruled out.
+
+Keep the skill guidance conceptual. Do not add local service names, hostnames,
+tokens, account details, topology, or private repo inventories to public skills.
+Those facts belong in the configured local information source.
+
+If a session discovers that local operational context is missing, stale,
+misleading, or newly changed, do not leave that discovery only in chat. Route a
+durable capture back to the configured local information source. Start read-only
+unless the user has approved mutation; if updating that source is not approved,
+record the need as a private-safe follow-up without copying private facts into
+public issues, PRs, docs, or summaries.
+
 ## Workflow
 
 1. Identify the exact technology, version, language, and task. If the version is
    missing and matters, inspect local manifests first (`package.json`,
    `pyproject.toml`, `uv.lock`, `Cargo.toml`, `go.mod`, Dockerfiles, CI files).
-2. Search current docs. Use primary sources; when searching the web, use precise
+2. If the task depends on private/local operational state, read the configured
+   local context route before following provider-specific or product-repo clues.
+3. Search current docs. Use primary sources; when searching the web, use precise
    queries and official-domain filters where possible.
-3. Fetch the specific page or section needed. Avoid broad summaries when a
+4. Fetch the specific page or section needed. Avoid broad summaries when a
    reference page, migration note, or release note answers the question.
-4. Compare docs against local code before editing. If docs and repo behavior
+5. Compare docs against local code before editing. If docs and repo behavior
    disagree, call out the mismatch and avoid broad changes until the intended
    contract is clear.
-5. Answer or implement narrowly using the sourced behavior.
-6. Cite the sources used in the response when the user asked for an answer,
+6. Answer or implement narrowly using the sourced behavior.
+7. Cite the sources used in the response when the user asked for an answer,
    when the fact is unstable, or when source attribution will help future work.
 
 ## Optional Docs CLIs
