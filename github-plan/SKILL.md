@@ -72,7 +72,8 @@ GitHub-backed planning.
 For close comments, use `../github/scripts/gh-issue close` so stdin is posted as
 a body-file-backed comment before the issue is closed. For other multiline
 writes, prefer body files or stdin. Do not pass escaped `\n` through
-shell-quoted flags.
+shell-quoted flags. Follow `../references/every-code-formatting.md` when
+writing durable issue bodies, planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
 

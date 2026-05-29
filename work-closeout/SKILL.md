@@ -91,6 +91,11 @@ Leave the user with a truthful closeout answer:
    or remote resources without explicit approval.
 9. Report final state concisely.
 
+When writing final summaries, closeout comments, or migrated handoff content,
+follow `../references/every-code-formatting.md`: cite point-in-time evidence,
+keep recovery-critical facts in GitHub for GitHub-backed work, and avoid
+boilerplate that does not help the next session resume.
+
 ## Safe To Exit
 
 Treat "safe to exit" as strict hygiene, not merely context preservation. Safe

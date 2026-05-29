@@ -81,7 +81,9 @@ operation, and route those calls through `scripts/gh-with-env-token`.
   `scripts/gh-comment pr` for PR timeline comments, and
   `scripts/gh-with-env-token pr review --body-file` for PR review feedback when
   no review helper exists. Avoid unquoted heredocs for Markdown bodies because
-  shell command substitution runs inside backticks.
+  shell command substitution runs inside backticks. Follow
+  `../references/every-code-formatting.md` when writing durable PR, issue,
+  review, or closeout text.
 - **Authentication**: The helpers own token selection, fallback behavior,
   consistent warnings, and parseable output. If no automation token is
   configured, `scripts/gh-with-env-token` uses the active local `gh` account and
