@@ -1304,6 +1304,7 @@ class HumanOutputTest(unittest.TestCase):
                         "ide_product_code": "IU",
                         "port": 63342,
                         "plugin_version": "1.12.10",
+                        "plugin_build_fingerprint": "abc123-clean",
                         "open_project_count": 1,
                     }
                 ],
@@ -1312,6 +1313,7 @@ class HumanOutputTest(unittest.TestCase):
                         "ide_name": "IntelliJ IDEA 2026.1.2",
                         "ide_product_code": "IU",
                         "plugin_version": "1.12.10",
+                        "plugin_build_fingerprint": "abc123-clean",
                         "name": "jetbrains-inspection-api",
                         "base_path": "/tmp/jetbrains-inspection-api",
                     }
@@ -1329,7 +1331,8 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("matching_identities=0", text)
         self.assertIn("reason=different_jetbrains_product_running", text)
         self.assertIn("ROUTE_IDENTITY: ide=IntelliJ IDEA 2026.1.2 product=IU", text)
-        self.assertIn("ROUTE_OTHER_PROJECT: ide=IntelliJ IDEA 2026.1.2 product=IU plugin=1.12.10 name=jetbrains-inspection-api", text)
+        self.assertIn("plugin=1.12.10@abc123-clean", text)
+        self.assertIn("ROUTE_OTHER_PROJECT: ide=IntelliJ IDEA 2026.1.2 product=IU plugin=1.12.10@abc123-clean name=jetbrains-inspection-api", text)
         self.assertIn("ROUTE_NEXT_ACTION: Open the worktree in PyCharm with the inspection plugin installed and up to date", text)
 
     def test_human_output_explains_status_bearing_timeout_errors(self):
