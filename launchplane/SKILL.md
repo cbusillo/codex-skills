@@ -14,6 +14,14 @@ Use `docs-lookup` first when a task is discovering the source of truth or access
 path for external/private infrastructure and it is not already clear that
 Launchplane manages that resource.
 
+When a repo has `.github/github.json`, inspect its `launchplane` block before
+looking in sibling repos, archived workstation files, or workflow variables. The
+repo block is public-safe routing metadata only: it may name helper paths,
+environment variable names for service URLs, local config examples,
+merge-train labels, and GitHub Actions workflow entrypoints. It must not
+contain tokens, secret values, cookies, concrete Launchplane service URLs,
+private credential paths, provider payloads, or plaintext runtime configuration.
+
 ## Core Goal
 
 Provide situational awareness and safe runtime management. Always favor
@@ -52,6 +60,11 @@ Mutate runtime environments, managed secrets, and product config.
   in the operator contract. Missing private config means the write-capable path
   is unavailable and must fail closed; do not use `.github/github.override.json`
   for Launchplane credentials.
+- **Repo Metadata**: Use `.github/github.json` `launchplane` metadata to find
+  helper paths, workflow entrypoints, labels, and service URL env var names, but
+  keep concrete service URLs and credentials in private operator config,
+  environment variables, GitHub Actions OIDC, or signed-in Launchplane UI
+  sessions.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
