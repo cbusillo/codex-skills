@@ -386,13 +386,23 @@ class LifecycleTest(unittest.TestCase):
 
     def test_auto_open_timeout_payload_names_trust_and_modal_causes(self):
         args = Namespace(background_open=True)
-        payload = jb_inspect.auto_open_timeout_payload(
-            args,
-            {"ide": "PyCharm", "worktree_root": "/tmp/worktree", "trusted_auto_open_roots": ["/tmp"]},
-            300_000,
-        )
+        original_trusted = jb_inspect.trusted_auto_open_roots
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        jb_inspect.trusted_auto_open_roots = lambda: ["/tmp"]
+        jb_inspect.discover_diagnostic_identities = lambda port: []
+        try:
+            payload = jb_inspect.auto_open_timeout_payload(
+                args,
+                {"ide": "PyCharm", "worktree_root": "/tmp/worktree"},
+                300_000,
+            )
+        finally:
+            jb_inspect.trusted_auto_open_roots = original_trusted
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
 
         self.assertTrue(payload["background_open"])
+        self.assertEqual(payload["blocked_diagnostic"]["reason"], "jetbrains_project_open_blocked")
+        self.assertEqual(payload["blocked_diagnostic"]["selected_trusted_root"], str(Path("/tmp").resolve()))
         self.assertIn("JetBrains trust", payload["likely_causes"][0])
         self.assertIn("new window", " ".join(payload["likely_causes"]))
 
@@ -615,6 +625,40 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(result["session_id"], "py-session")
 
+    def test_list_reports_zero_project_prompt_hint_for_discovered_identity(self):
+        original_discover = jb_inspect.discover_identities
+        jb_inspect.discover_identities = lambda port: [
+            {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.1.2",
+                "ide_product_code": "PY",
+                "session_id": "py-session",
+                "open_projects": [],
+            }
+        ]
+        try:
+            result = jb_inspect.command_list(Namespace(port=None))
+        finally:
+            jb_inspect.discover_identities = original_discover
+
+        self.assertEqual(result["count"], 0)
+        self.assertIn("zero_project_hint", result)
+        self.assertIn("Trust Project", result["zero_project_hint"])
+        self.assertIn("safe-mode", result["zero_project_hint"])
+        self.assertIn("open-project", result["zero_project_hint"])
+        self.assertEqual(result["identities"][0]["open_project_count"], 0)
+
+    def test_list_omits_zero_project_prompt_hint_without_identity(self):
+        original_discover = jb_inspect.discover_identities
+        jb_inspect.discover_identities = lambda port: []
+        try:
+            result = jb_inspect.command_list(Namespace(port=None))
+        finally:
+            jb_inspect.discover_identities = original_discover
+
+        self.assertEqual(result["count"], 0)
+        self.assertNotIn("zero_project_hint", result)
+
     def test_route_diagnostic_reports_other_ide_projects(self):
         original_discover = jb_inspect.discover_diagnostic_identities
         jb_inspect.discover_diagnostic_identities = lambda port: [
@@ -702,6 +746,27 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(diagnostic["matching_project_count"], 0)
         self.assertEqual(diagnostic["reason"], "target_ide_running_without_target_project")
         self.assertIn("exact worktree", diagnostic["next_action"])
+        self.assertIn("Trust Project", diagnostic["next_action"])
+        self.assertIn("safe-mode", diagnostic["next_action"])
+        self.assertIn("open-project", diagnostic["next_action"])
+
+    def test_route_diagnostic_for_no_instances_mentions_hidden_prompt_as_secondary_cause(self):
+        original_discover = jb_inspect.discover_diagnostic_identities
+        jb_inspect.discover_diagnostic_identities = lambda port: []
+        try:
+            payload = jb_inspect.route_diagnostic_payload(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/Users/me/Developer/mediaforce", "project_path": "/Users/me/Developer/mediaforce"},
+            )
+        finally:
+            jb_inspect.discover_diagnostic_identities = original_discover
+
+        diagnostic = payload["route_diagnostic"]
+        self.assertEqual(diagnostic["reason"], "no_plugin_instances_discovered")
+        self.assertTrue(diagnostic["next_action"].startswith("Launch the configured JetBrains IDE with the inspection plugin installed"))
+        self.assertIn("Trust Project", diagnostic["next_action"])
+        self.assertIn("safe-mode", diagnostic["next_action"])
+        self.assertIn("open-project", diagnostic["next_action"])
 
     def test_open_project_for_lifecycle_uses_running_ide_without_bootstrap(self):
         calls = []
@@ -764,6 +829,46 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertIn("did not accept", str(raised.exception))
         self.assertEqual(raised.exception.payload["prepare_timeout_ms"], 1234)
+
+    def test_wait_for_exact_route_reports_project_open_blocked_after_scheduled_open(self):
+        original_find = jb_inspect.find_exact_route
+        original_sleep = jb_inspect.time.sleep
+        original_trusted = jb_inspect.trusted_auto_open_roots
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        jb_inspect.find_exact_route = lambda args, context: None
+        jb_inspect.time.sleep = lambda seconds: None
+        jb_inspect.trusted_auto_open_roots = lambda: ["/tmp"]
+        jb_inspect.discover_diagnostic_identities = lambda port: [
+            {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.1.2",
+                "ide_product_code": "PY",
+                "session_id": "py-session",
+                "open_projects": [],
+            }
+        ]
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_for_exact_route(
+                    Namespace(port=None, background_open=True),
+                    {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    1,
+                )
+        finally:
+            jb_inspect.find_exact_route = original_find
+            jb_inspect.time.sleep = original_sleep
+            jb_inspect.trusted_auto_open_roots = original_trusted
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
+
+        payload = jb_inspect.error_payload(raised.exception, Namespace(command="closeout"))
+        self.assertEqual(payload["error_reason"], "project_open_blocked")
+        self.assertEqual(payload["blocked_diagnostic"]["reason"], "jetbrains_project_open_blocked")
+        self.assertTrue(payload["blocked_diagnostic"]["background_open"])
+        self.assertEqual(payload["blocked_diagnostic"]["prepare_timeout_ms"], 1)
+        self.assertEqual(payload["blocked_diagnostic"]["requested_ide"], "PyCharm")
+        self.assertEqual(payload["blocked_diagnostic"]["target_worktree"], "/tmp/repo")
+        self.assertEqual(payload["blocked_diagnostic"]["selected_trusted_root"], str(Path("/tmp").resolve()))
+        self.assertEqual(payload["route_diagnostic"]["reason"], "target_ide_running_without_target_project")
 
     def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1334,6 +1439,54 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("plugin=1.12.10@abc123-clean", text)
         self.assertIn("ROUTE_OTHER_PROJECT: ide=IntelliJ IDEA 2026.1.2 product=IU plugin=1.12.10@abc123-clean name=jetbrains-inspection-api", text)
         self.assertIn("ROUTE_NEXT_ACTION: Open the worktree in PyCharm with the inspection plugin installed and up to date", text)
+
+    def test_human_output_prints_blocked_project_open_diagnostic(self):
+        payload = {
+            "status": "error",
+            "error_reason": "project_open_blocked",
+            "error_message": "Timed out waiting for JetBrains IDE to open the exact worktree.",
+            "command": "closeout",
+            "exit_code": 3,
+            "context": {"repo_path": "/tmp/repo", "worktree_root": "/tmp/repo", "ide": "PyCharm"},
+            "blocked_diagnostic": {
+                "reason": "jetbrains_project_open_blocked",
+                "message": "JetBrains may be waiting on a Trust Project, safe-mode, or open-project prompt.",
+                "requested_ide": "PyCharm",
+                "target_worktree": "/tmp/repo",
+                "background_open": True,
+                "prepare_timeout_ms": 1234,
+                "selected_trusted_root": "/tmp",
+            },
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("PROJECT_OPEN_BLOCKED: reason=jetbrains_project_open_blocked", text)
+        self.assertIn("requested_ide=PyCharm", text)
+        self.assertIn("background_open=True", text)
+        self.assertIn("prepare_timeout_ms=1234", text)
+        self.assertIn("PROJECT_OPEN_BLOCKED_HINT: JetBrains may be waiting on a Trust Project, safe-mode, or open-project prompt.", text)
+
+    def test_human_output_prints_zero_project_hint(self):
+        payload = {
+            "status": "ok",
+            "projects": [],
+            "count": 0,
+            "zero_project_hint": jb_inspect.zero_project_hint(),
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("PROJECT_OPEN_HINT:", text)
+        self.assertIn("Trust Project", text)
+        self.assertIn("safe-mode", text)
+        self.assertIn("open-project", text)
 
     def test_human_output_explains_status_bearing_timeout_errors(self):
         payload = jb_inspect.error_payload(
