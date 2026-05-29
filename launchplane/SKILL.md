@@ -21,6 +21,10 @@ environment variable names for service URLs, local config examples,
 merge-train labels, and GitHub Actions workflow entrypoints. It must not
 contain tokens, secret values, cookies, concrete Launchplane service URLs,
 private credential paths, provider payloads, or plaintext runtime configuration.
+Do not treat repo-owned app, preview, deploy, or health-check URLs as
+Launchplane service URLs when they are intentionally documented readiness
+metadata; keep those in repo docs or top-level `healthUrls`, not as copied
+Launchplane runtime/provider state.
 
 ## Core Goal
 

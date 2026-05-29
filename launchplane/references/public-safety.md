@@ -14,12 +14,20 @@ Treat these as private unless the user explicitly says they are safe to publish:
   and private repository names.
 - Branch names, issue titles, PR titles, work-request ids, preview gate ids,
   and operational status text copied from a private workspace.
-- Provider details such as target ids, application names, health URLs, runtime
-  env dumps, policy digests, and deployment evidence payloads.
+- Provider details copied from private runtime evidence, such as target ids,
+  application names, health URLs, runtime env dumps, policy digests, and
+  deployment evidence payloads.
 - Local filesystem paths, checkout paths, terminal session names, worker
   hostnames, and ignored config paths that reveal machine topology.
 
 ## Safe Examples
+
+Repo-owned product, app, preview, deploy, and health-check URLs are not
+automatically Launchplane context. In private implementation repos, they may be
+committed when they are intentionally documented operational metadata, such as
+top-level `healthUrls` or readiness endpoints in operations docs. This does not
+make Launchplane service/operator/context URLs, trace URLs, provider payloads,
+or copied private runtime evidence safe to publish.
 
 Use fake placeholders in committed examples:
 
