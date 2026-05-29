@@ -15,6 +15,10 @@ state: product context, design requests, returned critique, accepted direction,
 implementation constraints, PR links, browser QA evidence, tradeoffs, and
 closeout state.
 
+Use `../references/every-code-formatting.md` when drafting design requests,
+issue comments, critique summaries, and closeout notes so design state remains
+compact, point-in-time, and recoverable from GitHub.
+
 Do not create local handoff Markdown files. Repos should hold product and
 implementation facts; GitHub planning issues should hold active design workflow
 state.

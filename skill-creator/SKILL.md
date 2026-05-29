@@ -117,6 +117,11 @@ When a workflow depends on fragile CLI payloads such as multiline Markdown,
 JSON, or shell-sensitive quoting, prefer a helper script that reads stdin or a
 file over teaching quoting tricks in prose.
 
+When creating or updating a skill that generates reviews, handoffs, issue/PR
+comments, readiness reports, or final summaries, point it at
+`../references/every-code-formatting.md` instead of copying broad Every Code
+formatting rules into the skill body.
+
 ##### References (`references/`)
 
 Documentation and reference material intended to be loaded as needed into context to inform Codex's process and thinking.
