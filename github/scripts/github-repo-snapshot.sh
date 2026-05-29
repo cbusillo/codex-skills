@@ -398,6 +398,39 @@ if [[ "$json_output" -eq 1 ]]; then
     --slurpfile health "$tmpdir/health.json" \
     '
     def present($value): ($value | type == "string" and length > 0);
+    def cleanup_summary($config):
+      if $config == null then
+        {
+          status: "no_config",
+          commands: [],
+          routineCommands: [],
+          handoffArtifacts: null,
+          warnings: [{code: "missing_config", message: "No repo metadata config was loaded."}]
+        }
+      else
+        ($config.data.cleanup // {}) as $cleanup |
+        ($cleanup.commands // []) as $commands |
+        {
+          status: (if ($config.data.cleanup // null) == null then "not_configured" else "configured" end),
+          deleteMergedLocalBranches: ($cleanup.deleteMergedLocalBranches // null),
+          removeMergedCleanWorktrees: ($cleanup.removeMergedCleanWorktrees // null),
+          commands: $commands,
+          routineCommands: [
+            $commands[] |
+            select(
+              (.when // "routine") == "routine" and
+              present(.name // "") and
+              present(.command // "")
+            )
+          ],
+          handoffArtifacts: ($cleanup.handoffArtifacts // null),
+          warnings: ([
+            $commands[]? |
+            select((present(.name // "") | not) or (present(.command // "") | not)) |
+            {code: "invalid_cleanup_command", message: "Cleanup command entries should include name and command."}
+          ])
+        }
+      end;
     def launchplane_summary($config):
       if $config == null then
         {
@@ -473,6 +506,7 @@ if [[ "$json_output" -eq 1 ]]; then
         remotes: $remotes[0]
       },
       config: $config[0],
+      cleanup: cleanup_summary($config[0]),
       launchplane: launchplane_summary($config[0]),
       github: {
         ghAvailable: $ghAvailable,
@@ -511,6 +545,32 @@ if [[ -n "$config_path" ]]; then
     printf 'override: %s (applied)\n' "$config_override_path"
   fi
   run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), launchplane: (.launchplane // {}), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
+
+  section "Cleanup"
+  # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.
+  run_or_note "cleanup metadata summary" jq -r '
+    if (.cleanup // null) == null then
+      "status: not_configured"
+    else
+      .cleanup as $cleanup |
+      [
+        "status: configured",
+        "deleteMergedLocalBranches: " + (($cleanup.deleteMergedLocalBranches // "") | tostring),
+        "removeMergedCleanWorktrees: " + (($cleanup.removeMergedCleanWorktrees // "") | tostring),
+        "routineCommands: " + ([
+          ($cleanup.commands // [])[] |
+          select(
+            (.when // "routine") == "routine" and
+            ((.name // "") | length > 0) and
+            ((.command // "") | length > 0)
+          ) |
+          .name
+        ] | join(", ")),
+        "handoffTemporaryGlobs: " + (($cleanup.handoffArtifacts.temporaryGlobs // []) | join(", ")),
+        "handoffDurableSurface: " + ($cleanup.handoffArtifacts.durableSurface // "")
+      ] | .[]
+    end
+  ' "$effective_config_path"
 
   section "Launchplane"
   # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.

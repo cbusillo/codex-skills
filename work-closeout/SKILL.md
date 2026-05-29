@@ -38,6 +38,12 @@ Leave the user with a truthful closeout answer:
    expectations, cleanup policy, and ownership boundaries. If metadata should
    change, update it only with approval; otherwise record a concrete remaining
    item before saying it is safe to exit.
+
+   Also read `cleanup`. During closeout, run or report repo-configured commands
+   with `when: "routine"` as closeout evidence. Commands marked `explicit`,
+   `cold`, `aggressive`, or any unrecognized value are report-only unless the
+   user explicitly asks for that cleanup. Never run a cleanup command whose
+   effect is unclear; record the not-run reason instead.
 3. Inspect local state:
 
    ```bash
@@ -77,9 +83,10 @@ Leave the user with a truthful closeout answer:
 7. Clean only artifacts clearly created by the current work: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
-   If the repo still has legacy `handoff*.md` files from the old workflow,
-   delete or migrate them once their content is captured in GitHub unless they
-   are intentionally preserved.
+   If the repo still has legacy `handoff*.md` files or files matching
+   `cleanup.handoffArtifacts.temporaryGlobs`, delete or migrate them once their
+   content is captured in the owning GitHub issue or PR comment unless they are
+   intentionally preserved as committed docs.
 8. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
 9. Report final state concisely.
@@ -138,10 +145,30 @@ For conditional safe-to-exit, at least one durable place must hold the next
 step. Avoid duplicating every detail everywhere; link PRs, issues, and plans
 when that improves continuity.
 
+## Handoff Surfaces
+
+For GitHub-backed repos, recovery-critical handoff content belongs in the
+owning GitHub issue or PR comment. Use local handoff files only as temporary
+scratch while drafting or when the user explicitly asks for an offline/private
+handoff.
+
+- If a handoff file names an active issue or PR, copy the actionable summary,
+  blockers, next action, validation state, and relevant point-in-time links to
+  that GitHub thread before relying on it.
+- If a handoff file is intentionally committed, make sure it describes durable
+  product or repo behavior, not session-only coordination.
+- Before declaring closeout complete, sweep temporary handoff files matching
+  configured globs and either delete them after migration or report why they are
+  intentionally left behind.
+
 ## Plan Hygiene
 
 - Prefer `github` and update the active issue's `Current Status`, finish
   line, blockers, and Project fields before parking work.
+- After a PR merges, sweep issues referenced by the canonical merged PR body and
+  comments. `Refs #...` is intentionally non-closing; close only issues whose
+  acceptance criteria were conclusively satisfied by the merge. Otherwise,
+  update `Current Status` or leave a comment with what remains.
 - Mark completed checklist items, record blockers, and remove or rewrite stale
   assumptions in the GitHub plan issue.
 - Before declaring safe to exit after closing or merging implementation work,
