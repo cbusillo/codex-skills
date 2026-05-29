@@ -574,11 +574,20 @@ def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
         "ide_product_code": identity.get("ide_product_code") or identity.get("product_code"),
         "ide_version": identity.get("ide_version") or identity.get("version"),
         "plugin_version": identity.get("plugin_version"),
+        "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
         "session_id": identity.get("session_id"),
         "port": identity.get("port"),
         "pid": identity.get("pid"),
         "open_project_count": len(identity.get("open_projects", []) or []),
     }
+
+
+def plugin_identity_label(identity: dict[str, Any]) -> str:
+    version = identity.get("plugin_version") or "unknown"
+    fingerprint = identity.get("plugin_build_fingerprint")
+    if fingerprint:
+        return f"{version}@{fingerprint}"
+    return str(version)
 
 
 def flat_project_matches_context(project: dict[str, Any], context: dict[str, Any]) -> bool:
@@ -1267,7 +1276,7 @@ def print_route_diagnostic(diagnostic: Any) -> None:
                     "product": identity.get("ide_product_code"),
                     "port": identity.get("port"),
                     "projects": identity.get("open_project_count"),
-                    "plugin": identity.get("plugin_version"),
+                    "plugin": plugin_identity_label(identity),
                 },
             )
         )
@@ -1280,7 +1289,7 @@ def print_route_diagnostic(diagnostic: Any) -> None:
                     "product": project.get("ide_product_code"),
                     "name": project.get("project_name") or project.get("name"),
                     "base_path": project.get("base_path"),
-                    "plugin": project.get("plugin_version"),
+                    "plugin": plugin_identity_label(project),
                 },
             )
         )
@@ -1919,6 +1928,7 @@ def flatten_project(identity: dict[str, Any], project: dict[str, Any]) -> dict[s
         "ide_name": identity.get("ide_name"),
         "ide_product_code": identity.get("ide_product_code"),
         "plugin_version": identity.get("plugin_version"),
+        "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
         "project_key": project.get("project_key"),
         "project_instance_id": project.get("project_instance_id"),
         "name": project.get("name"),
