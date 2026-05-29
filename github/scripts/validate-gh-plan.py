@@ -288,6 +288,95 @@ def test_create_reports_stale_project_as_non_blocking_warning() -> None:
     assert payload["project_fields"]["error_code"] == "lookup_stale", payload
     assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
     assert "planning.projects" in payload["project_fields"]["recommended_action"], payload
+    assert "Verify the acting GitHub identity can see the Project." in payload["project_fields"]["recommended_actions"], payload
+
+
+def test_create_reports_project_auth_denied_as_non_blocking_warning() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[dict[str, Any]] = []
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "active": "plan:active"},
+        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": "Code", "repo_managers": {}},
+    }
+    original_gh_json = plan.gh_json
+
+    def fake_gh_json(
+        args: list[str],
+        *,
+        input_text: Optional[str] = None,
+        prefer_active: bool = False,
+        recoverable: bool = False,
+    ) -> tuple[str, Any]:
+        if args[:2] == ["issue", "list"]:
+            return "automation-gh", []
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
+        return original_gh_json(
+            args,
+            input_text=input_text,
+            prefer_active=prefer_active,
+            recoverable=recoverable,
+        )
+
+    plan.gh_json = fake_gh_json
+    plan.ensure_labels = lambda repo, wanted, config: ("automation-gh", [])
+    plan.rest_create_issue = lambda repo, title, body, labels, milestone: ("automation-gh", issue)
+    plan.resolve_project = lambda owner, project, recoverable=False: ("automation-gh", 7, {"title": project, "number": 7})
+
+    def fake_run_raw(
+        args: list[str],
+        *,
+        prefer_active: bool = False,
+        recoverable: bool = False,
+        **_kwargs: Any,
+    ) -> tuple[str, str, str]:
+        calls.append({"args": args, "prefer_active": prefer_active, "recoverable": recoverable})
+        if args[:2] == ["project", "item-add"] and recoverable:
+            raise plan.project_error("HTTP 403: resource not accessible by integration")
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    plan.run_raw = fake_run_raw
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Durable plan",
+            title_flag=None,
+            body="## Finish Line\n\nShip it.\n",
+            body_file=None,
+            label=None,
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="active",
+            focus="Now",
+            manager=None,
+            finish_line=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert payload["issue"]["number"] == 10, payload
+    assert payload["project_fields"]["warning"] is True, payload
+    assert payload["project_fields"]["blocking"] is False, payload
+    assert payload["project_fields"]["operation"] == "create_project_sync", payload
+    assert payload["project_fields"]["error_code"] == "project_auth_denied", payload
+    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
+    assert "Grant the automation identity access to the Project." in payload["project_fields"]["recommended_actions"], payload
+    assert all(call["args"][:2] != ["gh", "project"] for call in calls), calls
 
 
 def test_close_reports_stale_project_as_non_blocking_warning() -> None:
@@ -342,6 +431,66 @@ def test_close_reports_stale_project_as_non_blocking_warning() -> None:
     assert payload["project"]["operation"] == "close_project_sync", payload
     assert payload["project"]["error_code"] == "lookup_stale", payload
     assert payload["project"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
+    assert any(call[:2] == ["issue", "close"] for call in calls), calls
+
+
+def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[list[str]] = []
+
+    plan.load_config = lambda repo: {
+        "labels": {"active": "plan:active", "done": "plan:done"},
+        "projects": {"owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus"},
+    }
+    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+
+    def fake_run_raw(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+        calls.append(args)
+        if args[:2] in (["issue", "edit"], ["issue", "close"]):
+            return "automation-gh", "", ""
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    plan.run_raw = fake_run_raw
+    plan.project_meta = lambda owner, project, recoverable=False: (
+        "automation-gh",
+        7,
+        {"title": project, "number": 7},
+    )
+    plan.project_fields = lambda owner, project_number, recoverable=False: (_ for _ in ()).throw(
+        plan.project_error("HTTP 403: resource not accessible by integration")
+    )
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_close(types.SimpleNamespace(
+            repo="owner/repo",
+            issue="10",
+            reason="completed",
+            body=None,
+            body_file=None,
+            owner=None,
+            project=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert payload["closed"]["number"] == 10, payload
+    assert payload["project"]["warning"] is True, payload
+    assert payload["project"]["blocking"] is False, payload
+    assert payload["project"]["operation"] == "close_project_sync", payload
+    assert payload["project"]["error_code"] == "project_auth_denied", payload
+    assert "Use Project-capable auth for this operation." in payload["project"]["recommended_actions"], payload
     assert any(call[:2] == ["issue", "close"] for call in calls), calls
 
 
@@ -1433,7 +1582,9 @@ def main() -> None:
         test_project_commands_are_recoverable,
         test_create_reports_issue_when_project_sync_fails,
         test_create_reports_stale_project_as_non_blocking_warning,
+        test_create_reports_project_auth_denied_as_non_blocking_warning,
         test_close_reports_stale_project_as_non_blocking_warning,
+        test_close_reports_project_auth_denied_as_non_blocking_warning,
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
