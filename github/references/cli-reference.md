@@ -75,12 +75,15 @@ requested.
 
 Project commands preflight GraphQL quota, cache Project metadata within the run,
 and classify recoverable failures with `error_code` values such as
-`rate_limited`, `lookup_stale`, `not_in_project`, and
-`field_or_option_missing`.
+`rate_limited`, `project_auth_denied`, `lookup_stale`, `not_in_project`, and
+`field_or_option_missing`. Project auth or visibility failures do not
+automatically fall back to active human auth; the helper reports the acting
+identity, target Project, and human choices instead.
 
 When issue creation or close succeeds but optional Project sync fails, the
 helper returns `ok: true` with a non-blocking Project warning, target context,
-and the Project sync operation that needs follow-up.
+the Project sync operation that needs follow-up, and compact
+`recommended_actions` when the failure needs an auth or config decision.
 
 ## Formatting Tip
 

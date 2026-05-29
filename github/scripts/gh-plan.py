@@ -190,6 +190,14 @@ def classify_project_error(message: str) -> str:
     lowered = message.lower()
     if "rate limit" in lowered or "graphql" in lowered or "secondary rate" in lowered:
         return "rate_limited"
+    if (
+        "resource not accessible" in lowered
+        or "forbidden" in lowered
+        or "permission denied" in lowered
+        or "must have admin rights" in lowered
+        or ("403" in lowered and "project" in lowered)
+    ):
+        return "project_auth_denied"
     if "not in project" in lowered:
         return "not_in_project"
     if "field not found" in lowered or "unknown option" in lowered or "no such field" in lowered:
@@ -229,6 +237,23 @@ def project_failure_payload(
                 "Check planning.projects owner/default_project config, disable Projects, "
                 "create the Project, or verify auth can see it."
             )
+            payload["recommended_actions"] = [
+                "Check planning.projects owner/default_project config.",
+                "Create or rename the configured Project if it is intentionally missing.",
+                "Verify the acting GitHub identity can see the Project.",
+                "Disable Project sync if this repo or workspace should not use Projects.",
+            ]
+        elif payload.get("error_code") == "project_auth_denied":
+            payload["recommended_action"] = (
+                "Grant the automation identity access to the Project, use Project-capable "
+                "auth for this operation, disable Project sync, or fix stale Project config."
+            )
+            payload["recommended_actions"] = [
+                "Grant the automation identity access to the Project.",
+                "Use Project-capable auth for this operation.",
+                "Disable Project sync if this repo or workspace should not use Projects.",
+                "Fix planning.projects owner/default_project config if it is stale.",
+            ]
     return payload
 
 
