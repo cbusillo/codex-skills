@@ -232,6 +232,12 @@ Add plans to Projects when repo/workspace config defines a default Project or
 the user asks for Project tracking. Use only a few human-facing fields: `Focus`,
 `Manager`, `Finish Line`, `Roadmap Start`, and `Roadmap Target`.
 
+When issue create/close succeeds but the helper returns a non-blocking Project
+warning, mention it briefly and present the helper's human choices. Do not retry
+repeatedly or silently switch to active human auth. Project auth/config fixes are
+human decisions: grant automation Project access, use Project-capable auth,
+disable Project sync, or correct stale Project config.
+
 Treat roadmap dates as planning anchors, not commitments. Keep them useful for
 LLM-assisted coding by using honest day, week, or month windows and moving or
 clearing stale dates when reality changes.
