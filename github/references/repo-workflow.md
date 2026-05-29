@@ -101,6 +101,9 @@ Default to PR-backed implementation work.
   or shared environment validation is involved. Use `Closes #123` or
   `Fixes #123` only when auto-close is clearly intended and local/CI evidence
   can conclusively close the issue.
+- `Refs #123` is deliberately non-closing. It keeps the relationship visible
+  while preserving a required post-merge decision about whether the issue is
+  truly done.
 - Do not close externally reported issues just because a fix PR merged. Leave a
   validation comment and close only after the reporter/current user confirms or
   explicitly asks.
@@ -151,9 +154,24 @@ issue or PR still depends on them. Remove the associated local branch with
 branch is merged or otherwise unnecessary. Ask before deleting any dirty
 worktree, branch with unmerged commits, or ambiguous review/automation worktree.
 
-Issue closeout belongs to the winning PR. After the canonical PR merges, update
-stale planning state, duplicate issues, or workstream comments so future agents
-can see which PR was selected and which PRs were superseded.
+Issue closeout belongs to the winning PR. After the canonical PR merges, sweep
+every issue referenced by that PR body or its closing comments. For each issue:
+
+- close it only when the merged PR conclusively satisfies the issue finish line
+  and acceptance criteria
+- otherwise update `Current Status` or add a comment with what remains and leave
+  it open
+- use `scripts/gh-issue close` with stdin for close comments so Markdown is
+  posted through a body-file-backed path
+
+Also update stale planning state, duplicate issues, or workstream comments so
+future agents can see which PR was selected and which PRs were superseded.
+
+Handoff content follows the same durability rule. For GitHub-backed work, write
+recovery-critical handoff notes to the owning issue or PR timeline. Local
+`handoff*.md` files are temporary scratch unless intentionally committed as repo
+documentation; migrate their actionable content before deleting them during
+closeout.
 
 Use repo-specific instructions for exceptions, deploy labels, preview behavior,
 required checks, or release policy.
@@ -221,9 +239,9 @@ inline threads before deciding what to change.
 - For issue and PR timeline comments, use `scripts/gh-comment` or
   `scripts/gh-pr.py comment --body-file`; never pass escaped `\n` through
   `--body`.
-- For issue close comments, use `scripts/gh-issue close` with stdin. It posts
-  the close comment with `--body-file` before closing the issue because
-  `gh issue close` may only support `--comment string`.
+- For issue close comments, use `scripts/gh-issue close` with stdin. It passes
+  stdin as `gh issue close --comment` so the close and comment happen in one
+  `gh` operation.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

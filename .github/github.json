@@ -96,7 +96,34 @@
   },
   "cleanup": {
     "deleteMergedLocalBranches": true,
-    "removeMergedCleanWorktrees": true
+    "removeMergedCleanWorktrees": true,
+    "commands": [
+      {
+        "name": "git status",
+        "command": "git status --short --branch",
+        "when": "routine",
+        "description": "Confirm the checkout is clean before closeout."
+      },
+      {
+        "name": "worktree list",
+        "command": "git worktree list",
+        "when": "routine",
+        "description": "List linked worktrees so stale generated worktrees are visible."
+      },
+      {
+        "name": "merged local branches",
+        "command": "git branch --merged",
+        "when": "routine",
+        "description": "Surface local branches that Git can prove are merged."
+      }
+    ],
+    "handoffArtifacts": {
+      "temporaryGlobs": [
+        "handoff*.md",
+        "*-handoff.md"
+      ],
+      "durableSurface": "GitHub issue or PR comment"
+    }
   },
   "metadataFreshness": {
     "updateWhen": [

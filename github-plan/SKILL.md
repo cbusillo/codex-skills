@@ -28,7 +28,8 @@ plan or the work must not be written to GitHub.
 - Promote durable work to one canonical issue with the configured planning
   label, usually `plan`.
 - Keep issue bodies structured and current; `Current Status` is the recovery
-  point for future sessions.
+  point for future sessions and the preferred durable handoff surface for
+  GitHub-backed planning work.
 - Use native GitHub dependencies and sub-issues for relationships, including
   cross-repo relationships.
 - Use Projects and other configured surfaces as view layers, not sources of
@@ -36,7 +37,9 @@ plan or the work must not be written to GitHub.
 - Use milestones for release, phase, or date buckets only.
 - Avoid ad hoc label taxonomies; ask before creating new labels.
 - Prefer `Refs #123` from PRs unless the user explicitly wants auto-close or the
-  issue is an internal task that can be conclusively closed.
+  issue is an internal task that can be conclusively closed. `Refs` is
+  deliberately non-closing; after merge, sweep referenced issues and close only
+  the ones whose finish line was actually satisfied.
 - Optimize for the user finishing work, not for cataloging every possible idea.
 
 ## Local Conventions
@@ -95,7 +98,9 @@ state. Child issues should each have one scoped finish line and one next action.
 3. When a new idea appears, classify it as do now, acceptance criterion, related
    issue, sub-issue, blocker, or later. Do not pivot without an explicit
    decision.
-4. Before pausing, update `Current Status` so the user can resume quickly.
+4. Before pausing, update `Current Status` or the owning PR/issue comment so the
+   user can resume quickly. Do not leave a local handoff file as the only
+   recovery source for GitHub-backed work.
 5. Keep the user in maker mode; let Projects or other surfaces handle management
    state.
 
@@ -204,6 +209,17 @@ state.
   corrective context only in chat or PR comments.
 - If an old issue might mislead a future agent, treat it as unfinished cleanup,
   not optional housekeeping.
+
+After a canonical PR merges, inspect the issues it references with `Refs`,
+`Closes`, `Fixes`, or `Resolves`. `Refs` should remain non-closing by default.
+For each referenced issue, either close it with `../github/scripts/gh-issue
+close` and a multiline evidence comment when the merge conclusively satisfies
+the finish line, or update/comment the remaining state and leave it open.
+
+Local handoff documents are not durable planning records unless the user asked
+for offline/private handoff. If a session created `handoff*.md` or similar
+scratch files, migrate recovery-critical content into the owning GitHub issue or
+PR comment before closeout and then delete or explicitly preserve the file.
 
 ## Projects And Surfaces
 
