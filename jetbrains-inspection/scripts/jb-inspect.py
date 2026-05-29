@@ -44,6 +44,12 @@ READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
+PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
+PROJECT_OPEN_BLOCKED_HINT = (
+    "JetBrains may be waiting on a Trust Project, safe-mode, or open-project prompt "
+    "in a foreground or background IDE window. Bring the IDE forward, answer the prompt, "
+    "then retry inspection."
+)
 
 
 class InspectError(Exception):
@@ -286,7 +292,11 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
     for identity in identities:
         for project in identity.get("open_projects", []) or []:
             projects.append(flatten_project(identity, project))
-    return {"status": "ok", "mode": "http", "projects": projects, "count": len(projects)}
+    result = {"status": "ok", "mode": "http", "projects": projects, "count": len(projects)}
+    if identities and not projects:
+        result["zero_project_hint"] = zero_project_hint()
+        result["identities"] = [public_identity_summary(identity) for identity in identities]
+    return result
 
 
 def command_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -471,6 +481,7 @@ def wait_for_exact_route(args: argparse.Namespace, context: dict[str, Any], time
             last_error = error
         time.sleep(2)
     payload = auto_open_timeout_payload(args, context, timeout_ms)
+    payload["error_reason"] = "project_open_blocked"
     if last_error:
         payload["last_error"] = str(last_error)
     raise InspectError("Timed out waiting for JetBrains IDE to open the exact worktree.", 3, payload)
@@ -487,14 +498,43 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
+        "target_worktree": context.get("worktree_root"),
+        "selected_trusted_root": selected_trusted_root_for_payload(context),
         "global_config": str(global_config_path()),
         "background_open": getattr(args, "background_open", False),
         "prepare_timeout_ms": timeout_ms,
+        "blocked_diagnostic": project_open_blocked_diagnostic(args, context, timeout_ms),
         "likely_causes": causes,
         "hint": "Run again with --foreground-open, trust the project if prompted, set JetBrains project opening to New Window, or open the worktree manually once.",
     }
     payload.update(route_diagnostic_payload(args, context))
     return payload
+
+
+def project_open_blocked_diagnostic(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+    return {
+        "reason": PROJECT_OPEN_BLOCKED_REASON,
+        "message": PROJECT_OPEN_BLOCKED_HINT,
+        "background_open": getattr(args, "background_open", False),
+        "prepare_timeout_ms": timeout_ms,
+        "requested_ide": context.get("ide"),
+        "target_worktree": context.get("worktree_root"),
+        "selected_trusted_root": selected_trusted_root_for_payload(context),
+    }
+
+
+def selected_trusted_root_for_payload(context: dict[str, Any]) -> str | None:
+    try:
+        return str(trusted_root_for_worktree(context))
+    except InspectError:
+        return None
+
+
+def zero_project_hint() -> str:
+    return (
+        "Discovered a JetBrains inspection plugin identity but zero open projects. "
+        "A pending Trust Project, safe-mode, or open-project prompt may be preventing project loading."
+    )
 
 
 def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -536,10 +576,10 @@ def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) 
         diagnostic["next_action"] = f"Open the worktree in {target_ide} with the inspection plugin installed and up to date for that IDE, or update repo config/--ide to one of the discovered JetBrains products."
     elif matching_identities and not matching_projects:
         diagnostic["reason"] = "target_ide_running_without_target_project"
-        diagnostic["next_action"] = "Open the exact worktree in the configured IDE, verify that IDE has the inspection plugin installed and up to date, or allow lifecycle closeout to open it under a trusted root."
+        diagnostic["next_action"] = "Open the exact worktree in the configured IDE, check for a pending Trust Project, safe-mode, or open-project prompt, verify that IDE has the inspection plugin installed and up to date, or allow lifecycle closeout to open it under a trusted root."
     elif not identities:
         diagnostic["reason"] = "no_plugin_instances_discovered"
-        diagnostic["next_action"] = "Launch the configured JetBrains IDE with the inspection plugin installed."
+        diagnostic["next_action"] = "Launch the configured JetBrains IDE with the inspection plugin installed; if an IDE was launched hidden/background, also check whether it is blocked before plugin registration by a Trust Project, safe-mode, or open-project prompt."
     return {"route_diagnostic": diagnostic}
 
 
@@ -1177,6 +1217,8 @@ def print_human(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    if payload.get("zero_project_hint"):
+        print(safe_text("PROJECT_OPEN_HINT: {hint}", {"hint": payload.get("zero_project_hint")}))
     if status == "error":
         print_error_details(payload)
     print_result_flags(payload)
@@ -1245,9 +1287,30 @@ def print_error_details(payload: dict[str, Any]) -> None:
     }
     if any(value is not None for value in context_details.values()):
         print(safe_text("CONTEXT: repo={repo} worktree={worktree} ide={ide} endpoint={endpoint} url={url}", context_details))
+    print_blocked_diagnostic(payload.get("blocked_diagnostic"))
     print_route_diagnostic(payload.get("route_diagnostic"))
     if payload.get("hint"):
         print(safe_text("HINT: {hint}", {"hint": payload.get("hint")}))
+
+
+def print_blocked_diagnostic(diagnostic: Any) -> None:
+    if not isinstance(diagnostic, dict):
+        return
+    print(
+        safe_text(
+            "PROJECT_OPEN_BLOCKED: reason={reason} requested_ide={requested_ide} target_worktree={target_worktree} background_open={background_open} prepare_timeout_ms={prepare_timeout_ms} selected_trusted_root={selected_trusted_root}",
+            {
+                "reason": diagnostic.get("reason"),
+                "requested_ide": diagnostic.get("requested_ide"),
+                "target_worktree": diagnostic.get("target_worktree"),
+                "background_open": diagnostic.get("background_open"),
+                "prepare_timeout_ms": diagnostic.get("prepare_timeout_ms"),
+                "selected_trusted_root": diagnostic.get("selected_trusted_root"),
+            },
+        )
+    )
+    if diagnostic.get("message"):
+        print(safe_text("PROJECT_OPEN_BLOCKED_HINT: {message}", {"message": diagnostic.get("message")}))
 
 
 def print_route_diagnostic(diagnostic: Any) -> None:
