@@ -138,13 +138,18 @@ Common top-level keys:
 - `importantWorkflows`: GitHub Actions workflows agents should watch closely.
 - `qaLabels` and `deployLabels`: labels that change QA or deploy behavior.
 - `healthUrls`: product, lane, or deploy health endpoints relevant to readiness.
+  Concrete app-facing URLs may be committed in private implementation repos when
+  they are intentionally repo-facing operational metadata.
 - `relatedRepos`: repos agents should consider during cross-repo work.
 - `launchplane`: public-safe routing metadata for Launchplane context,
   operator, and merge-train surfaces. It may name environment variable names,
   helper paths, workflow names, labels, local config examples, and expected
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads, or
-  plaintext runtime configuration.
+  plaintext runtime configuration. Do not treat app, preview, deploy, or
+  health-check URLs as Launchplane service URLs when they are owned by the repo's
+  runtime contract; keep those in `healthUrls` or operations docs, and avoid
+  duplicating Launchplane-managed lane coordinates in this block.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
@@ -174,6 +179,11 @@ Rules:
   variables, while write-capable helpers still source concrete service URLs and
   credentials only from private operator config, environment variables, GitHub
   Actions OIDC, or signed-in Launchplane UI sessions.
+- Concrete product, app, preview, deploy, and health-check URLs are allowed when
+  they are intentionally part of a private implementation repo's operational
+  contract. This exception does not apply to Launchplane service/operator/context
+  URLs, trace URLs, provider payloads, copied runtime evidence, or private
+  control-plane topology.
 - Omit `launchplane` or set `launchplane.enabled` to `false` for repos that do
   not use Launchplane. Snapshot and readiness helpers should treat missing,
   disabled, unavailable, or unauthorized Launchplane access as reportable state,
