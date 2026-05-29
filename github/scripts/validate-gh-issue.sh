@@ -287,6 +287,72 @@ if grep -q '^issue comment ' "$log"; then
 	exit 1
 fi
 
+cat >"$tmpdir/large-close-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue comment 13 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
+	'issue close 13 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/large-close-gh"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/large-close-gh" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_CLOSE_COMMENT_ARG_MAX=8 \
+	"$repo_root/github/scripts/gh-issue" close 13 --repo owner/repo --reason completed \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'
+Closing with a long streamed body.
+EOF
+
+grep -q '^issue comment 13 --body-file .* --repo owner/repo$' "$log"
+grep -qx 'issue close 13 --repo owner/repo --reason completed' "$log"
+grep -qx 'commented' "$stdout_log"
+grep -qx 'closed' "$stdout_log"
+if grep -q -- '--comment' "$log"; then
+	echo "error: large gh-issue close comments should not be inlined into argv" >&2
+	exit 1
+fi
+
+cat >"$tmpdir/failing-large-comment-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue comment 14 --body-file '*' --repo owner/repo')
+		printf 'comment failed\n' >&2
+		exit 1
+		;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/failing-large-comment-gh"
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/failing-large-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_CLOSE_COMMENT_ARG_MAX=8 \
+	"$repo_root/github/scripts/gh-issue" close 14 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'; then
+Closing with a long streamed body.
+EOF
+	echo "error: gh-issue close should not close if the streamed comment fails" >&2
+	exit 1
+fi
+
+grep -q '^issue comment 14 --body-file .* --repo owner/repo$' "$log"
+if grep -q '^issue close 14' "$log"; then
+	echo "error: gh-issue close should stop before close after comment failure" >&2
+	exit 1
+fi
+
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
