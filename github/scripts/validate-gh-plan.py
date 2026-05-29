@@ -494,6 +494,148 @@ def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
     assert any(call[:2] == ["issue", "close"] for call in calls), calls
 
 
+def test_close_syncs_project_before_closing_issue() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[list[str]] = []
+
+    plan.load_config = lambda repo: {
+        "labels": {"active": "plan:active", "done": "plan:done"},
+        "projects": {"owner": "owner", "default_project": "Roadmap"},
+        "project_fields": {"focus": "Focus"},
+    }
+    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.project_meta = lambda owner, project, recoverable=False: (
+        "automation-gh",
+        7,
+        {"id": "project-id", "title": project, "number": 7},
+    )
+    plan.project_fields = lambda owner, project_number, recoverable=False: {
+        "Status": {
+            "id": "status-field",
+            "name": "Status",
+            "type": "ProjectV2SingleSelectField",
+            "options": [{"name": "Done", "id": "done-option"}],
+        },
+        "Focus": {"id": "focus-field", "name": "Focus", "type": "ProjectV2Field"},
+    }
+    plan.find_project_item = lambda owner, project_number, issue_url, **kwargs: {"id": "item-id"}
+
+    def fake_run_raw(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+        calls.append(args)
+        if args[:2] in (["issue", "edit"], ["issue", "close"], ["project", "item-edit"]):
+            return "automation-gh", "{}", ""
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    plan.run_raw = fake_run_raw
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_close(types.SimpleNamespace(
+            repo="owner/repo",
+            issue="10",
+            reason="completed",
+            body=None,
+            body_file=None,
+            owner=None,
+            project=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    issue_close_index = next(i for i, call in enumerate(calls) if call[:2] == ["issue", "close"])
+    project_edit_indices = [i for i, call in enumerate(calls) if call[:2] == ["project", "item-edit"]]
+    assert project_edit_indices, calls
+    assert max(project_edit_indices) < issue_close_index, calls
+
+
+def test_find_project_item_uses_issue_query_and_higher_limit() -> None:
+    plan = load_plan_module()
+    calls: list[list[str]] = []
+
+    def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        calls.append(args)
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
+        if args[:2] == ["project", "item-list"]:
+            return "automation-gh", {
+                "items": [
+                    {
+                        "id": "item-id",
+                        "content": {"url": "https://github.com/owner/repo/issues/214"},
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected gh_json args: {args}")
+
+    plan.gh_json = fake_gh_json
+    item = plan.find_project_item(
+        "owner",
+        7,
+        "https://github.com/owner/repo/issues/214",
+        recoverable=True,
+    )
+
+    assert item["id"] == "item-id", item
+    item_list = next(call for call in calls if call[:2] == ["project", "item-list"])
+    assert "--query" in item_list, item_list
+    assert "#214" in item_list, item_list
+    assert "--limit" in item_list, item_list
+    assert "50" in item_list, item_list
+
+
+def test_find_project_item_falls_back_when_query_misses_exact_issue() -> None:
+    plan = load_plan_module()
+    calls: list[list[str]] = []
+
+    def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        calls.append(args)
+        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
+            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
+        if args[:2] == ["project", "item-list"] and "--query" in args:
+            return "automation-gh", {
+                "items": [
+                    {
+                        "id": "other-item-id",
+                        "content": {"url": "https://github.com/other/repo/issues/214"},
+                    }
+                ]
+            }
+        if args[:2] == ["project", "item-list"]:
+            return "automation-gh", {
+                "items": [
+                    {
+                        "id": "item-id",
+                        "content": {"url": "https://github.com/owner/repo/issues/214"},
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected gh_json args: {args}")
+
+    plan.gh_json = fake_gh_json
+    item = plan.find_project_item(
+        "owner",
+        7,
+        "https://github.com/owner/repo/issues/214",
+        recoverable=True,
+    )
+
+    assert item["id"] == "item-id", item
+    item_lists = [call for call in calls if call[:2] == ["project", "item-list"]]
+    assert len(item_lists) == 2, item_lists
+    assert "--query" in item_lists[0], item_lists
+    assert "--query" not in item_lists[1], item_lists
+
+
 def test_create_supports_waiting_plan_status() -> None:
     plan = load_plan_module()
     captured: dict[str, Any] = {}
@@ -1585,6 +1727,9 @@ def main() -> None:
         test_create_reports_project_auth_denied_as_non_blocking_warning,
         test_close_reports_stale_project_as_non_blocking_warning,
         test_close_reports_project_auth_denied_as_non_blocking_warning,
+        test_close_syncs_project_before_closing_issue,
+        test_find_project_item_uses_issue_query_and_higher_limit,
+        test_find_project_item_falls_back_when_query_misses_exact_issue,
         test_create_supports_waiting_plan_status,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,

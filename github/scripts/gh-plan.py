@@ -946,12 +946,32 @@ def project_fields(owner: str, project_number: int, *, recoverable: bool = False
     return fields
 
 
-def project_items(owner: str, project_number: int, *, recoverable: bool = False) -> list[dict[str, Any]]:
-    cache_key = ("items", owner, project_number)
+def project_items(
+    owner: str,
+    project_number: int,
+    *,
+    query: str | None = None,
+    limit: int = 1000,
+    recoverable: bool = False,
+) -> list[dict[str, Any]]:
+    cache_key = ("items", owner, project_number, query, limit)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
     ensure_graphql_budget(recoverable=recoverable)
-    _, data = gh_json(["project", "item-list", str(project_number), "--owner", owner, "--format", "json", "--limit", "200"], prefer_active=True, recoverable=recoverable)
+    args = [
+        "project",
+        "item-list",
+        str(project_number),
+        "--owner",
+        owner,
+        "--format",
+        "json",
+        "--limit",
+        str(limit),
+    ]
+    if query:
+        args.extend(["--query", query])
+    _, data = gh_json(args, prefer_active=True, recoverable=recoverable)
     items = data.get("items", [])
     PROJECT_CACHE[cache_key] = items
     return items
@@ -968,13 +988,31 @@ def find_project_item(
 ) -> dict[str, Any]:
     if item_id:
         return {"id": item_id}
+    issue_number = issue_url.rstrip("/").rsplit("/", 1)[-1]
     for attempt in range(attempts):
-        for item in project_items(owner, project_number, recoverable=recoverable):
+        try:
+            items = project_items(
+                owner,
+                project_number,
+                query=f"#{issue_number}",
+                limit=50,
+                recoverable=recoverable,
+            )
+        except PlanError:
+            items = project_items(owner, project_number, recoverable=recoverable)
+        for item in items:
             content = item.get("content") or {}
             if content.get("url") == issue_url:
                 return item
+        if items:
+            for item in project_items(owner, project_number, recoverable=recoverable):
+                content = item.get("content") or {}
+                if content.get("url") == issue_url:
+                    return item
         if attempt + 1 < attempts:
-            PROJECT_CACHE.pop(("items", owner, project_number), None)
+            for key in list(PROJECT_CACHE):
+                if len(key) >= 3 and key[:3] == ("items", owner, project_number):
+                    PROJECT_CACHE.pop(key, None)
             time.sleep(1)
     raise project_error(f"Issue is not in project {owner}/{project_number}: {issue_url}")
 
@@ -1142,9 +1180,6 @@ def cmd_close(args: argparse.Namespace) -> None:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    close_args = ["issue", "close", str(number), "-R", issue_repo, "--reason", args.reason]
-    actor, _, _ = run_raw(close_args)
-
     project_result: dict[str, Any] = {}
     project_config = config.get("projects") or {}
     project = args.project or project_config.get("default_project")
@@ -1180,6 +1215,9 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation="close_project_sync",
                 non_blocking=True,
             )
+
+    close_args = ["issue", "close", str(number), "-R", issue_repo, "--reason", args.reason]
+    actor, _, _ = run_raw(close_args)
 
     emit({
         "ok": True,
