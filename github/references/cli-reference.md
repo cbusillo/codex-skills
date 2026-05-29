@@ -106,8 +106,10 @@ EOF
 ```
 
 `gh issue close` does not support `--body-file`; `scripts/gh-issue close` reads
-stdin and passes it as the `gh issue close --comment` value so the close and
-comment are one `gh` operation.
+stdin and uses the best available safe transport. Ordinary close comments are
+passed as `gh issue close --comment` so the close and comment are one `gh`
+operation. Large comments are posted first with `gh issue comment --body-file`,
+then the issue is closed, so the body is streamed instead of inlined into argv.
 
 For timeline comments, use `scripts/gh-comment` or
 `scripts/gh-pr.py comment --body-file`. For PR review feedback, use
