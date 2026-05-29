@@ -259,7 +259,7 @@ Allowed without asking when safe:
 - fast-forward the local default branch when it is an ancestor of the remote
 - report unsafe cleanup candidates instead of touching them
 
-Never include Codex Desktop auto-review worktrees under
+Never include Codex Desktop or Every Code auto-review worktrees under
 `~/.code/working/<repo>/branches/auto-review*` in automatic cleanup.
 
 Use `git branch -d <branch>` before considering `-D`; do not force-delete unless

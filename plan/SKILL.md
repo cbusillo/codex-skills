@@ -30,8 +30,9 @@ planning workflow.
 
 ## If Explicitly Asked For A Local Plan
 
-1. Resolve the plans directory as `$CODEX_HOME/plans`, or `~/.codex/plans` when
-   `CODEX_HOME` is unset.
+1. Resolve the plans directory as `$CODE_HOME/plans` when set,
+   `$CODEX_HOME/plans` for compatibility, then `~/.code/plans` or
+   `~/.codex/plans`.
 2. Read repo context only as needed; do not modify the repository.
 3. Draft the plan in chat first unless the user explicitly asked to write it.
 4. Save only under the plans directory, with frontmatter containing `name` and

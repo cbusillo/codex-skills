@@ -5,7 +5,7 @@
 #     "PyYAML>=6.0.0",
 # ]
 # ///
-"""Repo-wide validation for Code skill bundles."""
+"""Repo-wide validation for Every Code skill bundles."""
 
 from __future__ import annotations
 
@@ -85,10 +85,10 @@ def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
 
 
 def resolve_system_skills_root() -> Path:
-    """Return the Code runtime system skill cache or the repo fallback.
+    """Return the Every Code runtime system skill cache or the repo fallback.
 
-    Code caches embedded system skills under the active runtime skills directory:
-    `CODE_HOME/skills/.system` for Code, with `CODEX_HOME/skills/.system` kept
+    Every Code caches embedded system skills under the active runtime skills directory:
+    `CODE_HOME/skills/.system` for Every Code, with `CODEX_HOME/skills/.system` kept
     for compatibility. This repo may also contain a generated `.system` cache,
     which keeps override-name validation deterministic for plain checkouts and
     CI jobs that do not mount a runtime cache.

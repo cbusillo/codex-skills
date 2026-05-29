@@ -65,10 +65,10 @@ Every Code state, deploy evidence, or source-of-truth links. Treat `no_context`,
 continue with local/GitHub readiness checks. Do not print raw helper stderr or
 copy helper payloads into readiness output.
 
-If you inspect worktrees, ignore Codex Desktop auto-review worktrees under
-`~/.code/working/<repo>/branches/auto-review*` unless the user's task is
-specifically about that review. They are detached external review context and
-should not affect readiness for the active repo/branch.
+If you inspect worktrees, ignore Codex Desktop or Every Code auto-review
+worktrees under `~/.code/working/<repo>/branches/auto-review*` unless the user's
+task is specifically about that review. They are detached external review
+context and should not affect readiness for the active repo/branch.
 
 5. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest

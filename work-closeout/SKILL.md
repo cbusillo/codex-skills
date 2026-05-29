@@ -186,7 +186,8 @@ when that improves continuity.
 
 ## Auto Review Worktrees
 
-Codex Desktop may create detached review worktrees under paths like:
+Codex Desktop and Every Code auto-review flows may create detached review
+worktrees under paths like:
 
 ```text
 ~/.code/working/<repo>/branches/auto-review*
@@ -198,8 +199,8 @@ Treat these as external review context, not the active workstream.
 - Do not treat their files as blocking the current repo closeout.
 - Do not clean, prune, delete, or modify them unless the user explicitly asks
   about that review worktree.
-- Mention them only when relevant, for example: "Ignored Codex Desktop
-  auto-review worktrees."
+- Mention them only when relevant, for example: "Ignored detached auto-review
+  worktrees."
 - If the user asks about a review result or review worktree specifically, switch
   context deliberately and inspect that worktree as the task target.
 

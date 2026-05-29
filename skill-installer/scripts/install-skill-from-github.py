@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Install a skill from a GitHub repo path into $CODEX_HOME/skills."""
+"""Install a skill from a GitHub repo path into the active skills directory."""
 
 from __future__ import annotations
 
@@ -46,7 +46,9 @@ class InstallError(Exception):
     pass
 
 
-def _codex_home() -> str:
+def _runtime_home() -> str:
+    if os.environ.get("CODE_HOME"):
+        return os.environ["CODE_HOME"]
     if os.environ.get("CODEX_HOME"):
         return os.environ["CODEX_HOME"]
     code_home = os.path.expanduser("~/.code")
@@ -252,7 +254,7 @@ def _resolve_source(args: Args) -> Source:
 
 
 def _default_dest() -> str:
-    return os.path.join(_codex_home(), "skills")
+    return os.path.join(_runtime_home(), "skills")
 
 
 def _parse_args(argv: list[str]) -> Args:
