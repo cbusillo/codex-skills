@@ -105,9 +105,9 @@ Closing with a multiline Markdown comment before closing the issue.
 EOF
 ```
 
-`gh issue close` does not support `--body-file` in all installed `gh` versions;
-`scripts/gh-issue close` posts the stdin body as a comment first, then closes
-the issue.
+`gh issue close` does not support `--body-file`; `scripts/gh-issue close` reads
+stdin and passes it as the `gh issue close --comment` value so the close and
+comment are one `gh` operation.
 
 For timeline comments, use `scripts/gh-comment` or
 `scripts/gh-pr.py comment --body-file`. For PR review feedback, use

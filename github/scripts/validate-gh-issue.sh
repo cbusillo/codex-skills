@@ -188,8 +188,7 @@ cat >"$tmpdir/record-gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	'issue comment 9 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
-	'issue close 9 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	'issue close 9 --comment '*' --repo owner/repo --reason completed') printf 'closed\n' ;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
 		exit 1
@@ -205,20 +204,17 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
 Closing with `literal markdown`.
 EOF
 
-grep -q '^issue comment 9 --body-file .*[[:space:]]--repo owner/repo$' "$log"
-grep -qx 'issue close 9 --repo owner/repo --reason completed' "$log"
-grep -qx 'commented' "$stdout_log"
-grep -qx 'closed' <(tail -n 1 "$stdout_log")
+expected_close_line="issue close 9 --comment Closing with \`literal markdown\`. --repo owner/repo --reason completed"
+grep -Fqx "$expected_close_line" "$log"
+grep -qx 'closed' "$stdout_log"
 
 cat >"$tmpdir/record-comment-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	'issue comment 10 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
-	'issue close 10 --repo owner/repo --reason completed') printf 'closed\n' ;;
-	'issue comment 11 --body-file '*' -Rowner/repo') printf 'commented\n' ;;
-	'issue close 11 -Rowner/repo --reason completed') printf 'closed\n' ;;
+	'issue close 10 --comment '*' --repo owner/repo --reason completed') printf 'closed\n' ;;
+	'issue close 11 --comment '*' -Rowner/repo --reason completed') printf 'closed\n' ;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
 		exit 1
@@ -235,11 +231,13 @@ GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
 Closing with stdin body only.
 EOF
 
-grep -q '^issue comment 10 --body-file .*[[:space:]]--repo owner/repo$' "$log"
-grep -qx 'issue close 10 --repo owner/repo --reason completed' "$log"
+grep -q '^issue close 10 --comment Closing with stdin body only\.[[:space:]]--repo owner/repo --reason completed$' "$log"
 if grep -q -- '--comment' "$log"; then
-	echo "error: gh-issue close should strip caller --comment passthrough" >&2
-	exit 1
+	comment_count="$(grep -o -- '--comment' "$log" | wc -l | tr -d ' ')"
+	if [[ "$comment_count" != "1" ]]; then
+		echo "error: gh-issue close should strip caller --comment passthrough" >&2
+		exit 1
+	fi
 fi
 
 : >"$log"
@@ -250,10 +248,42 @@ GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
 Closing with stdin body only.
 EOF
 
-grep -q '^issue comment 11 --body-file .*[[:space:]]-Rowner/repo$' "$log"
-grep -qx 'issue close 11 -Rowner/repo --reason completed' "$log"
+grep -q '^issue close 11 --comment Closing with stdin body only\.[[:space:]]-Rowner/repo --reason completed$' "$log"
 if grep -q -- '-cduplicate comment' "$log"; then
 	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
+	exit 1
+fi
+
+cat >"$tmpdir/failing-close-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue close 12 --comment '*' --repo owner/repo')
+		printf 'close failed\n' >&2
+		exit 1
+		;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/failing-close-gh"
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/failing-close-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 12 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'; then
+Closing with one atomic close command.
+EOF
+	echo "error: gh-issue close should surface close failures" >&2
+	exit 1
+fi
+
+grep -q '^issue close 12 --comment Closing with one atomic close command\.[[:space:]]--repo owner/repo$' "$log"
+if grep -q '^issue comment ' "$log"; then
+	echo "error: gh-issue close should not post a separate pre-close comment" >&2
 	exit 1
 fi
 
