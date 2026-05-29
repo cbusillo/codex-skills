@@ -57,6 +57,28 @@ Repo-local values override workspace defaults.
       "deleteBranchOnMerge": true
     }
   },
+  "cleanup": {
+    "deleteMergedLocalBranches": true,
+    "removeMergedCleanWorktrees": true,
+    "commands": [
+      {
+        "name": "git status",
+        "command": "git status --short --branch",
+        "when": "routine",
+        "description": "Confirm the checkout is clean before closeout."
+      },
+      {
+        "name": "prune generated caches",
+        "command": "rm -rf .cache/example-generated",
+        "when": "explicit",
+        "description": "Example cold cleanup; run only when intentionally requested."
+      }
+    ],
+    "handoffArtifacts": {
+      "temporaryGlobs": ["handoff*.md", "*-handoff.md"],
+      "durableSurface": "GitHub issue or PR comment"
+    }
+  },
   "metadataFreshness": {
     "updateWhen": ["validation gates change", "important workflows change"]
   },
@@ -131,7 +153,10 @@ Common top-level keys:
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.
-- `cleanup`: repo-local cleanup policy for merged branches and worktrees.
+- `cleanup`: repo-local closeout cleanup policy. Boolean fields may authorize
+  routine branch/worktree hygiene, `commands` may list named cleanup or audit
+  commands, and `handoffArtifacts` may describe temporary local handoff files
+  that must be migrated to the durable surface before deletion.
 - `metadataFreshness`: events that should trigger metadata review.
 
 Rules:
@@ -158,5 +183,12 @@ Rules:
   `Finish Line`; avoid duplicating the whole issue body into fields.
 - Use `workflow.repo_managers` for repo-specific human ownership. Fall back to
   `workflow.default_manager` only when a repo has no specific manager.
+- Treat `cleanup.commands[].when == "routine"` as ordinary closeout evidence:
+  agents may run or report the command during closeout. Treat any other value,
+  such as `explicit`, `cold`, or `aggressive`, as report-only unless the user or
+  repo guidance explicitly asks for that cleanup.
+- Keep recovery-critical handoff content in the owning GitHub issue or PR
+  comment for GitHub-backed work. Local files matching configured temporary
+  handoff globs are scratch unless intentionally committed as part of a PR.
 - Live manager routing belongs in `~/.code/github-planning.json`; keep this
   reference generic so ownership changes do not require doc edits.

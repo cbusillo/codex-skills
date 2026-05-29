@@ -295,7 +295,48 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.launchplane.service.localConfigExample == "launchplane/references/launchplane-operator.local.example.json" and
 		.launchplane.mergeTrain.readyLabel == "ready-to-merge" and
 		.launchplane.mergeTrain.githubActionsRunner.workflow == "merge-train-runner.yml" and
-		(.launchplane.warnings | length) == 0
+		(.launchplane.warnings | length) == 0 and
+		.cleanup.status == "configured" and
+		.cleanup.routineCommands[0].name == "git status" and
+		.cleanup.handoffArtifacts.durableSurface == "GitHub issue or PR comment" and
+		(.cleanup.warnings | length) == 0
+	' >/dev/null
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" |
+	grep -A8 '^== Cleanup ==$' >"$tmpdir/cleanup-section.txt"
+
+grep -qx 'status: configured' "$tmpdir/cleanup-section.txt"
+grep -q '^routineCommands: git status, worktree list, merged local branches$' "$tmpdir/cleanup-section.txt"
+grep -q '^handoffDurableSurface: GitHub issue or PR comment$' "$tmpdir/cleanup-section.txt"
+
+cat >"$tmpdir/cleanup-policy.json" <<'EOF'
+{
+  "cleanup": {
+    "commands": [
+      {"name": "routine audit", "command": "git status --short", "when": "routine"},
+      {"name": "cold prune", "command": "rm -rf .cache/example", "when": "explicit"},
+      {"name": "broken"}
+    ],
+    "handoffArtifacts": {
+      "temporaryGlobs": ["handoff*.md"],
+      "durableSurface": "GitHub issue or PR comment"
+    }
+  }
+}
+EOF
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$tmpdir/cleanup-policy.json" |
+	jq -e '
+		.cleanup.status == "configured" and
+		(.cleanup.commands | length) == 3 and
+		(.cleanup.routineCommands | length) == 1 and
+		.cleanup.routineCommands[0].name == "routine audit" and
+		.cleanup.handoffArtifacts.temporaryGlobs[0] == "handoff*.md" and
+		([.cleanup.warnings[].code] | index("invalid_cleanup_command")) != null
 	' >/dev/null
 
 cat >"$tmpdir/incomplete-launchplane.json" <<'EOF'

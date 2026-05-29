@@ -67,6 +67,13 @@ operation, and route those calls through `scripts/gh-with-env-token`.
   available. If unavailable, record the not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
+- **Refs Closeout**: Treat `Refs #...` as intentionally non-closing. After the
+  canonical PR merges, sweep referenced issues and close only those whose finish
+  line is conclusively satisfied; otherwise comment/update durable state and
+  leave them open.
+- **Handoffs**: For GitHub-backed work, put recovery-critical handoff content in
+  the owning issue or PR comment. Local handoff files are scratch unless they
+  are intentionally committed docs.
 - **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies and
   issue close comments,
   `scripts/gh-pr.py create --body-file` and `scripts/gh-pr.py edit --body-file`
