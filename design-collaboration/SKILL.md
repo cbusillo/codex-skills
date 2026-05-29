@@ -29,7 +29,7 @@ External design collaborator owns:
 - interaction feel and polish
 - making the surface not ugly
 
-This harness owns:
+The Every Code harness owns:
 
 - product context and user workflow
 - required states and acceptance criteria

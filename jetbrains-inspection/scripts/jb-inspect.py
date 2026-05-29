@@ -1432,7 +1432,7 @@ def global_config_path() -> Path:
     override = os.environ.get("JETBRAINS_INSPECTION_GLOBAL_CONFIG")
     if override:
         return Path(override).expanduser()
-    code_home = os.environ.get("CODEX_HOME") or os.environ.get("CODE_HOME") or str(Path.home() / ".code")
+    code_home = os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or str(Path.home() / ".code")
     return Path(code_home).expanduser() / "jetbrains-inspection.json"
 
 

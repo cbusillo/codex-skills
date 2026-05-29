@@ -11,16 +11,16 @@ Use this skill whenever the task requires a live browser session.
 
 ## Primary Tool
 
-Use the browser tool available in the current harness. In Code, prefer the
-direct browser controller when it is available. In older Codex-style harnesses,
-use the global `ui-browser` helper instead of ad hoc HTML inspection or one-off
-screenshots.
+Use the browser tool available in the current harness. In the Every Code harness,
+prefer the direct browser controller when it is available. In older Codex-style
+harnesses, use the global `ui-browser` helper instead of ad hoc HTML inspection
+or one-off screenshots.
 
 The workflow is the same either way: open the live page, wait for app readiness,
 inspect visible state, interact like a user, and capture screenshots when they
 add evidence.
 
-## Code Browser Controller
+## Every Code Browser Controller
 
 When the direct browser controller is available, use it for navigation,
 interaction, fetches, screenshots, and diagnostics. Prefer visible UI actions

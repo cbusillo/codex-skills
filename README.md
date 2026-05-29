@@ -27,14 +27,14 @@ files instead of committing it.
 
 ### System Skill Overrides
 
-Code recreates bundled system skills under the runtime skills directory during
-startup: `$CODE_HOME/skills/.system` for Code, with
+Every Code recreates bundled system skills under the runtime skills directory during
+startup: `$CODE_HOME/skills/.system` for Every Code, with
 `$CODEX_HOME/skills/.system` kept for compatibility. Treat `.system/` in this
 repository as generated/vendor cache state, not as maintained source. Edit the
 top-level skill directories instead.
 
 Some top-level skills intentionally use the same names as bundled system skills
-so they win by normal Code skill precedence:
+so they win by normal Every Code skill precedence:
 
 - `openai-docs`
 - `plan`
@@ -43,7 +43,7 @@ so they win by normal Code skill precedence:
 - `skill-installer`
 
 Keep that override allowlist explicit in the repo validator. Runtime `.system`
-caches can differ by Code build, so validation fails only when an active
+caches can differ by Every Code build, so validation fails only when an active
 top-level skill overrides a bundled system skill that is not allowlisted. If Code
 adds a new bundled system skill with the same name as a top-level skill, update
 the top-level override skill or the validator allowlist intentionally instead of

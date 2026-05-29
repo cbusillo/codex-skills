@@ -90,7 +90,9 @@ def emit(payload: Any) -> None:
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
-def get_codex_home() -> pathlib.Path:
+def get_runtime_home() -> pathlib.Path:
+    if os.environ.get("CODE_HOME"):
+        return pathlib.Path(os.environ["CODE_HOME"]).expanduser()
     if os.environ.get("CODEX_HOME"):
         return pathlib.Path(os.environ["CODEX_HOME"]).expanduser()
     code_home = pathlib.Path("~/.code").expanduser()
@@ -100,7 +102,7 @@ def get_codex_home() -> pathlib.Path:
 
 
 def workspace_config_path() -> pathlib.Path:
-    return get_codex_home() / "github-planning.json"
+    return get_runtime_home() / "github-planning.json"
 
 
 def run_raw(

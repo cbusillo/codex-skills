@@ -271,8 +271,9 @@ For example, when building an image-editor skill, relevant questions include:
 - "I can imagine users asking for things like 'Remove the red-eye from this image' or 'Rotate this image'. Are there other ways you imagine this skill being used?"
 - "What would a user say that should trigger this skill?"
 - "Where should I create this skill? If you do not have a preference, I will
-  place it in `$CODEX_HOME/skills`. When `CODEX_HOME` is unset, I will prefer
-  `~/.code/skills` if present, then fall back to `~/.codex/skills`."
+  place it in `$CODE_HOME/skills` when set, use `$CODEX_HOME/skills` for
+  compatibility, then prefer `~/.code/skills` if present, and finally fall back
+  to `~/.codex/skills`."
 
 To avoid overwhelming users, avoid asking too many questions in a single message. Start with the most important questions and follow up as needed for better effectiveness.
 
@@ -309,9 +310,10 @@ At this point, it is time to actually create the skill.
 Skip this step only if the skill being developed already exists. In this case, continue to the next step.
 
 Before running `init_skill.py`, ask where the user wants the skill created. If
-they do not specify a location, default to `$CODEX_HOME/skills`; when
-`CODEX_HOME` is unset, prefer `~/.code/skills` if present, then fall back to
-`~/.codex/skills` so the skill is auto-discovered.
+they do not specify a location, default to `$CODE_HOME/skills` when set, use
+`$CODEX_HOME/skills` for compatibility, then prefer `~/.code/skills` if
+present, and finally fall back to `~/.codex/skills` so the skill is
+auto-discovered.
 
 When creating a new skill from scratch, always run the `init_skill.py` script. The script conveniently generates a new template skill directory that automatically includes everything a skill requires, making the skill creation process much more efficient and reliable.
 
@@ -324,7 +326,8 @@ scripts/init_skill.py <skill-name> --path <output-directory> [--resources script
 Examples:
 
 ```bash
-skills_dir="${CODEX_HOME:-$HOME/.code}/skills"
+skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}"
+skills_dir="$skills_home/skills"
 scripts/init_skill.py my-skill --path "$skills_dir"
 scripts/init_skill.py my-skill --path "$skills_dir" --resources scripts,references
 scripts/init_skill.py my-skill --path ~/work/skills --resources scripts --examples
@@ -350,7 +353,11 @@ Only include other optional interface fields when the user explicitly provides t
 
 ### Step 4: Edit the Skill
 
-When editing the (newly-generated or existing) skill, remember that the skill is being created for another instance of Codex to use. Include information that would be beneficial and non-obvious to Codex. Consider what procedural knowledge, domain-specific details, or reusable assets would help another Codex instance execute these tasks more effectively.
+When editing the (newly-generated or existing) skill, remember that the skill is
+being created for another coding agent instance to use. Include information that
+would be beneficial and non-obvious to that agent. Consider what procedural
+knowledge, domain-specific details, or reusable assets would help another agent
+execute these tasks more effectively.
 
 After substantial revisions, or if the skill is particularly tricky, you should use subagents to forward-test the skill on realistic tasks or artifacts. When doing so, pass the artifact under validation rather than your diagnosis of what is wrong, and keep the prompt generic enough that success depends on transferable reasoning rather than hidden ground truth.
 
@@ -368,12 +375,13 @@ If you used `--examples`, delete any placeholder files that are not needed for t
 
 ##### Frontmatter
 
-Write the YAML frontmatter for Code with `name` and `description`:
+Write the YAML frontmatter for the Every Code agent with `name` and
+`description`:
 
 - `name`: The skill name
-- `description`: This is the primary triggering mechanism for your skill, and helps Code understand when to use the skill.
+- `description`: This is the primary triggering mechanism for your skill, and helps the agent understand when to use the skill.
   - Include both what the Skill does and specific triggers/contexts for when to use it.
-  - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to Code.
+  - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to the agent.
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when Codex needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
 - `metadata.short-description`: Optional compact human-facing summary for UI/listing surfaces. Keep the full routing and trigger detail in `description`.
 - `policy.allow_implicit_invocation`: Optional boolean. Set to `false` only for skills that should be discoverable and explicitly invokable, but excluded from default implicit routing.

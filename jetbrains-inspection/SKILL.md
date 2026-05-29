@@ -58,7 +58,7 @@ already running, then asks the running inspection plugin to schedule the exact
 worktree open. The helper polls until the exact route appears before it
 inspects; a lifecycle open response alone is not proof that the IDE finished
 opening the project.
-Configure trusted roots in `${CODEX_HOME:-$HOME/.code}/jetbrains-inspection.json`:
+Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`:
 
 ```json
 {
