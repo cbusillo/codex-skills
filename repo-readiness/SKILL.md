@@ -56,7 +56,7 @@ If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
 
 ```bash
-~/.code/skills/launchplane/scripts/launchplane-context.py --repo OWNER/REPO
+../launchplane/scripts/launchplane-context.py --repo OWNER/REPO
 ```
 
 Use `available` context only as a hint for product mapping, preview readiness,
