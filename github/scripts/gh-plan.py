@@ -1004,6 +1004,11 @@ def find_project_item(
             content = item.get("content") or {}
             if content.get("url") == issue_url:
                 return item
+        if items:
+            for item in project_items(owner, project_number, recoverable=recoverable):
+                content = item.get("content") or {}
+                if content.get("url") == issue_url:
+                    return item
         if attempt + 1 < attempts:
             for key in list(PROJECT_CACHE):
                 if len(key) >= 3 and key[:3] == ("items", owner, project_number):
