@@ -58,6 +58,7 @@ edit)
 	;;
 close)
 	comment_args=()
+	close_args=()
 	remaining=("$@")
 	idx=0
 	while [[ "$idx" -lt "${#remaining[@]}" ]]; do
@@ -69,18 +70,36 @@ close)
 				exit 2
 			fi
 			comment_args+=("$arg" "${remaining[$((idx + 1))]}")
+			close_args+=("$arg" "${remaining[$((idx + 1))]}")
 			idx=$((idx + 2))
 			;;
 		--repo=*)
 			comment_args+=("$arg")
+			close_args+=("$arg")
+			idx=$((idx + 1))
+			;;
+		-R*)
+			comment_args+=("$arg")
+			close_args+=("$arg")
+			idx=$((idx + 1))
+			;;
+		--comment | -c)
+			if [[ "$((idx + 1))" -ge "${#remaining[@]}" ]]; then
+				echo "error: $arg requires a value" >&2
+				exit 2
+			fi
+			idx=$((idx + 2))
+			;;
+		--comment=* | -c*)
 			idx=$((idx + 1))
 			;;
 		*)
+			close_args+=("$arg")
 			idx=$((idx + 1))
 			;;
 		esac
 	done
 	"$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}"
-	"$gh_bin" issue close "$target" "$@"
+	"$gh_bin" issue close "$target" "${close_args[@]}"
 	;;
 esac

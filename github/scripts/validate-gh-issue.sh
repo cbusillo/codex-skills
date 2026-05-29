@@ -210,6 +210,53 @@ grep -qx 'issue close 9 --repo owner/repo --reason completed' "$log"
 grep -qx 'commented' "$stdout_log"
 grep -qx 'closed' <(tail -n 1 "$stdout_log")
 
+cat >"$tmpdir/record-comment-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	'issue comment 10 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
+	'issue close 10 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	'issue comment 11 --body-file '*' -Rowner/repo') printf 'commented\n' ;;
+	'issue close 11 -Rowner/repo --reason completed') printf 'closed\n' ;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$tmpdir/record-comment-gh"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 10 --repo owner/repo \
+	--comment "duplicate comment" --reason completed \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'
+Closing with stdin body only.
+EOF
+
+grep -q '^issue comment 10 --body-file .*[[:space:]]--repo owner/repo$' "$log"
+grep -qx 'issue close 10 --repo owner/repo --reason completed' "$log"
+if grep -q -- '--comment' "$log"; then
+	echo "error: gh-issue close should strip caller --comment passthrough" >&2
+	exit 1
+fi
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 11 -Rowner/repo \
+	-c"duplicate comment" --reason completed \
+	>"$stdout_log" 2>"$stderr_log" <<'EOF'
+Closing with stdin body only.
+EOF
+
+grep -q '^issue comment 11 --body-file .*[[:space:]]-Rowner/repo$' "$log"
+grep -qx 'issue close 11 -Rowner/repo --reason completed' "$log"
+if grep -q -- '-cduplicate comment' "$log"; then
+	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
+	exit 1
+fi
+
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -241,7 +288,64 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.github.openPullRequests[0].draft == false and
 		.github.openPullRequests[0].mergeStateStatus == null and
 		.github.openPullRequests[0].snapshotReadiness.degraded == true and
-		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false
+		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false and
+		.launchplane.status == "configured" and
+		.launchplane.service.contextUrlEnv == "LAUNCHPLANE_CONTEXT_URL" and
+		.launchplane.service.operatorUrlEnv == "LAUNCHPLANE_OPERATOR_URL" and
+		.launchplane.service.localConfigExample == "launchplane/references/launchplane-operator.local.example.json" and
+		.launchplane.mergeTrain.readyLabel == "ready-to-merge" and
+		.launchplane.mergeTrain.githubActionsRunner.workflow == "merge-train-runner.yml" and
+		(.launchplane.warnings | length) == 0
+	' >/dev/null
+
+cat >"$tmpdir/incomplete-launchplane.json" <<'EOF'
+{
+  "defaultBranch": "main",
+  "launchplane": {
+    "enabled": true,
+    "context": {"enabled": true},
+    "operator": {"enabled": true},
+    "mergeTrain": {"enabled": true}
+  }
+}
+EOF
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$tmpdir/incomplete-launchplane.json" |
+	jq -e '
+		.launchplane.status == "configured" and
+		.launchplane.enabled == true and
+		([.launchplane.warnings[].code] | sort) == [
+			"missing_actions_runner",
+			"missing_context_helper",
+			"missing_context_url_env",
+			"missing_operator_helper",
+			"missing_operator_url_env",
+			"missing_ready_label"
+		]
+	' >/dev/null
+
+cat >"$tmpdir/committed-launchplane-url.json" <<'EOF'
+{
+  "defaultBranch": "main",
+  "launchplane": {
+    "enabled": true,
+    "service": {
+      "publicUrl": "https://launchplane.example.invalid",
+      "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
+      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL"
+    }
+  }
+}
+EOF
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$tmpdir/committed-launchplane-url.json" |
+	jq -e '
+		.launchplane.status == "configured" and
+		([.launchplane.warnings[].code] | index("committed_service_url")) != null
 	' >/dev/null
 
 snapshot_config="$tmpdir/snapshot-config.json"

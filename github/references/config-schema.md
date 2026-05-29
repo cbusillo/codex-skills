@@ -22,6 +22,36 @@ Repo-local values override workspace defaults.
   },
   "healthUrls": [],
   "relatedRepos": [],
+  "launchplane": {
+    "enabled": true,
+    "service": {
+      "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
+      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL",
+      "localConfigExample": "launchplane/references/launchplane-operator.local.example.json"
+    },
+    "context": {
+      "enabled": true,
+      "helper": "launchplane/scripts/launchplane-context.py"
+    },
+    "operator": {
+      "enabled": true,
+      "helper": "launchplane/scripts/launchplane-write-action.py",
+      "requiresPrivateConfig": true
+    },
+    "mergeTrain": {
+      "enabled": true,
+      "controller": true,
+      "readyLabel": "ready-to-merge",
+      "baseBranch": "main",
+      "githubActionsRunner": {
+        "repo": "OWNER/launchplane",
+        "workflow": "merge-train-runner.yml",
+        "ref": "main",
+        "runnerMode": "controller",
+        "mutateDefault": false
+      }
+    }
+  },
   "githubSettings": {
     "expected": {
       "deleteBranchOnMerge": true
@@ -87,6 +117,12 @@ Common top-level keys:
 - `qaLabels` and `deployLabels`: labels that change QA or deploy behavior.
 - `healthUrls`: product, lane, or deploy health endpoints relevant to readiness.
 - `relatedRepos`: repos agents should consider during cross-repo work.
+- `launchplane`: public-safe routing metadata for Launchplane context,
+  operator, and merge-train surfaces. It may name environment variable names,
+  helper paths, workflow names, labels, local config examples, and expected
+  capabilities. It must not contain tokens, cookies, secret values, concrete
+  Launchplane service URLs, private credential paths, provider payloads, or
+  plaintext runtime configuration.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
@@ -108,9 +144,15 @@ Rules:
   let manifests own dependency and inventory facts.
 - Use native GitHub dependencies and sub-issues as canonical relationships.
 - Projects are views. Do not require Project writes for planning to work.
-- LaunchPlane is not a published config surface in this version. If a future
-  release adds LaunchPlane settings, document the supported keys here and wire
-  them into `gh-plan.py` at the same time.
+- Launchplane repo metadata is routing, not authorization. Context helpers may
+  use it to discover helper paths and the names of service URL environment
+  variables, while write-capable helpers still source concrete service URLs and
+  credentials only from private operator config, environment variables, GitHub
+  Actions OIDC, or signed-in Launchplane UI sessions.
+- Omit `launchplane` or set `launchplane.enabled` to `false` for repos that do
+  not use Launchplane. Snapshot and readiness helpers should treat missing,
+  disabled, unavailable, or unauthorized Launchplane access as reportable state,
+  not as permission to bypass Launchplane with direct provider mutation.
 - Put cross-repo defaults in the workspace config, not in a single repo.
 - Project fields should reduce human lostness. Prefer `Focus`, `Manager`, and
   `Finish Line`; avoid duplicating the whole issue body into fields.

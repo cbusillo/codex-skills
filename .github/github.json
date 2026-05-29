@@ -40,6 +40,36 @@
   "deployLabels": [],
   "healthUrls": [],
   "relatedRepos": [],
+  "launchplane": {
+    "enabled": true,
+    "service": {
+      "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
+      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL",
+      "localConfigExample": "launchplane/references/launchplane-operator.local.example.json"
+    },
+    "context": {
+      "enabled": true,
+      "helper": "launchplane/scripts/launchplane-context.py"
+    },
+    "operator": {
+      "enabled": true,
+      "helper": "launchplane/scripts/launchplane-write-action.py",
+      "requiresPrivateConfig": true
+    },
+    "mergeTrain": {
+      "enabled": true,
+      "controller": true,
+      "readyLabel": "ready-to-merge",
+      "baseBranch": "main",
+      "githubActionsRunner": {
+        "repo": "cbusillo/launchplane",
+        "workflow": "merge-train-runner.yml",
+        "ref": "main",
+        "runnerMode": "controller",
+        "mutateDefault": false
+      }
+    }
+  },
   "githubSignals": {
     "postMerge": {
       "waitForActions": true,
@@ -75,6 +105,7 @@
       "primary commands change",
       "important workflows change",
       "repo relationship changes",
+      "Launchplane access routing changes",
       "cleanup policy changes",
       "ownership boundaries change"
     ]

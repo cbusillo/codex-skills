@@ -396,7 +396,73 @@ if [[ "$json_output" -eq 1 ]]; then
     --slurpfile recentRuns "$tmpdir/recent-runs.json" \
     --slurpfile repoSettings "$tmpdir/repo-settings.json" \
     --slurpfile health "$tmpdir/health.json" \
-    '{
+    '
+    def present($value): ($value | type == "string" and length > 0);
+    def launchplane_summary($config):
+      if $config == null then
+        {
+          status: "no_config",
+          enabled: false,
+          warnings: [{code: "missing_config", message: "No repo metadata config was loaded."}]
+        }
+      elif ($config.data.launchplane // null) == null then
+        {
+          status: "not_configured",
+          enabled: false,
+          warnings: [{code: "missing_launchplane_metadata", message: "Launchplane metadata is not configured for this repo."}]
+        }
+      else
+        ($config.data.launchplane) as $lp |
+        {
+          status: (if ($lp.enabled // false) then "configured" else "disabled" end),
+          enabled: ($lp.enabled // false),
+          service: {
+            contextUrlEnv: ($lp.service.contextUrlEnv // null),
+            operatorUrlEnv: ($lp.service.operatorUrlEnv // null),
+            localConfigExample: ($lp.service.localConfigExample // null)
+          },
+          context: {
+            enabled: ($lp.context.enabled // false),
+            helper: ($lp.context.helper // null)
+          },
+          operator: {
+            enabled: ($lp.operator.enabled // false),
+            helper: ($lp.operator.helper // null),
+            requiresPrivateConfig: ($lp.operator.requiresPrivateConfig // true)
+          },
+          mergeTrain: {
+            enabled: ($lp.mergeTrain.enabled // false),
+            controller: ($lp.mergeTrain.controller // false),
+            readyLabel: ($lp.mergeTrain.readyLabel // null),
+            baseBranch: ($lp.mergeTrain.baseBranch // null),
+            githubActionsRunner: ($lp.mergeTrain.githubActionsRunner // null)
+          },
+          warnings: ([
+            if ($lp.enabled // false) and (($lp.service.publicUrl // null) != null) then
+              {code: "committed_service_url", message: "Launchplane service.publicUrl should not be committed; use env or private operator config for concrete service URLs."}
+            else empty end,
+            if ($lp.enabled // false) and (present($lp.service.contextUrlEnv // "") | not) then
+              {code: "missing_context_url_env", message: "Launchplane service.contextUrlEnv is missing."}
+            else empty end,
+            if ($lp.enabled // false) and (present($lp.service.operatorUrlEnv // "") | not) then
+              {code: "missing_operator_url_env", message: "Launchplane service.operatorUrlEnv is missing."}
+            else empty end,
+            if ($lp.context.enabled // false) and (present($lp.context.helper // "") | not) then
+              {code: "missing_context_helper", message: "Launchplane context helper path is missing."}
+            else empty end,
+            if ($lp.operator.enabled // false) and (present($lp.operator.helper // "") | not) then
+              {code: "missing_operator_helper", message: "Launchplane operator helper path is missing."}
+            else empty end,
+            if ($lp.mergeTrain.enabled // false) and (present($lp.mergeTrain.readyLabel // "") | not) then
+              {code: "missing_ready_label", message: "Launchplane mergeTrain.readyLabel is missing."}
+            else empty end,
+            if ($lp.mergeTrain.enabled // false) and (($lp.mergeTrain.githubActionsRunner // null) == null) then
+              {code: "missing_actions_runner", message: "Launchplane mergeTrain.githubActionsRunner is missing."}
+            else empty end
+          ])
+        }
+      end;
+    {
       repository: {
         root: $repoRoot,
         currentBranch: $currentBranch,
@@ -407,6 +473,7 @@ if [[ "$json_output" -eq 1 ]]; then
         remotes: $remotes[0]
       },
       config: $config[0],
+      launchplane: launchplane_summary($config[0]),
       github: {
         ghAvailable: $ghAvailable,
         currentBranchPullRequest: $currentPr[0],
@@ -443,7 +510,31 @@ if [[ -n "$config_path" ]]; then
   if [[ -n "$config_override_path" ]]; then
     printf 'override: %s (applied)\n' "$config_override_path"
   fi
-  run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
+  run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), launchplane: (.launchplane // {}), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
+
+  section "Launchplane"
+  # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.
+  run_or_note "launchplane metadata summary" jq -r '
+    if (.launchplane // null) == null then
+      "status: not_configured"
+    else
+      .launchplane as $lp |
+      [
+        "status: " + (if ($lp.enabled // false) then "configured" else "disabled" end),
+        "contextUrlEnv: " + ($lp.service.contextUrlEnv // ""),
+        "operatorUrlEnv: " + ($lp.service.operatorUrlEnv // ""),
+        "localConfigExample: " + ($lp.service.localConfigExample // ""),
+        "contextHelper: " + ($lp.context.helper // ""),
+        "operatorHelper: " + ($lp.operator.helper // ""),
+        "operatorRequiresPrivateConfig: " + (($lp.operator.requiresPrivateConfig // true) | tostring),
+        "mergeTrainEnabled: " + (($lp.mergeTrain.enabled // false) | tostring),
+        "mergeTrainReadyLabel: " + ($lp.mergeTrain.readyLabel // ""),
+        "mergeTrainBaseBranch: " + ($lp.mergeTrain.baseBranch // ""),
+        "mergeTrainWorkflow: " + ($lp.mergeTrain.githubActionsRunner.workflow // ""),
+        "mergeTrainWorkflowRepo: " + ($lp.mergeTrain.githubActionsRunner.repo // "")
+      ] | .[]
+    end
+  ' "$effective_config_path"
 fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
