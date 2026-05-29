@@ -189,6 +189,8 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	'issue close 9 --comment '*' --repo owner/repo --reason completed') printf 'closed\n' ;;
+	'issue close 90 --repo owner/repo --reason completed') printf 'closed\n' ;;
+	'issue close 91 --repo owner/repo --comment caller-supplied') printf 'closed\n' ;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
 		exit 1
@@ -198,14 +200,49 @@ EOF
 chmod +x "$tmpdir/record-gh"
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+printf '%s' "Closing with \`literal markdown\`." | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
 	"$repo_root/github/scripts/gh-issue" close 9 --repo owner/repo --reason completed \
-	>"$stdout_log" 2>"$stderr_log" <<'EOF'
-Closing with `literal markdown`.
-EOF
+	>"$stdout_log" 2>"$stderr_log"
 
 expected_close_line="issue close 9 --comment Closing with \`literal markdown\`. --repo owner/repo --reason completed"
 grep -Fqx "$expected_close_line" "$log"
+grep -qx 'closed' "$stdout_log"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 90 --repo owner/repo --reason completed \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+
+grep -qx 'issue close 90 --repo owner/repo --reason completed' "$log"
+grep -qx 'closed' "$stdout_log"
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 91 --repo owner/repo --comment caller-supplied \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+
+grep -qx 'issue close 91 --repo owner/repo --comment caller-supplied' "$log"
+grep -qx 'closed' "$stdout_log"
+
+cat >"$tmpdir/record-bytes-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2 $3" != "issue close 92" || "$4" != "--comment" ]]; then
+	printf 'unexpected gh args: %s\n' "$*" >&2
+	exit 1
+fi
+printf '%s' "$5" >"$GH_ISSUE_TEST_LOG"
+printf 'closed\n'
+EOF
+chmod +x "$tmpdir/record-bytes-gh"
+
+: >"$log"
+printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-bytes-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 92 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log"
+
+printf 'Line one\nLine two\n\n' >"$tmpdir/expected-comment-bytes"
+cmp "$tmpdir/expected-comment-bytes" "$log"
 grep -qx 'closed' "$stdout_log"
 
 cat >"$tmpdir/record-comment-gh" <<'EOF'
@@ -224,12 +261,10 @@ EOF
 chmod +x "$tmpdir/record-comment-gh"
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
 	"$repo_root/github/scripts/gh-issue" close 10 --repo owner/repo \
 	--comment "duplicate comment" --reason completed \
-	>"$stdout_log" 2>"$stderr_log" <<'EOF'
-Closing with stdin body only.
-EOF
+	>"$stdout_log" 2>"$stderr_log"
 
 grep -q '^issue close 10 --comment Closing with stdin body only\.[[:space:]]--repo owner/repo --reason completed$' "$log"
 if grep -q -- '--comment' "$log"; then
@@ -241,12 +276,10 @@ if grep -q -- '--comment' "$log"; then
 fi
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
 	"$repo_root/github/scripts/gh-issue" close 11 -Rowner/repo \
 	-c"duplicate comment" --reason completed \
-	>"$stdout_log" 2>"$stderr_log" <<'EOF'
-Closing with stdin body only.
-EOF
+	>"$stdout_log" 2>"$stderr_log"
 
 grep -q '^issue close 11 --comment Closing with stdin body only\.[[:space:]]-Rowner/repo --reason completed$' "$log"
 if grep -q -- '-cduplicate comment' "$log"; then
@@ -272,11 +305,9 @@ EOF
 chmod +x "$tmpdir/failing-close-gh"
 
 : >"$log"
-if GH_ISSUE_GH="$tmpdir/failing-close-gh" GH_ISSUE_TEST_LOG="$log" \
+if printf '%s' 'Closing with one atomic close command.' | GH_ISSUE_GH="$tmpdir/failing-close-gh" GH_ISSUE_TEST_LOG="$log" \
 	"$repo_root/github/scripts/gh-issue" close 12 --repo owner/repo \
-	>"$stdout_log" 2>"$stderr_log" <<'EOF'; then
-Closing with one atomic close command.
-EOF
+	>"$stdout_log" 2>"$stderr_log"; then
 	echo "error: gh-issue close should surface close failures" >&2
 	exit 1
 fi

@@ -69,11 +69,11 @@ If the helpers are unavailable, use `gh` directly with body files and compact
 JSON reads. Do not fall back to repo docs or local plan files for durable
 GitHub-backed planning.
 
-For close comments, use `../github/scripts/gh-issue close` so stdin is posted as
-a body-file-backed comment before the issue is closed. For other multiline
-writes, prefer body files or stdin. Do not pass escaped `\n` through
-shell-quoted flags. Follow `../references/every-code-formatting.md` when
-writing durable issue bodies, planning comments, handoffs, or closeout evidence.
+For close comments, use `../github/scripts/gh-issue close` so stdin is passed
+through a formatting-safe close path. For other multiline writes, prefer body
+files or stdin. Do not pass escaped `\n` through shell-quoted flags. Follow
+`../references/every-code-formatting.md` when writing durable issue bodies,
+planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
 

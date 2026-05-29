@@ -14,7 +14,8 @@ Usage:
 Read a GitHub issue body from stdin and pass it to gh with --body-file,
 preserving literal Markdown backticks, newlines, and shell-looking text.
 
-For close, stdin is passed to gh issue close as the closing comment.
+For close, non-empty stdin is passed to gh issue close as the closing comment.
+Empty stdin preserves normal gh issue close behavior and closes without a comment.
 Large close comments are posted with gh issue comment --body-file before the
 issue is closed, because gh issue close does not support --body-file.
 USAGE
@@ -44,9 +45,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$tmp_body"
+if [[ "$command" == "close" && -t 0 ]]; then
+	: >"$tmp_body"
+else
+	cat >"$tmp_body"
+fi
 
-if [[ ! -s "$tmp_body" ]]; then
+if [[ "$command" != "close" && ! -s "$tmp_body" ]]; then
 	echo "error: issue body is empty" >&2
 	exit 2
 fi
@@ -101,6 +106,11 @@ close)
 			;;
 		esac
 	done
+	if [[ ! -s "$tmp_body" ]]; then
+		"$gh_bin" issue close "$target" "${remaining[@]}"
+		exit 0
+	fi
+
 	comment_arg_max="${GH_ISSUE_CLOSE_COMMENT_ARG_MAX:-32768}"
 	if [[ ! "$comment_arg_max" =~ ^[0-9]+$ ]]; then
 		echo "error: GH_ISSUE_CLOSE_COMMENT_ARG_MAX must be a non-negative integer" >&2
@@ -108,7 +118,8 @@ close)
 	fi
 	body_size="$(wc -c <"$tmp_body" | tr -d '[:space:]')"
 	if [[ "$body_size" -le "$comment_arg_max" ]]; then
-		"$gh_bin" issue close "$target" --comment "$(<"$tmp_body")" "${close_args[@]}"
+		IFS= read -r -d '' close_comment <"$tmp_body" || true
+		"$gh_bin" issue close "$target" --comment "$close_comment" "${close_args[@]}"
 	else
 		"$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}"
 		"$gh_bin" issue close "$target" "${close_args[@]}"

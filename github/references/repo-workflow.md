@@ -162,7 +162,7 @@ every issue referenced by that PR body or its closing comments. For each issue:
 - otherwise update `Current Status` or add a comment with what remains and leave
   it open
 - use `scripts/gh-issue close` with stdin for close comments so Markdown is
-  posted through a body-file-backed path
+  passed through a formatting-safe close path
 
 Also update stale planning state, duplicate issues, or workstream comments so
 future agents can see which PR was selected and which PRs were superseded.
