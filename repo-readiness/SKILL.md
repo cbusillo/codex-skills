@@ -84,6 +84,10 @@ context and should not affect readiness for the active repo/branch.
    safe-to-exit, continue into `work-closeout` after the readiness answer is
    established.
 
+Use `../references/every-code-formatting.md` for readiness reports and durable
+readiness comments: lead with status, cite concrete evidence, and keep skipped
+or pending checks explicit without copying large logs.
+
 ## Gate Selection
 
 - Docs-only: validate links/rendering when practical; do not run full code gates
