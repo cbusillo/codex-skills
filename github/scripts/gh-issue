@@ -15,6 +15,8 @@ Read a GitHub issue body from stdin and pass it to gh with --body-file,
 preserving literal Markdown backticks, newlines, and shell-looking text.
 
 For close, stdin is passed to gh issue close as the closing comment.
+Large close comments are posted with gh issue comment --body-file before the
+issue is closed, because gh issue close does not support --body-file.
 USAGE
 }
 
@@ -58,6 +60,7 @@ edit)
 	;;
 close)
 	close_args=()
+	comment_args=()
 	remaining=("$@")
 	idx=0
 	while [[ "$idx" -lt "${#remaining[@]}" ]]; do
@@ -69,14 +72,17 @@ close)
 				exit 2
 			fi
 			close_args+=("$arg" "${remaining[$((idx + 1))]}")
+			comment_args+=("$arg" "${remaining[$((idx + 1))]}")
 			idx=$((idx + 2))
 			;;
 		--repo=*)
 			close_args+=("$arg")
+			comment_args+=("$arg")
 			idx=$((idx + 1))
 			;;
 		-R*)
 			close_args+=("$arg")
+			comment_args+=("$arg")
 			idx=$((idx + 1))
 			;;
 		--comment | -c)
@@ -95,6 +101,17 @@ close)
 			;;
 		esac
 	done
-	"$gh_bin" issue close "$target" --comment "$(<"$tmp_body")" "${close_args[@]}"
+	comment_arg_max="${GH_ISSUE_CLOSE_COMMENT_ARG_MAX:-32768}"
+	if [[ ! "$comment_arg_max" =~ ^[0-9]+$ ]]; then
+		echo "error: GH_ISSUE_CLOSE_COMMENT_ARG_MAX must be a non-negative integer" >&2
+		exit 2
+	fi
+	body_size="$(wc -c <"$tmp_body" | tr -d '[:space:]')"
+	if [[ "$body_size" -le "$comment_arg_max" ]]; then
+		"$gh_bin" issue close "$target" --comment "$(<"$tmp_body")" "${close_args[@]}"
+	else
+		"$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}"
+		"$gh_bin" issue close "$target" "${close_args[@]}"
+	fi
 	;;
 esac
