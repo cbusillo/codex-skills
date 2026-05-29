@@ -417,9 +417,9 @@ if [[ "$json_output" -eq 1 ]]; then
           status: (if ($lp.enabled // false) then "configured" else "disabled" end),
           enabled: ($lp.enabled // false),
           service: {
-            publicUrl: ($lp.service.publicUrl // null),
             contextUrlEnv: ($lp.service.contextUrlEnv // null),
-            operatorUrlEnv: ($lp.service.operatorUrlEnv // null)
+            operatorUrlEnv: ($lp.service.operatorUrlEnv // null),
+            localConfigExample: ($lp.service.localConfigExample // null)
           },
           context: {
             enabled: ($lp.context.enabled // false),
@@ -438,8 +438,14 @@ if [[ "$json_output" -eq 1 ]]; then
             githubActionsRunner: ($lp.mergeTrain.githubActionsRunner // null)
           },
           warnings: ([
-            if ($lp.enabled // false) and (present($lp.service.publicUrl // "") | not) then
-              {code: "missing_public_url", message: "Launchplane service.publicUrl is missing."}
+            if ($lp.enabled // false) and (($lp.service.publicUrl // null) != null) then
+              {code: "committed_service_url", message: "Launchplane service.publicUrl should not be committed; use env or private operator config for concrete service URLs."}
+            else empty end,
+            if ($lp.enabled // false) and (present($lp.service.contextUrlEnv // "") | not) then
+              {code: "missing_context_url_env", message: "Launchplane service.contextUrlEnv is missing."}
+            else empty end,
+            if ($lp.enabled // false) and (present($lp.service.operatorUrlEnv // "") | not) then
+              {code: "missing_operator_url_env", message: "Launchplane service.operatorUrlEnv is missing."}
             else empty end,
             if ($lp.context.enabled // false) and (present($lp.context.helper // "") | not) then
               {code: "missing_context_helper", message: "Launchplane context helper path is missing."}
@@ -515,7 +521,9 @@ if [[ -n "$config_path" ]]; then
       .launchplane as $lp |
       [
         "status: " + (if ($lp.enabled // false) then "configured" else "disabled" end),
-        "servicePublicUrl: " + ($lp.service.publicUrl // ""),
+        "contextUrlEnv: " + ($lp.service.contextUrlEnv // ""),
+        "operatorUrlEnv: " + ($lp.service.operatorUrlEnv // ""),
+        "localConfigExample: " + ($lp.service.localConfigExample // ""),
         "contextHelper: " + ($lp.context.helper // ""),
         "operatorHelper: " + ($lp.operator.helper // ""),
         "operatorRequiresPrivateConfig: " + (($lp.operator.requiresPrivateConfig // true) | tostring),

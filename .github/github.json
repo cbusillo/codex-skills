@@ -43,9 +43,9 @@
   "launchplane": {
     "enabled": true,
     "service": {
-      "publicUrl": "https://launchplane.shinycomputers.com",
       "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
-      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL"
+      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL",
+      "localConfigExample": "launchplane/references/launchplane-operator.local.example.json"
     },
     "context": {
       "enabled": true,

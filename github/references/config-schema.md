@@ -25,9 +25,9 @@ Repo-local values override workspace defaults.
   "launchplane": {
     "enabled": true,
     "service": {
-      "publicUrl": "https://launchplane.example.invalid",
       "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
-      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL"
+      "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL",
+      "localConfigExample": "launchplane/references/launchplane-operator.local.example.json"
     },
     "context": {
       "enabled": true,
@@ -118,10 +118,11 @@ Common top-level keys:
 - `healthUrls`: product, lane, or deploy health endpoints relevant to readiness.
 - `relatedRepos`: repos agents should consider during cross-repo work.
 - `launchplane`: public-safe routing metadata for Launchplane context,
-  operator, and merge-train surfaces. It may name public service URLs,
-  environment variable names, helper paths, workflow names, labels, and expected
-  capabilities. It must not contain tokens, cookies, secret values, private
-  credential paths, provider payloads, or plaintext runtime configuration.
+  operator, and merge-train surfaces. It may name environment variable names,
+  helper paths, workflow names, labels, local config examples, and expected
+  capabilities. It must not contain tokens, cookies, secret values, concrete
+  Launchplane service URLs, private credential paths, provider payloads, or
+  plaintext runtime configuration.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
@@ -144,10 +145,10 @@ Rules:
 - Use native GitHub dependencies and sub-issues as canonical relationships.
 - Projects are views. Do not require Project writes for planning to work.
 - Launchplane repo metadata is routing, not authorization. Context helpers may
-  use it to discover public service and helper paths, while write-capable
-  helpers still source credentials only from private operator config,
-  environment variables, GitHub Actions OIDC, or signed-in Launchplane UI
-  sessions.
+  use it to discover helper paths and the names of service URL environment
+  variables, while write-capable helpers still source concrete service URLs and
+  credentials only from private operator config, environment variables, GitHub
+  Actions OIDC, or signed-in Launchplane UI sessions.
 - Omit `launchplane` or set `launchplane.enabled` to `false` for repos that do
   not use Launchplane. Snapshot and readiness helpers should treat missing,
   disabled, unavailable, or unauthorized Launchplane access as reportable state,

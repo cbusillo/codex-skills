@@ -78,6 +78,11 @@ close)
 			close_args+=("$arg")
 			idx=$((idx + 1))
 			;;
+		-R*)
+			comment_args+=("$arg")
+			close_args+=("$arg")
+			idx=$((idx + 1))
+			;;
 		--comment | -c)
 			if [[ "$((idx + 1))" -ge "${#remaining[@]}" ]]; then
 				echo "error: $arg requires a value" >&2
@@ -85,7 +90,7 @@ close)
 			fi
 			idx=$((idx + 2))
 			;;
-		--comment=*)
+		--comment=* | -c*)
 			idx=$((idx + 1))
 			;;
 		*)

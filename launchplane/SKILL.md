@@ -17,10 +17,10 @@ Launchplane manages that resource.
 When a repo has `.github/github.json`, inspect its `launchplane` block before
 looking in sibling repos, archived workstation files, or workflow variables. The
 repo block is public-safe routing metadata only: it may name helper paths,
-public service URLs, environment variable names, merge-train labels, and
-GitHub Actions workflow entrypoints. It must not contain tokens, secret values,
-cookies, private credential paths, provider payloads, or plaintext runtime
-configuration.
+environment variable names for service URLs, local config examples,
+merge-train labels, and GitHub Actions workflow entrypoints. It must not
+contain tokens, secret values, cookies, concrete Launchplane service URLs,
+private credential paths, provider payloads, or plaintext runtime configuration.
 
 ## Core Goal
 
@@ -61,9 +61,10 @@ Mutate runtime environments, managed secrets, and product config.
   is unavailable and must fail closed; do not use `.github/github.override.json`
   for Launchplane credentials.
 - **Repo Metadata**: Use `.github/github.json` `launchplane` metadata to find
-  the intended public route or workflow, but keep credentials in private
-  operator config, environment variables, GitHub Actions OIDC, or signed-in
-  Launchplane UI sessions.
+  helper paths, workflow entrypoints, labels, and service URL env var names, but
+  keep concrete service URLs and credentials in private operator config,
+  environment variables, GitHub Actions OIDC, or signed-in Launchplane UI
+  sessions.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
