@@ -130,7 +130,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account rate-limited-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: automation gh token failed; retrying with active gh auth' "$stderr_log"
+grep -q 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account' "$stderr_log"
 grep -q 'gh auth status (automation token):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
@@ -140,7 +140,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	"$repo_root/github/scripts/gh-with-env-token" invalid-token-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: automation gh token failed; retrying with active gh auth' "$stderr_log"
+grep -q 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -148,7 +148,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account active-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: no automation gh token found; using active gh auth' "$stderr_log"
+grep -q 'warning: no automation gh token found; using active gh auth; GitHub writes may appear as the active account' "$stderr_log"
 grep -q 'gh auth status (active gh auth):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
@@ -387,7 +387,7 @@ fi
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'warning: automation gh token failed; retrying with active gh auth\n' >&2
+printf 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account\n' >&2
 case "${1:-} ${2:-}" in
 	'api --method')
 		case "$*" in

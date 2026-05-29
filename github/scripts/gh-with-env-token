@@ -45,7 +45,7 @@ is_auth_failed() {
 
 retry_with_active_auth() {
 	cat "$stderr_file" >&2
-	echo "warning: automation gh token failed; retrying with active gh auth" >&2
+	echo "warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
@@ -59,7 +59,7 @@ print_account() {
 }
 
 if [ -z "${GH_TOKEN:-}" ]; then
-	echo "warning: no automation gh token found; using active gh auth" >&2
+	echo "warning: no automation gh token found; using active gh auth; GitHub writes may appear as the active account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		echo "gh auth status (active gh auth):" >&2
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
