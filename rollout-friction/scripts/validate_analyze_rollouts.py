@@ -110,6 +110,154 @@ def test_auto_review_valid_finding_signal() -> None:
     )
 
 
+def test_skill_guidance_does_not_count_as_github_rate_limit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "Friction signal guidance: GitHub REST or GraphQL rate-limit pressure should be classified if observed."
+                    },
+                }
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"skill guidance should not count as live rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_helper_doc_dump_does_not_count_as_github_rate_limit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "--- name: github description: Comprehensive GitHub Expert persona; use gh helper when GraphQL rate limit pressure appears."
+                    },
+                }
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"github_graphql_rate_limit", "generic_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"helper docs should not count as live rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_github_plan_doc_dump_does_not_count_as_github_rate_limit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "--- name: github-plan description: Use when creating GitHub issues. Local Conventions: helper is REST-first for normal PR orientation. Before batching those operations, check rate limits when failures look quota-related. If GraphQL is exhausted but REST still works, prefer REST."
+                    },
+                }
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"github_graphql_rate_limit", "generic_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"github-plan docs should not count as live rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_auth_login_noise_is_classified_without_generic_failure() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "remote control enrollment failed: Multi-factor authentication required; process exited with code 1"
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "remote control login recovered after logout/restart; process exited with code 1"
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "refresh_token_reused caused Authentication expired; process exited with code 1"
+                    },
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auth_login_loop" not in findings:
+        raise AssertionError("auth/login loops should be classified explicitly")
+    if "repeated_command_failure" in findings:
+        raise AssertionError("auth/login loops should not inflate repeated command failures")
+
+
+def test_nominal_remote_control_enrollment_is_not_auth_loop() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "creating new remote control enrollment: enroll_url=https://example.invalid/enroll"
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "remote control status changed to connecting"
+                    },
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auth_login_loop" in findings:
+        raise AssertionError("nominal remote-control enrollment logs should not count as auth loops")
+
+
+def test_local_llm_scout_timeout_signal() -> None:
+    assert_signals(
+        ["LM Studio local LLM private scout timed out before returning suggestions."],
+        {"local_llm_scout_timeout"},
+    )
+
+
+def test_local_llm_scout_misuse_risk_signal() -> None:
+    assert_signals(
+        ["LM Studio local LLM private scout asked for raw traces and tried to decide policy routing."],
+        {"local_llm_scout_misuse_risk"},
+    )
+
+
+def test_lm_studio_scout_strips_channel_wrappers() -> None:
+    scout_script = Path(__file__).with_name("lm_studio_scout.py")
+    spec = importlib.util.spec_from_file_location("lm_studio_scout", scout_script)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load lm_studio_scout.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    normalized = module.normalize_content(
+        '<|channel|>final <|constrain|>JSON<|message|>{"ok":true}'
+    )
+    if normalized != '{"ok":true}':
+        raise AssertionError(f"unexpected normalized scout content: {normalized!r}")
+
+
 def test_nested_json_fragments_count_once_per_line() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
