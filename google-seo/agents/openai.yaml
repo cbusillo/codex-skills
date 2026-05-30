@@ -1,0 +1,7 @@
+interface:
+  display_name: "Google SEO"
+  short_description: "Search Console, PageSpeed, and SEO checks"
+  default_prompt: "Use $google-seo to pull Search Console data, run PageSpeed checks, and summarize SEO priorities."
+
+policy:
+  allow_implicit_invocation: true
