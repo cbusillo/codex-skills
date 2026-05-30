@@ -90,8 +90,8 @@ sections needed for the task:
 - technical constraints: framework, component system, styling system, assets,
   browser/device requirements, and things that cannot change
 - visual direction: brand cues, references, things to avoid, style freedom, and
-  product-specific assets or iconography that reflect what the product does and
-  is called rather than generic marks
+  product-specific assets or iconography tied to the product name, domain, and
+  purpose rather than generic marks
 - accessibility and usability needs: keyboard/touch, contrast/readability,
   motion sensitivity, density, and scanning needs
 - requested response format: summary, hierarchy, tokens, state notes,
@@ -124,9 +124,9 @@ Do not blindly trust returned UI/design output.
 - Update `Decisions`, `Acceptance Criteria`, `Validation`, and `Current Status`
   instead of leaving conclusions only in chat.
 - Use `browser-ui-review` after implementation and attach or reference browser
-  evidence before signoff. Finish passes should leave reviewable proof for key
-  states, accessibility basics, responsive behavior, and destructive-action
-  safety when relevant.
+  evidence before signoff.
+- Finish passes should leave reviewable proof for key states, accessibility
+  basics, responsive behavior, and destructive-action safety when relevant.
 
 ## Repo Documentation Boundary
 
