@@ -155,8 +155,7 @@ def http_json(
             payload = response.read().decode("utf-8")
             return json.loads(payload) if payload else {}
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        fail(f"HTTP {exc.code} from {url}: {detail}")
+        fail(f"HTTP {exc.code} from {url}; response detail omitted")
     except urllib.error.URLError as exc:
         fail(f"request failed for {url}: {exc.reason}")
 
@@ -176,8 +175,7 @@ def token_request(params: dict[str, str]) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        fail(f"OAuth token request failed with HTTP {exc.code}: {detail}")
+        fail(f"OAuth token request failed with HTTP {exc.code}; response detail omitted")
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
@@ -260,7 +258,7 @@ def access_token() -> str:
     atomic_json(TOKEN_PATH, token_data)
     access_token_value = refreshed.get("access_token")
     if not access_token_value:
-        fail(f"OAuth refresh response did not include an access token: {refreshed}")
+        fail("OAuth refresh response did not include an access token")
     return str(access_token_value)
 
 
