@@ -181,6 +181,36 @@ def validate_openai_yaml(skill_dir: Path) -> list[str]:
     return errors
 
 
+def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
+    frontmatter = read_frontmatter(skill_dir / "SKILL.md")
+    policy = frontmatter.get("policy")
+    if not isinstance(policy, dict):
+        return []
+    command_policies = policy.get("command_policies")
+    if not isinstance(command_policies, list):
+        return []
+
+    errors: list[str] = []
+    skill_md = skill_dir / "SKILL.md"
+    for policy_index, command_policy in enumerate(command_policies):
+        if not isinstance(command_policy, dict):
+            continue
+        preferred = command_policy.get("preferred")
+        if not isinstance(preferred, list):
+            continue
+        for preferred_index, entry in enumerate(preferred):
+            if not isinstance(entry, dict):
+                continue
+            raw = entry.get("path")
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            if not (skill_dir / raw).exists():
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].path points to missing {raw}"
+                )
+    return errors
+
+
 def validate_referenced_paths(skill_dir: Path) -> list[str]:
     skill_md = skill_dir / "SKILL.md"
     lines = skill_md.read_text().splitlines()
@@ -237,6 +267,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
         )
 
     errors.extend(validate_referenced_paths(skill_dir))
+    errors.extend(validate_skill_command_policy_paths(skill_dir))
     errors.extend(validate_openai_yaml(skill_dir))
     errors.extend(validate_python_script_metadata(skill_dir))
     return errors
