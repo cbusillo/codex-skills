@@ -9,9 +9,44 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from typing import Any
+
+
+REDACTED = "[redacted]"
+SENSITIVE_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "client_secret",
+    "clientsecret",
+    "key_string",
+    "keystring",
+    "password",
+    "private_key",
+    "privatekey",
+    "refresh_token",
+    "refreshtoken",
+    "secret",
+    "token",
+}
+
+
+def normalized_key(key: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+def redacted(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if normalized_key(key) in SENSITIVE_KEYS else redacted(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redacted(item) for item in value]
+    return value
 
 
 def run_gcloud(args: list[str], *, allow_failure: bool = False) -> Any:
@@ -146,7 +181,7 @@ def main() -> None:
         "activeAccount": active_account(),
         "projects": [project_inventory(project_id) for project_id in projects],
     }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(redacted(payload), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

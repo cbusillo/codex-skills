@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -29,10 +30,47 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_ROOT = "https://searchconsole.googleapis.com/webmasters/v3"
 INSPECTION_ROOT = "https://searchconsole.googleapis.com/v1"
+REDACTED = "[redacted]"
+SENSITIVE_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "client_secret",
+    "clientsecret",
+    "key_string",
+    "keystring",
+    "password",
+    "private_key",
+    "privatekey",
+    "refresh_token",
+    "refreshtoken",
+    "secret",
+    "token",
+}
+
+
+def normalized_key(key: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+def redacted(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if normalized_key(key) in SENSITIVE_KEYS else redacted(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redacted(item) for item in value]
+    return value
+
+
+def print_json(data: Any) -> None:
+    print(json.dumps(redacted(data), indent=2, sort_keys=True))
 
 
 def fail(message: str, code: int = 1) -> None:
-    print(f"error: {message}", file=sys.stderr)
+    safe_message = str(redacted({"message": message})["message"])
+    print(f"error: {safe_message}", file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -153,7 +191,7 @@ def cmd_status(_args: argparse.Namespace) -> None:
         "token_configured": TOKEN_PATH.exists(),
         "scope": SCOPES[0],
     }
-    print(json.dumps(status, indent=2, sort_keys=True))
+    print_json(status)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -238,13 +276,13 @@ def site_url(value: str) -> str:
 
 def cmd_sites(_args: argparse.Namespace) -> None:
     data = http_json(f"{API_ROOT}/sites", token=access_token())
-    print(json.dumps(data, indent=2, sort_keys=True))
+    print_json(data)
 
 
 def cmd_sitemaps(args: argparse.Namespace) -> None:
     site = urllib.parse.quote(site_url(args.site), safe="")
     data = http_json(f"{API_ROOT}/sites/{site}/sitemaps", token=access_token())
-    print(json.dumps(data, indent=2, sort_keys=True))
+    print_json(data)
 
 
 def cmd_search_analytics(args: argparse.Namespace) -> None:
@@ -275,7 +313,7 @@ def cmd_search_analytics(args: argparse.Namespace) -> None:
         data=body,
     )
     if args.format == "json":
-        print(json.dumps(data, indent=2, sort_keys=True))
+        print_json(data)
         return
 
     writer = csv.writer(sys.stdout)
@@ -300,7 +338,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         token=access_token(),
         data=body,
     )
-    print(json.dumps(data, indent=2, sort_keys=True))
+    print_json(data)
 
 
 def parser() -> argparse.ArgumentParser:
