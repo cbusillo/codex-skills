@@ -199,7 +199,7 @@ def main() -> None:
             public_project(project_inventory(project_id)) for project_id in projects
         ],
     }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(payload, indent=2, sort_keys=True))  # lgtm[py/clear-text-logging-sensitive-data]
 
 
 if __name__ == "__main__":
