@@ -3,6 +3,82 @@ name: github
 description: "Comprehensive GitHub Expert persona for repository execution and hygiene: PRs, branches, Actions, reviews, merge/deploy state, issue comments, and safe cleanup. For durable planning, roadmaps, blockers, Projects, or workstream graphs, use github-plan."
 metadata:
   short-description: Execute GitHub repo workflows
+policy:
+  command_policies:
+    - id: prefer-gh-pr-create-helper
+      match:
+        argv_prefix: ["gh", "pr", "create"]
+      action: require_preferred
+      message: Raw `gh pr create` uses the active local GitHub account and is fragile for multiline Markdown. Use the GitHub helper-backed PR create path.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["scripts/gh-pr.py", "create", "--title", "<title>", "--body-file", "<file>"]
+          purpose: Creates PRs through the configured automation token and preserves body formatting.
+    - id: prefer-gh-pr-edit-helper
+      match:
+        argv_prefix: ["gh", "pr", "edit"]
+      action: require_preferred
+      message: Raw `gh pr edit` uses the active local GitHub account and can mangle body text. Use the GitHub helper-backed PR edit path.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["scripts/gh-pr.py", "edit", "<pr>", "--body-file", "<file>"]
+          purpose: Edits PR metadata or body through the configured automation token and safe body-file handling.
+    - id: prefer-gh-pr-comment-helper
+      match:
+        argv_prefix: ["gh", "pr", "comment"]
+      action: require_preferred
+      message: Raw `gh pr comment` is easy to quote incorrectly and may use the active local account. Use the GitHub helper-backed PR comment path.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["scripts/gh-pr.py", "comment", "<pr>", "--body-file", "<file>"]
+          purpose: Posts PR comments with safe Markdown/body-file handling.
+        - kind: script
+          path: scripts/gh-comment
+          example_argv: ["scripts/gh-comment", "pr", "<pr>"]
+          purpose: Reads comment Markdown from stdin and posts it safely.
+    - id: prefer-gh-pr-merge-helper
+      match:
+        argv_prefix: ["gh", "pr", "merge"]
+      action: require_preferred
+      message: Raw `gh pr merge` bypasses the helper's merge defaults, branch cleanup, and token handling. Use the GitHub helper-backed merge path.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["scripts/gh-pr.py", "merge", "<pr>", "--method", "merge", "--delete-branch"]
+          purpose: Performs the approved merge through the REST helper with normalized defaults and optional branch cleanup.
+    - id: prefer-gh-issue-create-helper
+      match:
+        argv_prefix: ["gh", "issue", "create"]
+      action: require_preferred
+      message: Raw `gh issue create` is fragile for multiline Markdown. Use the GitHub issue helper so the body is read safely from stdin.
+      preferred:
+        - kind: script
+          path: scripts/gh-issue
+          example_argv: ["scripts/gh-issue", "create", "<title>"]
+          purpose: Creates issues with safe body-file handling.
+    - id: prefer-gh-issue-edit-helper
+      match:
+        argv_prefix: ["gh", "issue", "edit"]
+      action: require_preferred
+      message: Raw `gh issue edit` can mangle multiline issue bodies. Use the GitHub issue helper for body updates.
+      preferred:
+        - kind: script
+          path: scripts/gh-issue
+          example_argv: ["scripts/gh-issue", "edit", "<issue>"]
+          purpose: Edits issues with safe body-file handling.
+    - id: prefer-gh-issue-close-helper
+      match:
+        argv_prefix: ["gh", "issue", "close"]
+      action: require_preferred
+      message: Raw `gh issue close` can mangle close comments. Use the GitHub issue helper so close comments preserve Markdown.
+      preferred:
+        - kind: script
+          path: scripts/gh-issue
+          example_argv: ["scripts/gh-issue", "close", "<issue>"]
+          purpose: Closes issues with safe close-comment handling.
 ---
 
 # GitHub Expert
@@ -34,19 +110,12 @@ current behavior, configuration, or operational policy.
 
 Use PRs for all non-trivial code changes.
 
-Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
-GitHub account. For normal agent PR writes, use `scripts/gh-pr.py create`,
-`scripts/gh-pr.py edit`, and `scripts/gh-pr.py comment`, or `scripts/gh-comment
-pr` for timeline comments. These helper-backed paths route through
-`scripts/gh-with-env-token` so the configured automation token authors the
-write by default.
-
 Use the bundled `gh-*` and `github-*` helper scripts first for GitHub work. The
-helpers are the agent-facing interface for this skill: they keep common flows
-ergonomic, normalize output for LLM consumption, protect Markdown/body
-formatting, centralize retry and auth behavior, and give us one controlled place
-to improve GitHub workflows. Reach for raw `gh` only when no helper covers the
-operation, and route those calls through `scripts/gh-with-env-token`.
+machine-readable `policy.command_policies` frontmatter owns the common raw `gh`
+write-to-helper mapping; this prose keeps the judgment around branch discipline,
+merge method, formatting, verification, and exceptions. Reach for raw `gh` only
+when no helper covers the operation, and route those calls through
+`scripts/gh-with-env-token`.
 
 - **Branch Discipline**: Protect default, shared, release, and production
   branches. Create focused task branches before editing when currently on a

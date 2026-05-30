@@ -64,7 +64,7 @@ skill-name/
 │   │   ├── name: (required)
 │   │   ├── description: (required)
 │   │   ├── metadata.short-description: (optional)
-│   │   └── policy.allow_implicit_invocation: (optional)
+│   │   └── policy: allow_implicit_invocation and command_policies (optional)
 │   └── Markdown instructions (required)
 ├── agents/ (recommended)
 │   └── openai.yaml - UI metadata for skill lists and chips
@@ -80,6 +80,35 @@ Every SKILL.md consists of:
 
 - **Frontmatter** (YAML): Contains `name` and `description` fields. `description` is the full model-visible trigger/routing text. Optional `metadata.short-description` provides compact human-facing listing text, and optional `policy.allow_implicit_invocation: false` marks a skill as manual-only.
 - **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
+
+##### Command policies
+
+When a skill owns a fragile or preferred command workflow, put the machine-readable
+mapping in `policy.command_policies` instead of relying only on prose. Keep prose
+for judgment, sequencing, and exceptions.
+
+Use command policies for common raw-command-to-helper cases, especially when raw
+commands are fragile around auth, multiline Markdown, quoting, retries, cleanup,
+or normalized output.
+
+```yaml
+policy:
+  command_policies:
+    - id: prefer-helper
+      match:
+        argv_prefix: ["tool", "subcommand"]
+      action: require_preferred
+      message: Prefer the bundled helper for this workflow.
+      preferred:
+        - kind: script
+          path: scripts/helper.py
+          example_argv: ["scripts/helper.py", "subcommand", "<target>"]
+          purpose: Runs the workflow through the maintained helper.
+```
+
+Supported matchers are `argv_exact`, `argv_prefix`, and `shell_regex`; declare
+exactly one. Supported actions are `require_preferred`, `require_confirm`, and
+`reject`. Preferred entries may name `script`, `skill`, or `command` actions.
 
 #### Agents metadata (recommended)
 
