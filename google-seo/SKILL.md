@@ -82,7 +82,7 @@ For URL-prefix properties, pass the full prefix URL.
 
 When the user has multiple confusing Google Cloud projects:
 
-1. Prefer `uv run scripts/google-cloud-inventory.py` when `gcloud` is installed
+1. Prefer `scripts/google-cloud-inventory.sh` when `gcloud` is installed
    and authenticated. Use browser access for UI-only OAuth consent/client setup.
 2. Inventory projects, billing state, enabled APIs, OAuth clients, service
    accounts, API keys, and recent activity.
