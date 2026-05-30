@@ -91,6 +91,23 @@ Use command policies for common raw-command-to-helper cases, especially when raw
 commands are fragile around auth, multiline Markdown, quoting, retries, cleanup,
 or normalized output.
 
+Choose one canonical owner for each raw command path. If sibling skills care
+about the same command, put the policy on the skill that owns the workflow and
+have the other skills reference that owner in prose. Do not copy the same matcher
+into multiple skills just to restate shared guidance.
+
+When multiple loaded policies match a command, Every Code selects the primary
+policy by matcher specificity (`argv_exact`, then `argv_prefix`, then
+`shell_regex`), longer argv matcher, and stable skill load/declaration order.
+The guard still lists lower-priority matched policies with their action and
+warning, and de-duplicates identical preferred actions. Keep matchers as narrow
+as the workflow allows; broad prefixes are appropriate only when the skill truly
+owns the whole command family.
+
+`argv_exact` and `argv_prefix` match tokenized command arguments. Use
+`shell_regex` for wildcard-like shell-script situations, compound commands, or
+patterns that cannot be represented as a token prefix.
+
 ```yaml
 policy:
   command_policies:
