@@ -67,8 +67,11 @@ def print_json(data: Any) -> None:
     print(json.dumps(redacted(data), indent=2, sort_keys=True))
 
 
-def fail(message: str, code: int = 1) -> None:
-    print(f"error: {redacted(message)}", file=sys.stderr)
+def fail(message: str, code: int = 1, *, public: bool = True) -> None:
+    if public:
+        print(f"error: {message}", file=sys.stderr)
+    else:
+        print("error: Google SEO helper command failed", file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -155,9 +158,9 @@ def http_json(
             payload = response.read().decode("utf-8")
             return json.loads(payload) if payload else {}
     except urllib.error.HTTPError as exc:
-        fail(f"HTTP {exc.code} from {url}; response detail omitted")
+        fail(f"HTTP {exc.code} from {url}; response detail omitted", public=False)
     except urllib.error.URLError as exc:
-        fail(f"request failed for {url}: {exc.reason}")
+        fail(f"request failed for {url}; reason omitted", public=False)
 
 
 def token_request(params: dict[str, str]) -> dict[str, Any]:
@@ -175,7 +178,10 @@ def token_request(params: dict[str, str]) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        fail(f"OAuth token request failed with HTTP {exc.code}; response detail omitted")
+        fail(
+            f"OAuth token request failed with HTTP {exc.code}; response detail omitted",
+            public=False,
+        )
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
@@ -219,7 +225,7 @@ def cmd_auth(_args: argparse.Namespace) -> None:
     server.handle_request()
 
     if server.oauth_error:
-        fail(f"OAuth error: {server.oauth_error}")
+        fail("OAuth provider returned an error; detail omitted", public=False)
     if not server.oauth_code:
         fail("OAuth flow did not return an authorization code")
 
@@ -258,7 +264,7 @@ def access_token() -> str:
     atomic_json(TOKEN_PATH, token_data)
     access_token_value = refreshed.get("access_token")
     if not access_token_value:
-        fail("OAuth refresh response did not include an access token")
+        fail("OAuth refresh response did not include an access token", public=False)
     return str(access_token_value)
 
 
