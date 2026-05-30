@@ -3,6 +3,22 @@ name: jetbrains-inspection
 description: Use JetBrains IDE inspections through the local inspection plugin; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
+policy:
+  command_policies:
+    - id: prefer-jb-inspect-for-plugin-http
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b(127\\.0\\.0\\.1|localhost)[:/]\\S*/(api/)?inspection\\b"
+      action: require_preferred
+      message: Direct HTTP calls to the JetBrains inspection plugin bypass route resolution, worktree safety, stale-result handling, lifecycle locking, and cleanup. Use the inspection helper instead.
+      preferred:
+        - kind: script
+          path: scripts/jb-inspect.py
+          example_argv: ["uv", "run", "scripts/jb-inspect.py", "closeout", "--repo", "$PWD", "--scope", "changed_files"]
+          purpose: Runs the readiness inspection flow with route safety, lifecycle cleanup, and stale-result checks.
+        - kind: script
+          path: scripts/jb-inspect.py
+          example_argv: ["uv", "run", "scripts/jb-inspect.py", "status", "--repo", "$PWD"]
+          purpose: Reads route-pinned plugin status through the helper.
 ---
 
 # JetBrains Inspection
