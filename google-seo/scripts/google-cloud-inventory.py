@@ -49,6 +49,22 @@ def redacted(value: Any) -> Any:
     return value
 
 
+def public_project(project: dict[str, Any]) -> dict[str, Any]:
+    billing = project.get("billing")
+    return {
+        "projectId": project.get("projectId"),
+        "billingEnabled": billing.get("billingEnabled")
+        if isinstance(billing, dict)
+        else None,
+        "enabledServices": project.get("enabledServices"),
+        "serviceAccounts": project.get("serviceAccounts"),
+        "apiKeys": project.get("apiKeys"),
+        "iamBindingCount": len(project.get("iamBindings", []))
+        if isinstance(project.get("iamBindings"), list)
+        else None,
+    }
+
+
 def run_gcloud(args: list[str], *, allow_failure: bool = False) -> Any:
     command = ["gcloud", *args]
     completed = subprocess.run(
@@ -179,10 +195,11 @@ def main() -> None:
     ]
     payload = {
         "activeAccount": active_account(),
-        "projects": [project_inventory(project_id) for project_id in projects],
+        "projects": [
+            public_project(project_inventory(project_id)) for project_id in projects
+        ],
     }
-    # codeql[py/clear-text-logging-sensitive-data]
-    print(json.dumps(redacted(payload), indent=2, sort_keys=True))
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
