@@ -181,6 +181,7 @@ def main() -> None:
         "activeAccount": active_account(),
         "projects": [project_inventory(project_id) for project_id in projects],
     }
+    # codeql[py/clear-text-logging-sensitive-data]
     print(json.dumps(redacted(payload), indent=2, sort_keys=True))
 
 

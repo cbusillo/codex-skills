@@ -70,6 +70,7 @@ def print_json(data: Any) -> None:
 
 def fail(message: str, code: int = 1) -> None:
     safe_message = str(redacted({"message": message})["message"])
+    # codeql[py/clear-text-logging-sensitive-data]
     print(f"error: {safe_message}", file=sys.stderr)
     raise SystemExit(code)
 
