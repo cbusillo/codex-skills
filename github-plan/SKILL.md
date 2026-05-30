@@ -3,6 +3,60 @@ name: github-plan
 description: Use when the user asks for a plan, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, cross-repo blockers, milestones, Projects, or replacing local plans with GitHub issues. Think in chat first, then promote durable plans to GitHub with parent issues, sub-issues, blockers, and compact scripted lookups.
 metadata:
   short-description: Plan durable work in GitHub issues
+policy:
+  command_policies:
+    - id: prefer-gh-plan-index-for-issue-list
+      match:
+        argv_prefix: ["gh", "issue", "list"]
+      action: require_preferred
+      message: Raw `gh issue list` misses the planning helper's compact fields, label defaults, and dependency summaries. Use the GitHub plan helper for planning issue indexes.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "index"]
+          purpose: Lists durable planning issues with compact status, labels, dependency, and sub-issue fields.
+    - id: prefer-gh-plan-search-for-issue-search
+      match:
+        argv_prefix: ["gh", "search", "issues"]
+      action: require_preferred
+      message: Raw `gh search issues` skips the planning helper's normalized output and stale/duplicate plan cues. Use the GitHub plan helper for planning discovery.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "search", "<query>"]
+          purpose: Searches planning issues with compact normalized output and state handling.
+    - id: prefer-gh-plan-helper-for-project-commands
+      match:
+        argv_prefix: ["gh", "project"]
+      action: require_preferred
+      message: Raw `gh project` commands bypass planning config, rate-limit checks, and Project field normalization. Use the GitHub plan helper for planning Project operations.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "project-list", "--owner", "<owner>"]
+          purpose: Lists configured Projects with compact JSON.
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "project-add", "<issue>"]
+          purpose: Adds a planning issue to the configured Project.
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
+          purpose: Updates planning Project fields through configured names and values.
+    - id: prefer-gh-plan-helper-for-planning-graphql
+      match:
+        shell_regex: "\\bgh\\s+api\\s+graphql\\b.*\\b(updateProjectV2ItemFieldValue|addProjectV2ItemById|deleteProjectV2Item|addSubIssue|removeSubIssue|createLinkedBranch|markIssueAsDuplicate)\\b"
+      action: require_preferred
+      message: Raw planning GraphQL mutations are easy to leave half-applied and usually skip helper-owned recovery behavior. Use the GitHub plan helper for Project and relationship changes.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+          purpose: Updates Project fields with helper-owned config and rate-limit handling.
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["../github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
+          purpose: Creates native planning relationships through the helper.
 ---
 
 # GitHub Plan
@@ -68,6 +122,11 @@ Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 If the helpers are unavailable, use `gh` directly with body files and compact
 JSON reads. Do not fall back to repo docs or local plan files for durable
 GitHub-backed planning.
+
+The machine-readable `policy.command_policies` frontmatter owns common raw
+planning lookup, Project, and GraphQL-to-helper mappings. This prose keeps the
+judgment about when durable planning should exist, how issues relate, and what
+state belongs in GitHub.
 
 For close comments, use `../github/scripts/gh-issue close` so stdin is passed
 through a formatting-safe close path. For other multiline writes, prefer body
