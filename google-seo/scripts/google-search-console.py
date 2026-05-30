@@ -31,19 +31,15 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_ROOT = "https://searchconsole.googleapis.com/webmasters/v3"
 INSPECTION_ROOT = "https://searchconsole.googleapis.com/v1"
 REDACTED = "[redacted]"
-SENSITIVE_KEYS = {
+RAW_SENSITIVE_KEYS = {
     "access_token",
     "api_key",
     "authorization",
     "client_secret",
-    "clientsecret",
     "key_string",
-    "keystring",
     "password",
     "private_key",
-    "privatekey",
     "refresh_token",
-    "refreshtoken",
     "secret",
     "token",
 }
@@ -51,6 +47,9 @@ SENSITIVE_KEYS = {
 
 def normalized_key(key: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+SENSITIVE_KEYS = {normalized_key(key) for key in RAW_SENSITIVE_KEYS}
 
 
 def redacted(value: Any) -> Any:
@@ -69,8 +68,7 @@ def print_json(data: Any) -> None:
 
 
 def fail(message: str, code: int = 1) -> None:
-    _ = message
-    print("error: Google SEO helper command failed", file=sys.stderr)
+    print(f"error: {redacted(message)}", file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -82,9 +80,7 @@ def ensure_config_dir() -> None:
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
     ensure_config_dir()
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.open("w", encoding="utf-8").write(
-        json.dumps(data, indent=2, sort_keys=True) + "\n"
-    )
+    tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     os.chmod(tmp_path, 0o600)
     tmp_path.replace(path)
 
@@ -262,7 +258,10 @@ def access_token() -> str:
     token_data.update(refreshed)
     token_data["refresh_token"] = refresh_token
     atomic_json(TOKEN_PATH, token_data)
-    return refreshed["access_token"]
+    access_token_value = refreshed.get("access_token")
+    if not access_token_value:
+        fail(f"OAuth refresh response did not include an access token: {refreshed}")
+    return str(access_token_value)
 
 
 def site_url(value: str) -> str:
