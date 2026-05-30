@@ -64,6 +64,12 @@ META_ECHO_RE = re.compile(
     r"\"findings\"\s*:\s*\[\s*\{\s*\"title\"\s*:\s*\"\[P\d\]|"
     r"\b(recommended_destination|likely_cause|scanned_files)\b|"
     r"\b(signal|severity|category|evidence)\b[^\n]{0,160}\b(recommended_destination|likely_cause)\b|"
+    r"\b(GitHub REST or GraphQL rate-limit pressure|GitHub REST usage also hit quota|"
+    r"A workflow likely used GraphQL-heavy GitHub commands|rate-limit pressure\b[^\n]{0,160}\bskill)\b|"
+    r"---\s*name:\s*github\s+description:[^\n]{0,240}\b(GraphQL|rate limit)\b|"
+    r"---\s*name:\s*github-plan\s+description:[^\n]{0,1200}\b(GraphQL|rate limit)\b|"
+    r"\b(comprehensive GitHub Expert persona|gh helper|GitHub helper)\b[^\n]{0,240}\b(GraphQL|rate limit)\b|"
+    r"\b(helper is REST-first|Before batching those operations, check rate limits)\b|"
     r"^\s*---\s*(?:\\n|\s)+name:\s+[a-z0-9_-]+\s*(?:\\n|\s)+description:|"
     r"^\s*\([^\n]{0,80}error\|failed\|blocked\|timeout\|timed out\|rate limit\|GraphQL\|retry|"
     r"^I used `rollout-friction` read-only\.|"
@@ -76,6 +82,14 @@ INVESTIGATION_NOISE_RE = re.compile(
     r"\b(GraphQL|rate limit|error|failed|blocked|timeout|grep|pattern|signal)\b|"
     r"\bgrep\b[^\n]{0,160}\b(GraphQL|rate limit|error|failed|blocked|timeout)\b|"
     r"\bassistant\b[^\n]{0,160}\b(discussion|summary|mentioned|investigation)\b",
+    re.I,
+)
+AUTH_LOGIN_NOISE_RE = re.compile(
+    r"\b("
+    r"remote control|refresh_token_reused|Authentication expired|token_revoked|"
+    r"Multi-factor authentication required|auth recovery|login problem|"
+    r"logout/restart|iPhone now shows"
+    r")\b",
     re.I,
 )
 INTERESTING_JSON_KEYS = (
@@ -238,6 +252,20 @@ SIGNALS: list[Signal] = [
         threshold=2,
     ),
     Signal(
+        "auth_login_loop",
+        "medium",
+        "environment-friction",
+        re.compile(
+            r"refresh_token_reused|Authentication expired|token_revoked|"
+            r"Multi-factor authentication required|auth recovery|"
+            r"remote control[^\n]{0,160}(failed|forbidden|expired|revoked|reused|auth recovery|authentication required|login problem)",
+            re.I,
+        ),
+        "move-to-local-config",
+        "Login or account state explained apparent tool failures; keep private details local unless a reusable diagnostic would prevent repeated investigation.",
+        threshold=2,
+    ),
+    Signal(
         "auto_review_loop",
         "high",
         "review-friction",
@@ -336,6 +364,25 @@ SIGNALS: list[Signal] = [
         re.compile(r"Repetition detected|stuck state|duplicate items|high prompt growth|context drift", re.I),
         "fix-harness",
         "The runtime or transcript indicated loop/stuck behavior; inspect session metrics and prompts.",
+    ),
+    Signal(
+        "local_llm_scout_timeout",
+        "low",
+        "agent-loop",
+        re.compile(r"\b(LM Studio|local LLM|private scout|scout)\b[^\n]{0,180}\b(timeout|timed out)", re.I),
+        "ignore-noise",
+        "A local model scout timed out; treat this as expected optional-tool friction unless repeated timeouts require benchmark or preload guidance.",
+    ),
+    Signal(
+        "local_llm_scout_misuse_risk",
+        "medium",
+        "agent-loop",
+        re.compile(
+            r"\b(LM Studio|local LLM|private scout|scout)\b[^\n]{0,180}\b(raw traces|routing|policy|promotion|drift|unbounded)",
+            re.I,
+        ),
+        "promote-to-skill",
+        "A local model scout appeared to cross advisory boundaries; promote guardrails, not private trace details.",
     ),
 ]
 
@@ -636,7 +683,18 @@ def scan(
                 continue
             if suppress_investigation_noise and not is_structured and is_investigation_noise(text):
                 continue
+            matched_auth_login_noise = bool(AUTH_LOGIN_NOISE_RE.search(text))
             for signal in SIGNALS:
+                if matched_auth_login_noise and signal.name in {
+                    "github_graphql_rate_limit",
+                    "github_rest_rate_limit",
+                    "repeated_command_failure",
+                    "missing_dependency_or_tool",
+                    "generic_rate_limit",
+                }:
+                    continue
+                if signal.name == "auth_login_loop" and not matched_auth_login_noise:
+                    continue
                 canonical_text = canonical_hit_text(text)
                 for occurrence, _match in enumerate(signal.pattern.finditer(text)):
                     line_signal_key = (path, line_no, signal.name)
