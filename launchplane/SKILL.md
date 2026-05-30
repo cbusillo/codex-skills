@@ -3,6 +3,46 @@ name: launchplane
 description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, and audited operator mutations. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
 metadata:
   short-description: Operate Launchplane-managed state
+policy:
+  command_policies:
+    - id: prefer-launchplane-write-helper-for-product-config-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
+      action: require_preferred
+      message: Raw Launchplane product-config API calls bypass helper-owned dry-run/apply discipline, redaction, private config sourcing, and traceable operator output. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-preflight", "--help"]
+          purpose: Preflights product-config intent through the bounded helper path.
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-dry-run", "--payload-file", "<file>"]
+          purpose: Performs redacted product-config dry-run before any apply.
+    - id: prefer-launchplane-write-helper-for-merge-train-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/work-graph/merge-train/controller/run-once\\b"
+      action: require_preferred
+      message: Raw Launchplane merge-train controller calls bypass helper-owned config, idempotency, redacted output, and phase evidence. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--help"]
+          purpose: Advances the merge train through the bounded controller helper.
+    - id: prefer-launchplane-helpers-over-global-cli
+      match:
+        argv_prefix: ["launchplane"]
+      action: require_preferred
+      message: Do not assume a global `launchplane` binary on ordinary workstations. Use the bundled helpers unless you are explicitly on a host-only Launchplane context with a repo-provided command.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-context.py
+          example_argv: ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
+          purpose: Reads Launchplane context through the structural helper.
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--help"]
+          purpose: Uses bounded Launchplane mutation entrypoints when operator action is approved.
 ---
 
 # Launchplane Expert
