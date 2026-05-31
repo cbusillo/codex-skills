@@ -8,6 +8,7 @@ Use official Google docs for setup and API behavior.
 - Search Analytics query method: https://developers.google.com/webmaster-tools/v1/searchanalytics/query
 - Sites resource: https://developers.google.com/webmaster-tools/v1/sites
 - Sitemaps resource: https://developers.google.com/webmaster-tools/v1/sitemaps
+- Sitemaps submit method: https://developers.google.com/webmaster-tools/v1/sitemaps/submit
 - URL Inspection API: https://developers.google.com/webmaster-tools/v1/urlInspection.index/inspect
 
 ## OAuth
@@ -19,6 +20,10 @@ Use official Google docs for setup and API behavior.
 Use `https://www.googleapis.com/auth/webmasters.readonly` for read-only Search
 Console reports. Use broader scopes only when a requested workflow truly needs
 mutation.
+
+Use `https://www.googleapis.com/auth/webmasters` for sitemap submission. Keep
+that token separate from the read-only reporting token so normal diagnostics do
+not run with write scope.
 
 ## PageSpeed
 
