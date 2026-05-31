@@ -1,6 +1,6 @@
 ---
 name: docs-lookup
-description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering the source of truth or access path for private operations.
+description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations, but not performing infrastructure actions or mutations.
 metadata:
   short-description: Find external docs and ops context
 ---
@@ -27,10 +27,15 @@ Use this skill for:
   Docker, GitHub Actions, uv, PyPI, Dokploy, Launchplane, Stripe, Shopify,
   RepairShopr, Fishbowl, or similar tools.
 - tasks where the answer depends on environment-specific operational context or
-  discovering the source of truth/access path for private operations.
+  discovering source-of-truth docs or access paths for private operations.
 
 Do not use this skill for stable local repo facts that can be answered directly
 from checked-in code or docs.
+
+Do not use this skill to perform infrastructure actions, API mutations,
+operator workflows, rollback/snapshot decisions, or production-impacting
+changes. Use the owning operator skill such as `infra-ops` or `launchplane`
+after docs and authority are discovered.
 
 ## Source Order
 
@@ -52,7 +57,8 @@ docs workflow for OpenAI-specific questions.
 For provider or infrastructure tasks, route by source of truth rather than
 provider name. Use official docs for generic behavior, local context routing for
 this environment's setup or access path, and the owning operator skill for
-managed product/runtime state or mutations.
+read-only inventory, managed product/runtime state, production checks, or
+mutations.
 
 ## Local Operational Context
 
@@ -80,6 +86,8 @@ public issues, PRs, docs, or summaries.
    `pyproject.toml`, `uv.lock`, `Cargo.toml`, `go.mod`, Dockerfiles, CI files).
 2. If the task depends on private/local operational state, read the configured
    local context route before following provider-specific or product-repo clues.
+   If the task asks you to inspect, operate, validate, or mutate infrastructure,
+   switch to the owning operator skill after identifying the docs/access path.
 3. Search current docs. Use primary sources; when searching the web, use precise
    queries and official-domain filters where possible.
 4. Fetch the specific page or section needed. Avoid broad summaries when a

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Infra Ops"
+  short_description: "Operate private infrastructure safely"
+  default_prompt: "Use $infra-ops to inspect infra context, choose the right safety tier, and route actions through private helpers."

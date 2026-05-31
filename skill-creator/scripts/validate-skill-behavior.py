@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+from email.message import Message
 from pathlib import Path
 
 
@@ -363,6 +364,8 @@ def test_launchplane_write_action_helper_contract() -> None:
 
     spec = importlib.util.spec_from_file_location("launchplane_write_action", helper)
     require(spec is not None and spec.loader is not None, "Write-action helper must be importable")
+    if spec is None or spec.loader is None:
+        raise AssertionError("Write-action helper must be importable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     success_payload = module.summarize_success(
@@ -401,7 +404,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         "https://launchplane.example.invalid/v1/example",
         403,
         "Forbidden",
-        hdrs={},
+        hdrs=Message(),
         fp=io.BytesIO(error_body),
     )
     denied_payload = module.summarize_http_error(
@@ -530,6 +533,54 @@ def test_github_merges_land_through_prs() -> None:
     )
 
 
+def test_infra_ops_owns_live_infra_actions() -> None:
+    infra_text = (ROOT / "infra-ops" / "SKILL.md").read_text().lower()
+    docs_text = (ROOT / "docs-lookup" / "SKILL.md").read_text().lower()
+    routing_text = (ROOT / "docs-lookup" / "references" / "routing.md").read_text().lower()
+    infra_normalized = " ".join(infra_text.split())
+    docs_normalized = " ".join(docs_text.split())
+    routing_normalized = " ".join(routing_text.split())
+
+    require(
+        "read-only inventory, health checks, guarded pilot writes" in infra_normalized,
+        "Infra ops must visibly trigger for inventory, health checks, and pilot writes",
+    )
+    require(
+        "production-impacting infra changes" in infra_normalized,
+        "Infra ops must visibly trigger for production-impacting infra changes",
+    )
+    require(
+        "`~/.code/local-context.toml`" in infra_text
+        and "`[docs].local_infra`" in infra_text,
+        "Infra ops must route through the local context docs pointer",
+    )
+    require(
+        "do not guess from provider dashboards, browser sessions, shell history, or `.env` files"
+        in infra_normalized,
+        "Infra ops must fail closed instead of guessing from dashboards or .env files",
+    )
+    require(
+        "use `docs-lookup` first only when the task is still about finding docs" in infra_normalized,
+        "Infra ops must keep docs-lookup as discovery-only handoff",
+    )
+    require(
+        "do not use this skill to perform infrastructure actions" in docs_normalized,
+        "Docs lookup must explicitly reject infrastructure actions",
+    )
+    require(
+        "switch to the owning operator skill after identifying the docs/access path"
+        in docs_normalized,
+        "Docs lookup must hand off after docs/access-path discovery",
+    )
+    require(
+        "~/.code/local-context.toml" in routing_text
+        and "[docs].local_infra" in routing_text
+        and "do not fall back" in routing_normalized
+        and "`.env` files" in routing_normalized,
+        "Docs routing must keep local infra discovery on local-context.toml without .env fallback",
+    )
+
+
 def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
     creator_text = (ROOT / "skill-creator" / "SKILL.md").read_text().lower()
     normalized = " ".join(creator_text.split())
@@ -558,6 +609,7 @@ def main() -> None:
         test_github_plan_sweeps_stale_related_issues,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
+        test_infra_ops_owns_live_infra_actions,
         test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
     for test in tests:
