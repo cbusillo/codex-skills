@@ -7,6 +7,8 @@
 import argparse
 import importlib.util
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import TestCase, main
 from unittest.mock import patch
 
@@ -20,6 +22,31 @@ SPEC.loader.exec_module(google_search_console)
 
 
 class GoogleSearchConsoleHelperTest(TestCase):
+    def test_status_preserves_legacy_read_token_fields(self) -> None:
+        rendered: list[dict[str, Any]] = []
+
+        with TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            client_path = config_dir / "oauth-client.json"
+            read_token_path = config_dir / "search-console-token.json"
+            write_token_path = config_dir / "search-console-write-token.json"
+            client_path.touch()
+            read_token_path.touch()
+
+            with (
+                patch.object(google_search_console, "CONFIG_DIR", config_dir),
+                patch.object(google_search_console, "CLIENT_PATH", client_path),
+                patch.object(google_search_console, "READ_TOKEN_PATH", read_token_path),
+                patch.object(google_search_console, "WRITE_TOKEN_PATH", write_token_path),
+                patch.object(google_search_console, "print_json", side_effect=rendered.append),
+            ):
+                google_search_console.cmd_status(argparse.Namespace())
+
+        self.assertEqual(rendered[0]["token_configured"], True)
+        self.assertEqual(rendered[0]["scope"], google_search_console.READ_SCOPE)
+        self.assertEqual(rendered[0]["read_token_configured"], True)
+        self.assertEqual(rendered[0]["write_token_configured"], False)
+
     def test_token_paths_are_separate_by_access_level(self) -> None:
         self.assertEqual(
             google_search_console.token_path("read").name,

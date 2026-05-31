@@ -207,6 +207,8 @@ def cmd_status(_args: argparse.Namespace) -> None:
     status = {
         "config_dir": str(CONFIG_DIR),
         "client_configured": CLIENT_PATH.exists(),
+        "token_configured": READ_TOKEN_PATH.exists(),
+        "scope": READ_SCOPE,
         "read_token_configured": READ_TOKEN_PATH.exists(),
         "write_token_configured": WRITE_TOKEN_PATH.exists(),
         "read_scope": READ_SCOPE,
