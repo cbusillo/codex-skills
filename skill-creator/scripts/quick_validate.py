@@ -25,12 +25,23 @@ MAX_COMMAND_POLICY_PURPOSE_LENGTH = 256
 MAX_COMMAND_POLICIES_PER_SKILL = 64
 MAX_COMMAND_POLICY_PREFERRED = 8
 MAX_COMMAND_POLICY_ARGV_TOKENS = 32
-ALLOWED_PROPERTIES = {"name", "description", "metadata", "policy"}
+MAX_STRUCTURED_ITEMS_PER_SKILL = 128
+ALLOWED_PROPERTIES = {
+    "name",
+    "description",
+    "metadata",
+    "policy",
+    "resources",
+    "commands",
+    "workflow_defaults",
+}
 ALLOWED_METADATA_PROPERTIES = {"short-description"}
 ALLOWED_POLICY_PROPERTIES = {"allow_implicit_invocation", "command_policies"}
 ALLOWED_COMMAND_POLICY_ACTIONS = {"require_preferred", "require_confirm", "reject"}
 ALLOWED_COMMAND_POLICY_MATCHERS = {"argv_exact", "argv_prefix", "shell_regex"}
 ALLOWED_COMMAND_POLICY_PREFERRED_KINDS = {"script", "skill", "command"}
+ALLOWED_RESOURCE_KINDS = {"script", "reference", "template", "asset"}
+ALLOWED_COMMAND_SOURCES = {"skill", "repo", "external"}
 
 
 def validate_skill(skill_path):
@@ -127,6 +138,10 @@ def validate_skill_content(content, skill_dir=None):
         if command_policy_error:
             return False, command_policy_error
 
+    structured_metadata_error = validate_structured_metadata(frontmatter, skill_dir)
+    if structured_metadata_error:
+        return False, structured_metadata_error
+
     if "name" not in frontmatter:
         return False, "Missing 'name' in frontmatter"
     if "description" not in frontmatter:
@@ -169,6 +184,151 @@ def validate_skill_content(content, skill_dir=None):
             )
 
     return True, "Skill is valid!"
+
+
+def validate_structured_metadata(frontmatter, skill_dir=None):
+    resource_paths, resource_error = validate_resources(frontmatter.get("resources"), skill_dir)
+    if resource_error:
+        return resource_error
+
+    command_error = validate_commands(frontmatter.get("commands"), resource_paths, skill_dir)
+    if command_error:
+        return command_error
+
+    return validate_workflow_defaults(frontmatter.get("workflow_defaults"))
+
+
+def validate_resources(resources, skill_dir=None):
+    if resources is None:
+        return set(), None
+    if not isinstance(resources, list):
+        return set(), "resources must be a list"
+    if len(resources) > MAX_STRUCTURED_ITEMS_PER_SKILL:
+        return set(), f"resources must contain at most {MAX_STRUCTURED_ITEMS_PER_SKILL} entries"
+
+    paths = set()
+    for index, resource in enumerate(resources):
+        path = f"resources[{index}]"
+        if not isinstance(resource, dict):
+            return paths, f"{path} must be a YAML dictionary"
+        unexpected = set(resource) - {"path", "kind", "description"}
+        if unexpected:
+            return paths, f"Unexpected key(s) in {path}: {', '.join(sorted(unexpected))}"
+        raw_path = resource.get("path")
+        if not valid_nonempty_string(raw_path, MAX_COMMAND_POLICY_TOKEN_LENGTH):
+            return paths, f"{path}.path must be a non-empty string of at most {MAX_COMMAND_POLICY_TOKEN_LENGTH} characters"
+        raw_path = str(raw_path).strip()
+        path_error = validate_relative_resource_path(raw_path, f"{path}.path")
+        if path_error:
+            return paths, path_error
+        if raw_path in paths:
+            return paths, f"{path}.path duplicates {raw_path}"
+        paths.add(raw_path)
+        if skill_dir is not None and not (Path(skill_dir) / raw_path).is_file():
+            return paths, f"{path}.path points to missing file {raw_path}"
+        if resource.get("kind") not in ALLOWED_RESOURCE_KINDS:
+            allowed = ", ".join(sorted(ALLOWED_RESOURCE_KINDS))
+            return paths, f"{path}.kind must be one of: {allowed}"
+        if not valid_nonempty_string(resource.get("description"), MAX_COMMAND_POLICY_PURPOSE_LENGTH):
+            return paths, f"{path}.description must be a non-empty string of at most {MAX_COMMAND_POLICY_PURPOSE_LENGTH} characters"
+    return paths, None
+
+
+def validate_commands(commands, resource_paths, skill_dir=None):
+    if commands is None:
+        return None
+    if not isinstance(commands, list):
+        return "commands must be a list"
+    if len(commands) > MAX_STRUCTURED_ITEMS_PER_SKILL:
+        return f"commands must contain at most {MAX_STRUCTURED_ITEMS_PER_SKILL} entries"
+
+    names = set()
+    for index, command in enumerate(commands):
+        path = f"commands[{index}]"
+        if not isinstance(command, dict):
+            return f"{path} must be a YAML dictionary"
+        unexpected = set(command) - {"name", "source", "resource_path", "example_argv", "purpose"}
+        if unexpected:
+            return f"Unexpected key(s) in {path}: {', '.join(sorted(unexpected))}"
+        name = command.get("name")
+        if not valid_nonempty_string(name, MAX_SKILL_NAME_LENGTH):
+            return f"{path}.name must be a non-empty string of at most {MAX_SKILL_NAME_LENGTH} characters"
+        name = str(name).strip()
+        if not re.match(r"^[a-z0-9-]+$", name):
+            return f"{path}.name should be hyphen-case (lowercase letters, digits, and hyphens only)"
+        if name in names:
+            return f"{path}.name duplicates {name}"
+        names.add(name)
+
+        if "source" not in command:
+            return f"{path}.source is required"
+        source = command.get("source")
+        if source not in ALLOWED_COMMAND_SOURCES:
+            allowed = ", ".join(sorted(ALLOWED_COMMAND_SOURCES))
+            return f"{path}.source must be one of: {allowed}"
+
+        resource_path = command.get("resource_path")
+        if source == "skill":
+            if not valid_nonempty_string(resource_path, MAX_COMMAND_POLICY_TOKEN_LENGTH):
+                return f"{path}.resource_path must be set for source: skill"
+            resource_path = str(resource_path).strip()
+            path_error = validate_relative_resource_path(resource_path, f"{path}.resource_path")
+            if path_error:
+                return path_error
+            if resource_path not in resource_paths:
+                return f"{path}.resource_path must be listed in resources"
+            if skill_dir is not None and not (Path(skill_dir) / resource_path).is_file():
+                return f"{path}.resource_path points to missing file {resource_path}"
+        elif resource_path is not None:
+            return f"{path}.resource_path is only allowed for source: skill"
+
+        argv_error = validate_argv_tokens(command.get("example_argv"), f"{path}.example_argv")
+        if argv_error:
+            return argv_error
+        if not valid_nonempty_string(command.get("purpose"), MAX_COMMAND_POLICY_PURPOSE_LENGTH):
+            return f"{path}.purpose must be a non-empty string of at most {MAX_COMMAND_POLICY_PURPOSE_LENGTH} characters"
+    return None
+
+
+def validate_workflow_defaults(workflow_defaults):
+    if workflow_defaults is None:
+        return None
+    if not isinstance(workflow_defaults, list):
+        return "workflow_defaults must be a list"
+    if len(workflow_defaults) > MAX_STRUCTURED_ITEMS_PER_SKILL:
+        return f"workflow_defaults must contain at most {MAX_STRUCTURED_ITEMS_PER_SKILL} entries"
+
+    names = set()
+    for index, workflow_default in enumerate(workflow_defaults):
+        path = f"workflow_defaults[{index}]"
+        if not isinstance(workflow_default, dict):
+            return f"{path} must be a YAML dictionary"
+        unexpected = set(workflow_default) - {"name", "value", "description"}
+        if unexpected:
+            return f"Unexpected key(s) in {path}: {', '.join(sorted(unexpected))}"
+        name = workflow_default.get("name")
+        if not valid_nonempty_string(name, MAX_SKILL_NAME_LENGTH):
+            return f"{path}.name must be a non-empty string of at most {MAX_SKILL_NAME_LENGTH} characters"
+        name = str(name).strip()
+        if name in names:
+            return f"{path}.name duplicates {name}"
+        names.add(name)
+        if "value" not in workflow_default:
+            return f"{path}.value is required"
+        if workflow_default["value"] is None:
+            return f"{path}.value cannot be null"
+        if not valid_nonempty_string(workflow_default.get("description"), MAX_COMMAND_POLICY_PURPOSE_LENGTH):
+            return f"{path}.description must be a non-empty string of at most {MAX_COMMAND_POLICY_PURPOSE_LENGTH} characters"
+    return None
+
+
+def validate_relative_resource_path(value, path):
+    if value.startswith("/"):
+        return f"{path} must be relative"
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return f"{path} must be a normalized relative path"
+    return None
 
 
 def validate_command_policies(command_policies, skill_dir=None):
@@ -320,6 +480,30 @@ def run_self_tests():
             "Skill is valid!",
         ),
         (
+            "structured-metadata",
+            "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/helper.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: helper\n    source: skill\n    resource_path: scripts/helper.py\n    example_argv: [\"uv\", \"run\", \"scripts/helper.py\"]\n    purpose: Runs helper.\n  - name: repo-check\n    source: repo\n    example_argv: [\"just\", \"check\"]\n    purpose: Runs repo check.\nworkflow_defaults:\n  - name: default_path\n    value: skills\n    description: Default output path.\n---\n",
+            True,
+            "Skill is valid!",
+        ),
+        (
+            "invalid-skill-command-resource",
+            "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/helper.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: missing\n    source: skill\n    resource_path: scripts/missing.py\n    example_argv: [\"uv\", \"run\", \"scripts/missing.py\"]\n    purpose: Runs helper.\n---\n",
+            False,
+            "resource_path must be listed in resources",
+        ),
+        (
+            "invalid-external-command-resource",
+            "---\nname: demo-skill\ndescription: Use for demo work.\ncommands:\n  - name: gh-view\n    source: external\n    resource_path: scripts/helper.py\n    example_argv: [\"gh\", \"pr\", \"view\"]\n    purpose: Views PR.\n---\n",
+            False,
+            "resource_path is only allowed for source: skill",
+        ),
+        (
+            "missing-command-source",
+            "---\nname: demo-skill\ndescription: Use for demo work.\ncommands:\n  - name: helper\n    example_argv: [\"uv\", \"run\", \"scripts/helper.py\"]\n    purpose: Runs helper.\n---\n",
+            False,
+            "commands[0].source is required",
+        ),
+        (
             "invalid-policy-type",
             "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  allow_implicit_invocation: no thanks\n---\n",
             False,
@@ -349,6 +533,42 @@ def run_self_tests():
             )
             return 1
         print(f"ok {name}")
+
+    skill_creator_dir = Path(__file__).resolve().parents[1]
+    valid, message = validate_skill_content(
+        "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/quick_validate.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: helper\n    source: skill\n    resource_path: scripts/quick_validate.py\n    example_argv: [\"uv\", \"run\", \"scripts/quick_validate.py\"]\n    purpose: Runs helper.\n---\n",
+        skill_creator_dir,
+    )
+    if not valid:
+        print(f"not ok structured-metadata-existing-file: {message}", file=sys.stderr)
+        return 1
+    print("ok structured-metadata-existing-file")
+
+    valid, message = validate_skill_content(
+        "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts\n    kind: script\n    description: Uses a directory.\n---\n",
+        skill_creator_dir,
+    )
+    if valid or "points to missing file scripts" not in message:
+        print(
+            "not ok structured-metadata-directory-resource: "
+            f"got ({valid}, {message!r})",
+            file=sys.stderr,
+        )
+        return 1
+    print("ok structured-metadata-directory-resource")
+
+    valid, message = validate_skill_content(
+        "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/quick_validate.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: helper\n    source: skill\n    resource_path: scripts\n    example_argv: [\"uv\", \"run\", \"scripts\"]\n    purpose: Runs helper.\n---\n",
+        skill_creator_dir,
+    )
+    if valid or "resource_path must be listed in resources" not in message:
+        print(
+            "not ok structured-metadata-directory-command-resource: "
+            f"got ({valid}, {message!r})",
+            file=sys.stderr,
+        )
+        return 1
+    print("ok structured-metadata-directory-command-resource")
     return 0
 
 

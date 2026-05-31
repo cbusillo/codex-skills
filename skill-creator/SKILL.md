@@ -3,6 +3,54 @@ name: skill-creator
 description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.
 metadata:
   short-description: Create or update a skill
+resources:
+  - path: scripts/init_skill.py
+    kind: script
+    description: Scaffold a new skill directory with SKILL.md, optional resource folders, and agent UI metadata.
+  - path: scripts/quick_validate.py
+    kind: script
+    description: Validate a single skill's frontmatter, naming, command policies, and structured metadata.
+  - path: scripts/generate_openai_yaml.py
+    kind: script
+    description: Generate agents/openai.yaml UI metadata for a skill.
+  - path: scripts/validate-skill-behavior.py
+    kind: script
+    description: Run behavioral smoke checks for skill routing and invocation expectations.
+  - path: scripts/validate-skill-repo.py
+    kind: script
+    description: Validate all active skills in this repository.
+  - path: references/openai_yaml.md
+    kind: reference
+    description: Field definitions and examples for agents/openai.yaml.
+  - path: references/forward-testing.md
+    kind: reference
+    description: Guidance for subagent forward-testing of complex skill revisions.
+commands:
+  - name: init-skill
+    source: skill
+    resource_path: scripts/init_skill.py
+    example_argv: ["uv", "run", "scripts/init_skill.py", "<skill-name>", "--path", "<output-directory>"]
+    purpose: Scaffolds a new skill directory from the maintained template.
+  - name: quick-validate-skill
+    source: skill
+    resource_path: scripts/quick_validate.py
+    example_argv: ["uv", "run", "scripts/quick_validate.py", "<path-to-skill-folder>"]
+    purpose: Performs focused validation for one skill folder.
+  - name: generate-openai-yaml
+    source: skill
+    resource_path: scripts/generate_openai_yaml.py
+    example_argv: ["uv", "run", "scripts/generate_openai_yaml.py", "<path-to-skill-folder>", "--interface", "short_description=<text>"]
+    purpose: Generates or refreshes UI metadata for a skill.
+  - name: validate-skill-behavior
+    source: skill
+    resource_path: scripts/validate-skill-behavior.py
+    example_argv: ["uv", "run", "scripts/validate-skill-behavior.py"]
+    purpose: Runs repository-level behavior checks for high-impact skill guidance.
+  - name: validate-skill-repo
+    source: skill
+    resource_path: scripts/validate-skill-repo.py
+    example_argv: ["uv", "run", "scripts/validate-skill-repo.py"]
+    purpose: Runs repository-wide validation across active skills.
 ---
 
 # Skill Creator
@@ -79,7 +127,45 @@ skill-name/
 Every SKILL.md consists of:
 
 - **Frontmatter** (YAML): Contains `name` and `description` fields. `description` is the full model-visible trigger/routing text. Optional `metadata.short-description` provides compact human-facing listing text, and optional `policy.allow_implicit_invocation: false` marks a skill as manual-only.
+- **Structured metadata** (YAML): Optional `resources`, `commands`, and `workflow_defaults` fields describe bundled files and routine commands. Keep judgment, routing, safety, and procedural nuance in prose.
 - **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
+
+##### Structured resources and commands
+
+Use `resources` to declare bundled files that agents can load or run, and use
+`commands` to declare routine command entrypoints. This metadata should describe
+the stable surface area; do not move nuanced workflow guidance out of prose.
+
+```yaml
+resources:
+  - path: scripts/example.py
+    kind: script
+    description: Short description.
+commands:
+  - name: example-command
+    source: skill
+    resource_path: scripts/example.py
+    example_argv: ["uv", "run", "scripts/example.py", "--flag"]
+    purpose: Short purpose.
+  - name: repo-command
+    source: repo
+    example_argv: ["just", "some-recipe"]
+    purpose: Runs a repo workflow command.
+  - name: external-command
+    source: external
+    example_argv: ["gh", "pr", "view"]
+    purpose: Runs an external tool command.
+workflow_defaults:
+  - name: default_name
+    value: default value
+    description: Short description.
+```
+
+- `resources[].kind` must be one of `script`, `reference`, `template`, or `asset`.
+  - Commands must declare `source`.
+  - `source: skill` commands must declare `resource_path`, and that path must exist and be listed in `resources`.
+- `source: repo` and `source: external` commands must not declare `resource_path`.
+- Do not invent unsupported structured fields for options, variants, network requirements, sandbox hints, or output templates.
 
 ##### Command policies
 
@@ -436,6 +522,9 @@ Write the YAML frontmatter for the Every Code agent with `name` and
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when Codex needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
 - `metadata.short-description`: Optional compact human-facing summary for UI/listing surfaces. Keep the full routing and trigger detail in `description`.
 - `policy.allow_implicit_invocation`: Optional boolean. Set to `false` only for skills that should be discoverable and explicitly invokable, but excluded from default implicit routing.
+- `resources`: Optional list of bundled files with `path`, `kind`, and `description`.
+- `commands`: Optional list of executable entrypoints with `name`, `source`, `example_argv`, and `purpose`. Use `resource_path` only for `source: skill` commands.
+- `workflow_defaults`: Optional list of simple defaults with `name`, `value`, and `description`.
 
 Example:
 

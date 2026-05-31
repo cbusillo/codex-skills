@@ -3,6 +3,57 @@ name: google-seo
 description: Use for Google Search Console, PageSpeed Insights, Lighthouse, Core Web Vitals, sitemap/indexing checks, SEO performance reports, and shared Google OAuth setup for SEO tooling across sites.
 metadata:
   short-description: Google SEO, Search Console, and PageSpeed
+resources:
+  - path: scripts/google-search-console.py
+    kind: script
+    description: Manage Search Console OAuth and run read-only Search Console reports.
+  - path: scripts/google-cloud-inventory.sh
+    kind: script
+    description: Inventory Google Cloud projects, APIs, billing, keys, and service accounts with read-only gcloud commands.
+  - path: references/google-docs.md
+    kind: reference
+    description: Google API and OAuth documentation notes for SEO workflows.
+commands:
+  - name: google-search-console-status
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "status"]
+    purpose: Shows local Search Console helper configuration without secrets.
+  - name: google-search-console-auth
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "auth"]
+    purpose: Runs the loopback OAuth consent flow for Search Console reads.
+  - name: google-search-console-sites
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "sites"]
+    purpose: Lists accessible Search Console properties.
+  - name: google-search-console-init
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "init", "~/Downloads/client_secret.json"]
+    purpose: Installs a desktop OAuth client JSON into the shared local config.
+  - name: google-search-console-sitemaps
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "sitemaps", "example.com"]
+    purpose: Lists submitted sitemaps for a Search Console property.
+  - name: google-search-console-search-analytics
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "search-analytics", "example.com", "--start-date", "YYYY-MM-DD", "--end-date", "YYYY-MM-DD", "--dimension", "query"]
+    purpose: Queries Search Analytics rows for a site property.
+  - name: google-search-console-inspect
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "inspect", "example.com", "https://www.example.com/"]
+    purpose: Retrieves URL inspection status for a property URL.
+  - name: google-cloud-inventory
+    source: skill
+    resource_path: scripts/google-cloud-inventory.sh
+    example_argv: ["scripts/google-cloud-inventory.sh", "--project", "<project-id>"]
+    purpose: Collects read-only Google Cloud project inventory for SEO tooling triage.
 ---
 
 # Google SEO

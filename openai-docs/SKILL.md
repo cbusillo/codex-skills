@@ -3,6 +3,25 @@ name: "openai-docs"
 description: "Use when the user asks how to build with OpenAI products or APIs and needs up-to-date official documentation with citations, help choosing the latest model for a use case, or model upgrade and prompt-upgrade guidance; supersedes docs-lookup for OpenAI-specific questions; prioritize OpenAI docs MCP tools, use bundled references only as helper context, and restrict any fallback browsing to official OpenAI domains."
 metadata:
   short-description: Reference official OpenAI docs
+resources:
+  - path: scripts/resolve-latest-model-info.js
+    kind: script
+    description: Resolve latest model, migration guide, and prompting guide metadata from official docs markdown.
+  - path: references/latest-model.md
+    kind: reference
+    description: Bundled fallback for latest/current model-selection guidance.
+  - path: references/upgrade-guide.md
+    kind: reference
+    description: Bundled fallback for model upgrade planning and migration guidance.
+  - path: references/prompting-guide.md
+    kind: reference
+    description: Bundled fallback for prompt rewrite and prompt-behavior upgrade guidance.
+commands:
+  - name: resolve-latest-model-info
+    source: skill
+    resource_path: scripts/resolve-latest-model-info.js
+    example_argv: ["node", "scripts/resolve-latest-model-info.js"]
+    purpose: Resolves latest model and related guide URLs from official docs markdown.
 ---
 
 
