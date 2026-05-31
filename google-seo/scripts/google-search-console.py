@@ -204,13 +204,15 @@ def token_request(params: dict[str, str]) -> dict[str, Any]:
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
+    read_token_configured = READ_TOKEN_PATH.exists()
+    write_token_configured = WRITE_TOKEN_PATH.exists()
     status = {
         "config_dir": str(CONFIG_DIR),
         "client_configured": CLIENT_PATH.exists(),
-        "token_configured": READ_TOKEN_PATH.exists(),
+        "token_configured": read_token_configured or write_token_configured,
         "scope": READ_SCOPE,
-        "read_token_configured": READ_TOKEN_PATH.exists(),
-        "write_token_configured": WRITE_TOKEN_PATH.exists(),
+        "read_token_configured": read_token_configured,
+        "write_token_configured": write_token_configured,
         "read_scope": READ_SCOPE,
         "write_scope": WRITE_SCOPE,
     }
