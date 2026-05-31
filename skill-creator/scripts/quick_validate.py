@@ -226,7 +226,8 @@ def validate_resources(resources, skill_dir=None):
         paths.add(raw_path)
         if skill_dir is not None and not (Path(skill_dir) / raw_path).is_file():
             return paths, f"{path}.path points to missing file {raw_path}"
-        if resource.get("kind") not in ALLOWED_RESOURCE_KINDS:
+        kind = resource.get("kind")
+        if not isinstance(kind, str) or kind not in ALLOWED_RESOURCE_KINDS:
             allowed = ", ".join(sorted(ALLOWED_RESOURCE_KINDS))
             return paths, f"{path}.kind must be one of: {allowed}"
         if not valid_nonempty_string(resource.get("description"), MAX_COMMAND_POLICY_PURPOSE_LENGTH):
@@ -263,7 +264,7 @@ def validate_commands(commands, resource_paths, skill_dir=None):
         if "source" not in command:
             return f"{path}.source is required"
         source = command.get("source")
-        if source not in ALLOWED_COMMAND_SOURCES:
+        if not isinstance(source, str) or source not in ALLOWED_COMMAND_SOURCES:
             allowed = ", ".join(sorted(ALLOWED_COMMAND_SOURCES))
             return f"{path}.source must be one of: {allowed}"
 
@@ -279,7 +280,7 @@ def validate_commands(commands, resource_paths, skill_dir=None):
                 return f"{path}.resource_path must be listed in resources"
             if skill_dir is not None and not (Path(skill_dir) / resource_path).is_file():
                 return f"{path}.resource_path points to missing file {resource_path}"
-        elif resource_path is not None:
+        elif "resource_path" in command:
             return f"{path}.resource_path is only allowed for source: skill"
 
         argv_error = validate_argv_tokens(command.get("example_argv"), f"{path}.example_argv")
@@ -352,7 +353,7 @@ def validate_command_policies(command_policies, skill_dir=None):
         if matcher_error:
             return matcher_error
         action = command_policy.get("action")
-        if action not in ALLOWED_COMMAND_POLICY_ACTIONS:
+        if not isinstance(action, str) or action not in ALLOWED_COMMAND_POLICY_ACTIONS:
             allowed = ", ".join(sorted(ALLOWED_COMMAND_POLICY_ACTIONS))
             return f"{path}.action must be one of: {allowed}"
         message = command_policy.get("message")
@@ -404,7 +405,7 @@ def validate_command_policy_preferred(preferred, policy_path, skill_dir=None):
         if unexpected:
             return f"Unexpected key(s) in {entry_path}: {', '.join(sorted(unexpected))}"
         kind = entry.get("kind")
-        if kind not in ALLOWED_COMMAND_POLICY_PREFERRED_KINDS:
+        if not isinstance(kind, str) or kind not in ALLOWED_COMMAND_POLICY_PREFERRED_KINDS:
             allowed = ", ".join(sorted(ALLOWED_COMMAND_POLICY_PREFERRED_KINDS))
             return f"{entry_path}.kind must be one of: {allowed}"
         if entry.get("path") is not None:
@@ -486,6 +487,12 @@ def run_self_tests():
             "Skill is valid!",
         ),
         (
+            "invalid-resource-kind-type",
+            "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/helper.py\n    kind: [script]\n    description: Runs helper.\n---\n",
+            False,
+            "resources[0].kind must be one of",
+        ),
+        (
             "invalid-skill-command-resource",
             "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/helper.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: missing\n    source: skill\n    resource_path: scripts/missing.py\n    example_argv: [\"uv\", \"run\", \"scripts/missing.py\"]\n    purpose: Runs helper.\n---\n",
             False,
@@ -494,6 +501,18 @@ def run_self_tests():
         (
             "invalid-external-command-resource",
             "---\nname: demo-skill\ndescription: Use for demo work.\ncommands:\n  - name: gh-view\n    source: external\n    resource_path: scripts/helper.py\n    example_argv: [\"gh\", \"pr\", \"view\"]\n    purpose: Views PR.\n---\n",
+            False,
+            "resource_path is only allowed for source: skill",
+        ),
+        (
+            "invalid-command-source-type",
+            "---\nname: demo-skill\ndescription: Use for demo work.\ncommands:\n  - name: gh-view\n    source: [repo]\n    example_argv: [\"gh\", \"pr\", \"view\"]\n    purpose: Views PR.\n---\n",
+            False,
+            "commands[0].source must be one of",
+        ),
+        (
+            "null-external-command-resource",
+            "---\nname: demo-skill\ndescription: Use for demo work.\ncommands:\n  - name: gh-view\n    source: external\n    resource_path: null\n    example_argv: [\"gh\", \"pr\", \"view\"]\n    purpose: Views PR.\n---\n",
             False,
             "resource_path is only allowed for source: skill",
         ),
@@ -510,6 +529,12 @@ def run_self_tests():
             "policy.allow_implicit_invocation must be a boolean",
         ),
         (
+            "invalid-command-policy-action-type",
+            "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  command_policies:\n    - id: prefer-helper\n      match:\n        argv_exact: [\"gh\", \"pr\"]\n      action: [require_preferred]\n---\n",
+            False,
+            "policy.command_policies[0].action must be one of",
+        ),
+        (
             "invalid-command-policy-match",
             "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  command_policies:\n    - id: prefer-helper\n      match:\n        argv_exact: [\"gh\", \"pr\"]\n        argv_prefix: [\"gh\"]\n      action: require_preferred\n---\n",
             False,
@@ -520,6 +545,12 @@ def run_self_tests():
             "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  owner: Code\n---\n",
             False,
             "Unexpected key(s) in policy",
+        ),
+        (
+            "invalid-preferred-kind-type",
+            "---\nname: demo-skill\ndescription: Use for demo work.\npolicy:\n  command_policies:\n    - id: prefer-helper\n      match:\n        argv_prefix: [\"gh\", \"pr\"]\n      action: require_preferred\n      preferred:\n        - kind: [script]\n          path: scripts/gh-pr.py\n          example_argv: [\"scripts/gh-pr.py\", \"merge\"]\n          purpose: Use helper.\n---\n",
+            False,
+            "policy.command_policies[0].preferred[0].kind must be one of",
         ),
     ]
 
