@@ -193,13 +193,23 @@ when no helper covers the operation, and route those calls through
 - **Branch Discipline**: Protect default, shared, release, and production
   branches. Create focused task branches before editing when currently on a
   protected branch.
-- **Merges & Stacks**: When the user approves a merge and does not specify the
-  method, state that you are using a normal merge commit and run
-  `scripts/gh-pr.py merge <pr> --method merge` for GitHub helper-backed merge
-  execution. Do not use `--squash` or `--rebase` unless the user explicitly
-  asks, repo policy requires it, or you ask and receive confirmation. For
-  stacked PRs, consider a rollup branch when merging each layer would rerun
+- **Merges & Stacks**: For GitHub-backed repositories, merging implementation
+  work means merging a Pull Request through GitHub. When the user approves a
+  merge and does not specify the method, state that you are using a normal merge
+  commit and run `scripts/gh-pr.py merge <pr> --method merge` for GitHub
+  helper-backed merge execution. Do not locally merge a task branch into a
+  protected, default, shared, release, or production branch as an implementation
+  shortcut. Local branch integration is only appropriate for explicit local
+  synchronization or stack maintenance, and the resulting implementation still
+  lands through a PR. Do not use `--squash` or `--rebase` unless the user
+  explicitly asks, repo policy requires it, or you ask and receive confirmation.
+  For stacked PRs, consider a rollup branch when merging each layer would rerun
   expensive checks or create avoidable conflict churn.
+- **Accidental Local Default-Branch Merge Recovery**: If implementation work is
+  accidentally merged into a protected/default/shared branch locally, preserve
+  the commit or branch if needed, restore the local protected branch to the
+  remote tip, push or update the task branch, and continue through the PR flow.
+  Do not push the accidental local protected-branch merge.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `scripts/gh-with-env-token pr create` from that
   repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.

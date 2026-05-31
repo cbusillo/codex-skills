@@ -504,6 +504,50 @@ def test_github_cross_repo_pr_create_is_explicit() -> None:
     )
 
 
+def test_github_merges_land_through_prs() -> None:
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    normalized = " ".join(github_text.split())
+
+    require(
+        "merging implementation work means merging a pull request through github" in normalized,
+        "GitHub skill must define implementation merges as PR merges",
+    )
+    require(
+        "do not locally merge a task branch into a protected, default, shared, release, or production branch" in normalized,
+        "GitHub skill must forbid local task-branch merges into protected branches",
+    )
+    require(
+        "local branch integration is only appropriate for explicit local synchronization or stack maintenance" in normalized,
+        "GitHub skill must reserve local merges for explicit sync/stack maintenance",
+    )
+    require(
+        "accidentally merged into a protected/default/shared branch locally" in normalized,
+        "GitHub skill must include recovery guidance for accidental local protected-branch merges",
+    )
+    require(
+        "do not push the accidental local protected-branch merge" in normalized,
+        "GitHub skill must forbid pushing accidental local protected-branch merges",
+    )
+
+
+def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
+    creator_text = (ROOT / "skill-creator" / "SKILL.md").read_text().lower()
+    normalized = " ".join(creator_text.split())
+
+    require(
+        "use the exec harness for behavior-sensitive skill changes when available" in normalized,
+        "Skill creator guidance must call out exec harness validation",
+    )
+    require(
+        "routing, command policy, safety boundaries, or github/repo workflow semantics" in normalized,
+        "Skill creator guidance must identify behavior-sensitive skill changes",
+    )
+    require(
+        "negative or ambiguity case when practical" in normalized,
+        "Skill creator guidance must encourage ambiguity/negative harness cases",
+    )
+
+
 def main() -> None:
     tests = [
         test_chronicle_stays_quiet_when_unavailable,
@@ -513,6 +557,8 @@ def main() -> None:
         test_stale_injected_override_paths_are_nonfatal,
         test_github_plan_sweeps_stale_related_issues,
         test_github_cross_repo_pr_create_is_explicit,
+        test_github_merges_land_through_prs,
+        test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
     for test in tests:
         test()
