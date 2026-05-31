@@ -3,6 +3,27 @@ name: github-plan
 description: Use when the user asks for a plan, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, cross-repo blockers, milestones, Projects, or replacing local plans with GitHub issues. Think in chat first, then promote durable plans to GitHub with parent issues, sub-issues, blockers, and compact scripted lookups.
 metadata:
   short-description: Plan durable work in GitHub issues
+commands:
+  - name: github-plan-index
+    source: repo
+    example_argv: ["../github/scripts/gh-plan.py", "index"]
+    purpose: Lists durable planning issues with compact status and relationship fields.
+  - name: github-plan-search
+    source: repo
+    example_argv: ["../github/scripts/gh-plan.py", "search", "<query>"]
+    purpose: Searches planning issues with normalized compact output.
+  - name: github-plan-create
+    source: repo
+    example_argv: ["../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
+    purpose: Creates a durable plan issue with helper-owned labels and Project fields.
+  - name: github-plan-update-section
+    source: repo
+    example_argv: ["../github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
+    purpose: Updates one markdown section of a planning issue safely.
+  - name: github-plan-project-set
+    source: repo
+    example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+    purpose: Updates configured Project fields through the planning helper.
 policy:
   command_policies:
     - id: prefer-gh-plan-index-for-issue-list

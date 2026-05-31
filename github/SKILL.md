@@ -3,6 +3,79 @@ name: github
 description: "Comprehensive GitHub Expert persona for repository execution and hygiene: PRs, branches, Actions, reviews, merge/deploy state, issue comments, and safe cleanup. For durable planning, roadmaps, blockers, Projects, or workstream graphs, use github-plan."
 metadata:
   short-description: Execute GitHub repo workflows
+resources:
+  - path: scripts/gh-pr.py
+    kind: script
+    description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.
+  - path: scripts/gh-issue
+    kind: script
+    description: Safe issue create, edit, and close helper for multiline Markdown bodies.
+  - path: scripts/gh-comment
+    kind: script
+    description: Safe stdin-backed comment helper for issues and pull requests.
+  - path: scripts/gh-with-env-token
+    kind: script
+    description: GitHub CLI wrapper that selects configured automation auth before falling back to active local auth.
+  - path: scripts/github-ci-diagnose.py
+    kind: script
+    description: Diagnose failing PR checks and summarize relevant CI log excerpts.
+  - path: scripts/github-repo-snapshot.sh
+    kind: script
+    description: Capture compact repository, branch, PR, and workflow state for orientation.
+  - path: scripts/gh-plan.py
+    kind: script
+    description: Shared planning issue and Project helper used by GitHub planning workflows.
+  - path: references/repo-workflow.md
+    kind: reference
+    description: Detailed GitHub workflow, PR, checks, review, and cleanup guidance.
+  - path: references/cli-reference.md
+    kind: reference
+    description: GitHub helper command reference.
+  - path: references/issue-templates.md
+    kind: reference
+    description: Issue and planning body templates.
+  - path: references/config-schema.md
+    kind: reference
+    description: Repository GitHub metadata schema reference.
+  - path: references/github-projects.md
+    kind: reference
+    description: GitHub Projects configuration and field reference.
+commands:
+  - name: github-pr-view
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["scripts/gh-pr.py", "view", "<pr>"]
+    purpose: Reads pull request metadata through the REST-first helper.
+  - name: github-pr-create
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["scripts/gh-pr.py", "create", "--title", "<title>", "--body-file", "<file>"]
+    purpose: Creates pull requests through the helper with safe body handling.
+  - name: github-pr-checks
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["scripts/gh-pr.py", "checks", "<pr>"]
+    purpose: Reads PR check runs and commit statuses through the helper.
+  - name: github-pr-merge
+    source: skill
+    resource_path: scripts/gh-pr.py
+    example_argv: ["scripts/gh-pr.py", "merge", "<pr>", "--method", "merge", "--delete-branch"]
+    purpose: Merges pull requests through the helper with normalized defaults.
+  - name: github-issue-create
+    source: skill
+    resource_path: scripts/gh-issue
+    example_argv: ["scripts/gh-issue", "create", "<title>"]
+    purpose: Creates GitHub issues with safe body-file handling.
+  - name: github-ci-diagnose
+    source: skill
+    resource_path: scripts/github-ci-diagnose.py
+    example_argv: ["uv", "run", "scripts/github-ci-diagnose.py", "--pr", "<pr>"]
+    purpose: Diagnoses failing PR checks and summarizes relevant logs.
+  - name: github-repo-snapshot
+    source: skill
+    resource_path: scripts/github-repo-snapshot.sh
+    example_argv: ["scripts/github-repo-snapshot.sh", "--json"]
+    purpose: Captures compact repo and GitHub state for orientation.
 policy:
   command_policies:
     - id: prefer-gh-pr-create-helper
