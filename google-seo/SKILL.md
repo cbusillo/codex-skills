@@ -24,6 +24,11 @@ commands:
     resource_path: scripts/google-search-console.py
     example_argv: ["uv", "run", "scripts/google-search-console.py", "auth"]
     purpose: Runs the loopback OAuth consent flow for Search Console reads.
+  - name: google-search-console-auth-write
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "auth-write"]
+    purpose: Runs the explicit write-scope OAuth flow for sitemap submission.
   - name: google-search-console-sites
     source: skill
     resource_path: scripts/google-search-console.py
@@ -39,6 +44,11 @@ commands:
     resource_path: scripts/google-search-console.py
     example_argv: ["uv", "run", "scripts/google-search-console.py", "sitemaps", "example.com"]
     purpose: Lists submitted sitemaps for a Search Console property.
+  - name: google-search-console-submit-sitemap
+    source: skill
+    resource_path: scripts/google-search-console.py
+    example_argv: ["uv", "run", "scripts/google-search-console.py", "submit-sitemap", "example.com", "https://www.example.com/sitemap.xml"]
+    purpose: Submits a sitemap using the separate write token.
   - name: google-search-console-search-analytics
     source: skill
     resource_path: scripts/google-search-console.py
@@ -84,6 +94,8 @@ Expected files:
 
 - `oauth-client.json`: downloaded Google OAuth desktop client JSON.
 - `search-console-token.json`: local OAuth token created by the helper.
+- `search-console-write-token.json`: local OAuth token created only by the
+  explicit write-scope helper.
 
 For PageSpeed API keys, first check the current environment and then
 `~/.code/local.env` for `PAGESPEED_INSIGHTS_API_KEY`. Never print the value.
@@ -114,6 +126,23 @@ https://www.googleapis.com/auth/webmasters.readonly
 
 Use this for Search Analytics, Sites, Sitemaps listing, and URL Inspection reads.
 
+For sitemap submission, use the explicit write-scope flow. This stores a
+separate token and leaves the read-only reporting token untouched:
+
+```sh
+uv run scripts/google-search-console.py auth-write
+uv run scripts/google-search-console.py submit-sitemap example.com https://www.example.com/sitemap.xml
+```
+
+The write helper uses:
+
+```text
+https://www.googleapis.com/auth/webmasters
+```
+
+Sitemap submission can encourage recrawl but does not guarantee indexing,
+ranking, or immediate URL Inspection changes.
+
 ## Common Reports
 
 After auth, collect compact evidence with commands like:
@@ -124,6 +153,7 @@ uv run scripts/google-search-console.py sitemaps example.com
 uv run scripts/google-search-console.py search-analytics example.com --start-date YYYY-MM-DD --end-date YYYY-MM-DD --dimension query --format csv
 uv run scripts/google-search-console.py search-analytics example.com --start-date YYYY-MM-DD --end-date YYYY-MM-DD --dimension page --format csv
 uv run scripts/google-search-console.py inspect example.com https://www.example.com/
+uv run scripts/google-search-console.py submit-sitemap example.com https://www.example.com/sitemap.xml
 ```
 
 For domain properties, `example.com` is normalized to `sc-domain:example.com`.

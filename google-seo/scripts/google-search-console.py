@@ -24,8 +24,11 @@ from typing import Any
 
 CONFIG_DIR = Path.home() / ".code" / "google-search"
 CLIENT_PATH = CONFIG_DIR / "oauth-client.json"
-TOKEN_PATH = CONFIG_DIR / "search-console-token.json"
-SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+READ_TOKEN_PATH = CONFIG_DIR / "search-console-token.json"
+WRITE_TOKEN_PATH = CONFIG_DIR / "search-console-write-token.json"
+READ_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
+DEFAULT_ACCESS_LEVEL = "read"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_ROOT = "https://searchconsole.googleapis.com/webmasters/v3"
@@ -86,6 +89,22 @@ def atomic_json(path: Path, data: dict[str, Any]) -> None:
     tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     os.chmod(tmp_path, 0o600)
     tmp_path.replace(path)
+
+
+def token_path(access_level: str) -> Path:
+    if access_level == "read":
+        return READ_TOKEN_PATH
+    if access_level == "write":
+        return WRITE_TOKEN_PATH
+    fail(f"unknown access level: {access_level}")
+
+
+def scopes_for(access_level: str) -> list[str]:
+    if access_level == "read":
+        return [READ_SCOPE]
+    if access_level == "write":
+        return [WRITE_SCOPE]
+    fail(f"unknown access level: {access_level}")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -188,8 +207,10 @@ def cmd_status(_args: argparse.Namespace) -> None:
     status = {
         "config_dir": str(CONFIG_DIR),
         "client_configured": CLIENT_PATH.exists(),
-        "token_configured": TOKEN_PATH.exists(),
-        "scope": SCOPES[0],
+        "read_token_configured": READ_TOKEN_PATH.exists(),
+        "write_token_configured": WRITE_TOKEN_PATH.exists(),
+        "read_scope": READ_SCOPE,
+        "write_scope": WRITE_SCOPE,
     }
     print_json(status)
 
@@ -204,15 +225,16 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"installed OAuth client config at {CLIENT_PATH}")
 
 
-def cmd_auth(_args: argparse.Namespace) -> None:
+def run_auth(access_level: str) -> None:
     config = client_config()
     server = OAuthHTTPServer(("127.0.0.1", 0), OAuthCallbackHandler)
     redirect_uri = f"http://127.0.0.1:{server.server_port}/oauth2callback"
+    scopes = scopes_for(access_level)
     params = {
         "client_id": config["client_id"],
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(SCOPES),
+        "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
@@ -240,17 +262,28 @@ def cmd_auth(_args: argparse.Namespace) -> None:
     )
     if "refresh_token" not in token_data:
         fail("OAuth response did not include a refresh token; rerun auth with consent")
-    token_data["scope_requested"] = SCOPES
-    atomic_json(TOKEN_PATH, token_data)
-    print(f"stored Search Console token at {TOKEN_PATH}")
+    token_data["access_level"] = access_level
+    token_data["scope_requested"] = scopes
+    path = token_path(access_level)
+    atomic_json(path, token_data)
+    print(f"stored {access_level} Search Console token at {path}")
 
 
-def access_token() -> str:
+def cmd_auth(_args: argparse.Namespace) -> None:
+    run_auth("read")
+
+
+def cmd_auth_write(_args: argparse.Namespace) -> None:
+    run_auth("write")
+
+
+def access_token(access_level: str = DEFAULT_ACCESS_LEVEL) -> str:
     config = client_config()
-    token_data = load_json(TOKEN_PATH)
+    path = token_path(access_level)
+    token_data = load_json(path)
     refresh_token = token_data.get("refresh_token")
     if not refresh_token:
-        fail(f"{TOKEN_PATH} has no refresh_token; run auth again")
+        fail(f"{path} has no refresh_token; run auth again")
     refreshed = token_request(
         {
             "client_id": config["client_id"],
@@ -261,7 +294,7 @@ def access_token() -> str:
     )
     token_data.update(refreshed)
     token_data["refresh_token"] = refresh_token
-    atomic_json(TOKEN_PATH, token_data)
+    atomic_json(path, token_data)
     access_token_value = refreshed.get("access_token")
     if not access_token_value:
         fail("OAuth refresh response did not include an access token", public=False)
@@ -286,6 +319,30 @@ def cmd_sitemaps(args: argparse.Namespace) -> None:
     site = urllib.parse.quote(site_url(args.site), safe="")
     data = http_json(f"{API_ROOT}/sites/{site}/sitemaps", token=access_token())
     print_json(data)
+
+
+def sitemap_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        fail("sitemap URL must be fully qualified, for example https://www.example.com/sitemap.xml")
+    return value
+
+
+def cmd_submit_sitemap(args: argparse.Namespace) -> None:
+    site = urllib.parse.quote(site_url(args.site), safe="")
+    feed = urllib.parse.quote(sitemap_url(args.sitemap), safe="")
+    http_json(
+        f"{API_ROOT}/sites/{site}/sitemaps/{feed}",
+        method="PUT",
+        token=access_token("write"),
+    )
+    print_json(
+        {
+            "submitted": True,
+            "site": site_url(args.site),
+            "sitemap": args.sitemap,
+        }
+    )
 
 
 def cmd_search_analytics(args: argparse.Namespace) -> None:
@@ -358,12 +415,28 @@ def parser() -> argparse.ArgumentParser:
     auth = sub.add_parser("auth", help="run browser OAuth consent flow")
     auth.set_defaults(func=cmd_auth)
 
+    auth_write = sub.add_parser(
+        "auth-write",
+        help="run browser OAuth consent flow for explicit sitemap write access",
+    )
+    auth_write.set_defaults(func=cmd_auth_write)
+
     sites = sub.add_parser("sites", help="list accessible Search Console properties")
     sites.set_defaults(func=cmd_sites)
 
     sitemaps = sub.add_parser("sitemaps", help="list sitemaps for a property")
     sitemaps.add_argument("site", help="domain, sc-domain:domain, or URL-prefix property")
     sitemaps.set_defaults(func=cmd_sitemaps)
+
+    submit_sitemap = sub.add_parser(
+        "submit-sitemap",
+        help="submit a sitemap for a property using the explicit write token",
+    )
+    submit_sitemap.add_argument(
+        "site", help="domain, sc-domain:domain, or URL-prefix property"
+    )
+    submit_sitemap.add_argument("sitemap", help="fully qualified sitemap URL")
+    submit_sitemap.set_defaults(func=cmd_submit_sitemap)
 
     analytics = sub.add_parser("search-analytics", help="query Search Analytics")
     analytics.add_argument("site", help="domain, sc-domain:domain, or URL-prefix property")
