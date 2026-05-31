@@ -3,6 +3,63 @@ name: launchplane
 description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, and audited operator mutations. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
 metadata:
   short-description: Operate Launchplane-managed state
+resources:
+  - path: scripts/launchplane-context.py
+    kind: script
+    description: Read Launchplane context for a repository, branch, issue, or pull request.
+  - path: scripts/launchplane-write-action.py
+    kind: script
+    description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
+  - path: references/context-helper-contract.md
+    kind: reference
+    description: Contract for Launchplane context helper configuration, fallback, output, and redaction behavior.
+  - path: references/operator-contract.md
+    kind: reference
+    description: Operator safety contract for Launchplane private config, credentials, and runtime mutations.
+  - path: references/write-action-helper-contract.md
+    kind: reference
+    description: Contract for write-action helper entrypoints, exit behavior, idempotency, and redacted output.
+  - path: references/public-safety.md
+    kind: reference
+    description: Public-safety guidance for Launchplane outputs, repo metadata, and credential handling.
+  - path: references/context.available.example.json
+    kind: reference
+    description: Example available Launchplane context response.
+  - path: references/context.no-context.example.json
+    kind: reference
+    description: Example no-context Launchplane response.
+  - path: references/launchplane-context.local.example.json
+    kind: reference
+    description: Public-safe example for private context helper configuration.
+  - path: references/launchplane-operator.local.example.json
+    kind: reference
+    description: Public-safe example for private operator helper configuration.
+commands:
+  - name: launchplane-context
+    source: skill
+    resource_path: scripts/launchplane-context.py
+    example_argv: ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
+    purpose: Reads Launchplane context through the structural helper.
+  - name: launchplane-product-config-preflight
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-preflight", "--product", "<product>", "--context", "<context>", "--source-url", "<url>", "--reason", "<reason>"]
+    purpose: Preflights product-config intent through the bounded helper path.
+  - name: launchplane-product-config-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-dry-run", "--payload-file", "<file>"]
+    purpose: Performs a redacted product-config dry-run before any apply.
+  - name: launchplane-product-config-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-apply", "--payload-file", "<file>", "--idempotency-key", "<key>"]
+    purpose: Applies product-config changes through the bounded helper after approval.
+  - name: launchplane-merge-train-controller-run-once
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--repo", "OWNER/REPO", "--idempotency-key", "<key>"]
+    purpose: Advances one merge-train controller phase through the bounded helper.
 policy:
   command_policies:
     - id: prefer-launchplane-write-helper-for-product-config-api

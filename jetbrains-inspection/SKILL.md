@@ -3,6 +3,39 @@ name: jetbrains-inspection
 description: Use JetBrains IDE inspections through the local inspection plugin; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
+resources:
+  - path: scripts/jb-inspect.py
+    kind: script
+    description: Route-safe JetBrains inspection helper with lifecycle, stale-result, and cleanup handling.
+  - path: tests/test_jb_inspect.py
+    kind: reference
+    description: Regression tests for JetBrains inspection helper routing and lifecycle behavior.
+commands:
+  - name: jetbrains-inspection-list
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "list"]
+    purpose: Lists discovered IDE projects and plugin routes.
+  - name: jetbrains-inspection-route
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "route", "--repo", "$PWD"]
+    purpose: Resolves the target IDE and project route for a repository.
+  - name: jetbrains-inspection-closeout
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "closeout", "--repo", "$PWD", "--scope", "changed_files"]
+    purpose: Runs the readiness inspection flow with route safety, lifecycle cleanup, and stale-result checks.
+  - name: jetbrains-inspection-status
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "status", "--repo", "$PWD"]
+    purpose: Reads route-pinned inspection status through the helper.
+  - name: jetbrains-inspection-problems
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "problems", "--repo", "$PWD", "--severity", "error"]
+    purpose: Fetches current inspection problems through the helper.
 policy:
   command_policies:
     - id: prefer-jb-inspect-for-plugin-http
