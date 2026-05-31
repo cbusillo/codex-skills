@@ -122,6 +122,13 @@ cleanup pass or track a focused cleanup item. If a finding is a false positive o
 cannot be fixed cleanly, discuss an explicit suppression, baseline, or config
 change.
 
+Reviewability is part of readiness. Unless a change is mostly mechanical, treat
+diffs over roughly 800 changed lines as a review-risk signal; for complex logic
+changes, prefer stages under roughly 500 changed lines. If a change is larger,
+explain whether it can be split into reviewable stages and identify the smallest
+coherent stage to land first, based on the actual diff, dependencies, and
+affected call sites.
+
 When work changes docs routing, validation commands, lint/inspection routing,
 required docs conditions, important workflows, health endpoints, repo
 relationships, cleanup policy, or ownership boundaries, check whether

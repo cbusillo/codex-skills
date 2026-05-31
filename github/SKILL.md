@@ -236,6 +236,14 @@ when no helper covers the operation, and route those calls through
   shell command substitution runs inside backticks. Follow
   `../references/every-code-formatting.md` when writing durable PR, issue,
   review, or closeout text.
+- **PR Body Quality**: Preserve important existing PR body content, especially
+  screenshots, images, and links that the author may not be able to recover.
+  Explain why the change is being made before listing what changed. Describe the
+  net change of the PR, not abandoned implementation attempts. Include
+  purposeful verification evidence, but avoid padding the body with routine CI
+  steps. Avoid absolute local paths; use repo-relative paths or GitHub links.
+  Mention related issues or PRs when useful, and avoid self-references to the PR
+  being edited.
 - **Authentication**: The helpers own token selection, fallback behavior,
   consistent warnings, and parseable output. If no automation token is
   configured, `scripts/gh-with-env-token` uses the active local `gh` account and
