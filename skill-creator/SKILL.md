@@ -101,6 +101,12 @@ When using subagents for validation, treat that as an evaluation surface. The go
 
 Prefer raw artifacts such as example prompts, outputs, diffs, logs, or traces. Give the minimum task-local context needed to perform the validation. Avoid passing the intended answer, suspected bug, intended fix, or your prior conclusions unless the validation explicitly requires them.
 
+Use the exec harness for behavior-sensitive skill changes when available. A
+skill that changes routing, command policy, safety boundaries, or GitHub/repo
+workflow semantics should have at least one harness-style prompt that exercises
+the intended behavior and a negative or ambiguity case when practical. Keep
+these tests focused on observable agent behavior rather than private reasoning.
+
 ### Anatomy of a Skill
 
 Every skill consists of a required SKILL.md file and optional bundled resources:
