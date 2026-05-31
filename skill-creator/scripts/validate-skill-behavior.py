@@ -579,6 +579,66 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         and "`.env` files" in routing_normalized,
         "Docs routing must keep local infra discovery on local-context.toml without .env fallback",
     )
+    require(
+        "private dns" in docs_normalized
+        and "cloudflare" in docs_normalized
+        and "verification cname" in docs_normalized
+        and "product repo `.env` files" in docs_normalized
+        and "hand live record inspection or mutation to `infra-ops`" in docs_normalized,
+        "Docs lookup must route product-repo DNS/Cloudflare discovery to local infra before mutation",
+    )
+    require(
+        "private dns and cloudflare requests are local-infrastructure routes"
+        in routing_normalized
+        and "bing verification cname or txt record" in routing_normalized
+        and "use `[docs].local_infra` to find the private dns/cloudflare authority"
+        in routing_normalized
+        and "use `infra-ops` for live record inspection, mutation, rollback, and verification"
+        in routing_normalized,
+        "Docs routing must include the product-repo DNS/Cloudflare regression path",
+    )
+    require(
+        "for dns or cloudflare work" in infra_normalized
+        and "read the private dns/cloudflare docs or helper usage" in infra_normalized
+        and "token values, zone identifiers, account details, and rollback specifics"
+        in infra_normalized
+        and "redacted verification results" in infra_normalized,
+        "Infra ops must own DNS/Cloudflare operations without public topology details",
+    )
+
+
+def test_dns_cloudflare_routes_to_local_infra_context() -> None:
+    docs_text = (ROOT / "docs-lookup" / "SKILL.md").read_text().lower()
+    routing_text = (ROOT / "docs-lookup" / "references" / "routing.md").read_text().lower()
+    docs_normalized = " ".join(docs_text.split())
+    routing_normalized = " ".join(routing_text.split())
+
+    require(
+        "description:" in docs_text
+        and "dns" in docs_text.split("---", 2)[1]
+        and "cloudflare" in docs_text.split("---", 2)[1],
+        "Docs lookup frontmatter must trigger for DNS/Cloudflare access discovery",
+    )
+    require(
+        "private dns" in docs_normalized
+        and "cloudflare" in docs_normalized
+        and "verification cname" in docs_normalized
+        and "product repo `.env` files" in docs_normalized
+        and "common token locations" in docs_normalized
+        and "hand live record inspection or mutation to `infra-ops`" in docs_normalized,
+        "Docs lookup must route DNS/Cloudflare discovery to local infra before mutation or token search",
+    )
+    require(
+        "private dns and cloudflare requests are local-infrastructure routes"
+        in routing_normalized
+        and "verification cname or txt record" in routing_normalized
+        and "use `[docs].local_infra` to find the private dns/cloudflare authority"
+        in routing_normalized
+        and "do not start by scanning product repo `.env` files" in routing_normalized
+        and "use `infra-ops` for live record inspection, mutation, rollback, and verification"
+        in routing_normalized,
+        "Docs routing must include the product-repo DNS/Cloudflare regression path",
+    )
 
 
 def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
@@ -610,6 +670,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_infra_ops_owns_live_infra_actions,
+        test_dns_cloudflare_routes_to_local_infra_context,
         test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
     for test in tests:

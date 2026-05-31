@@ -1,6 +1,6 @@
 ---
 name: docs-lookup
-description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations, but not performing infrastructure actions or mutations.
+description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations such as DNS or Cloudflare records, but not performing infrastructure actions or mutations.
 metadata:
   short-description: Find external docs and ops context
 ---
@@ -26,6 +26,9 @@ Use this skill for:
 - tasks that mention Odoo, JetBrains APIs, Next.js, React, Prisma, Mantine,
   Docker, GitHub Actions, uv, PyPI, Dokploy, Launchplane, Stripe, Shopify,
   RepairShopr, Fishbowl, or similar tools.
+- tasks that ask where to make private DNS or Cloudflare changes, such as
+  verification records, zone ownership, token location, or provider access
+  paths.
 - tasks where the answer depends on environment-specific operational context or
   discovering source-of-truth docs or access paths for private operations.
 
@@ -67,6 +70,12 @@ environment is configured, reached, mutated, verified, or owned. Do not infer
 that a product repo, cloud provider, dashboard, deployment platform, or browser
 session is the source of truth until the configured local context route has been
 checked or ruled out.
+
+For private DNS or Cloudflare requests, such as adding a verification CNAME or
+TXT record or finding where provider access is configured, use this skill only
+to find the configured local infrastructure source of truth. Then hand live
+record inspection or mutation to `infra-ops`. Do not search product repo `.env`
+files, shell history, or common token locations as a first move.
 
 Keep the skill guidance conceptual. Do not add local service names, hostnames,
 tokens, account details, topology, or private repo inventories to public skills.

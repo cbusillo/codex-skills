@@ -44,6 +44,14 @@ local docs path as private local context:
   PRs, docs, or handoffs
 - prefer summaries and safe source references over raw command output
 
+Private DNS and Cloudflare requests are local-infrastructure routes when they
+depend on this environment's zones, accounts, credentials, or verification
+records. For example, if a product repo needs a Bing verification CNAME or TXT
+record, use `[docs].local_infra` to find the private DNS/Cloudflare authority;
+do not start by scanning product repo `.env` files, shell history, or common
+provider-token locations. After the docs/access path is known, use `infra-ops`
+for live record inspection, mutation, rollback, and verification.
+
 If the file or key is missing and local infrastructure context is required, say
 that the local docs source is not configured instead of guessing. Do not fall
 back to shell environment variables or repo `.env` files for this routing.
