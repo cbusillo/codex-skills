@@ -213,6 +213,7 @@ def cmd_status(_args: argparse.Namespace) -> None:
         "scope": READ_SCOPE,
         "read_token_configured": read_token_configured,
         "write_token_configured": write_token_configured,
+        "sitemap_submission_configured": write_token_configured,
         "read_scope": READ_SCOPE,
         "write_scope": WRITE_SCOPE,
     }

@@ -46,6 +46,7 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertEqual(rendered[0]["scope"], google_search_console.READ_SCOPE)
         self.assertEqual(rendered[0]["read_token_configured"], True)
         self.assertEqual(rendered[0]["write_token_configured"], False)
+        self.assertEqual(rendered[0]["sitemap_submission_configured"], False)
 
     def test_status_keeps_legacy_token_configured_read_only(self) -> None:
         rendered: list[dict[str, Any]] = []
@@ -70,6 +71,7 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertEqual(rendered[0]["token_configured"], False)
         self.assertEqual(rendered[0]["read_token_configured"], False)
         self.assertEqual(rendered[0]["write_token_configured"], True)
+        self.assertEqual(rendered[0]["sitemap_submission_configured"], True)
 
     def test_auth_does_not_request_incremental_grants(self) -> None:
         captured: dict[str, str] = {}
