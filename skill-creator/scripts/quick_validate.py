@@ -223,13 +223,16 @@ def validate_resources(resources, skill_dir=None):
             return paths, path_error
         if raw_path in paths:
             return paths, f"{path}.path duplicates {raw_path}"
-        paths.add(raw_path)
-        if skill_dir is not None and not (Path(skill_dir) / raw_path).is_file():
-            return paths, f"{path}.path points to missing file {raw_path}"
         kind = resource.get("kind")
         if not isinstance(kind, str) or kind not in ALLOWED_RESOURCE_KINDS:
             allowed = ", ".join(sorted(ALLOWED_RESOURCE_KINDS))
             return paths, f"{path}.kind must be one of: {allowed}"
+        paths.add(raw_path)
+        resource_path = Path(skill_dir) / raw_path if skill_dir is not None else None
+        if resource_path is not None and not resource_path.exists():
+            return paths, f"{path}.path points to missing {raw_path}"
+        if resource_path is not None and kind in {"script", "reference"} and not resource_path.is_file():
+            return paths, f"{path}.path must be a file for kind: {kind}"
         if not valid_nonempty_string(resource.get("description"), MAX_COMMAND_POLICY_PURPOSE_LENGTH):
             return paths, f"{path}.description must be a non-empty string of at most {MAX_COMMAND_POLICY_PURPOSE_LENGTH} characters"
     return paths, None
@@ -579,14 +582,23 @@ def run_self_tests():
         "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts\n    kind: script\n    description: Uses a directory.\n---\n",
         skill_creator_dir,
     )
-    if valid or "points to missing file scripts" not in message:
+    if valid or "path must be a file for kind: script" not in message:
         print(
-            "not ok structured-metadata-directory-resource: "
+            "not ok structured-metadata-directory-script-resource: "
             f"got ({valid}, {message!r})",
             file=sys.stderr,
         )
         return 1
-    print("ok structured-metadata-directory-resource")
+    print("ok structured-metadata-directory-script-resource")
+
+    valid, message = validate_skill_content(
+        "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: assets\n    kind: asset\n    description: Uses an asset directory.\n  - path: references\n    kind: template\n    description: Uses a template directory.\n---\n",
+        skill_creator_dir,
+    )
+    if not valid:
+        print(f"not ok structured-metadata-directory-assets: {message}", file=sys.stderr)
+        return 1
+    print("ok structured-metadata-directory-assets")
 
     valid, message = validate_skill_content(
         "---\nname: demo-skill\ndescription: Use for demo work.\nresources:\n  - path: scripts/quick_validate.py\n    kind: script\n    description: Runs helper.\ncommands:\n  - name: helper\n    source: skill\n    resource_path: scripts\n    example_argv: [\"uv\", \"run\", \"scripts\"]\n    purpose: Runs helper.\n---\n",
