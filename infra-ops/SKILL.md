@@ -7,6 +7,12 @@ resources:
   - path: references/private-context.example.md
     kind: reference
     description: Public-safe example of the private operations context contract and repo pointer conventions.
+  - path: references/npmplus-context-schema.md
+    kind: reference
+    description: Public-safe schema for the generic NPMplus engine and private context provider boundary.
+  - path: scripts/npmplus-ops.py
+    kind: script
+    description: Generic redacted NPMplus operations engine driven by private context.
 commands:
   - name: infra-ops-private-context
     source: external
@@ -14,9 +20,19 @@ commands:
       [
         "sh",
         "-lc",
-        "awk '/^\\[docs\\]/{s=1;next}/^\\[/{s=0}s&&/^local_infra[[:space:]]*=/{f=1}END{exit !f}' ~/.code/local-context.toml && printf configured || printf missing",
+        "awk '/^\\[docs\\]/{s=1}/^\\[/{s=0}s&&/^[[:space:]]*local_infra[[:space:]]*=/{f=1}END{exit !f}' ~/.code/local-context.toml&&printf configured||printf missing",
       ]
     purpose: Checks whether the private operations docs pointer is configured without printing its value.
+  - name: infra-ops-npmplus-context-check
+    source: skill
+    resource_path: scripts/npmplus-ops.py
+    example_argv: ["uv", "run", "scripts/npmplus-ops.py", "context-check"]
+    purpose: Validates the private NPMplus context provider without printing private values.
+  - name: infra-ops-npmplus-pilot-status
+    source: skill
+    resource_path: scripts/npmplus-ops.py
+    example_argv: ["uv", "run", "scripts/npmplus-ops.py", "pilot-status"]
+    purpose: Reads redacted NPMplus inventory and pilot target summaries through private context.
 ---
 
 # Infra Ops
@@ -84,10 +100,12 @@ adapter families such as ingress, DNS, virtualization, mesh networking, media
 services, monitoring, and managed product/runtime APIs, but it should not bake
 one site, product, hostname, or secret layout into `SKILL.md`.
 
-For NPMplus or ingress work, use the private docs and helpers to identify the
-automation user, canary route, lifecycle checks, rollback snapshot, and any
-service-specific guardrails. Treat that as the first validation path for this
-skill, not as a hard-coded public example.
+For NPMplus or ingress work, use the public generic NPMplus engine only through
+the private context provider contract in
+`references/npmplus-context-schema.md`. Keep the automation user, canary route,
+remote validation commands, rollback snapshot, and service-specific guardrails
+in the private repo. Treat the public engine as reusable API/redaction/dry-run
+machinery, not as a place for site-specific defaults.
 
 For Launchplane-managed runtime state, use the `launchplane` skill once the
 resource is known to be managed by Launchplane. `infra-ops` can coordinate the
