@@ -209,7 +209,7 @@ def cmd_status(_args: argparse.Namespace) -> None:
     status = {
         "config_dir": str(CONFIG_DIR),
         "client_configured": CLIENT_PATH.exists(),
-        "token_configured": read_token_configured or write_token_configured,
+        "token_configured": read_token_configured,
         "scope": READ_SCOPE,
         "read_token_configured": read_token_configured,
         "write_token_configured": write_token_configured,
@@ -241,7 +241,7 @@ def run_auth(access_level: str) -> None:
         "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
-        "include_granted_scopes": "true",
+        "include_granted_scopes": "false",
     }
     auth_url = f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
     print("Opening browser for Google OAuth consent...")

@@ -47,7 +47,7 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertEqual(rendered[0]["read_token_configured"], True)
         self.assertEqual(rendered[0]["write_token_configured"], False)
 
-    def test_status_treats_write_only_token_as_configured(self) -> None:
+    def test_status_keeps_legacy_token_configured_read_only(self) -> None:
         rendered: list[dict[str, Any]] = []
 
         with TemporaryDirectory() as tmp:
@@ -67,9 +67,36 @@ class GoogleSearchConsoleHelperTest(TestCase):
             ):
                 google_search_console.cmd_status(argparse.Namespace())
 
-        self.assertEqual(rendered[0]["token_configured"], True)
+        self.assertEqual(rendered[0]["token_configured"], False)
         self.assertEqual(rendered[0]["read_token_configured"], False)
         self.assertEqual(rendered[0]["write_token_configured"], True)
+
+    def test_auth_does_not_request_incremental_grants(self) -> None:
+        captured: dict[str, str] = {}
+
+        class FakeServer:
+            server_port = 8765
+            oauth_code = "code"
+            oauth_error = None
+
+            def handle_request(self) -> None:
+                return
+
+        def fake_open(url: str) -> None:
+            parsed = google_search_console.urllib.parse.urlparse(url)
+            query = google_search_console.urllib.parse.parse_qs(parsed.query)
+            captured["include_granted_scopes"] = query["include_granted_scopes"][0]
+
+        with (
+            patch.object(google_search_console, "client_config", return_value={"client_id": "client", "client_secret": "secret"}),
+            patch.object(google_search_console, "OAuthHTTPServer", return_value=FakeServer()),
+            patch.object(google_search_console.webbrowser, "open", side_effect=fake_open),
+            patch.object(google_search_console, "token_request", return_value={"refresh_token": "refresh"}),
+            patch.object(google_search_console, "atomic_json"),
+        ):
+            google_search_console.run_auth("read")
+
+        self.assertEqual(captured["include_granted_scopes"], "false")
 
     def test_token_paths_are_separate_by_access_level(self) -> None:
         self.assertEqual(
