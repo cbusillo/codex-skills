@@ -141,6 +141,14 @@ Common top-level keys:
   Concrete app-facing URLs may be committed in private implementation repos when
   they are intentionally repo-facing operational metadata.
 - `relatedRepos`: repos agents should consider during cross-repo work.
+- `prWorkflow`: repo-specific PR workflow hints such as whether a green,
+  mergeable PR is only readiness evidence, whether explicit user approval is
+  required before merge, and which watch skill/helper should monitor long PR
+  fix trains.
+- `release`: repo-specific release intent and batching metadata. Use this for
+  facts such as which file or workflow expresses release intent, release
+  metadata files, immediate-release triggers, and defer/batch conditions. Do not
+  put repository-specific release semantics in global skills.
 - `launchplane`: public-safe routing metadata for Launchplane context,
   operator, and merge-train surfaces. It may name environment variable names,
   helper paths, workflow names, labels, local config examples, and expected
