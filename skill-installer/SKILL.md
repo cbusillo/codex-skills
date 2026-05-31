@@ -3,6 +3,27 @@ name: skill-installer
 description: Install skills into Every Code or Codex-style agent skill directories from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).
 metadata:
   short-description: Install curated skills from openai/skills or other repos
+resources:
+  - path: scripts/list-skills.py
+    kind: script
+    description: List installable skills from a GitHub repo path and annotate already-installed entries.
+  - path: scripts/install-skill-from-github.py
+    kind: script
+    description: Install one or more skill directories from a GitHub repo path or tree URL.
+  - path: scripts/github_utils.py
+    kind: script
+    description: Shared GitHub request helpers used by the installer scripts.
+commands:
+  - name: list-installable-skills
+    source: skill
+    resource_path: scripts/list-skills.py
+    example_argv: ["uv", "run", "scripts/list-skills.py", "--path", "skills/.curated"]
+    purpose: Lists available skills with installed annotations.
+  - name: install-skill-from-github
+    source: skill
+    resource_path: scripts/install-skill-from-github.py
+    example_argv: ["uv", "run", "scripts/install-skill-from-github.py", "--repo", "openai/skills", "--path", "skills/.curated/<skill-name>"]
+    purpose: Installs a skill from a GitHub repository into the active skills directory.
 ---
 
 # Skill Installer

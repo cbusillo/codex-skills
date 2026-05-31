@@ -3,6 +3,24 @@ name: plugin-creator
 description: Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, and baseline placeholders you can edit before publishing or testing. Use when Codex needs to create a new local plugin, add optional plugin structure, or generate or update repo-root `.agents/plugins/marketplace.json` entries for plugin ordering and availability metadata.
 metadata:
   short-description: Scaffold Codex plugins
+resources:
+  - path: scripts/create_basic_plugin.py
+    kind: script
+    description: Scaffold a Codex plugin directory and optionally update marketplace metadata.
+  - path: references/plugin-json-spec.md
+    kind: reference
+    description: Canonical sample JSON for plugin manifests and marketplace entries.
+commands:
+  - name: create-basic-plugin
+    source: skill
+    resource_path: scripts/create_basic_plugin.py
+    example_argv: ["uv", "run", "scripts/create_basic_plugin.py", "<plugin-name>"]
+    purpose: Creates a plugin scaffold with required manifest placeholders.
+  - name: create-basic-plugin-with-marketplace
+    source: skill
+    resource_path: scripts/create_basic_plugin.py
+    example_argv: ["uv", "run", "scripts/create_basic_plugin.py", "<plugin-name>", "--with-marketplace"]
+    purpose: Creates a plugin scaffold and adds or updates a marketplace entry.
 ---
 
 # Plugin Creator
