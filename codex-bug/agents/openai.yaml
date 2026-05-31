@@ -1,0 +1,3 @@
+interface:
+  display_name: "Codex Bug"
+  short_description: "Triage upstream Codex bug reports"
