@@ -100,6 +100,12 @@ adapter families such as ingress, DNS, virtualization, mesh networking, media
 services, monitoring, and managed product/runtime APIs, but it should not bake
 one site, product, hostname, or secret layout into `SKILL.md`.
 
+For DNS or Cloudflare work, resolve the private operations repo through
+`[docs].local_infra`, read the private DNS/Cloudflare docs or helper usage, and
+keep token values, zone identifiers, account details, and rollback specifics in
+that private source. Public summaries should stick to generic record types,
+intended diffs, safety tier, and redacted verification results.
+
 For NPMplus or ingress work, use the public generic NPMplus engine only through
 the private context provider contract in
 `references/npmplus-context-schema.md`. Keep the automation user, canary route,
