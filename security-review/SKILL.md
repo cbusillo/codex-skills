@@ -106,8 +106,9 @@ focus areas.
 ### Local infrastructure
 
 - For local Mac, home-lab, network, Proxmox/LXC, backup, or service security,
-  use the `[docs].local_infra` value from
-  `~/.code/local-context.toml` as the local docs source when configured, and
+  use the `[docs].local_infra` value from `$CODE_HOME/local-context.toml`,
+  falling back to `$CODEX_HOME/local-context.toml` and then
+  `~/.code/local-context.toml`, as the local docs source when configured, and
   start read-only unless the user explicitly approves mutation.
 
 ## Guardrails

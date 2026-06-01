@@ -6,9 +6,10 @@ topology.
 
 ## Repo Pointer
 
-Use the existing local context pointer for the private operations repo first:
+Use the existing local context pointer for the private operations repo first,
+rooted at `$CODE_HOME` when set, then `$CODEX_HOME`, then `~/.code`:
 
-- `~/.code/local-context.toml` `[docs].local_infra`: current pointer for the
+- `$CODE_HOME/local-context.toml` `[docs].local_infra`: current pointer for the
   private operations repo checkout.
 
 The pointer value is private. Do not print it into public issues, PRs, logs, or

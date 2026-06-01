@@ -82,6 +82,11 @@ chmod +x "$tmpdir/path-gh"
 workspace_env_dir="$tmpdir/.code"
 mkdir -p "$workspace_env_dir"
 printf 'CODEX_GITHUB_TOKEN=workspace-token\n' >"$workspace_env_dir/local.env"
+code_home_dir="$tmpdir/.chris-code"
+codex_home_dir="$tmpdir/.codex"
+mkdir -p "$code_home_dir" "$codex_home_dir"
+printf 'CODEX_GITHUB_TOKEN=code-home-token\n' >"$code_home_dir/local.env"
+printf 'CODEX_GITHUB_TOKEN=codex-home-token\n' >"$codex_home_dir/local.env"
 generated_worktree="$tmpdir/.code/working/codex-skills/branches/review"
 mkdir -p "$generated_worktree/github/scripts"
 cp "$repo_root/github/scripts/gh-with-env-token" "$generated_worktree/github/scripts/gh-with-env-token"
@@ -95,6 +100,29 @@ env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
 	"$generated_worktree/github/scripts/gh-with-env-token" auth status >/dev/null
 
 grep -qx 'workspace-token' "$env_log"
+
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	CODE_HOME="$code_home_dir" \
+	CODEX_HOME="$codex_home_dir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx 'code-home-token' "$env_log"
+
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	CODEX_HOME="$codex_home_dir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
+
+grep -qx 'codex-home-token' "$env_log"
 
 : >"$env_log"
 env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \

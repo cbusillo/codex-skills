@@ -3,6 +3,10 @@ set -eu
 
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
+elif [ -n "${CODE_HOME:-}" ]; then
+	env_file=$CODE_HOME/local.env
+elif [ -n "${CODEX_HOME:-}" ]; then
+	env_file=$CODEX_HOME/local.env
 elif [ -n "${HOME:-}" ]; then
 	env_file=$HOME/.code/local.env
 else

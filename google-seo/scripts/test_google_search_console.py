@@ -7,6 +7,7 @@
 import argparse
 import importlib.util
 import io
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -23,6 +24,30 @@ SPEC.loader.exec_module(google_search_console)
 
 
 class GoogleSearchConsoleHelperTest(TestCase):
+    def patch_config_paths(self, stack: ExitStack, config_dir: Path) -> None:
+        stack.enter_context(patch.object(google_search_console, "CONFIG_DIR", config_dir))
+        stack.enter_context(
+            patch.object(
+                google_search_console,
+                "CLIENT_PATH",
+                config_dir / "oauth-client.json",
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                google_search_console,
+                "READ_TOKEN_PATH",
+                config_dir / "search-console-token.json",
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                google_search_console,
+                "WRITE_TOKEN_PATH",
+                config_dir / "search-console-write-token.json",
+            )
+        )
+
     def test_fail_keeps_public_message_details(self) -> None:
         with patch.object(google_search_console.sys, "stderr", io.StringIO()) as stderr:
             with self.assertRaises(SystemExit):
@@ -30,24 +55,43 @@ class GoogleSearchConsoleHelperTest(TestCase):
 
         self.assertIn("missing example config", stderr.getvalue())
 
+    def test_runtime_home_prefers_code_home(self) -> None:
+        with TemporaryDirectory() as tmp:
+            code_home = str(Path(tmp) / "chris-code")
+            codex_home = str(Path(tmp) / "codex")
+
+            with patch.dict(
+                google_search_console.os.environ,
+                {"CODE_HOME": code_home, "CODEX_HOME": codex_home},
+                clear=False,
+            ):
+                self.assertEqual(google_search_console.runtime_home(), Path(code_home))
+
+    def test_runtime_home_uses_codex_home_before_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            codex_home = str(Path(tmp) / "codex")
+
+            with patch.dict(
+                google_search_console.os.environ,
+                {"CODEX_HOME": codex_home},
+                clear=False,
+            ):
+                google_search_console.os.environ.pop("CODE_HOME", None)
+                self.assertEqual(google_search_console.runtime_home(), Path(codex_home))
+
     def test_status_preserves_legacy_read_token_fields(self) -> None:
         rendered: list[dict[str, Any]] = []
 
         with TemporaryDirectory() as tmp:
             config_dir = Path(tmp)
-            client_path = config_dir / "oauth-client.json"
-            read_token_path = config_dir / "search-console-token.json"
-            write_token_path = config_dir / "search-console-write-token.json"
-            client_path.touch()
-            read_token_path.touch()
+            (config_dir / "oauth-client.json").touch()
+            (config_dir / "search-console-token.json").touch()
 
-            with (
-                patch.object(google_search_console, "CONFIG_DIR", config_dir),
-                patch.object(google_search_console, "CLIENT_PATH", client_path),
-                patch.object(google_search_console, "READ_TOKEN_PATH", read_token_path),
-                patch.object(google_search_console, "WRITE_TOKEN_PATH", write_token_path),
-                patch.object(google_search_console, "print_json", side_effect=rendered.append),
-            ):
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, config_dir)
+                stack.enter_context(
+                    patch.object(google_search_console, "print_json", side_effect=rendered.append)
+                )
                 google_search_console.cmd_status(argparse.Namespace())
 
         self.assertEqual(rendered[0]["token_configured"], True)
@@ -61,19 +105,14 @@ class GoogleSearchConsoleHelperTest(TestCase):
 
         with TemporaryDirectory() as tmp:
             config_dir = Path(tmp)
-            client_path = config_dir / "oauth-client.json"
-            read_token_path = config_dir / "search-console-token.json"
-            write_token_path = config_dir / "search-console-write-token.json"
-            client_path.touch()
-            write_token_path.touch()
+            (config_dir / "oauth-client.json").touch()
+            (config_dir / "search-console-write-token.json").touch()
 
-            with (
-                patch.object(google_search_console, "CONFIG_DIR", config_dir),
-                patch.object(google_search_console, "CLIENT_PATH", client_path),
-                patch.object(google_search_console, "READ_TOKEN_PATH", read_token_path),
-                patch.object(google_search_console, "WRITE_TOKEN_PATH", write_token_path),
-                patch.object(google_search_console, "print_json", side_effect=rendered.append),
-            ):
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, config_dir)
+                stack.enter_context(
+                    patch.object(google_search_console, "print_json", side_effect=rendered.append)
+                )
                 google_search_console.cmd_status(argparse.Namespace())
 
         self.assertEqual(rendered[0]["token_configured"], False)
@@ -102,14 +141,31 @@ class GoogleSearchConsoleHelperTest(TestCase):
             query = google_search_console.urllib.parse.parse_qs(parsed.query)
             captured["include_granted_scopes"] = query["include_granted_scopes"][0]
 
-        with (
-            patch.object(google_search_console, "client_config", return_value={"client_id": "client", "client_secret": "secret"}),
-            patch.object(google_search_console, "OAuthHTTPServer", return_value=FakeServer()),
-            patch.object(google_search_console.webbrowser, "open", side_effect=fake_open),
-            patch.object(google_search_console, "token_request", return_value={"refresh_token": "refresh"}),
-            patch.object(google_search_console, "atomic_json"),
-        ):
-            google_search_console.run_auth("read")
+        with TemporaryDirectory() as tmp:
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, Path(tmp))
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "client_config",
+                        return_value={"client_id": "client", "client_secret": "secret"},
+                    )
+                )
+                stack.enter_context(
+                    patch.object(google_search_console, "OAuthHTTPServer", return_value=FakeServer())
+                )
+                stack.enter_context(
+                    patch.object(google_search_console.webbrowser, "open", side_effect=fake_open)
+                )
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "token_request",
+                        return_value={"refresh_token": "refresh"},
+                    )
+                )
+                stack.enter_context(patch.object(google_search_console, "atomic_json"))
+                google_search_console.run_auth("read")
 
         self.assertEqual(captured["include_granted_scopes"], "false")
 
@@ -129,16 +185,31 @@ class GoogleSearchConsoleHelperTest(TestCase):
                 self.closed = True
 
         fake_server = FakeServer()
+        token_request = None
+        stderr = None
 
-        with (
-            patch.object(google_search_console, "client_config", return_value={"client_id": "client", "client_secret": "secret"}),
-            patch.object(google_search_console, "OAuthHTTPServer", return_value=fake_server),
-            patch.object(google_search_console.webbrowser, "open"),
-            patch.object(google_search_console, "token_request") as token_request,
-            patch.object(google_search_console.sys, "stderr", io.StringIO()) as stderr,
-        ):
-            with self.assertRaises(SystemExit) as exc:
-                google_search_console.run_auth("write")
+        with TemporaryDirectory() as tmp:
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, Path(tmp))
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "client_config",
+                        return_value={"client_id": "client", "client_secret": "secret"},
+                    )
+                )
+                stack.enter_context(
+                    patch.object(google_search_console, "OAuthHTTPServer", return_value=fake_server)
+                )
+                stack.enter_context(patch.object(google_search_console.webbrowser, "open"))
+                token_request = stack.enter_context(
+                    patch.object(google_search_console, "token_request")
+                )
+                stderr = stack.enter_context(
+                    patch.object(google_search_console.sys, "stderr", io.StringIO())
+                )
+                with self.assertRaises(SystemExit) as exc:
+                    google_search_console.run_auth("write")
 
         self.assertEqual(exc.exception.code, 1)
         self.assertEqual(
@@ -146,6 +217,8 @@ class GoogleSearchConsoleHelperTest(TestCase):
             google_search_console.OAUTH_CALLBACK_TIMEOUT_SECONDS,
         )
         self.assertTrue(fake_server.closed)
+        assert stderr is not None
+        assert token_request is not None
         self.assertIn("Browser callback timed out after 5 minutes", stderr.getvalue())
         token_request.assert_not_called()
 

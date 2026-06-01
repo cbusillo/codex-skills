@@ -84,10 +84,11 @@ repeatable SEO diagnostics across multiple websites.
 
 ## Shared Local State
 
-Default private location:
+Default private location, rooted at `$CODE_HOME` when set, then `$CODEX_HOME`,
+then `~/.code`:
 
 ```text
-~/.code/google-search/
+$CODE_HOME/google-search/
 ```
 
 Expected files:
@@ -98,7 +99,8 @@ Expected files:
   explicit write-scope helper.
 
 For PageSpeed API keys, first check the current environment and then
-`~/.code/local.env` for `PAGESPEED_INSIGHTS_API_KEY`. Never print the value.
+`$CODE_HOME/local.env`, falling back to `$CODEX_HOME/local.env` and
+`~/.code/local.env`, for `PAGESPEED_INSIGHTS_API_KEY`. Never print the value.
 
 ## Search Console OAuth
 

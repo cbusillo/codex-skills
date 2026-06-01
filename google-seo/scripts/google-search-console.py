@@ -22,10 +22,6 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_DIR = Path.home() / ".code" / "google-search"
-CLIENT_PATH = CONFIG_DIR / "oauth-client.json"
-READ_TOKEN_PATH = CONFIG_DIR / "search-console-token.json"
-WRITE_TOKEN_PATH = CONFIG_DIR / "search-console-write-token.json"
 READ_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
 DEFAULT_ACCESS_LEVEL = "read"
@@ -47,6 +43,20 @@ RAW_SENSITIVE_KEYS = {
     "secret",
     "token",
 }
+
+
+def runtime_home() -> Path:
+    if os.environ.get("CODE_HOME"):
+        return Path(os.environ["CODE_HOME"]).expanduser()
+    if os.environ.get("CODEX_HOME"):
+        return Path(os.environ["CODEX_HOME"]).expanduser()
+    return Path.home() / ".code"
+
+
+CONFIG_DIR = runtime_home() / "google-search"
+CLIENT_PATH = CONFIG_DIR / "oauth-client.json"
+READ_TOKEN_PATH = CONFIG_DIR / "search-console-token.json"
+WRITE_TOKEN_PATH = CONFIG_DIR / "search-console-write-token.json"
 
 
 def normalized_key(key: object) -> str:
