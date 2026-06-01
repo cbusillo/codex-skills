@@ -32,6 +32,25 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def command_argv(skill_name: str, command_name: str) -> list[str]:
+    text = (ROOT / skill_name / "SKILL.md").read_text()
+    marker = f"  - name: {command_name}"
+    start = text.find(marker)
+    require(start >= 0, f"{skill_name} must define {command_name}")
+    block_end = text.find("\n  - name:", start + len(marker))
+    if block_end < 0:
+        block_end = text.find("\n---", start + len(marker))
+    block = text[start:block_end]
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("example_argv:"):
+            raw_json = stripped.split(":", 1)[1].strip()
+            argv = json.loads(raw_json)
+            require(isinstance(argv, list), f"{command_name} must define example_argv")
+            return [str(token) for token in argv]
+    raise AssertionError(f"{command_name} must define single-line example_argv")
+
+
 def test_chronicle_stays_quiet_when_unavailable() -> None:
     text = (ROOT / "chronicle" / "SKILL.md").read_text()
     lower = text.lower()
@@ -607,6 +626,50 @@ def test_infra_ops_owns_live_infra_actions() -> None:
     )
 
 
+def test_infra_ops_private_context_command_detects_docs_pointer() -> None:
+    argv = command_argv("infra-ops", "infra-ops-private-context")
+    with tempfile.TemporaryDirectory() as tmp:
+        context_path = Path(tmp) / "local-context.toml"
+        context_path.write_text('[docs]\nlocal_infra = "private/ops"\n', encoding="utf-8")
+        command = [*argv, "--local-context", str(context_path)]
+        result = subprocess.run(
+            command,
+            cwd=ROOT / "infra-ops",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    require(
+        result.returncode == 0 and result.stdout.strip() == "configured",
+        "Infra ops private context command must detect [docs].local_infra without printing its value",
+    )
+    require(
+        "private/ops" not in result.stdout + result.stderr,
+        "Infra ops private context command must not print the private path value",
+    )
+
+
+def test_infra_ops_private_context_command_reports_missing() -> None:
+    argv = command_argv("infra-ops", "infra-ops-private-context")
+    with tempfile.TemporaryDirectory() as tmp:
+        context_path = Path(tmp) / "local-context.toml"
+        context_path.write_text('[docs]\nother = "private/ops"\n', encoding="utf-8")
+        command = [*argv, "--local-context", str(context_path)]
+        result = subprocess.run(
+            command,
+            cwd=ROOT / "infra-ops",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    require(
+        result.returncode != 0 and result.stdout.strip() == "missing",
+        "Infra ops private context command must report missing when [docs].local_infra is absent",
+    )
+
+
 def test_dns_cloudflare_routes_to_local_infra_context() -> None:
     docs_text = (ROOT / "docs-lookup" / "SKILL.md").read_text().lower()
     routing_text = (ROOT / "docs-lookup" / "references" / "routing.md").read_text().lower()
@@ -670,6 +733,8 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_infra_ops_owns_live_infra_actions,
+        test_infra_ops_private_context_command_detects_docs_pointer,
+        test_infra_ops_private_context_command_reports_missing,
         test_dns_cloudflare_routes_to_local_infra_context,
         test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
