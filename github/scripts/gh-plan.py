@@ -403,20 +403,14 @@ def resolve_manager_value(value: Any) -> str | None:
     raw_value = str(value).strip()
     if not raw_value:
         return None
-    resolved = resolve_person_for_project(raw_value)
-    if resolved:
-        return resolved
     if raw_value.casefold().startswith("person:"):
-        return None
+        return resolve_person_for_project(raw_value) or raw_value
     return raw_value
 
 
 def resolve_required_manager_value(value: Any) -> str | None:
     raw_value = str(value).strip() if value else ""
-    resolved = resolve_manager_value(raw_value)
-    if raw_value.casefold().startswith("person:") and not resolved:
-        raise PlanError(f"Unable to resolve manager {raw_value!r} through people context")
-    return resolved
+    return resolve_manager_value(raw_value)
 
 
 def resolve_person_for_project(value: str) -> str | None:
