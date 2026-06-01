@@ -21,10 +21,11 @@ The `Manager` field should hold the human owner or reviewer. Resolve this from:
 - Repository instructions or `AGENTS.md`.
 
 When the optional `people` skill and `.local/people.yaml` are available,
-manager values may be stable `person:<id>` references or configured aliases; the
-planning helper resolves them to the Project field value. If people context is
-absent or a value does not resolve, raw manager strings continue to pass through
-unchanged.
+manager values may be stable `person:<id>` references. The planning helper
+resolves those explicit references to the Project field value. Raw manager
+strings and GitHub handles are not rewritten through people context, and
+unresolved `person:<id>` values pass through unchanged so manager routing remains
+stable when people context is absent or incomplete.
 
 Treat unrecognized issue, PR, comment, review, and commit actors as unknown
 until live GitHub evidence or local people context identifies them. Unknown

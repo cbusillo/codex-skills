@@ -201,10 +201,11 @@ Rules:
   `Finish Line`; avoid duplicating the whole issue body into fields.
 - Use `workflow.repo_managers` for repo-specific human ownership. Fall back to
   `workflow.default_manager` only when a repo has no specific manager.
-- Manager values may be raw Project field values, GitHub handles, or optional
+- Manager values may be raw Project field values, GitHub handles, or explicit
   `person:<id>` references resolved through the `people` skill's private local
-  `.local/people.yaml` contract when available. Keep raw values working so
-  installations without `people` remain portable.
+  `.local/people.yaml` contract when available. Raw values are never rewritten
+  through people context, and unresolved `person:<id>` values pass through
+  unchanged so manager routing remains stable.
 - Treat `cleanup.commands[].when == "routine"` as ordinary closeout evidence:
   agents may run or report the command during closeout. Treat any other value,
   such as `explicit`, `cold`, or `aggressive`, as report-only unless the user or

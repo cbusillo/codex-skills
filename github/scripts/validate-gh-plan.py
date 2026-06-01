@@ -171,7 +171,7 @@ def test_manager_for_repo_passes_raw_values_without_people_resolver() -> None:
     assert manager == "@repo-manager"
 
 
-def test_manager_for_repo_drops_unresolved_person_ref() -> None:
+def test_manager_for_repo_preserves_unresolved_person_ref() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
@@ -183,22 +183,35 @@ def test_manager_for_repo_drops_unresolved_person_ref() -> None:
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
 
-    assert manager is None
+    assert manager == "person:example-manager"
 
 
-def test_explicit_unresolved_person_manager_fails() -> None:
+def test_explicit_unresolved_person_manager_is_preserved() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
     try:
-        try:
-            plan.resolve_required_manager_value("person:example-manager")
-        except plan.PlanError as exc:
-            assert "Unable to resolve manager" in str(exc)
-        else:
-            raise AssertionError("expected unresolved explicit person manager to fail")
+        assert plan.resolve_required_manager_value("person:example-manager") == "person:example-manager"
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
+
+
+def test_raw_manager_values_do_not_resolve_through_people() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    original_run = plan.subprocess.run
+    plan.PEOPLE_RESOLVER = SCRIPT
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"raw manager value should not invoke people resolver: {command}")
+
+    plan.subprocess.run = fake_run
+    try:
+        assert plan.resolve_manager_value("Example") == "Example"
+        assert plan.resolve_manager_value("@example-manager") == "@example-manager"
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+        plan.subprocess.run = original_run
 
 
 def test_manager_for_repo_resolves_person_ref_when_available() -> None:
@@ -1817,8 +1830,9 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_manager_for_repo_passes_raw_values_without_people_resolver,
-        test_manager_for_repo_drops_unresolved_person_ref,
-        test_explicit_unresolved_person_manager_fails,
+        test_manager_for_repo_preserves_unresolved_person_ref,
+        test_explicit_unresolved_person_manager_is_preserved,
+        test_raw_manager_values_do_not_resolve_through_people,
         test_manager_for_repo_resolves_person_ref_when_available,
         test_create_reports_issue_when_project_sync_fails,
         test_create_reports_stale_project_as_non_blocking_warning,
