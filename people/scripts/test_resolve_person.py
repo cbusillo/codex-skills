@@ -114,6 +114,15 @@ class ResolvePersonTest(TestCase):
         self.assertEqual(result["status"], "matched")
         self.assertNotIn("notes", result["match"])
 
+    def test_accepts_documented_detail_markdown_path(self) -> None:
+        people = self.people()
+        self.assertEqual(people[0]["details_file"], "people/example-manager.md")
+        result = resolve_person.resolve("Example", people)
+        self.assertEqual(result["status"], "matched")
+        self.assertEqual(
+            result["match"]["details_file"], ".local/people/example-manager.md"
+        )
+
     def test_person_ref_wins_over_alias_collision(self) -> None:
         data = resolve_person.yaml.safe_load(SAMPLE)
         data["people"].append(
