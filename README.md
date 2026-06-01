@@ -90,7 +90,8 @@ a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
 command it runs.
 
-Copy `.env.example` to `$CODE_HOME/local.env` and set one of:
+Copy `.env.example` to `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, or
+`~/.code/local.env`, matching the runtime home you use, and set one of:
 
 - `GH_TOKEN`
 - `GITHUB_TOKEN`
