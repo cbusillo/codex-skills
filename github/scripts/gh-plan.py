@@ -404,7 +404,7 @@ def resolve_manager_value(value: Any) -> str | None:
     if not raw_value:
         return None
     if raw_value.casefold().startswith("person:"):
-        return resolve_person_for_project(raw_value) or raw_value
+        return resolve_person_for_project(raw_value)
     return raw_value
 
 
@@ -438,12 +438,9 @@ def resolve_person_for_project(value: str) -> str | None:
     match = payload.get("match") if isinstance(payload, dict) else None
     if not isinstance(match, dict):
         return None
-    mention = match.get("mention_style")
-    if isinstance(mention, str) and mention.strip():
-        return mention.strip()
-    github = match.get("github")
-    if isinstance(github, str) and github.strip():
-        return f"@{github.strip().lstrip('@')}"
+    preferred = match.get("preferred_reference")
+    if isinstance(preferred, str) and preferred.strip():
+        return preferred.strip()
     display_name = match.get("display_name")
     if isinstance(display_name, str) and display_name.strip():
         return display_name.strip()

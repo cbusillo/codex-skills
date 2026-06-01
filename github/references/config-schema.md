@@ -204,8 +204,9 @@ Rules:
 - Manager values may be raw Project field values, GitHub handles, or explicit
   `person:<id>` references resolved through the `people` skill's private local
   `.local/people.yaml` contract when available. Raw values are never rewritten
-  through people context, and unresolved `person:<id>` values pass through
-  unchanged so manager routing remains stable.
+  through people context. Resolved people use Project field labels, preferring
+  `preferred_reference` and then `display_name`; unresolved `person:<id>` values
+  are skipped rather than written literally.
 - Treat `cleanup.commands[].when == "routine"` as ordinary closeout evidence:
   agents may run or report the command during closeout. Treat any other value,
   such as `explicit`, `cold`, or `aggressive`, as report-only unless the user or

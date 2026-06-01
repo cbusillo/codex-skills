@@ -171,7 +171,7 @@ def test_manager_for_repo_passes_raw_values_without_people_resolver() -> None:
     assert manager == "@repo-manager"
 
 
-def test_manager_for_repo_preserves_unresolved_person_ref() -> None:
+def test_manager_for_repo_skips_unresolved_person_ref() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
@@ -183,15 +183,15 @@ def test_manager_for_repo_preserves_unresolved_person_ref() -> None:
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
 
-    assert manager == "person:example-manager"
+    assert manager is None
 
 
-def test_explicit_unresolved_person_manager_is_preserved() -> None:
+def test_explicit_unresolved_person_manager_is_skipped() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
     try:
-        assert plan.resolve_required_manager_value("person:example-manager") == "person:example-manager"
+        assert plan.resolve_required_manager_value("person:example-manager") is None
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
 
@@ -214,7 +214,7 @@ def test_raw_manager_values_do_not_resolve_through_people() -> None:
         plan.subprocess.run = original_run
 
 
-def test_manager_for_repo_resolves_person_ref_when_available() -> None:
+def test_manager_for_repo_resolves_person_ref_to_project_label_when_available() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
     original_run = plan.subprocess.run
@@ -234,6 +234,8 @@ def test_manager_for_repo_resolves_person_ref_when_available() -> None:
             "status": "matched",
             "match": {
                 "id": "example-manager",
+                "display_name": "Example Manager",
+                "preferred_reference": "Example",
                 "github": "example-manager",
                 "mention_style": "@example-manager",
             },
@@ -255,7 +257,7 @@ def test_manager_for_repo_resolves_person_ref_when_available() -> None:
         plan.subprocess.run = original_run
         plan.shutil.which = original_which
 
-    assert manager == "@example-manager"
+    assert manager == "Example"
 
 
 def test_create_reports_issue_when_project_sync_fails() -> None:
@@ -1830,10 +1832,10 @@ def main() -> None:
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
         test_manager_for_repo_passes_raw_values_without_people_resolver,
-        test_manager_for_repo_preserves_unresolved_person_ref,
-        test_explicit_unresolved_person_manager_is_preserved,
+        test_manager_for_repo_skips_unresolved_person_ref,
+        test_explicit_unresolved_person_manager_is_skipped,
         test_raw_manager_values_do_not_resolve_through_people,
-        test_manager_for_repo_resolves_person_ref_when_available,
+        test_manager_for_repo_resolves_person_ref_to_project_label_when_available,
         test_create_reports_issue_when_project_sync_fails,
         test_create_reports_stale_project_as_non_blocking_warning,
         test_create_reports_project_auth_denied_as_non_blocking_warning,
