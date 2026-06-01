@@ -29,6 +29,7 @@ WRITE_TOKEN_PATH = CONFIG_DIR / "search-console-write-token.json"
 READ_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
 DEFAULT_ACCESS_LEVEL = "read"
+OAUTH_CALLBACK_TIMEOUT_SECONDS = 300
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_ROOT = "https://searchconsole.googleapis.com/webmasters/v3"
@@ -76,6 +77,14 @@ def fail(message: str, code: int = 1, *, public: bool = True) -> None:
     else:
         print("error: Google SEO helper command failed", file=sys.stderr)
     raise SystemExit(code)
+
+
+def fail_oauth_callback_timeout() -> None:
+    print(
+        "error: Browser callback timed out after 5 minutes; rerun the command when ready",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 def ensure_config_dir() -> None:
@@ -154,6 +163,10 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 class OAuthHTTPServer(HTTPServer):
     oauth_code: str | None = None
     oauth_error: str | None = None
+    callback_timed_out = False
+
+    def handle_timeout(self) -> None:
+        self.callback_timed_out = True
 
 
 def http_json(
@@ -233,6 +246,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 def run_auth(access_level: str) -> None:
     config = client_config()
     server = OAuthHTTPServer(("127.0.0.1", 0), OAuthCallbackHandler)
+    server.timeout = OAUTH_CALLBACK_TIMEOUT_SECONDS
     redirect_uri = f"http://127.0.0.1:{server.server_port}/oauth2callback"
     scopes = scopes_for(access_level)
     params = {
@@ -249,10 +263,15 @@ def run_auth(access_level: str) -> None:
     print(f"Redirect URI: {redirect_uri}")
     print(f"Authorization URL: {auth_url}")
     webbrowser.open(auth_url)
-    server.handle_request()
+    try:
+        server.handle_request()
+    finally:
+        server.server_close()
 
     if server.oauth_error:
         fail("OAuth provider returned an error; detail omitted", public=False)
+    if server.callback_timed_out:
+        fail_oauth_callback_timeout()
     if not server.oauth_code:
         fail("OAuth flow did not return an authorization code")
 
