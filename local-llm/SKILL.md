@@ -67,12 +67,26 @@ The endpoint determines data handling. A model name alone does not prove localit
 
 ## Sensitive Material
 
-Localhost and trusted-LAN models are preferred over cloud APIs for private or sensitive local material when the runtime is trusted. The restriction is on durable artifacts, not on local inference itself:
+Localhost and trusted-LAN models are preferred over cloud APIs for private or
+sensitive local material when the runtime is trusted. The restriction is on
+durable artifacts, not on local inference itself. When local config marks an
+endpoint as `locality: localhost` or `locality: trusted_lan` with private/local
+trust, it may receive original private local inputs for the current task,
+including unredacted rollout snippets, memory drafts, local config extracts, and
+repo-specific context. Do not redact away useful local signal just because the
+input would be unsafe for a public issue or cloud model.
+
+Keep these boundaries:
 
 - Do not commit raw private prompts, outputs, traces, memory drafts, hostnames, tokens, or account details.
 - Do not paste private model output into public issues, PR comments, docs, or skill examples.
 - Check whether LM Studio logging/history is enabled before sending material that should not be retained.
-- Do not send sensitive material to `cloud` endpoints unless the user explicitly approves that provider and context.
+- Strip or withhold obvious secrets such as tokens, passwords, API keys, and
+  private keys even for trusted local models unless the user explicitly asks for
+  secret analysis.
+- Redact, summarize, or avoid sensitive material for `cloud`, unknown, disabled,
+  or untrusted endpoints unless the user explicitly approves that provider and
+  context.
 
 ## Model Index
 
