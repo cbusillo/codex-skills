@@ -499,6 +499,188 @@ def test_real_trace_evidence_survives_meta_echo_filter() -> None:
             raise AssertionError(f"real trace evidence should still report {expected}")
 
 
+def test_static_diff_payloads_do_not_count_as_failures() -> None:
+    module = load_module()
+    static_diff = """
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 1234567..89abcde 100644
+@@ -1,6 +1,6 @@
+ name: Test
+ on:
+   push:
+     branches: [main]
++    # Process exited with code 1
++    # No such file or directory
+""".strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "tool_result", "payload": {"aggregated_output": static_diff}},
+                {"type": "tool_result", "payload": {"aggregated_output": static_diff}},
+                {"type": "tool_result", "payload": {"aggregated_output": static_diff}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"repeated_command_failure", "missing_dependency_or_tool"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"static diffs should not count as execution failures: {sorted(unexpected)}")
+
+
+def test_yaml_config_payloads_do_not_count_as_failures() -> None:
+    module = load_module()
+    workflow_config = """
+name: Validate
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    steps:
+      - run: echo 'Command failed examples belong to docs, not runtime'
+""".strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "tool_result", "payload": {"aggregated_output": workflow_config}},
+                {"type": "tool_result", "payload": {"aggregated_output": workflow_config}},
+                {"type": "tool_result", "payload": {"aggregated_output": workflow_config}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" in findings:
+        raise AssertionError("static workflow YAML should not count as repeated command failure")
+
+
+def test_real_failures_after_static_payload_still_count() -> None:
+    module = load_module()
+    config_dump = """
+name: Validate
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    steps:
+      - run: echo 'Command failed examples belong to docs, not runtime'
+""".strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "tool_result",
+                    "payload": {"aggregated_output": f"{config_dump}\nProcess exited with code 1"},
+                },
+                {
+                    "type": "tool_result",
+                    "payload": {"aggregated_output": f"{config_dump}\nerror: runtime failure after config dump"},
+                },
+                {
+                    "type": "tool_result",
+                    "payload": {"aggregated_output": f"{config_dump}\nCommand failed in runtime step after config dump"},
+                },
+                {
+                    "type": "tool_result",
+                    "payload": {"aggregated_output": f"{config_dump}\nNo such file or directory: missing-tool"},
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" not in findings:
+        raise AssertionError("real failures after a static config dump should still count")
+    if "missing_dependency_or_tool" not in findings:
+        raise AssertionError("missing dependencies after a static config dump should still count")
+
+
+def test_partial_diff_headers_do_not_count_as_failures() -> None:
+    module = load_module()
+    partial_diff = """
+--- a/scripts/build.sh
++++ b/scripts/build.sh
++echo 'Command failed examples belong to docs, not runtime'
++echo 'No such file or directory is documented here'
+""".strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "tool_result", "payload": {"aggregated_output": partial_diff}},
+                {"type": "tool_result", "payload": {"aggregated_output": partial_diff}},
+                {"type": "tool_result", "payload": {"aggregated_output": partial_diff}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"repeated_command_failure", "missing_dependency_or_tool"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"partial diff headers should suppress static failure examples: {sorted(unexpected)}")
+
+
+def test_repeated_identical_auto_review_events_still_count_as_loop() -> None:
+    module = load_module()
+    review_echo = (
+        "Auto Review: 1 issue(s) found. Findings: [P2] Preserve the specific error text. "
+        "Merge /tmp/auto-review to apply fixes."
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "event_msg", "payload": {"aggregated_output": review_echo}},
+                {"type": "event_msg", "payload": {"aggregated_output": review_echo}},
+                {"type": "event_msg", "payload": {"aggregated_output": review_echo}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auto_review_loop" not in findings:
+        raise AssertionError("identical repeated auto-review events should still satisfy loop threshold")
+
+
+def test_distinct_auto_review_events_still_count_as_loop() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "event_msg", "payload": {"aggregated_output": "Auto Review: 1 issue found for manager labels."}},
+                {"type": "event_msg", "payload": {"aggregated_output": "Auto Review: 2 issues found for details file paths."}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auto_review_loop" not in findings:
+        raise AssertionError("distinct auto-review events should still count as review-loop evidence")
+
+
+def test_spaced_auto_review_with_diff_marker_is_preserved() -> None:
+    module = load_module()
+    review_with_diff = "Auto Review: 1 issue found. The finding was valid. diff --git a/foo b/foo"
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [{"type": "event_msg", "payload": {"aggregated_output": review_with_diff}}],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auto_review_valid_finding" not in findings:
+        raise AssertionError("spaced Auto Review text should survive static-context guard")
+
+
+def test_plain_workflow_branch_failure_text_is_not_static_config() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "The workflow failed while checking branches: main; Process exited with code 1"},
+                {"message": "cannot push: branches: main is protected; Command failed"},
+                {"message": "name: build on: ubuntu failed with error:"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "repeated_command_failure" not in findings:
+        raise AssertionError("plain workflow/branch failure text should still count as real failures")
+
+
 def test_structured_payload_counts_are_separate_from_broad_context() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -692,6 +874,14 @@ def main() -> int:
     test_scanner_io_errors_do_not_count_as_command_failures()
     test_meta_echoes_do_not_create_findings()
     test_real_trace_evidence_survives_meta_echo_filter()
+    test_static_diff_payloads_do_not_count_as_failures()
+    test_yaml_config_payloads_do_not_count_as_failures()
+    test_real_failures_after_static_payload_still_count()
+    test_partial_diff_headers_do_not_count_as_failures()
+    test_repeated_identical_auto_review_events_still_count_as_loop()
+    test_distinct_auto_review_events_still_count_as_loop()
+    test_spaced_auto_review_with_diff_marker_is_preserved()
+    test_plain_workflow_branch_failure_text_is_not_static_config()
     test_structured_payload_counts_are_separate_from_broad_context()
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
