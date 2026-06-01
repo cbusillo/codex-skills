@@ -1,0 +1,4 @@
+---
+interface:
+  display_name: Local LLM
+  short_description: Inventory, chat with, and benchmark local models.

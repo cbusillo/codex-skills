@@ -56,16 +56,15 @@ rollout files, session traces, runout files, or agent workflow friction.
    understand high-value signals.
 4. If a local LLM is useful, use it only as a private bounded scout. Give it
    redacted analyzer output, signal names, and short synthesized observations,
-   not raw traces. Prefer
-   `uv run rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when
-   LM Studio is available; the helper defaults to a small bounded local model,
-   can be pointed at a newer local model with `ROLLOUT_FRICTION_LM_MODEL`,
-   strips known response wrappers, and times out instead of looping forever. Use
-   `--deep` only for deliberate large-model or cold-load reviews, not ordinary
-   audits. Treat these helper scripts as a temporary bridge until Every Code has
-   first-class LM Studio support. Run at most one scout pass unless the user asks
-   for another. Ask for missing classes or false-positive patterns, then verify
-   every suggestion yourself against maintained sources before acting.
+   not raw traces. When the optional `local-llm` skill is available, use its
+   model index and LM Studio helpers for endpoint/model selection and bounded
+   chat mechanics, while keeping this skill's rollout-specific evidence rules.
+   Use deep or cold-load model roles only for deliberate large-model reviews,
+   not ordinary audits. Otherwise prefer `uv run
+   rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when LM Studio
+   is available. Run at most one scout pass unless the user asks for another.
+   Ask for missing classes or false-positive patterns, then verify every
+   suggestion yourself against maintained sources before acting.
 5. Classify each finding as one of:
    - `promote-to-skill`
    - `fix-script-or-helper`

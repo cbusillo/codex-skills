@@ -91,7 +91,10 @@ When distilling Chronicle:
    durable. The Every Code agent performs classification, verification,
    recommendation, and any approved writes after reading the scout output. Do
    not send raw Chronicle data to remote services unless the user explicitly
-   approves the exact destination and scope.
+   approves the exact destination and scope. When the optional `local-llm` skill
+   is available, use it for local endpoint/model selection and bounded chat
+   mechanics; keep this skill's memory-specific evidence, redaction, and write
+   rules in force.
 3. Use sampling first, then chunked full-archive passes if the sample shows real
    value. For full passes, use a map/reduce flow that helps find recurring
    evidence, then have the Every Code agent review those scout notes before
