@@ -13,15 +13,14 @@ resources:
   - path: scripts/npmplus-ops.py
     kind: script
     description: Generic redacted NPMplus operations engine driven by private context.
+  - path: scripts/private-context-check.py
+    kind: script
+    description: Checks for configured private infra context without printing private values.
 commands:
   - name: infra-ops-private-context
-    source: external
-    example_argv:
-      [
-        "sh",
-        "-lc",
-        "awk '/^\\[docs\\]/{s=1}/^\\[/{s=0}s&&/^[[:space:]]*local_infra[[:space:]]*=/{f=1}END{exit !f}' ~/.code/local-context.toml&&printf configured||printf missing",
-      ]
+    source: skill
+    resource_path: scripts/private-context-check.py
+    example_argv: ["uv", "run", "scripts/private-context-check.py"]
     purpose: Checks whether the private operations docs pointer is configured without printing its value.
   - name: infra-ops-npmplus-context-check
     source: skill
