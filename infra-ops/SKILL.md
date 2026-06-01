@@ -51,10 +51,11 @@ The public skill is generic. The private operations repo is the authority for
 environment-specific docs, scripts, hostnames, topology, secrets, and service
 adapter details.
 
-Resolve that private repo from `~/.code/local-context.toml`, using the
-`[docs].local_infra` key. That is the local pointer for the private operations
-repo. Do not hard-code any private repo name, compatibility alias, branding, or
-absolute user path into committed public docs, issues, or PRs.
+Resolve that private repo from `$CODE_HOME/local-context.toml`, falling back to
+`$CODEX_HOME/local-context.toml` and then `~/.code/local-context.toml`, using
+the `[docs].local_infra` key. That is the local pointer for the private
+operations repo. Do not hard-code any private repo name, compatibility alias,
+branding, or absolute user path into committed public docs, issues, or PRs.
 
 If the local context file or key is missing, report that private infra context
 is not configured and keep the workflow read-only. Do not guess from provider

@@ -8,13 +8,22 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
 
-DEFAULT_LOCAL_CONTEXT = Path.home() / ".code" / "local-context.toml"
+def runtime_home() -> Path:
+    if os.environ.get("CODE_HOME"):
+        return Path(os.environ["CODE_HOME"]).expanduser()
+    if os.environ.get("CODEX_HOME"):
+        return Path(os.environ["CODEX_HOME"]).expanduser()
+    return Path.home() / ".code"
+
+
+DEFAULT_LOCAL_CONTEXT = runtime_home() / "local-context.toml"
 
 
 def private_context_configured(config: dict[str, Any]) -> bool:

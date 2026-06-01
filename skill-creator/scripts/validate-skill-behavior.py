@@ -569,7 +569,9 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         "Infra ops must visibly trigger for production-impacting infra changes",
     )
     require(
-        "`~/.code/local-context.toml`" in infra_text
+        "`$code_home/local-context.toml`" in infra_text
+        and "`$codex_home/local-context.toml`" in infra_text
+        and "`~/.code/local-context.toml`" in infra_text
         and "`[docs].local_infra`" in infra_text,
         "Infra ops must route through the local context docs pointer",
     )
@@ -592,7 +594,9 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         "Docs lookup must hand off after docs/access-path discovery",
     )
     require(
-        "~/.code/local-context.toml" in routing_text
+        "$code_home/local-context.toml" in routing_text
+        and "$codex_home/local-context.toml" in routing_text
+        and "~/.code/local-context.toml" in routing_text
         and "[docs].local_infra" in routing_text
         and "do not fall back" in routing_normalized
         and "`.env` files" in routing_normalized,

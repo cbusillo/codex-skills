@@ -128,12 +128,13 @@ uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
 special local cases where a different `gh` executable should be used.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
-loads `~/.code/local.env` by default, then prefers `CODEX_GITHUB_TOKEN`,
-`GH_TOKEN`, and `GITHUB_TOKEN` in that order. If no automation token is
-configured, it warns and uses the active local `gh` account. If the automation
-token is invalid or rate-limited, it retries with the active local `gh` account.
-Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
-different env file should be used.
+loads `$CODE_HOME/local.env` by default, falling back to
+`$CODEX_HOME/local.env` and then `~/.code/local.env`, then prefers
+`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. If no
+automation token is configured, it warns and uses the active local `gh` account.
+If the automation token is invalid or rate-limited, it retries with the active
+local `gh` account. Set `CODEX_SKILLS_ENV_FILE` only in tests or special local
+cases where a different env file should be used.
 
 Planning helpers are bot-first by default. If the bot token hits a GraphQL/API
 rate limit, helpers may retry with the active `gh` account and report the actor

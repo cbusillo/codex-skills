@@ -6,9 +6,9 @@
 """Generic NPMplus operations engine for the infra-ops skill.
 
 Environment-specific facts are supplied by a private context provider resolved
-from ~/.code/local-context.toml [docs].local_infra. This script must not grow
-private defaults such as hostnames, proxy host ids, env file paths, or remote
-validation commands.
+from the agent runtime home's local-context.toml [docs].local_infra. This script
+must not grow private defaults such as hostnames, proxy host ids, env file paths,
+or remote validation commands.
 """
 
 from __future__ import annotations
@@ -33,11 +33,21 @@ SCHEMA_VERSION = "npmplus.ops.v1"
 DEFAULT_PROFILE = "default"
 DEFAULT_CONTEXT_PROVIDER = Path("scripts/infra-context.py")
 DEFAULT_TIMEOUT_SECONDS = 15
-LOCAL_CONTEXT_PATH = Path.home() / ".code" / "local-context.toml"
 AUTH_REQUEST_NONE = {None, "", "none"}
 VALID_URL_SCHEMES = {"http", "https"}
 ALLOWED_LIFECYCLE_ACTIONS = {"proxy-host-enable", "proxy-host-disable"}
 PUBLIC_ALIAS_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def runtime_home() -> Path:
+    if os.environ.get("CODE_HOME"):
+        return Path(os.environ["CODE_HOME"]).expanduser()
+    if os.environ.get("CODEX_HOME"):
+        return Path(os.environ["CODEX_HOME"]).expanduser()
+    return Path.home() / ".code"
+
+
+LOCAL_CONTEXT_PATH = runtime_home() / "local-context.toml"
 
 
 class OpsError(RuntimeError):

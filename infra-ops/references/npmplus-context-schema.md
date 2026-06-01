@@ -7,7 +7,8 @@ remote commands, or rollback instructions.
 Private repos provide environment-specific context through the configured
 private operations repo pointer:
 
-- `~/.code/local-context.toml` `[docs].local_infra`
+- `$CODE_HOME/local-context.toml` `[docs].local_infra`, falling back to
+  `$CODEX_HOME/local-context.toml` and then `~/.code/local-context.toml`
 
 The default private provider path is `scripts/infra-context.py` inside that
 private repo. The provider command shape is:

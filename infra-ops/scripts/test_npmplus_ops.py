@@ -41,6 +41,25 @@ def put_text(path: Path, value: str) -> None:
         handle.write(value)
 
 
+def test_runtime_home_prefers_code_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    code_home = tmp_path / "chris-code"
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODE_HOME", str(code_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert npmplus_ops.runtime_home() == code_home
+
+
+def test_runtime_home_uses_codex_home_before_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.delenv("CODE_HOME", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert npmplus_ops.runtime_home() == codex_home
+
+
 def make_private_repo(tmp_path: Path) -> Path:
     private_repo = tmp_path / "private"
     (private_repo / "scripts").mkdir(parents=True)

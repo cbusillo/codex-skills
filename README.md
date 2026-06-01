@@ -86,10 +86,11 @@ procedure and leave private values in the local overlay.
 ## GitHub Automation Token
 
 The GitHub workflow skill includes `github/scripts/gh-with-env-token`,
-a small wrapper around `gh` that reads the user's ignored `.code/local.env` file
-and exports a token only for the command it runs.
+a small wrapper around `gh` that reads the user's ignored `local.env` file under
+`$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
+command it runs.
 
-Copy `.env.example` to `~/.code/local.env` and set one of:
+Copy `.env.example` to `$CODE_HOME/local.env` and set one of:
 
 - `GH_TOKEN`
 - `GITHUB_TOKEN`
@@ -101,7 +102,7 @@ Then call:
 github/scripts/gh-with-env-token pr view
 ```
 
-The `.code/local.env` file is local to the user account. Do not commit real
+The `local.env` file is local to the user account. Do not commit real
 tokens.
 
 ## Public-Safety Checklist
