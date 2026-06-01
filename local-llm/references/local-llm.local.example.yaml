@@ -1,0 +1,37 @@
+---
+# Public-safe example. Copy to `.local/local-llm.yaml` and replace values with
+# private local data. Do not commit real hostnames, LAN addresses, or tokens.
+version: 1
+default_endpoint: lmstudio-localhost
+endpoints:
+  lmstudio-localhost:
+    provider: lm_studio
+    base_url: http://127.0.0.1:1234/v1
+    locality: localhost
+    trust: private_local
+    enabled: true
+  example-trusted-lan:
+    provider: lm_studio
+    base_url: http://example-lmstudio.local:1234/v1
+    locality: trusted_lan
+    trust: private_local
+    enabled: false
+  example-cloud:
+    provider: openai_compatible
+    base_url: https://api.example.invalid/v1
+    locality: cloud
+    trust: external
+    enabled: false
+    token_env: LOCAL_LLM_EXAMPLE_TOKEN
+model_roles:
+  rollout_scout:
+    endpoint: lmstudio-localhost
+    primary: qwen3-coder-64b
+    fast: qwen3-coder-next
+    deep: qwen_qwen3.5-122b-a10b
+    max_tokens: 900
+    timeout_seconds: 180
+trusted_networks:
+  - name: example-home-lan
+    locality: trusted_lan
+    note: Replace locally; do not commit real network details.

@@ -1,0 +1,111 @@
+---
+version: 1
+curated_models:
+  qwen3-coder-64b:
+    provider_family: qwen
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - rollout_scout
+      - dense_trace_review
+      - code_workflow_audit
+    strengths:
+      - grounded analyzer review
+      - workflow and code false-positive detection
+      - strong quality-to-friction ratio for dense rollout reports
+    weaknesses:
+      - large download
+      - cold-load cost
+    tested:
+      date: 2026-06-01
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: Best rollout scout in the initial local trial.
+  qwen_qwen3.5-122b-a10b:
+    provider_family: qwen
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - deep_second_opinion
+      - dense_trace_review
+    strengths:
+      - broad reasoning
+      - useful as a deliberate second pass
+    weaknesses:
+      - may consume small output budgets with reasoning only
+      - slower and heavier than the default rollout scout
+    recommended_min_output_tokens: 2400
+    tested:
+      date: 2026-06-01
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: Usable after increasing max_tokens; not the default.
+  qwen3-coder-next:
+    provider_family: qwen
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - fast_rollout_scout
+      - code_workflow_audit
+    strengths:
+      - fast after load
+      - good analyzer-review instincts
+    weaknesses:
+      - less precise than qwen3-coder-64b on the initial rollout sample
+    tested:
+      date: 2026-06-01
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: Strong fast fallback.
+  devstral-small-2-24b-instruct-2512:
+    provider_family: mistral
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - small_fallback
+      - quick_agentic_code_review
+    strengths:
+      - smaller download
+      - coherent quick pass
+    weaknesses:
+      - less specific on dense rollout traces
+    tested:
+      date: 2026-06-01
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: Useful fallback, not preferred for dense rollout analysis.
+  openai/gpt-oss-20b:
+    provider_family: openai
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - smoke_test
+      - lightweight_chat
+    strengths:
+      - small enough for quick health checks
+    weaknesses:
+      - too generic for rollout-scout decisions in the initial trial
+    tested:
+      date: 2026-06-01
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: Avoid as rollout scout; fine for endpoint smoke tests.
+model_roles:
+  rollout_scout:
+    description: Advisory review of redacted rollout-friction analyzer reports.
+    primary: qwen3-coder-64b
+    fast: qwen3-coder-next
+    deep: qwen_qwen3.5-122b-a10b
+    small: devstral-small-2-24b-instruct-2512
+    temperature: 0.2
+    max_tokens: 900
+    timeout_seconds: 180
+  deep_second_opinion:
+    description: Deliberate second pass when quality matters more than latency.
+    primary: qwen_qwen3.5-122b-a10b
+    fallback: qwen3-coder-64b
+    temperature: 0.1
+    max_tokens: 2400
+    timeout_seconds: 420
+  smoke_test:
+    description: Short endpoint and model health check.
+    primary: openai/gpt-oss-20b
+    fallback: qwen3-coder-next
+    temperature: 0
+    max_tokens: 64
+    timeout_seconds: 120
