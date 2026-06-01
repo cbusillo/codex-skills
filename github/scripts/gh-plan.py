@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from typing import Any, Optional
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
 BOT_GH = SKILL_DIR.parent / "github/scripts/gh-with-env-token"
+PEOPLE_RESOLVER = SKILL_DIR.parent / "people/scripts/resolve_person.py"
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -392,7 +394,66 @@ def labels(config: dict[str, Any], *keys: str) -> list[str]:
 def manager_for_repo(config: dict[str, Any], repo: str) -> str | None:
     workflow = config.get("workflow") or {}
     repo_managers = workflow.get("repo_managers") or {}
-    return repo_managers.get(repo) or workflow.get("default_manager")
+    return resolve_manager_value(repo_managers.get(repo) or workflow.get("default_manager"))
+
+
+def resolve_manager_value(value: Any) -> str | None:
+    if not value:
+        return None
+    raw_value = str(value).strip()
+    if not raw_value:
+        return None
+    resolved = resolve_person_for_project(raw_value)
+    if resolved:
+        return resolved
+    if raw_value.casefold().startswith("person:"):
+        return None
+    return raw_value
+
+
+def resolve_required_manager_value(value: Any) -> str | None:
+    raw_value = str(value).strip() if value else ""
+    resolved = resolve_manager_value(raw_value)
+    if raw_value.casefold().startswith("person:") and not resolved:
+        raise PlanError(f"Unable to resolve manager {raw_value!r} through people context")
+    return resolved
+
+
+def resolve_person_for_project(value: str) -> str | None:
+    if not PEOPLE_RESOLVER.exists():
+        return None
+    try:
+        command = [sys.executable, str(PEOPLE_RESOLVER), value, "--strict"]
+        if uv := shutil.which("uv"):
+            command = [uv, "run", str(PEOPLE_RESOLVER), value, "--strict"]
+        proc = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    match = payload.get("match") if isinstance(payload, dict) else None
+    if not isinstance(match, dict):
+        return None
+    mention = match.get("mention_style")
+    if isinstance(mention, str) and mention.strip():
+        return mention.strip()
+    github = match.get("github")
+    if isinstance(github, str) and github.strip():
+        return f"@{github.strip().lstrip('@')}"
+    display_name = match.get("display_name")
+    if isinstance(display_name, str) and display_name.strip():
+        return display_name.strip()
+    return None
 
 
 def normalize_labels(items: list[dict[str, Any]] | None) -> list[str]:
@@ -798,7 +859,7 @@ def cmd_create(args: argparse.Namespace) -> None:
                 issue_url=issue["html_url"],
                 config=config,
                 focus=args.focus,
-                manager=args.manager or manager_for_repo(config, repo),
+                manager=resolve_required_manager_value(args.manager) or manager_for_repo(config, repo),
                 finish_line=args.finish_line,
                 item_id=added_item_id,
                 recoverable=True,
@@ -1148,7 +1209,7 @@ def cmd_project_set(args: argparse.Namespace) -> None:
         issue_url=issue["html_url"],
         config=config,
         focus=args.focus,
-        manager=args.manager,
+        manager=resolve_required_manager_value(args.manager),
         finish_line=args.finish_line,
         item_id=args.item_id,
         recoverable=True,

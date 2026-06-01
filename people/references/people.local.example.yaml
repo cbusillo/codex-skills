@@ -1,0 +1,68 @@
+---
+# Public-safe example only. Copy this shape to `.local/people.yaml` and replace
+# every value with private local data. Do not commit real people mappings.
+version: 1
+people:
+  - id: example-person
+    display_name: Example Person
+    preferred_reference: Example
+    aliases:
+      - Example
+      - Example Person
+      - example-user
+      - Exmaple
+    organization:
+      company: Example Company
+      team: Example Team
+      title: Example Role
+    relationship:
+      kind: collaborator
+      roles:
+        - planning-manager
+        - product-contact
+    contacts:
+      github:
+        username: example-user
+        bot_usernames:
+          - example-code-bot
+      email:
+        work: person@example.com
+      discord:
+        username: example_person
+        user_id: null
+      slack:
+        workspace: example-workspace
+        handle: example-person
+        user_id: null
+      phone:
+        mobile: null
+      website: https://example.com/
+    preferences:
+      preferred_contact: github
+      mention_style: "@example-user"
+      timezone: Etc/UTC
+      contact_notes: Use GitHub for repository work in this example.
+    trust:
+      level: trusted
+      intent: good
+      code: verify
+      authority: owner
+      handling: Verify technical claims and code changes before acting.
+    notes: Short private context hint for local use.
+    details_file: people/example-person.md
+
+  - id: example-reviewer
+    display_name: Example Reviewer
+    preferred_reference: Reviewer
+    aliases:
+      - Reviewer
+      - example-reviewer
+    contacts:
+      github:
+        username: example-reviewer
+    relationship:
+      kind: reviewer
+      roles:
+        - code-reviewer
+    preferences:
+      preferred_contact: github

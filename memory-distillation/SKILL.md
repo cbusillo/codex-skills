@@ -45,6 +45,10 @@ clean, prune, archive, reset, or distill memories.
   roadmap, and follow-up truth.
 - **Local config**: private, machine-specific, account-specific, or environment
   details. Prefer gitignored overlays for anything not safe to publish.
+- **People local config**: when the optional `people` skill and
+  `.local/people.yaml` are available, treat them as the maintained private
+  source for durable person identity, aliases, bot aliases, contact surfaces,
+  company/team, actor trust hints, role hints, and preferred contact context.
 
 ## Audit Workflow
 
@@ -58,6 +62,7 @@ clean, prune, archive, reset, or distill memories.
 3. Classify each candidate as one of:
    - `promote-to-skill`
    - `promote-to-repo-doc-or-issue`
+   - `move-to-people-local-config`
    - `move-to-local-config`
    - `keep-historical`
    - `delete-or-archive`
@@ -123,6 +128,11 @@ When distilling Chronicle:
   specific, architectural, or project-planning related.
 - Move to local config only when the fact is private/local and has a clear config
   contract or schema. If no contract exists, propose one before writing data.
+- Move durable person facts to people local config when available. Examples:
+  name-to-handle mappings, aliases, common misspellings, contact surfaces,
+  bot aliases, company/team/title, timezone, preferred contact method, actor
+  trust/posture hints, or stable relationship hints. Do not promote these private
+  facts into public skills.
 - Keep historical memories only when they are useful for later investigation and
   clearly non-authoritative.
 - Delete or archive memories that are stale, misleading, private, duplicative, or

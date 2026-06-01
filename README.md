@@ -67,15 +67,19 @@ Examples:
 .local/profile.md
 .local/github.md
 .local/launchplane.md
+.local/people.yaml
+.local/people/<person-id>.md
 ```
 
 When a skill needs local context, it should treat the local file as optional and
 continue to work without it. Commit `*.example.md` files when a template would
 help other users configure their own private overlay.
 
-Avoid storing tokens or passwords even in ignored files. Prefer environment
-variables, credential helpers, or secret managers, and document only the variable
-names a skill expects.
+Avoid storing tokens or passwords even in ignored files. Contact details such as
+email addresses, phone numbers, chat handles, and GitHub usernames may belong in
+private local overlays such as `.local/people.yaml`, but credentials still
+belong in environment variables, credential helpers, or secret managers. Public
+skills should document only the variable names a workflow expects.
 
 Keep local overrides out of skill instructions. Public `SKILL.md` files should
 describe reusable behavior, while ignored local files hold machine-specific

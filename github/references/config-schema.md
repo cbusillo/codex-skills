@@ -110,9 +110,9 @@ Repo-local values override workspace defaults.
       "default_project": null
     },
     "workflow": {
-      "default_manager": "@manager-login",
+      "default_manager": "person:manager-id",
       "repo_managers": {
-        "OWNER/REPO": "@repo-manager-login"
+        "OWNER/REPO": "person:repo-manager-id"
       }
     },
     "project_fields": {
@@ -201,6 +201,10 @@ Rules:
   `Finish Line`; avoid duplicating the whole issue body into fields.
 - Use `workflow.repo_managers` for repo-specific human ownership. Fall back to
   `workflow.default_manager` only when a repo has no specific manager.
+- Manager values may be raw Project field values, GitHub handles, or optional
+  `person:<id>` references resolved through the `people` skill's private local
+  `.local/people.yaml` contract when available. Keep raw values working so
+  installations without `people` remain portable.
 - Treat `cleanup.commands[].when == "routine"` as ordinary closeout evidence:
   agents may run or report the command during closeout. Treat any other value,
   such as `explicit`, `cold`, or `aggressive`, as report-only unless the user or
