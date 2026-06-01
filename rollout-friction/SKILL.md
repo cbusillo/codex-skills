@@ -54,13 +54,20 @@ rollout files, session traces, runout files, or agent workflow friction.
    or an explicit bounded `--root`. Keep analysis local.
 3. Review the findings and inspect only the minimum raw trace snippets needed to
    understand high-value signals.
-4. If a local LLM is useful, use it only as a private bounded scout. Give it
-   redacted analyzer output, signal names, and short synthesized observations,
-   not raw traces. When the optional `local-llm` skill is available, use its
-   model index and LM Studio helpers for endpoint/model selection and bounded
-   chat mechanics, while keeping this skill's rollout-specific evidence rules.
-   Use deep or cold-load model roles only for deliberate large-model reviews,
-   not ordinary audits. Otherwise prefer `uv run
+4. If a local LLM is useful, use it only as a private bounded scout. When the
+   optional `local-llm` skill is available, first resolve the endpoint locality
+   and trust from local config or inventory:
+   - For trusted `localhost` or trusted-LAN endpoints, original private local
+     rollout snippets may be sent to the model for the current task. Keep the
+     run bounded, strip obvious secrets such as tokens/passwords/API keys, and
+     store any raw prompts or outputs only in ignored local files when needed.
+   - For cloud, unknown, disabled, or untrusted endpoints, give only redacted
+     analyzer output, signal names, and short synthesized observations, not raw
+     traces.
+   Use the model index and LM Studio helpers for endpoint/model selection and
+   bounded chat mechanics, while keeping this skill's rollout-specific evidence
+   rules. Use deep or cold-load model roles only for deliberate large-model
+   reviews, not ordinary audits. Otherwise prefer `uv run
    rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when LM Studio
    is available. Run at most one scout pass unless the user asks for another.
    Ask for missing classes or false-positive patterns, then verify every
@@ -130,9 +137,11 @@ Look for concrete patterns, not vibes:
 
 ## When Not To Scout
 
-- Skip the local LLM scout when the redacted report still contains sensitive
-  client/customer identifiers, private project names, or compliance-sensitive
-  details that should not enter a model prompt.
+- Skip or further bound the local LLM scout when even a trusted local prompt
+  would include secrets, regulated data, or third-party material that should not
+  enter model runtime/logging. For untrusted/cloud endpoints, skip when the
+  redacted report still contains sensitive client/customer identifiers, private
+  project names, or compliance-sensitive details.
 - Skip the scout for straightforward findings that can be classified directly
   from analyzer output and maintained sources.
 - If LM Studio is unavailable or times out, continue with analyzer output and
