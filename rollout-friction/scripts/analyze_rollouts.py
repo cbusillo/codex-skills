@@ -92,6 +92,22 @@ AUTH_LOGIN_NOISE_RE = re.compile(
     r")\b",
     re.I,
 )
+DIFF_OR_STATIC_CONTEXT_RE = re.compile(
+    r"\bdiff --git\b|(?:^|\n)\s*(?:[A-Za-z_]+\=)?@@\s+-\d|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?index [0-9a-f]{7,}\.{2}[0-9a-f]{7,}\b|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?--- [ab]/|(?:^|\n)\s*(?:[A-Za-z_]+\=)?\+\+\+ [ab]/|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?name:\s+[^\n]{0,80}\n\s*on:\s*[^\n]*(?:\n|$)|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?push:\s*\n\s*branches:\b",
+    re.I,
+)
+AUTO_REVIEW_TEXT_RE = re.compile(r"\bauto[-\s]?review\b", re.I)
+STATIC_CONFIG_LINE_RE = re.compile(
+    r"^\s*(?:[-+]\s*)?(?:#|[-*]\s+|"
+    r"(?:name|on|push|pull_request|branches|jobs|steps|run|uses|with|env|permissions|"
+    r"workflow_dispatch|concurrency|strategy|matrix|needs|if|shell|working-directory)\s*:|"
+    r"-\s*(?:run|uses|name|with)\s*:)",
+    re.I,
+)
 INTERESTING_JSON_KEYS = (
     "type",
     "message",
@@ -696,7 +712,9 @@ def scan(
                 if signal.name == "auth_login_loop" and not matched_auth_login_noise:
                     continue
                 canonical_text = canonical_hit_text(text)
-                for occurrence, _match in enumerate(signal.pattern.finditer(text)):
+                for occurrence, match in enumerate(signal.pattern.finditer(text)):
+                    if should_skip_signal_match(signal.name, text, canonical_text, match):
+                        continue
                     line_signal_key = (path, line_no, signal.name)
                     line_texts = line_signal_texts.setdefault(line_signal_key, set())
                     if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
@@ -728,6 +746,43 @@ def canonical_hit_text(text: str) -> str:
         if lowered.startswith(prefix):
             return normalized[len(prefix) :]
     return normalized
+
+
+def should_skip_signal_match(
+    signal_name: str,
+    text: str,
+    canonical_text: str,
+    match: re.Match[str],
+) -> bool:
+    if signal_name in {"repeated_command_failure", "missing_dependency_or_tool"}:
+        return looks_like_static_match_context(text, match)
+    if signal_name in {"auto_review_loop", "auto_review_valid_finding"}:
+        return looks_like_static_diff_or_config(text) and AUTO_REVIEW_TEXT_RE.search(canonical_text) is None
+    return False
+
+
+def looks_like_static_diff_or_config(text: str) -> bool:
+    return bool(DIFF_OR_STATIC_CONTEXT_RE.search(text))
+
+
+def looks_like_static_match_context(text: str, match: re.Match[str]) -> bool:
+    if not looks_like_static_diff_or_config(text):
+        return False
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.end())
+    if line_end == -1:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    return looks_like_static_diff_line(line) or looks_like_static_config_line(line)
+
+
+def looks_like_static_diff_line(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(("diff --git", "index ", "@@ ", "--- a/", "+++ b/", "+", "-"))
+
+
+def looks_like_static_config_line(line: str) -> bool:
+    return bool(STATIC_CONFIG_LINE_RE.search(line))
 
 
 def summary_only_repeats_seen_values(summary: str, seen_texts: set[str]) -> bool:
