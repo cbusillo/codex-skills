@@ -151,6 +151,100 @@ def test_project_commands_are_recoverable() -> None:
     assert all(call["recoverable"] for call in project_calls), project_calls
 
 
+def test_manager_for_repo_passes_raw_values_without_people_resolver() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
+    try:
+        manager = plan.manager_for_repo(
+            {
+                "workflow": {
+                    "default_manager": "@default",
+                    "repo_managers": {"owner/repo": "@repo-manager"},
+                }
+            },
+            "owner/repo",
+        )
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+
+    assert manager == "@repo-manager"
+
+
+def test_manager_for_repo_drops_unresolved_person_ref() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
+    try:
+        manager = plan.manager_for_repo(
+            {"workflow": {"default_manager": "person:example-manager"}},
+            "owner/repo",
+        )
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+
+    assert manager is None
+
+
+def test_explicit_unresolved_person_manager_fails() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
+    try:
+        try:
+            plan.resolve_required_manager_value("person:example-manager")
+        except plan.PlanError as exc:
+            assert "Unable to resolve manager" in str(exc)
+        else:
+            raise AssertionError("expected unresolved explicit person manager to fail")
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+
+
+def test_manager_for_repo_resolves_person_ref_when_available() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    original_run = plan.subprocess.run
+    original_which = plan.shutil.which
+    plan.PEOPLE_RESOLVER = SCRIPT
+    plan.shutil.which = lambda name: "/usr/bin/uv" if name == "uv" else None
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command == [
+            "/usr/bin/uv",
+            "run",
+            str(SCRIPT),
+            "person:example-manager",
+            "--strict",
+        ], command
+        return completed(json.dumps({
+            "status": "matched",
+            "match": {
+                "id": "example-manager",
+                "github": "example-manager",
+                "mention_style": "@example-manager",
+            },
+        }))
+
+    plan.subprocess.run = fake_run
+    try:
+        manager = plan.manager_for_repo(
+            {
+                "workflow": {
+                    "default_manager": "person:example-manager",
+                    "repo_managers": {},
+                }
+            },
+            "owner/repo",
+        )
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+        plan.subprocess.run = original_run
+        plan.shutil.which = original_which
+
+    assert manager == "@example-manager"
+
+
 def test_create_reports_issue_when_project_sync_fails() -> None:
     plan = load_plan_module()
     issue = {
@@ -1722,6 +1816,10 @@ def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
+        test_manager_for_repo_passes_raw_values_without_people_resolver,
+        test_manager_for_repo_drops_unresolved_person_ref,
+        test_explicit_unresolved_person_manager_fails,
+        test_manager_for_repo_resolves_person_ref_when_available,
         test_create_reports_issue_when_project_sync_fails,
         test_create_reports_stale_project_as_non_blocking_warning,
         test_create_reports_project_auth_denied_as_non_blocking_warning,

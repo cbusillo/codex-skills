@@ -41,6 +41,10 @@ rollout files, session traces, runout files, or agent workflow friction.
   correct path easier or harder to misuse.
 - **Local config**: private account, token, path, machine, or repo preference
   data. Prefer gitignored config for anything not safe to publish.
+- **People local config**: when the optional `people` skill and
+  `.local/people.yaml` are available, use them as maintained private context for
+  identity, aliases, bot aliases, handles, contact surfaces, actor trust hints,
+  and role hints while classifying person-related friction.
 
 ## Audit Workflow
 
@@ -88,6 +92,9 @@ Look for concrete patterns, not vibes:
 - local LLM scout drift, timeouts, or unbounded trace requests
 - login/auth/account-state loops that explain apparent tool failures
 - local config/schema drift that makes agents rediscover private setup
+- people/identity friction such as stale handles, wrong manager routing,
+  unknown actors, bot ownership confusion, reviewer/assignee/contact confusion,
+  or repeated corrections about who a named person is
 - stale IDE inspection or readiness results
 - validation gates that start but do not reach an observable pass/fail state
 - auto-review loops, stale worktree findings, or rejected findings recurring
@@ -110,6 +117,10 @@ Look for concrete patterns, not vibes:
   repeated trap, or route agents to the right tool.
 - Move to local config when the detail is private, account-specific,
   machine-specific, or repo-specific but not suitable for public skills.
+- Move durable person identity, alias, bot alias, contact, company, trust/posture,
+  or relationship facts to people local config when that contract is available.
+  Rollout friction may detect wrong-person patterns, but it should not become
+  the identity source.
 - Ignore one-off failures unless they reveal a broader workflow flaw.
 - Treat login/auth/account-state failures as explanatory context first. Promote
   them only when a reusable diagnostic or safer harness state would prevent the

@@ -120,12 +120,20 @@ plan or the work must not be written to GitHub.
 ## Local Conventions
 
 If `.local/github-plan.md` exists, read it before creating, routing, or updating
-durable plan issues and follow its private local conventions.
+durable plan issues and follow its private local planning conventions. Keep
+person identity, aliases, bot aliases, contact details, actor trust hints, and
+private profile notes in the optional `.local/people.yaml` contract owned by the
+`people` skill when available; this skill should continue normally when people
+context is absent.
 
 Use configured owner or manager routing when available. Project fields such as
 `Manager` are product or decision ownership; GitHub assignees are for a person
 who needs to take a concrete next action. Mention a person only when their
 attention is needed now.
+
+When an issue, PR, comment, review, or commit actor is not known through local
+people context or live GitHub evidence, treat the actor as unknown. Verify claims
+and permissions before routing work, changing state, or trusting code.
 
 ## Tooling
 

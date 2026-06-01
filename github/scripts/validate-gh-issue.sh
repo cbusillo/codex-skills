@@ -92,7 +92,7 @@ mkdir -p "$generated_worktree/github/scripts"
 cp "$repo_root/github/scripts/gh-with-env-token" "$generated_worktree/github/scripts/gh-with-env-token"
 
 : >"$env_log"
-env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME \
 	PATH="$tmpdir:$PATH" \
 	HOME="$tmpdir" \
 	GH_ISSUE_ENV_LOG="$env_log" \
@@ -125,7 +125,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME \
 grep -qx 'codex-home-token' "$env_log"
 
 : >"$env_log"
-env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME \
 	PATH="$tmpdir:$PATH" \
 	GH_ISSUE_ENV_LOG="$env_log" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \

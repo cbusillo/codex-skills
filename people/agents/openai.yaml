@@ -1,0 +1,4 @@
+---
+interface:
+  display_name: "People"
+  short_description: "Resolve private local identity and contact context"
