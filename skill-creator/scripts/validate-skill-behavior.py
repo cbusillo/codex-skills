@@ -553,9 +553,11 @@ def test_github_merges_land_through_prs() -> None:
 
 
 def test_infra_ops_owns_live_infra_actions() -> None:
-    infra_text = (ROOT / "infra-ops" / "SKILL.md").read_text().lower()
+    infra_source = (ROOT / "infra-ops" / "SKILL.md").read_text()
+    infra_text = infra_source.lower()
     docs_text = (ROOT / "docs-lookup" / "SKILL.md").read_text().lower()
-    routing_text = (ROOT / "docs-lookup" / "references" / "routing.md").read_text().lower()
+    routing_source = (ROOT / "docs-lookup" / "references" / "routing.md").read_text()
+    routing_text = routing_source.lower()
     infra_normalized = " ".join(infra_text.split())
     docs_normalized = " ".join(docs_text.split())
     routing_normalized = " ".join(routing_text.split())
@@ -569,8 +571,8 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         "Infra ops must visibly trigger for production-impacting infra changes",
     )
     require(
-        "`$code_home/local-context.toml`" in infra_text
-        and "`$codex_home/local-context.toml`" in infra_text
+        "`$CODE_HOME/local-context.toml`" in infra_source
+        and "`$CODEX_HOME/local-context.toml`" in infra_source
         and "`~/.code/local-context.toml`" in infra_text
         and "`[docs].local_infra`" in infra_text,
         "Infra ops must route through the local context docs pointer",
@@ -594,8 +596,8 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         "Docs lookup must hand off after docs/access-path discovery",
     )
     require(
-        "$code_home/local-context.toml" in routing_text
-        and "$codex_home/local-context.toml" in routing_text
+        "$CODE_HOME/local-context.toml" in routing_source
+        and "$CODEX_HOME/local-context.toml" in routing_source
         and "~/.code/local-context.toml" in routing_text
         and "[docs].local_infra" in routing_text
         and "do not fall back" in routing_normalized
