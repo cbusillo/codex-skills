@@ -6,6 +6,7 @@
 
 import argparse
 import importlib.util
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -22,6 +23,13 @@ SPEC.loader.exec_module(google_search_console)
 
 
 class GoogleSearchConsoleHelperTest(TestCase):
+    def test_fail_keeps_public_message_details(self) -> None:
+        with patch.object(google_search_console.sys, "stderr", io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit):
+                google_search_console.fail("missing example config")
+
+        self.assertIn("missing example config", stderr.getvalue())
+
     def test_status_preserves_legacy_read_token_fields(self) -> None:
         rendered: list[dict[str, Any]] = []
 
@@ -80,8 +88,13 @@ class GoogleSearchConsoleHelperTest(TestCase):
             server_port = 8765
             oauth_code = "code"
             oauth_error = None
+            callback_timed_out = False
+            timeout = None
 
             def handle_request(self) -> None:
+                return
+
+            def server_close(self) -> None:
                 return
 
         def fake_open(url: str) -> None:
@@ -99,6 +112,42 @@ class GoogleSearchConsoleHelperTest(TestCase):
             google_search_console.run_auth("read")
 
         self.assertEqual(captured["include_granted_scopes"], "false")
+
+    def test_auth_callback_timeout_exits_without_token_request(self) -> None:
+        class FakeServer:
+            server_port = 8765
+            oauth_code = None
+            oauth_error = None
+            callback_timed_out = False
+            timeout = None
+            closed = False
+
+            def handle_request(self) -> None:
+                self.callback_timed_out = True
+
+            def server_close(self) -> None:
+                self.closed = True
+
+        fake_server = FakeServer()
+
+        with (
+            patch.object(google_search_console, "client_config", return_value={"client_id": "client", "client_secret": "secret"}),
+            patch.object(google_search_console, "OAuthHTTPServer", return_value=fake_server),
+            patch.object(google_search_console.webbrowser, "open"),
+            patch.object(google_search_console, "token_request") as token_request,
+            patch.object(google_search_console.sys, "stderr", io.StringIO()) as stderr,
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                google_search_console.run_auth("write")
+
+        self.assertEqual(exc.exception.code, 1)
+        self.assertEqual(
+            fake_server.timeout,
+            google_search_console.OAUTH_CALLBACK_TIMEOUT_SECONDS,
+        )
+        self.assertTrue(fake_server.closed)
+        self.assertIn("Browser callback timed out after 5 minutes", stderr.getvalue())
+        token_request.assert_not_called()
 
     def test_token_paths_are_separate_by_access_level(self) -> None:
         self.assertEqual(
