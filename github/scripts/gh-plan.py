@@ -413,13 +413,20 @@ def resolve_required_manager_value(value: Any) -> str | None:
     return resolve_manager_value(raw_value)
 
 
+def selected_manager_value(explicit_value: Any, config: dict[str, Any], repo: str) -> str | None:
+    if explicit_value:
+        return resolve_required_manager_value(explicit_value)
+    return manager_for_repo(config, repo)
+
+
 def resolve_person_for_project(value: str) -> str | None:
     if not PEOPLE_RESOLVER.exists():
         return None
+    uv = shutil.which("uv")
+    if not uv:
+        return None
     try:
-        command = [sys.executable, str(PEOPLE_RESOLVER), value, "--strict"]
-        if uv := shutil.which("uv"):
-            command = [uv, "run", str(PEOPLE_RESOLVER), value, "--strict"]
+        command = [uv, "run", str(PEOPLE_RESOLVER), value, "--strict"]
         proc = subprocess.run(
             command,
             text=True,
@@ -850,7 +857,7 @@ def cmd_create(args: argparse.Namespace) -> None:
                 issue_url=issue["html_url"],
                 config=config,
                 focus=args.focus,
-                manager=resolve_required_manager_value(args.manager) or manager_for_repo(config, repo),
+                manager=selected_manager_value(args.manager, config, repo),
                 finish_line=args.finish_line,
                 item_id=added_item_id,
                 recoverable=True,

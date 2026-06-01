@@ -192,8 +192,33 @@ def test_explicit_unresolved_person_manager_is_skipped() -> None:
     plan.PEOPLE_RESOLVER = Path("/tmp/not-present-people-resolver.py")
     try:
         assert plan.resolve_required_manager_value("person:example-manager") is None
+        assert plan.selected_manager_value(
+            "person:example-manager",
+            {"workflow": {"default_manager": "Code", "repo_managers": {}}},
+            "owner/repo",
+        ) is None
     finally:
         plan.PEOPLE_RESOLVER = original_resolver
+
+
+def test_person_resolution_requires_uv() -> None:
+    plan = load_plan_module()
+    original_resolver = plan.PEOPLE_RESOLVER
+    original_run = plan.subprocess.run
+    original_which = plan.shutil.which
+    plan.PEOPLE_RESOLVER = SCRIPT
+    plan.shutil.which = lambda name: None
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"person resolver should not run without uv: {command}")
+
+    plan.subprocess.run = fake_run
+    try:
+        assert plan.resolve_person_for_project("person:example-manager") is None
+    finally:
+        plan.PEOPLE_RESOLVER = original_resolver
+        plan.subprocess.run = original_run
+        plan.shutil.which = original_which
 
 
 def test_raw_manager_values_do_not_resolve_through_people() -> None:
@@ -1834,6 +1859,7 @@ def main() -> None:
         test_manager_for_repo_passes_raw_values_without_people_resolver,
         test_manager_for_repo_skips_unresolved_person_ref,
         test_explicit_unresolved_person_manager_is_skipped,
+        test_person_resolution_requires_uv,
         test_raw_manager_values_do_not_resolve_through_people,
         test_manager_for_repo_resolves_person_ref_to_project_label_when_available,
         test_create_reports_issue_when_project_sync_fails,
