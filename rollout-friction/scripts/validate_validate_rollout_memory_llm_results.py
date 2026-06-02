@@ -50,6 +50,10 @@ def result_payload(content: dict[str, object]) -> dict[str, object]:
 
 def complete_content() -> dict[str, object]:
     return {
+        "decisions": [
+            {"candidate_id": "memcand_a", "action": "note", "destination": "local_llm_notes"},
+            {"candidate_id": "memcand_b", "action": "discard", "destination": "discard_reasons"},
+        ],
         "people_updates": [],
         "profile_notes": [],
         "rollout_friction_notes": [],
@@ -143,12 +147,52 @@ def test_rejects_overlapping_note_and_discard() -> None:
         raise AssertionError(f"expected memcand_a overlapping disposition: {summary}")
 
 
+def test_rejects_duplicate_decisions() -> None:
+    module = load_module()
+    content = complete_content()
+    content["decisions"] = [
+        {"candidate_id": "memcand_a", "action": "note", "destination": "local_llm_notes"},
+        {"candidate_id": "memcand_a", "action": "note", "destination": "local_llm_notes"},
+        {"candidate_id": "memcand_b", "action": "discard", "destination": "discard_reasons"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected duplicate decisions to fail: {summary}")
+    if summary["duplicate_decision_candidate_ids"] != ["memcand_a"]:
+        raise AssertionError(f"expected memcand_a duplicate decision: {summary}")
+
+
+def test_rejects_missing_decision() -> None:
+    module = load_module()
+    content = complete_content()
+    content["decisions"] = [
+        {"candidate_id": "memcand_a", "action": "note", "destination": "local_llm_notes"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected missing decision to fail: {summary}")
+    if summary["missing_decision_candidate_ids"] != ["memcand_b"]:
+        raise AssertionError(f"expected memcand_b missing decision: {summary}")
+
+
 def main() -> int:
     test_accepts_complete_result()
     test_rejects_missing_candidate_coverage()
     test_reviewed_id_without_disposition_is_incomplete()
     test_rejects_duplicate_reviewed_ids()
     test_rejects_overlapping_note_and_discard()
+    test_rejects_duplicate_decisions()
+    test_rejects_missing_decision()
     print("ok validate-validate-rollout-memory-llm-results")
     return 0
 

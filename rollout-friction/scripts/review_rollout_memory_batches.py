@@ -28,8 +28,10 @@ DEFAULT_SYSTEM = (
     "You are a trusted local-only memory extraction reviewer. Return only valid JSON "
     "matching the requested schema. Prefer discard unless a candidate is durable, "
     "actionable, and supported by explicit user intent. Do not quote private snippets. "
-    "Cover every candidate_id exactly once as a note or discard, and include every "
-    "candidate_id in reviewed_candidate_ids."
+    "Return one decisions item for every candidate_id exactly once. Mirror note decisions "
+    "into the matching note list and discard decisions into discard_reasons. Do not put "
+    "a candidate_id in both a note list and discard_reasons. Include every candidate_id "
+    "in reviewed_candidate_ids."
 )
 
 

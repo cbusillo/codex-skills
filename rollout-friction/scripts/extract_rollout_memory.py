@@ -453,17 +453,28 @@ def prompt_batches(candidates: list[Candidate], batch_chars: int) -> Iterable[di
         yield {
             "schema_version": 1,
             "task": (
-                "Extract durable local updates from rollout memory candidates. Return JSON with "
+                "Extract durable local updates from rollout memory candidates. Return JSON with decisions, "
                 "people_updates, profile_notes, rollout_friction_notes, local_llm_notes, "
                 "repo_specific_notes, discard_reasons, and reviewed_candidate_ids. "
                 "Do not quote raw snippets. Prefer discard. "
-                "Every candidate_id must appear in exactly one of the note lists or discard_reasons, "
-                "and every candidate_id must also appear in reviewed_candidate_ids. "
+                "Every candidate_id must appear exactly once in decisions. Each decision has "
+                "candidate_id, action, destination, note, and reason. action is note or discard. "
+                "Also mirror note decisions into the matching note list and discard decisions into "
+                "discard_reasons. Do not put a candidate_id in both a note list and discard_reasons. "
                 "People updates require explicit identity/contact/role/trust facts. Profile notes "
                 "require stable user preferences or local workflow rules. Repo-specific notes belong "
                 "in the relevant repo, not the central profile."
             ),
             "output_schema": {
+                "decisions": [
+                    {
+                        "candidate_id": "string",
+                        "action": "note|discard",
+                        "destination": "people_updates|profile_notes|rollout_friction_notes|local_llm_notes|repo_specific_notes|discard_reasons",
+                        "note": "string|null",
+                        "reason": "string",
+                    }
+                ],
                 "people_updates": [],
                 "profile_notes": [],
                 "rollout_friction_notes": [],

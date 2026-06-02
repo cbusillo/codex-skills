@@ -77,6 +77,7 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
             raise ValidationError(f"{key} must be a list")
 
     expected_ids = candidate_ids(prompt)
+    decision_counts = ids_from_decisions(payload.get("decisions"))
     reviewed_ids = string_set(payload["reviewed_candidate_ids"])
     reviewed_counts = string_counts(payload["reviewed_candidate_ids"])
     discard_counts = ids_from_discards(payload["discard_reasons"])
@@ -96,6 +97,8 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         if count > 1 and id_ in expected_ids
     )
     overlapping_disposition_ids = sorted((note_ids & discard_ids) & expected_ids)
+    missing_decision_ids = expected_ids - set(decision_counts) if decision_counts else set()
+    duplicate_decision_ids = sorted(id_ for id_, count in decision_counts.items() if count > 1 and id_ in expected_ids)
     ok = (
         not missing_reviewed_ids
         and not missing_disposition_ids
@@ -103,6 +106,8 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         and not duplicate_reviewed_ids
         and not duplicate_disposition_ids
         and not overlapping_disposition_ids
+        and not missing_decision_ids
+        and not duplicate_decision_ids
     )
     return {
         "ok": ok,
@@ -116,6 +121,9 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         "duplicate_reviewed_count": len(duplicate_reviewed_ids),
         "duplicate_disposition_count": len(duplicate_disposition_ids),
         "overlapping_disposition_count": len(overlapping_disposition_ids),
+        "decision_count": sum(decision_counts.values()),
+        "missing_decision_count": len(missing_decision_ids),
+        "duplicate_decision_count": len(duplicate_decision_ids),
         "missing_candidate_ids": missing_ids[:20],
         "missing_reviewed_candidate_ids": sorted(missing_reviewed_ids)[:20],
         "missing_disposition_candidate_ids": sorted(missing_disposition_ids)[:20],
@@ -123,6 +131,8 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         "duplicate_reviewed_candidate_ids": duplicate_reviewed_ids[:20],
         "duplicate_disposition_candidate_ids": duplicate_disposition_ids[:20],
         "overlapping_disposition_candidate_ids": overlapping_disposition_ids[:20],
+        "missing_decision_candidate_ids": sorted(missing_decision_ids)[:20],
+        "duplicate_decision_candidate_ids": duplicate_decision_ids[:20],
         "note_count": sum(len(payload[key]) for key in NOTE_KEYS),
         "discard_count": len(payload["discard_reasons"]),
         "notes_by_key": {key: len(payload[key]) for key in NOTE_KEYS},
@@ -177,6 +187,16 @@ def ids_from_notes(payload: dict[str, Any]) -> Counter[str]:
                     ids[value] += 1
                 elif isinstance(value, list):
                     ids.update(item for item in value if isinstance(item, str))
+    return ids
+
+
+def ids_from_decisions(decisions: Any) -> Counter[str]:
+    ids: Counter[str] = Counter()
+    if not isinstance(decisions, list):
+        return ids
+    for item in decisions:
+        if isinstance(item, dict) and isinstance(item.get("candidate_id"), str):
+            ids[item["candidate_id"]] += 1
     return ids
 
 
