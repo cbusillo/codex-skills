@@ -70,6 +70,12 @@ def validate(prompt_path: Path, result_path: Path, allow_implicit_discards: bool
     content = result_envelope.get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValidationError("result envelope does not contain string content")
+    return validate_content(prompt, content, allow_implicit_discards=allow_implicit_discards)
+
+
+def validate_content(prompt: dict[str, Any], content: str, allow_implicit_discards: bool = False) -> dict[str, Any]:
+    if not isinstance(content, str) or not content.strip():
+        raise ValidationError("result content is empty")
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as exc:

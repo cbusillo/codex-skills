@@ -21,6 +21,9 @@ resources:
   - path: scripts/prepare_rollout_memory_long_context_review.py
     kind: script
     description: Prepare selected-note long-context review prompts and normalize duplicated structured-output captures.
+  - path: scripts/run_rollout_memory_long_context_matrix.py
+    kind: script
+    description: Run stdout-only selected-note review checks across model, budget, and provider variants.
   - path: scripts/validate_rollout_memory_llm_results.py
     kind: script
     description: Validate strict JSON and candidate coverage for local LLM memory-review results.
@@ -50,6 +53,11 @@ commands:
     resource_path: scripts/prepare_rollout_memory_long_context_review.py
     example_argv: ["uv", "run", "rollout-friction/scripts/prepare_rollout_memory_long_context_review.py", "prepare", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--budget", "quarter"]
     purpose: Build selected-note prompt payloads for approved long-context comparison runs.
+  - name: run-rollout-memory-long-context-matrix
+    source: skill
+    resource_path: scripts/run_rollout_memory_long_context_matrix.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--dry-run", "--budget", "quarter", "--variant", "sonnet-1m=claude:claude-sonnet-4-6[1m]"]
+    purpose: Produce JSONL status rows for approved model/budget comparison runs, including blocked access, timeout, budget, and validation outcomes.
 ---
 
 # Rollout Friction
@@ -163,6 +171,11 @@ apply memory updates by itself.
    `validate_rollout_memory_llm_results.py --allow-implicit-discards`; this mode
    still requires every candidate in `reviewed_candidate_ids` and treats omitted
    reviewed candidates as implicit discards.
+8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
+   tests. For real approved cloud tests, pass `--allow-private-cloud` and capture
+   stdout JSONL under `.local/`. Treat statuses such as `blocked_access`,
+   `blocked_transport`, `budget_exceeded`, `timeout`, and `failed_validation` as
+   first-class results to retry or fix, not as successful reviews.
 
 ## Friction Signals
 
