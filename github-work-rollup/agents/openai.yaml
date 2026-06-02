@@ -1,0 +1,7 @@
+interface:
+  display_name: "GitHub Work Rollup"
+  short_description: "Roll up current GitHub work"
+  default_prompt: "Use $github-work-rollup to summarize active, blocked, waiting, ready, stale, and recently completed GitHub work."
+
+policy:
+  allow_implicit_invocation: true

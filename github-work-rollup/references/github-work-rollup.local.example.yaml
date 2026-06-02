@@ -1,0 +1,25 @@
+# GitHub Work Rollup Local Config Example
+
+# Optional: copy this shape to `.local/github-work-rollup.yaml` for private,
+# machine-specific report defaults. The copied file is ignored by git.
+
+timezone: America/New_York
+default_window: 24h
+report_recipient: example team
+subjects:
+  - example-user
+repo_owners:
+  - example-org
+repositories:
+  - example-org/example-repo
+summary_level: standard
+output_path: .local/github-work-rollup/latest.md
+include_external_activity: false
+include_bots: false
+noise_filters:
+  labels:
+    - dependencies
+priority_sections:
+  - name: Codex Skill Updates
+    repositories:
+      - example-org/example-skills

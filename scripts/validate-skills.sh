@@ -15,6 +15,7 @@ helper_tests=(
 	babysit-pr/scripts/test_gh_pr_watch.py
 	codex-issue-digest/scripts/test_collect_issue_digest.py
 	google-seo/scripts/test_google_search_console.py
+	github-work-rollup/scripts/test_github_work_rollup.py
 	infra-ops/scripts/test_npmplus_ops.py
 	people/scripts/test_resolve_person.py
 	jetbrains-inspection/tests/test_jb_inspect.py
