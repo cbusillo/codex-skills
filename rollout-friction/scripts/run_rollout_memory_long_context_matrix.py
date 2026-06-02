@@ -92,8 +92,8 @@ def main() -> int:
             prompt_error = exc
         for variant in variants:
             key = row_key(prompt_summary["budget_name"], variant)
-            existing_row = existing.get(key)
-            reusable_row = reusable_existing_row(existing_row, skip_statuses, prompt_summary)
+            existing_rows = existing.get(key, [])
+            reusable_row = reusable_existing_row(existing_rows, skip_statuses, prompt_summary)
             if reusable_row is not None:
                 row = {**reusable_row, "status": "skipped_existing", "original_status": reusable_row.get("status")}
             elif prompt_error is not None:
@@ -297,16 +297,18 @@ def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str, str, s
 
 
 def reusable_existing_row(
-    row: dict[str, Any] | None, skip_statuses: set[str], prompt_summary: dict[str, Any]
+    rows: list[dict[str, Any]], skip_statuses: set[str], prompt_summary: dict[str, Any]
 ) -> dict[str, Any] | None:
-    if isinstance(row, dict) and row.get("status") in skip_statuses:
+    for row in reversed(rows):
+        if row.get("status") not in skip_statuses:
+            continue
         if row.get("prompt_sha256") == prompt_summary.get("prompt_sha256"):
             return row
     return None
 
 
-def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], dict[str, Any]]:
-    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
+    rows: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     if not path.exists():
         return rows
     with path.open("r", encoding="utf-8") as handle:
@@ -325,7 +327,7 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], dict[str, 
                     and isinstance(provider, str)
                     and isinstance(model, str)
                 ):
-                    rows[(budget, name, provider, model)] = payload
+                    rows.setdefault((budget, name, provider, model), []).append(payload)
     return rows
 
 
