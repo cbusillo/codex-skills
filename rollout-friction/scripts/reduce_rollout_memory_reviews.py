@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,20 +25,52 @@ DESTINATION_FILES = {
     "repo_specific_notes": "repo-specific local notes or owning repo",
 }
 TEXT_KEYS = ("note", "memory", "text", "summary", "update", "fact")
+DEFAULT_SHORTLIST_LIMIT = 30
+BUCKET_PRIORITY = {
+    "profile_notes": 5,
+    "people_updates": 4,
+    "local_llm_notes": 3,
+    "rollout_friction_notes": 2,
+    "repo_specific_notes": 1,
+}
+STALE_RE = re.compile(
+    r"\b(PR #?\d+|issue #?\d+|merged|closed|checks? passed|green checks?|commit [0-9a-f]{7,}|"
+    r"branch is clean|worktree branch|ready for PR|opened PR|review identified|reviewer identified|"
+    r"focused validation already passed|only file modified|cargo test|pytest|uv run|npm test)\b",
+    re.I,
+)
+KEEPER_RE = re.compile(
+    r"\b(prefers?|canonical|must|should|do not|never|always|policy|routing|belongs?|"
+    r"primary|fallback|local-only|privacy|protected|non-negotiable)\b",
+    re.I,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reduce local rollout-memory reviews into an apply-plan JSON.")
     parser.add_argument("review_dir", type=Path)
     parser.add_argument("--output", type=Path, help="Write apply-plan JSON. Defaults to stdout only.")
+    parser.add_argument(
+        "--format",
+        choices=["plan", "shortlist"],
+        default="plan",
+        help="Output the full apply-plan JSON or only the curated shortlist JSON.",
+    )
     parser.add_argument("--include-failed", action="store_true", help="Include failed batch summaries in the output plan.")
+    parser.add_argument(
+        "--shortlist-limit",
+        type=int,
+        default=DEFAULT_SHORTLIST_LIMIT,
+        help=f"Maximum curated shortlist updates to include. Default: {DEFAULT_SHORTLIST_LIMIT}.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    plan = reduce_reviews(args.review_dir, include_failed=args.include_failed)
-    text = json.dumps(plan, indent=2, ensure_ascii=False, sort_keys=True)
+    plan = reduce_reviews(args.review_dir, include_failed=args.include_failed, shortlist_limit=args.shortlist_limit)
+    output = plan if args.format == "plan" else plan["curated_shortlist"]
+    text = json.dumps(output, indent=2, ensure_ascii=False, sort_keys=True)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("w", encoding="utf-8") as handle:
@@ -47,7 +80,9 @@ def main() -> int:
     return 0 if plan["failed_batch_count"] == 0 else 1
 
 
-def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, Any]:
+def reduce_reviews(
+    review_dir: Path, include_failed: bool = False, shortlist_limit: int = DEFAULT_SHORTLIST_LIMIT
+) -> dict[str, Any]:
     notes_by_key: dict[str, list[dict[str, Any]]] = {key: [] for key in NOTE_KEYS}
     discard_count = 0
     failed_batches: list[dict[str, Any]] = []
@@ -83,6 +118,7 @@ def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, 
                 if isinstance(item, dict):
                     notes_by_key[key].append(normalize_note(item, batch_label, key))
     reduced = {key: dedupe_notes(values) for key, values in notes_by_key.items()}
+    shortlist = curate_shortlist(reduced, shortlist_limit)
     return {
         "schema_version": 1,
         "review_dir": str(review_dir),
@@ -97,6 +133,15 @@ def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, 
                 "updates": values,
             }
             for key, values in reduced.items()
+        },
+        "curated_shortlist": {
+            "limit": shortlist_limit,
+            "count": len(shortlist),
+            "updates": shortlist,
+            "guidance": (
+                "Start manual review here. This shortlist favors durable profile/people/workflow facts, "
+                "multi-candidate support, and non-transient wording. It is advisory, not an auto-apply list."
+            ),
         },
         "apply_guidance": "Review this draft manually before editing local memory or repo files.",
     }
@@ -168,7 +213,115 @@ def dedupe_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         existing = by_key[key]
         existing["candidate_ids"] = sorted(set(existing["candidate_ids"]) | set(note["candidate_ids"]))
         existing["source_batches"] = sorted(set(existing["source_batches"]) | set(note["source_batches"]))
-    return sorted(by_key.values(), key=lambda item: (item["bucket"], item["text"]))
+    return sorted((annotate_note(item) for item in by_key.values()), key=lambda item: (item["bucket"], item["text"]))
+
+
+def annotate_note(note: dict[str, Any]) -> dict[str, Any]:
+    annotated = dict(note)
+    annotated["support_count"] = len(annotated.get("candidate_ids") or [])
+    annotated["stale_or_transient"] = is_stale_or_transient(str(annotated.get("text") or ""))
+    annotated["keeper_score"] = keeper_score(annotated)
+    annotated["topic_key"] = topic_key(str(annotated.get("text") or ""))
+    return annotated
+
+
+def curate_shortlist(reduced: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    candidates = [note for notes in reduced.values() for note in notes]
+    ranked = sorted(
+        candidates,
+        key=lambda note: (
+            -int(note.get("keeper_score") or 0),
+            bool(note.get("stale_or_transient")),
+            str(note.get("bucket") or ""),
+            str(note.get("text") or ""),
+        ),
+    )
+    selected: list[dict[str, Any]] = []
+    topic_keys: list[set[str]] = []
+    bucket_counts: dict[str, int] = {}
+    for note in ranked:
+        topic = topic_terms(str(note.get("text") or ""))
+        bucket = str(note.get("bucket") or "")
+        if is_near_duplicate_topic(topic, topic_keys):
+            continue
+        if bucket_counts.get(bucket, 0) >= max(3, limit // 3):
+            continue
+        selected.append(shortlist_note(note))
+        topic_keys.append(topic)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def shortlist_note(note: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: note[key]
+        for key in (
+            "id",
+            "bucket",
+            "text",
+            "candidate_ids",
+            "source_batches",
+            "support_count",
+            "keeper_score",
+            "stale_or_transient",
+        )
+        if key in note
+    }
+
+
+def keeper_score(note: dict[str, Any]) -> int:
+    text = str(note.get("text") or "")
+    score = BUCKET_PRIORITY.get(str(note.get("bucket") or ""), 0) * 10
+    score += min(len(note.get("candidate_ids") or []), 5) * 3
+    if KEEPER_RE.search(text):
+        score += 8
+    if is_stale_or_transient(text):
+        score -= 20
+    return score
+
+
+def is_stale_or_transient(text: str) -> bool:
+    return bool(STALE_RE.search(text))
+
+
+def topic_key(text: str) -> str:
+    return " ".join(sorted(topic_terms(text)))[:96]
+
+
+def topic_terms(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9_.#-]+", text.casefold())
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "into",
+        "should",
+        "must",
+        "user",
+        "prefers",
+        "prefer",
+        "keep",
+        "use",
+    }
+    return {word for word in words if len(word) > 2 and word not in stop}
+
+
+def is_near_duplicate_topic(topic: set[str], existing_topics: list[set[str]]) -> bool:
+    if not topic:
+        return False
+    for existing in existing_topics:
+        overlap = len(topic & existing) / max(1, min(len(topic), len(existing)))
+        if overlap >= 0.65:
+            return True
+    return False
 
 
 def canonical_note_key(note: dict[str, Any]) -> str:

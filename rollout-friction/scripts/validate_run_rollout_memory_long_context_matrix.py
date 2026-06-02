@@ -100,6 +100,25 @@ def test_code_llm_command_uses_message_file() -> None:
         raise AssertionError(f"prompt path should be passed to code llm command: {command}")
 
 
+def test_persists_matrix_output_artifacts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        artifacts = module.persist_matrix_output(
+            root,
+            {"budget_name": "half"},
+            {"name": "sonnet/1m", "provider": "claude", "model": "claude-sonnet[1m]"},
+            '{"ok":true}',
+            {"ok": True, "note_count": 0},
+        )
+        content_path = Path(artifacts["content"])
+        validation_path = Path(artifacts["validation"])
+        if not content_path.exists() or not validation_path.exists():
+            raise AssertionError(f"expected matrix output artifacts: {artifacts}")
+        if "/" in content_path.name or "[" in content_path.name:
+            raise AssertionError(f"artifact stem should be path-safe: {content_path.name}")
+
+
 def test_default_schema_is_strict_object() -> None:
     module = load_module()
     schema = module.default_schema()
@@ -209,6 +228,7 @@ def main() -> int:
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
     test_code_llm_command_uses_message_file()
+    test_persists_matrix_output_artifacts()
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
     test_existing_rows_are_not_keyed_by_alias_only()

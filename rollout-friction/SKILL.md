@@ -47,7 +47,7 @@ commands:
     source: skill
     resource_path: scripts/reduce_rollout_memory_reviews.py
     example_argv: ["uv", "run", "rollout-friction/scripts/reduce_rollout_memory_reviews.py", ".local/rollout-memory/<run-id>/reviews", "--output", ".local/rollout-memory/<run-id>/apply-plan.json"]
-    purpose: Build a local draft apply plan from strict-valid review batches.
+    purpose: Build a local draft apply plan, including a curated shortlist, from strict-valid review batches.
   - name: prepare-rollout-memory-long-context-review
     source: skill
     resource_path: scripts/prepare_rollout_memory_long_context_review.py
@@ -166,9 +166,11 @@ apply memory updates by itself.
 5. Apply nothing from a batch that fails strict JSON or candidate coverage until
    it is rerun, split, or manually reviewed.
 6. Run `reduce_rollout_memory_reviews.py` only after strict validation. Treat the
-   reducer output as an apply-plan draft; inspect suggested updates before
-   editing `.local/profile.md`, `.local/people.yaml`, `.local/local-llm.yaml`,
-   skills, or repo files.
+   reducer output as an apply-plan draft. Start manual review from
+   `curated_shortlist`, then inspect full destination buckets only when the
+   shortlist reveals a useful theme. The shortlist is advisory, not an auto-apply
+   list; inspect suggested updates before editing `.local/profile.md`,
+   `.local/people.yaml`, `.local/local-llm.yaml`, skills, or repo files.
 7. For explicitly approved cloud or long-context comparison tests, use
    `prepare_rollout_memory_long_context_review.py` to build selected-note prompts
    with a `candidate_id_manifest`. Validate outputs with
@@ -177,14 +179,15 @@ apply memory updates by itself.
    reviewed candidates as implicit discards.
 8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
    tests. For real approved cloud tests, pass `--allow-private-cloud` and capture
-   stdout JSONL under `.local/`, or pass `--output-jsonl` with `--skip-existing`
-   for resumable runs. By default, resumable runs skip only existing `passed`
-   rows; use `--skip-status` only when intentionally preserving another status,
-   and `--retry-status` when rerunning a previously skipped status after an
-   access window or harness fix. Treat statuses such as `prompt_too_large`,
-   `blocked_access`, `blocked_transport`, `budget_exceeded`, `timeout`, and
-   `failed_validation` as first-class results to retry or fix, not as successful
-   reviews.
+   stdout JSONL under `.local/`; use `--output-dir` for normalized per-row cloud
+   artifacts that need later qualitative comparison. Pass `--output-jsonl` with
+   `--skip-existing` for resumable runs. By default, resumable runs skip only
+   existing `passed` rows; use `--skip-status` only when intentionally preserving
+   another status, and `--retry-status` when rerunning a previously skipped
+   status after an access window or harness fix. Treat statuses such as
+   `prompt_too_large`, `blocked_access`, `blocked_transport`, `budget_exceeded`,
+   `timeout`, and `failed_validation` as first-class results to retry or fix, not
+   as successful reviews.
 
 ## Friction Signals
 

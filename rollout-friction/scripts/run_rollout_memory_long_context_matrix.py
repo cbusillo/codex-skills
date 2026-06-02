@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variant", action="append", default=[], help="NAME=PROVIDER:MODEL. Providers: code-llm, claude.")
     parser.add_argument("--schema-file", type=Path, help="Strict JSON schema file for provider structured output.")
     parser.add_argument("--output-jsonl", type=Path, help="Append matrix rows to this JSONL file.")
+    parser.add_argument("--output-dir", type=Path, help="Write per-row normalized cloud output artifacts.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip rows already present in --output-jsonl.")
     parser.add_argument(
         "--skip-status",
@@ -153,6 +154,8 @@ def run_or_plan(
         validation = validate_content(payload, content, allow_implicit_discards=True)
         row.update(validation)
         row["status"] = "passed" if validation.get("ok") else "failed_validation"
+        if args.output_dir:
+            row["artifacts"] = persist_matrix_output(args.output_dir, prompt_summary, variant, content, validation)
     except MatrixBlocked as exc:
         row["status"] = exc.status
         row["error"] = str(exc)
@@ -203,6 +206,24 @@ def prompt_too_large_row(prompt_summary: dict[str, Any], variant: dict[str, str]
         "error": str(exc),
         "elapsed_seconds": 0.0,
     }
+
+
+def persist_matrix_output(
+    output_dir: Path, prompt_summary: dict[str, Any], variant: dict[str, str], content: str, validation: dict[str, Any]
+) -> dict[str, str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = safe_artifact_stem(prompt_summary["budget_name"], variant)
+    content_path = output_dir / f"{stem}.content.json"
+    validation_path = output_dir / f"{stem}.validation.json"
+    content_path.write_text(content, encoding="utf-8")
+    validation_path.write_text(json.dumps(validation, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    return {"content": str(content_path), "validation": str(validation_path)}
+
+
+def safe_artifact_stem(budget_name: str, variant: dict[str, str]) -> str:
+    raw = "-".join([budget_name, variant["name"], variant["provider"], variant["model"]])
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in raw)
+    return cleaned.strip("._-") or "matrix-row"
 
 
 def request_code_llm(model: str, prompt: str, args: argparse.Namespace) -> str:
