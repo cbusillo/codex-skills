@@ -51,11 +51,12 @@ MENTION_RE = re.compile(
 )
 PERSON_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:[ '-][A-Z][a-z]+){1,3}\b")
 PERSON_CUE_NAME_RE = re.compile(
-    r"\b(organizer|manager|reviewer|assignee|owner|contact|friend|trusted collaborator|works for|owned by|managed by|person:?|people:)\s+([A-Z][A-Za-z0-9_.-]{1,38})\b|"
+    r"\b(?i:(organizer|manager|reviewer|assignee|owner|contact|friend|trusted collaborator|works for|owned by|managed by|person:?|people:))\s+([A-Z][A-Za-z0-9_.-]{1,38})\b|"
     r"\b([A-Z][A-Za-z0-9_.-]{1,38})\s+(is|was|works for|owns|manages|organizes|managed|reviewed|assigned)\b",
-    re.I,
 )
-BARE_HANDLE_CUE_RE = re.compile(r"(?i)\b(?:github handle|handle|github|slack|discord)\s+([A-Za-z][A-Za-z0-9_.-]{1,38})\b")
+BARE_HANDLE_CUE_RE = re.compile(
+    r"\b(?i:(?:github|slack|discord)\s+(?:handle|username|user|id)|handle)\s+([A-Za-z][A-Za-z0-9_.-]{1,38})\b"
+)
 PUBLIC_PROPER_NAME_PHRASES = {
     "Every Code",
     "GitHub Actions",

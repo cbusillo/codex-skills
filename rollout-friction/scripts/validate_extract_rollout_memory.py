@@ -154,7 +154,7 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
                         "Jackie Example is the manager; GitHub handle @jackie-example, "
                         "Slack <@U12345>, Discord jackie-example#1234, email jackie@example.test. "
                         "Jackie is our organizer, TubeTester manages the video work, and handle TubeTester is bare. "
-                        "Every Code should remain readable."
+                        "Every Code and GitHub Actions should remain readable."
                     ),
                 )
             ],
@@ -182,6 +182,8 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
             raise AssertionError(f"redact mode should include marker {marker}: {redacted}")
     if "Every Code" not in redacted:
         raise AssertionError(f"redact mode should preserve public product names: {redacted}")
+    if "GitHub Actions" not in redacted:
+        raise AssertionError(f"redact mode should preserve GitHub product names: {redacted}")
     if "/Users/example" not in original:
         raise AssertionError(f"trusted originals should preserve path: {original}")
     if (
@@ -204,6 +206,26 @@ def test_redact_mode_records_person_data_privacy_summary() -> None:
         raise AssertionError(f"redact diagnostics should report person-data redaction: {redacted_privacy}")
     if trusted_privacy.get("redact_person_data"):
         raise AssertionError(f"trusted originals should not report person-data redaction: {trusted_privacy}")
+
+
+def test_redact_mode_does_not_overmatch_public_names_or_plain_prose() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False)
+    text = (
+        "GitHub Actions passed after the rollout. "
+        "owner repository and manager workflow are ordinary prose here. "
+        "github product names should not be treated as handles. "
+        "GitHub handle alice-example still needs redaction."
+    )
+
+    redacted = module.redact_person_data(text)
+
+    if "GitHub Actions" not in redacted:
+        raise AssertionError(f"redact mode mangled GitHub Actions: {redacted}")
+    for expected in ("owner repository", "manager workflow", "github product names"):
+        if expected not in redacted:
+            raise AssertionError(f"redact mode overmatched prose {expected!r}: {redacted}")
+    if "alice-example" in redacted or "<person-handle-redacted>" not in redacted:
+        raise AssertionError(f"redact mode missed explicit handle: {redacted}")
 
 
 def test_prompt_batches_emit_destination_aware_task() -> None:
@@ -331,6 +353,7 @@ def main() -> int:
     test_classifies_people_local_llm_and_friction()
     test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
     test_redact_mode_records_person_data_privacy_summary()
+    test_redact_mode_does_not_overmatch_public_names_or_plain_prose()
     test_prompt_batches_emit_destination_aware_task()
     test_candidate_ids_are_stable()
     test_dedupe_keeps_distinct_long_common_prefixes()
