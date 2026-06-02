@@ -91,6 +91,35 @@ or ambiguous resolution for write actions such as assigning, mentioning, routing
 or commenting. Treat any non-`exact`, non-`id`, non-`contact`, non-`name`, or
 non-`compact` confidence as lookup-only context.
 
+## Artifact Review Workflow
+
+When `memory-distillation` or `rollout-friction` creates ignored local artifacts
+such as `.local/rollout-memory/<run-id>/`, `.local/scan-output/<run-id>/`,
+apply plans, reducer inputs, prompts, or reviewed batch results, use this skill
+to review those artifacts for person facts before closeout when identity context
+was part of the work.
+
+1. Load the small `.local/people.yaml` index when available, and build search
+   terms from each known person's id, display name, preferred reference,
+   aliases, handles, bot aliases, and compact forms.
+2. Search the new local artifacts for every known form, not just the name that
+   appeared in the final reducer plan. For example, searching only `Rob Burnett`
+   can miss evidence that says `Burnett`, and searching only a handle can miss a
+   full-name correction.
+3. Also inspect any artifact-level smoke-check lists such as
+   `people_resolver_smoke_checks`; unresolved natural names or handles should be
+   treated as apply-review blockers until manually classified.
+4. Discount matches that appear only inside encoded blobs, screenshots, binary
+   payloads, tool command echoes, or the current review conversation. Those are
+   search artifacts, not person evidence.
+5. Promote only verified durable identity/contact/role/routing facts into
+   `.local/people.yaml` or `.local/people/<person-id>.md`. Keep transient issue
+   status, CI results, one-off reviews, and stale operational state out of the
+   people index.
+6. If an artifact mentions a person but evidence is incomplete, add only a
+   minimal known-person entry after user approval, or leave a private TODO in
+   the artifact review notes. Do not invent handles, roles, or relationships.
+
 ## Matching Model
 
 The resolver normalizes input by trimming whitespace, stripping a leading `@`,

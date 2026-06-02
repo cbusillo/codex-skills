@@ -69,9 +69,14 @@ clean, prune, archive, reset, or distill memories.
 4. Verify promotable facts against maintained sources before proposing them.
    Examples: local code, skill files, repo docs, GitHub state, official docs, or
    config schemas.
-5. Present a concise proposal with exact files or memory entries affected, the
+5. If the audit creates ignored local artifacts that include person mentions,
+   invoke the optional `people` skill's artifact review workflow before closeout.
+   Search the artifacts for every known alias and handle form, then route durable
+   identity/contact/role facts to `.local/people.yaml` instead of leaving them in
+   temporary reducer output or general memory.
+6. Present a concise proposal with exact files or memory entries affected, the
    classification, and the reason.
-6. Ask for explicit human approval before making any changes.
+7. Ask for explicit human approval before making any changes.
 
 ## Chronicle Distillation
 
