@@ -50,6 +50,12 @@ MENTION_RE = re.compile(
     r"\b[A-Za-z0-9_.-]{2,32}#[0-9]{4}\b"
 )
 PERSON_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:[ '-][A-Z][a-z]+){1,3}\b")
+PERSON_CUE_NAME_RE = re.compile(
+    r"\b(organizer|manager|reviewer|assignee|owner|contact|friend|trusted collaborator|works for|owned by|managed by|person:?|people:)\s+([A-Z][A-Za-z0-9_.-]{1,38})\b|"
+    r"\b([A-Z][A-Za-z0-9_.-]{1,38})\s+(is|was|works for|owns|manages|organizes|managed|reviewed|assigned)\b",
+    re.I,
+)
+BARE_HANDLE_CUE_RE = re.compile(r"(?i)\b(?:github handle|handle|github|slack|discord)\s+([A-Za-z][A-Za-z0-9_.-]{1,38})\b")
 PUBLIC_PROPER_NAME_PHRASES = {
     "Every Code",
     "GitHub Actions",
@@ -394,7 +400,18 @@ def clean_text(text: str, args: argparse.Namespace) -> str:
 def redact_person_data(text: str) -> str:
     cleaned = EMAIL_RE.sub("<person-email-redacted>", text)
     cleaned = MENTION_RE.sub("<person-handle-redacted>", cleaned)
+    cleaned = BARE_HANDLE_CUE_RE.sub(redact_bare_handle_cue, cleaned)
+    cleaned = PERSON_CUE_NAME_RE.sub(redact_person_cue_name, cleaned)
     return PERSON_NAME_RE.sub(redact_person_name, cleaned)
+
+
+def redact_bare_handle_cue(match: re.Match[str]) -> str:
+    return match.group(0).replace(match.group(1), "<person-handle-redacted>")
+
+
+def redact_person_cue_name(match: re.Match[str]) -> str:
+    name = match.group(2) or match.group(3)
+    return match.group(0).replace(name, "<person-name-redacted>")
 
 
 def redact_person_name(match: re.Match[str]) -> str:

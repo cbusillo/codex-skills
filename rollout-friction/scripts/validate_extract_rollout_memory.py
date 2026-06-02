@@ -153,6 +153,7 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
                         "Remember local config path /Users/example/Developer/.code/local.env. "
                         "Jackie Example is the manager; GitHub handle @jackie-example, "
                         "Slack <@U12345>, Discord jackie-example#1234, email jackie@example.test. "
+                        "Jackie is our organizer, TubeTester manages the video work, and handle TubeTester is bare. "
                         "Every Code should remain readable."
                     ),
                 )
@@ -166,7 +167,14 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
         raise AssertionError(f"redact mode leaked path: {redacted}")
     if "/" in redacted_source and "<path-redacted>" not in redacted_source:
         raise AssertionError(f"redact mode leaked source path: {redacted_source}")
-    for leaked in ("Jackie Example", "@jackie-example", "<@U12345>", "jackie-example#1234", "jackie@example.test"):
+    for leaked in (
+        "Jackie Example",
+        "@jackie-example",
+        "<@U12345>",
+        "jackie-example#1234",
+        "jackie@example.test",
+        "TubeTester",
+    ):
         if leaked in redacted:
             raise AssertionError(f"redact mode leaked person data {leaked!r}: {redacted}")
     for marker in ("<person-name-redacted>", "<person-handle-redacted>", "<person-email-redacted>"):
@@ -176,7 +184,12 @@ def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
         raise AssertionError(f"redact mode should preserve public product names: {redacted}")
     if "/Users/example" not in original:
         raise AssertionError(f"trusted originals should preserve path: {original}")
-    if "Jackie Example" not in original or "@jackie-example" not in original or "jackie@example.test" not in original:
+    if (
+        "Jackie Example" not in original
+        or "@jackie-example" not in original
+        or "jackie@example.test" not in original
+        or "TubeTester" not in original
+    ):
         raise AssertionError(f"trusted originals should preserve person data: {original}")
     if str(trace) != original_candidate.source_file:
         raise AssertionError(f"trusted originals should preserve source path: {original_candidate.source_file}")
