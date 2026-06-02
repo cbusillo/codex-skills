@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -207,21 +208,30 @@ def prompt_too_large_row(prompt_summary: dict[str, Any], variant: dict[str, str]
 def request_code_llm(model: str, prompt: str, args: argparse.Namespace) -> str:
     argv_limit = os.sysconf("SC_ARG_MAX") if hasattr(os, "sysconf") else 1_000_000
     schema_chars = len(compact_json(default_schema())) if not args.schema_file else len(str(args.schema_file))
-    estimated_argv_chars = len(prompt) + schema_chars + 4_000
+    estimated_argv_chars = len(DEFAULT_SYSTEM) + schema_chars + len(model) + 4_000
     if estimated_argv_chars > int(argv_limit * 0.9):
         raise MatrixBlocked(
             "blocked_transport",
-            f"estimated argv is {estimated_argv_chars} chars; code llm request requires argv and this host ARG_MAX is {argv_limit}",
+            f"estimated argv is {estimated_argv_chars} chars; code llm request schema args exceed this host ARG_MAX of {argv_limit}",
         )
     schema_args = ["--schema-file", str(args.schema_file)] if args.schema_file else ["--schema-json", compact_json(default_schema())]
-    command = [
+    with tempfile.TemporaryDirectory(prefix="rollout-memory-code-llm-") as tmp:
+        prompt_path = Path(tmp) / "prompt.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        command = code_llm_command(model, prompt_path, schema_args)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=args.max_seconds, check=True)
+    return extract_first_json_object(result.stdout.strip())
+
+
+def code_llm_command(model: str, prompt_path: Path, schema_args: list[str]) -> list[str]:
+    return [
         "code",
         "llm",
         "request",
         "--developer",
         DEFAULT_SYSTEM,
-        "--message",
-        prompt,
+        "--message-file",
+        str(prompt_path),
         *schema_args,
         "--format-name",
         "RolloutMemoryReview",
@@ -229,8 +239,6 @@ def request_code_llm(model: str, prompt: str, args: argparse.Namespace) -> str:
         "--model",
         model,
     ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=args.max_seconds, check=True)
-    return extract_first_json_object(result.stdout.strip())
 
 
 def request_claude(model: str, prompt: str, args: argparse.Namespace) -> str:
