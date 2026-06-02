@@ -75,6 +75,14 @@ When a skill needs local context, it should treat the local file as optional and
 continue to work without it. Commit `*.example.md` files when a template would
 help other users configure their own private overlay.
 
+Use `.local/profile.md` as the maintained private profile overlay: durable
+machine, account, workflow, and cross-repo preferences can live there when they
+are not safe or useful to publish. Review and prune it during memory
+distillation or rollout-friction closeout so stale local notes do not become
+hidden instructions. If a profile note becomes generally reusable, promote only
+the public-safe procedure into a skill or repo doc and keep private values in
+the local overlay.
+
 Avoid storing tokens or passwords even in ignored files. Contact details such as
 email addresses, phone numbers, chat handles, and GitHub usernames may belong in
 private local overlays such as `.local/people.yaml`, but credentials still
