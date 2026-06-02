@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Focused validation for validate_rollout_memory_llm_results.py."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+
+
+SCRIPT = Path(__file__).with_name("validate_rollout_memory_llm_results.py")
+
+
+def load_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("validate_rollout_memory_llm_results", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load validate_rollout_memory_llm_results.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_json(path: Path, payload: object) -> Path:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+    return path
+
+
+def prompt_payload() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "candidates": [
+            {"candidate_id": "memcand_a", "text": "Remember qwen3-coder-64b."},
+            {"candidate_id": "memcand_b", "text": "One-off status update."},
+        ],
+    }
+
+
+def result_payload(content: dict[str, object]) -> dict[str, object]:
+    return {"ok": True, "content": json.dumps(content)}
+
+
+def complete_content() -> dict[str, object]:
+    return {
+        "people_updates": [],
+        "profile_notes": [],
+        "rollout_friction_notes": [],
+        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "qwen3-coder-64b preference"}],
+        "repo_specific_notes": [],
+        "discard_reasons": [{"candidate_id": "memcand_b", "reason": "transient"}],
+        "reviewed_candidate_ids": ["memcand_a", "memcand_b"],
+    }
+
+
+def test_accepts_complete_result() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(complete_content())),
+        )
+    if not summary["ok"]:
+        raise AssertionError(f"expected complete result to pass: {summary}")
+    if summary["covered_count"] != 2 or summary["note_count"] != 1:
+        raise AssertionError(f"unexpected complete summary: {summary}")
+
+
+def test_rejects_missing_candidate_coverage() -> None:
+    module = load_module()
+    content = complete_content()
+    content["discard_reasons"] = []
+    content["reviewed_candidate_ids"] = ["memcand_a"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected missing candidate coverage to fail: {summary}")
+    if summary["missing_candidate_ids"] != ["memcand_b"]:
+        raise AssertionError(f"expected memcand_b missing: {summary}")
+
+
+def test_reviewed_id_without_disposition_is_incomplete() -> None:
+    module = load_module()
+    content = complete_content()
+    content["discard_reasons"] = []
+    content["reviewed_candidate_ids"] = ["memcand_a", "memcand_b"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected reviewed-only candidate to fail: {summary}")
+    if summary["missing_disposition_candidate_ids"] != ["memcand_b"]:
+        raise AssertionError(f"expected memcand_b missing disposition: {summary}")
+
+
+def main() -> int:
+    test_accepts_complete_result()
+    test_rejects_missing_candidate_coverage()
+    test_reviewed_id_without_disposition_is_incomplete()
+    print("ok validate-validate-rollout-memory-llm-results")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

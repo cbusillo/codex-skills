@@ -5,6 +5,35 @@ metadata:
   short-description: Audit rollout traces for workflow friction
 policy:
   allow_implicit_invocation: false
+resources:
+  - path: scripts/analyze_rollouts.py
+    kind: script
+    description: Deterministic local rollout/session friction analyzer.
+  - path: scripts/extract_rollout_memory.py
+    kind: script
+    description: Extract destination-aware durable-memory candidates from local rollout/session traces.
+  - path: scripts/review_rollout_memory_batches.py
+    kind: script
+    description: Run trusted-local LLM review over extractor prompt batches and validate coverage.
+  - path: scripts/validate_rollout_memory_llm_results.py
+    kind: script
+    description: Validate strict JSON and candidate coverage for local LLM memory-review results.
+commands:
+  - name: analyze-rollouts
+    source: skill
+    resource_path: scripts/analyze_rollouts.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/analyze_rollouts.py", "--root", "~/.code/sessions"]
+    purpose: Analyze local rollout/session traces for workflow friction signals.
+  - name: extract-rollout-memory
+    source: skill
+    resource_path: scripts/extract_rollout_memory.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/extract_rollout_memory.py", "--root", "~/.code/sessions", "--trusted-originals", "--output-dir", ".local/rollout-memory/<run-id>"]
+    purpose: Write local candidate and prompt artifacts for durable-memory review.
+  - name: review-rollout-memory-batches
+    source: skill
+    resource_path: scripts/review_rollout_memory_batches.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/review_rollout_memory_batches.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--output-dir", ".local/rollout-memory/<run-id>/reviews"]
+    purpose: Review extractor prompts with a trusted local model and validate per-batch coverage.
 ---
 
 # Rollout Friction
@@ -85,6 +114,30 @@ rollout files, session traces, runout files, or agent workflow friction.
 7. Present a concise proposal with the signal, evidence summary, likely cause,
    recommended destination, and exact changes that would need approval.
 8. Ask for explicit human approval before making any changes.
+
+## Memory Extraction Workflow
+
+Use this only after explicit approval to inspect rollout/session traces for
+durable memory candidates. This workflow prepares review artifacts; it does not
+apply memory updates by itself.
+
+1. Run `extract_rollout_memory.py` with explicit time/file bounds and an ignored
+   `.local/rollout-memory/<run-id>/` output directory. Use `--trusted-originals`
+   only for localhost or trusted-LAN models approved for private local inputs;
+   use `--redact` for cloud, unknown, disabled, or untrusted endpoints.
+2. Prefer destination-filtered passes when applying memory. Review `people`,
+   `profile`, and `local-llm` separately from `repo-specific` and
+   `rollout-friction` candidates so repo details do not pollute central memory.
+3. Tune `--batch-chars` and `--max-record-chars` from a small calibration run.
+   Oversharded prompts lose synthesis value, while overlarge prompts are more
+   likely to truncate or omit candidate IDs. Validate with
+   `validate_rollout_memory_llm_results.py` before scaling.
+4. Use `review_rollout_memory_batches.py` only against trusted local/private
+   endpoints. Treat validated LLM output as suggestions, then reduce and inspect
+   suggested updates before editing `.local/profile.md`, `.local/people.yaml`,
+   `.local/local-llm.yaml`, skills, or repo files.
+5. Apply nothing from a batch that fails strict JSON or candidate coverage until
+   it is rerun, split, or manually reviewed.
 
 ## Friction Signals
 

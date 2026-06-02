@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Focused validation for summarize_rollout_memory_reviews.py."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+
+
+SCRIPT = Path(__file__).with_name("summarize_rollout_memory_reviews.py")
+
+
+def load_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("summarize_rollout_memory_reviews", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load summarize_rollout_memory_reviews.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_json(path: Path, payload: object) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+
+
+def test_summarizes_complete_review_dir() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-001.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        write_json(
+            root / "batch-001.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "people_updates": [],
+                        "profile_notes": [],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_a"],
+                    }
+                )
+            },
+        )
+        summary = module.summarize(root)
+    if summary["ok_count"] != 1 or summary["failed_count"] != 0:
+        raise AssertionError(f"unexpected summary status: {summary}")
+    if summary["candidate_count"] != 1 or summary["covered_count"] != 1:
+        raise AssertionError(f"unexpected coverage summary: {summary}")
+
+
+def test_marks_missing_result_failed() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-001.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        summary = module.summarize(root)
+    if summary["failed_count"] != 1:
+        raise AssertionError(f"missing result should fail: {summary}")
+
+
+def main() -> int:
+    test_summarizes_complete_review_dir()
+    test_marks_missing_result_failed()
+    print("ok validate-summarize-rollout-memory-reviews")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
