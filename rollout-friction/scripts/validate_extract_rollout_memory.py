@@ -173,6 +173,12 @@ def test_prompt_batches_emit_destination_aware_task() -> None:
     task = batches[0]["task"]
     if "people_updates" not in task or "discard" not in task:
         raise AssertionError(f"prompt task should be destination-aware: {task}")
+    if "github_handle" not in task or "aliases" not in task:
+        raise AssertionError(f"people prompt should request structured identity fields: {task}")
+    people_schema = batches[0]["output_schema"]["people_updates"][0]
+    for expected_key in ("name", "aliases", "github_handle", "role", "organization"):
+        if expected_key not in people_schema:
+            raise AssertionError(f"people schema missing {expected_key}: {people_schema}")
     if batches[0].get("allowed_model_scope") != "trusted_local_or_trusted_lan":
         raise AssertionError(f"prompt should be local/trusted scoped: {batches[0]}")
 

@@ -466,7 +466,10 @@ def prompt_batches(candidates: list[Candidate], batch_chars: int) -> Iterable[di
                 "discard_reasons. Do not put a candidate_id in both a note list and discard_reasons. "
                 "People updates require explicit identity/contact/role/trust facts. Profile notes "
                 "require stable user preferences or local workflow rules. Repo-specific notes belong "
-                "in the relevant repo, not the central profile."
+                "in the relevant repo, not the central profile. For people_updates, prefer structured "
+                "fields over prose when evidence supports them: name, display_name, "
+                "preferred_reference, aliases, github_handle, role, organization, and note. Include "
+                "both natural names and handles so the people resolver can be smoke-tested."
             ),
             "output_schema": {
                 "decisions": [
@@ -478,7 +481,19 @@ def prompt_batches(candidates: list[Candidate], batch_chars: int) -> Iterable[di
                         "reason": "string",
                     }
                 ],
-                "people_updates": [],
+                "people_updates": [
+                    {
+                        "candidate_id": "string",
+                        "name": "string|null",
+                        "display_name": "string|null",
+                        "preferred_reference": "string|null",
+                        "aliases": ["string"],
+                        "github_handle": "string|null",
+                        "role": "string|null",
+                        "organization": "string|null",
+                        "note": "string",
+                    }
+                ],
                 "profile_notes": [],
                 "rollout_friction_notes": [],
                 "local_llm_notes": [],

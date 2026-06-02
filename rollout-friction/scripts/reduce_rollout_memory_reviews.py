@@ -25,6 +25,20 @@ DESTINATION_FILES = {
     "repo_specific_notes": "repo-specific local notes or owning repo",
 }
 TEXT_KEYS = ("note", "memory", "text", "summary", "update", "fact")
+PEOPLE_QUERY_KEYS = (
+    "name",
+    "display_name",
+    "preferred_reference",
+    "person",
+    "contact",
+    "handle",
+    "github",
+    "github_handle",
+    "username",
+    "alias",
+    "aliases",
+)
+HANDLE_RE = re.compile(r"(?<![\w/])@[A-Za-z0-9][A-Za-z0-9_-]{1,38}\b")
 DEFAULT_SHORTLIST_LIMIT = 30
 BUCKET_PRIORITY = {
     "profile_notes": 5,
@@ -118,6 +132,7 @@ def reduce_reviews(
                 if isinstance(item, dict):
                     notes_by_key[key].append(normalize_note(item, batch_label, key))
     reduced = {key: dedupe_notes(values) for key, values in notes_by_key.items()}
+    people_resolver_smoke_checks = people_smoke_checks(reduced.get("people_updates", []))
     shortlist = curate_shortlist(reduced, shortlist_limit)
     return {
         "schema_version": 1,
@@ -143,6 +158,7 @@ def reduce_reviews(
                 "multi-candidate support, and non-transient wording. It is advisory, not an auto-apply list."
             ),
         },
+        "people_resolver_smoke_checks": people_resolver_smoke_checks,
         "apply_guidance": "Review this draft manually before editing local memory or repo files.",
     }
 
@@ -176,6 +192,10 @@ def normalize_note(item: dict[str, Any], batch_label: str, bucket: str) -> dict[
     reason = item.get("reason") or item.get("rationale")
     if isinstance(reason, str) and reason.strip():
         normalized["reason"] = " ".join(reason.split())
+    if bucket == "people_updates":
+        queries = people_queries_from_note(item, text)
+        if queries:
+            normalized["resolver_queries"] = queries
     return normalized
 
 
@@ -213,6 +233,10 @@ def dedupe_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         existing = by_key[key]
         existing["candidate_ids"] = sorted(set(existing["candidate_ids"]) | set(note["candidate_ids"]))
         existing["source_batches"] = sorted(set(existing["source_batches"]) | set(note["source_batches"]))
+        existing["resolver_queries"] = sorted(
+            set(existing.get("resolver_queries") or []) | set(note.get("resolver_queries") or []),
+            key=str.casefold,
+        )
     return sorted((annotate_note(item) for item in by_key.values()), key=lambda item: (item["bucket"], item["text"]))
 
 
@@ -257,7 +281,7 @@ def curate_shortlist(reduced: dict[str, list[dict[str, Any]]], limit: int) -> li
 
 
 def shortlist_note(note: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         key: note[key]
         for key in (
             "id",
@@ -271,6 +295,81 @@ def shortlist_note(note: dict[str, Any]) -> dict[str, Any]:
         )
         if key in note
     }
+    if "resolver_queries" in note:
+        result["resolver_queries"] = note["resolver_queries"]
+    return result
+
+
+def people_smoke_checks(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for note in notes:
+        for query in note.get("resolver_queries") or []:
+            if not isinstance(query, str) or not query.strip():
+                continue
+            key = query.casefold()
+            entry = checks.setdefault(
+                key,
+                {
+                    "query": query,
+                    "note_ids": [],
+                    "candidate_ids": [],
+                    "source_batches": [],
+                },
+            )
+            entry["note_ids"].append(note["id"])
+            entry["candidate_ids"].extend(note.get("candidate_ids") or [])
+            entry["source_batches"].extend(note.get("source_batches") or [])
+    for entry in checks.values():
+        entry["note_ids"] = sorted(set(entry["note_ids"]))
+        entry["candidate_ids"] = sorted(set(entry["candidate_ids"]))
+        entry["source_batches"] = sorted(set(entry["source_batches"]))
+    return sorted(checks.values(), key=lambda item: str(item["query"]).casefold())
+
+
+def people_queries_from_note(item: dict[str, Any], text: str) -> list[str]:
+    queries: list[str] = []
+    for key in PEOPLE_QUERY_KEYS:
+        collect_people_query_value(queries, item.get(key))
+    for match in HANDLE_RE.findall(text):
+        queries.append(match)
+        queries.append(match[1:])
+    cleaned: list[str] = []
+    for query in queries:
+        clean_query = clean_people_query(query)
+        if clean_query:
+            cleaned.append(clean_query)
+    return sorted(dict.fromkeys(cleaned), key=str.casefold)
+
+
+def collect_people_query_value(queries: list[str], value: object) -> None:
+    if isinstance(value, str):
+        queries.extend(split_people_query_text(value))
+    elif isinstance(value, list):
+        for child in value:
+            collect_people_query_value(queries, child)
+    elif isinstance(value, dict):
+        for key in PEOPLE_QUERY_KEYS:
+            collect_people_query_value(queries, value.get(key))
+
+
+def split_people_query_text(value: str) -> list[str]:
+    stripped = value.strip()
+    if not stripped:
+        return []
+    parts = re.split(r"[,;]", stripped)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def clean_people_query(value: str) -> str | None:
+    query = " ".join(value.strip().split())
+    if not query:
+        return None
+    if len(query) > 80:
+        return None
+    lowered = query.casefold()
+    if lowered in {"github", "user", "reviewer", "manager", "collaborator", "person"}:
+        return None
+    return query
 
 
 def keeper_score(note: dict[str, Any]) -> int:
