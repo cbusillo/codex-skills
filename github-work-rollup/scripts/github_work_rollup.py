@@ -31,6 +31,7 @@ GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-wi
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
+REPORT_MODES = {"activity", "backlog", "standup"}
 BUCKET_ORDER = [
     "needs_attention",
     "blocked",
@@ -65,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--since", help="UTC ISO timestamp for window start.")
     parser.add_argument("--until", help="UTC ISO timestamp for window end.")
     parser.add_argument("--timezone", help="IANA timezone label for report display metadata.")
+    parser.add_argument("--mode", choices=sorted(REPORT_MODES), help="activity, backlog, or standup.")
     parser.add_argument("--summary-level", choices=sorted(SUMMARY_LEVELS), help="concise, standard, or detailed.")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     parser.add_argument("--output", type=Path, help="Write rendered output to this path.")
@@ -121,6 +123,9 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
     summary_level = args.summary_level or str(config.get("summary_level") or "standard")
     if summary_level not in SUMMARY_LEVELS:
         raise SystemExit(f"error: summary_level must be one of {', '.join(sorted(SUMMARY_LEVELS))}")
+    mode = args.mode or str(config.get("mode") or "activity")
+    if mode not in REPORT_MODES:
+        raise SystemExit(f"error: mode must be one of {', '.join(sorted(REPORT_MODES))}")
     return {
         "config_path": str(args.config) if args.config else None,
         "timezone": args.timezone or str(config.get("timezone") or "UTC"),
@@ -129,6 +134,7 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
         "repositories": repos,
         "repo_owners": owners,
         "subjects": subjects,
+        "mode": mode,
         "summary_level": summary_level,
         "output_path": str(args.output or config.get("output_path") or ""),
         "include_external_activity": bool(args.include_external_activity or config.get("include_external_activity")),
@@ -214,6 +220,34 @@ def deduplicate_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
+def collection_lanes(settings: dict[str, Any]) -> dict[str, bool]:
+    mode = str(settings.get("mode") or "activity")
+    return {
+        "recent_activity": True,
+        "open_backlog": mode in {"backlog", "standup"},
+        "recent_completions": mode in {"activity", "backlog", "standup"},
+    }
+
+
+def collect_open_backlog(settings: dict[str, Any]) -> bool:
+    return collection_lanes(settings)["open_backlog"]
+
+
+def item_collection_lane(state: str, entry: dict[str, Any], settings: dict[str, Any]) -> str:
+    mode = str(settings.get("mode") or "activity")
+    if state == "open" and mode == "standup" and item_in_window(entry, state, settings["window"]):
+        return "recent_activity"
+    if state == "open" and collect_open_backlog(settings):
+        return "open_backlog"
+    if state in {"closed", "merged"}:
+        return "recent_completion"
+    return "recent_activity"
+
+
+def should_window_filter_state(state: str, settings: dict[str, Any]) -> bool:
+    return not (state == "open" and collect_open_backlog(settings))
+
+
 def item_identity(item: dict[str, Any]) -> str:
     kind = item.get("kind")
     repo = item.get("repo")
@@ -234,11 +268,20 @@ def merge_duplicate_item(existing: dict[str, Any], incoming: dict[str, Any]) -> 
         if values:
             merged[field] = unique(values)
     merged["priority"] = max(int(existing.get("priority") or 0), int(incoming.get("priority") or 0))
+    merged["collection_lane"] = preferred_collection_lane(existing, incoming)
     if merged.get("bucket") == "recently_completed":
         merged["handoff"] = None
     elif not merged.get("handoff"):
         merged["handoff"] = existing.get("handoff") or incoming.get("handoff")
     return merged
+
+
+def preferred_collection_lane(*items: dict[str, Any]) -> str | None:
+    lanes = [str(item.get("collection_lane")) for item in items if item.get("collection_lane")]
+    for lane in ("recent_completion", "recent_activity", "open_backlog"):
+        if lane in lanes:
+            return lane
+    return lanes[0] if lanes else None
 
 
 def preferred_item(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +330,8 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "repositories": repos,
         "subjects": settings["subjects"],
         "summary_level": settings["summary_level"],
+        "mode": settings["mode"],
+        "collection_lanes": collection_lanes(settings),
         "preflight": preflight,
         "buckets": buckets,
         "summary": summary_counts(buckets, collection_warnings),
@@ -328,11 +373,21 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
 
 def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        *collect_prs(repo, "open", settings),
+        *collect_open_items(repo, "pr", settings),
         *collect_prs(repo, "closed", settings),
         *collect_prs(repo, "merged", settings),
-        *collect_issues(repo, "open", settings),
+        *collect_open_items(repo, "issue", settings),
         *collect_issues(repo, "closed", settings),
+    ]
+
+
+def collect_open_items(repo: str, kind: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collector = collect_prs if kind == "pr" else collect_issues
+    if settings["mode"] != "standup":
+        return collector(repo, "open", settings)
+    return [
+        *collector(repo, "open", settings, force_window_filter=False),
+        *collector(repo, "open", settings, force_window_filter=True),
     ]
 
 
@@ -372,30 +427,36 @@ def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def collect_prs(repo: str, state: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+def collect_prs(
+    repo: str,
+    state: str,
+    settings: dict[str, Any],
+    force_window_filter: bool | None = None,
+) -> list[dict[str, Any]]:
     fields = "number,title,url,author,labels,reviewDecision,isDraft,createdAt,updatedAt,closedAt,mergedAt,baseRefName"
-    result = run(
-        [
-            GH,
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            state,
-            "--limit",
-            str(settings["limit_items"]),
-            "--search",
-            search_window(settings["window"]),
-            "--json",
-            fields,
-        ]
-    )
+    window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    command = [
+        GH,
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--limit",
+        str(settings["limit_items"]),
+    ]
+    if window_filter:
+        command.extend(["--search", search_window(settings["window"])])
+    command.extend(["--json", fields])
+    result = run(command)
     if result.returncode != 0:
         return [collection_error(repo, "pr", state, result)]
     rows = []
     for entry in json.loads(result.stdout or "[]"):
-        if not isinstance(entry, dict) or not item_in_window(entry, state, settings["window"]):
+        if not isinstance(entry, dict):
+            continue
+        if window_filter and not item_in_window(entry, state, settings["window"]):
             continue
         if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
             continue
@@ -403,25 +464,29 @@ def collect_prs(repo: str, state: str, settings: dict[str, Any]) -> list[dict[st
     return rows
 
 
-def collect_issues(repo: str, state: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+def collect_issues(
+    repo: str,
+    state: str,
+    settings: dict[str, Any],
+    force_window_filter: bool | None = None,
+) -> list[dict[str, Any]]:
     fields = "number,title,url,author,labels,assignees,createdAt,updatedAt,closedAt,stateReason"
-    result = run(
-        [
-            GH,
-            "issue",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            state,
-            "--limit",
-            str(settings["limit_items"]),
-            "--search",
-            search_window(settings["window"]),
-            "--json",
-            fields,
-        ]
-    )
+    window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    command = [
+        GH,
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--limit",
+        str(settings["limit_items"]),
+    ]
+    if window_filter:
+        command.extend(["--search", search_window(settings["window"])])
+    command.extend(["--json", fields])
+    result = run(command)
     if result.returncode != 0:
         err_msg = (result.stderr or result.stdout or "").casefold()
         if "disabled issues" in err_msg or "issues are disabled" in err_msg:
@@ -430,7 +495,9 @@ def collect_issues(repo: str, state: str, settings: dict[str, Any]) -> list[dict
         return [collection_error(repo, "issue", state, result)]
     rows = []
     for entry in json.loads(result.stdout or "[]"):
-        if not isinstance(entry, dict) or not item_in_window(entry, state, settings["window"]):
+        if not isinstance(entry, dict):
+            continue
+        if window_filter and not item_in_window(entry, state, settings["window"]):
             continue
         if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
             continue
@@ -471,6 +538,7 @@ def normalize_search_item(entry: dict[str, Any], subject: str, qualifier: str, s
         "author": login_from(entry.get("user")),
         "labels": labels,
         "state": state,
+        "collection_lane": "recent_activity",
         "updated_at": entry.get("updated_at"),
         "completed_at": entry.get("closed_at") if state == "closed" else None,
         "bucket": bucket,
@@ -522,6 +590,7 @@ def normalize_pr(repo: str, state: str, entry: dict[str, Any], settings: dict[st
         "author": login_from(entry.get("author")),
         "labels": labels,
         "state": state,
+        "collection_lane": item_collection_lane(state, entry, settings),
         "review_decision": entry.get("reviewDecision") or "",
         "draft": bool(entry.get("isDraft")),
         "updated_at": entry.get("updatedAt"),
@@ -543,6 +612,7 @@ def normalize_issue(repo: str, state: str, entry: dict[str, Any], settings: dict
         "author": login_from(entry.get("author")),
         "labels": labels,
         "state": state,
+        "collection_lane": item_collection_lane(state, entry, settings),
         "assignees": [login_from(item) for item in entry.get("assignees") or [] if login_from(item)],
         "updated_at": entry.get("updatedAt"),
         "completed_at": entry.get("closedAt") if state == "closed" else None,
@@ -664,8 +734,12 @@ def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[
 
 
 def summary_counts(buckets: dict[str, list[dict[str, Any]]], collection_warnings: list[str]) -> dict[str, int]:
+    rows = [row for bucket in buckets.values() for row in bucket]
     return {
         **{bucket: len(buckets.get(bucket) or []) for bucket in BUCKET_ORDER},
+        "open_backlog": sum(1 for row in rows if row.get("collection_lane") == "open_backlog"),
+        "recent_activity": sum(1 for row in rows if row.get("collection_lane") == "recent_activity"),
+        "recent_completions": sum(1 for row in rows if row.get("collection_lane") == "recent_completion"),
         "collection_warnings": len(collection_warnings),
     }
 
@@ -712,6 +786,12 @@ def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> 
 
 def limitations(settings: dict[str, Any], repos: list[str]) -> list[str]:
     out = []
+    if settings["mode"] == "activity":
+        out.append("Activity mode applies the window to open and completed work; older open backlog is not included.")
+    elif settings["mode"] == "backlog":
+        out.append("Backlog mode includes open work regardless of update time; completed work remains window-bound.")
+    elif settings["mode"] == "standup":
+        out.append("Standup mode includes open backlog regardless of update time plus recent activity and completions inside the window.")
     if not settings["subjects"]:
         out.append("No subjects configured; rollup is repository-scoped only.")
     elif repos and not settings["include_external_activity"]:
@@ -751,6 +831,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"# GitHub Work Rollup for {payload['report_recipient']}",
         "",
         f"Window: {display_window['since']} to {display_window['until']} ({payload['timezone']})",
+        f"Mode: {payload.get('mode') or 'activity'}",
         render_sources(payload.get("repositories") or [], payload.get("subjects") or []),
         "",
         "## Executive Summary",
@@ -806,6 +887,8 @@ def render_executive_summary(summary: dict[str, int]) -> list[str]:
         f"in progress: {summary.get('in_progress', 0)}",
         f"completed: {summary.get('recently_completed', 0)}",
     ]
+    if summary.get("open_backlog"):
+        counts.append(f"open backlog: {summary.get('open_backlog', 0)}")
     if warnings:
         counts.append(f"collection warnings: {warnings}")
     return [headline, "Counts: " + " | ".join(counts)]
@@ -864,8 +947,9 @@ def render_item(item: dict[str, Any], include_handoff: bool = True) -> str:
     url = item.get("url")
     link = f"[{ref}]({url})" if url else ref
     handoff = f" Handoff: {item['handoff']}." if include_handoff and item.get("handoff") and item.get("bucket") != "recently_completed" else ""
+    lane = " Source: open backlog." if item.get("collection_lane") == "open_backlog" else ""
     error = f" Error: {item['error']}" if item.get("error") else ""
-    return f"- {link} {item.get('title')}{handoff}{error}"
+    return f"- {link} {item.get('title')}{lane}{handoff}{error}"
 
 
 def write_or_print(rendered: str, output: str | Path | None) -> None:

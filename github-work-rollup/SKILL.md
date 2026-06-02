@@ -80,6 +80,7 @@ Supported config fields:
 - `repo_owners`
 - `repositories`
 - `summary_level`: `concise`, `standard`, or `detailed`
+- `mode`: `activity`, `backlog`, or `standup`
 - `output_path`
 - `include_external_activity`
 - `include_bots`
@@ -92,21 +93,43 @@ Use `references/github-work-rollup.local.example.yaml` as the public-safe shape.
 If the local config file is absent, continue with explicit user scope and built-in
 defaults.
 
+Modes:
+
+- `activity` is the default recent-activity digest. It applies the window to
+  open and completed work, so older open backlog is intentionally omitted.
+- `backlog` includes open work regardless of update time and keeps completed
+  work window-bound.
+- `standup` combines open backlog with recent activity and completions. Use it
+  for questions like "what is next," "what are we blocked on," and routine
+  working-session briefs.
+
+Repository open-work collection follows the selected mode. Subject search stays
+window-bound in all modes so broad author/commenter/mention scans remain a
+recent activity signal rather than an unbounded people search.
+
 ## Workflow
 
 1. Resolve scope from the request and optional local config: repositories,
-   owners, subjects, time window, timezone, output format, and summary level.
+   owners, subjects, mode, time window, timezone, output format, and summary
+   level. Prefer `--mode standup` when the user asks for active work or next
+   work. Prefer `--mode activity` when they ask what changed recently.
 2. Run the helper in read-only mode:
 
    ```bash
-   uv run scripts/github_work_rollup.py --repo example-org/example-repo --window 24h --format markdown
+   uv run scripts/github_work_rollup.py \
+     --repo example-org/example-repo \
+     --mode standup \
+     --window 24h \
+     --format markdown
    ```
 
 3. If routine local defaults are needed, pass the private config explicitly or
    let the helper read `.local/github-work-rollup.yaml` when it exists:
 
    ```bash
-   uv run scripts/github_work_rollup.py --config .local/github-work-rollup.yaml --format json
+   uv run scripts/github_work_rollup.py \
+     --config .local/github-work-rollup.yaml \
+     --format json
    ```
 
 4. Treat the helper output as the source of truth for collected GitHub state. It
