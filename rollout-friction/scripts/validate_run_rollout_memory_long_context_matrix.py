@@ -86,12 +86,33 @@ def test_default_schema_is_strict_object() -> None:
         raise AssertionError(f"schema should require reviewed ids: {schema}")
 
 
+def test_existing_rows_are_keyed_by_budget_and_variant() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "results.jsonl"
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "budget_name": "quarter",
+                        "variant": {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+                        "status": "passed",
+                    }
+                )
+                + "\n"
+            )
+        rows = module.read_existing_rows(path)
+    if ("quarter", "gpt") not in rows or rows[("quarter", "gpt")]["status"] != "passed":
+        raise AssertionError(f"unexpected existing rows: {rows}")
+
+
 def main() -> int:
     test_parse_variant()
     test_dry_run_plans_matrix_row()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
     test_default_schema_is_strict_object()
+    test_existing_rows_are_keyed_by_budget_and_variant()
     print("ok validate-run-rollout-memory-long-context-matrix")
     return 0
 

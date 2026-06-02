@@ -37,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--budget", action="append", default=[], help="Budget name or NAME=CHARS. May be repeated.")
     parser.add_argument("--variant", action="append", default=[], help="NAME=PROVIDER:MODEL. Providers: code-llm, claude.")
     parser.add_argument("--schema-file", type=Path, help="Strict JSON schema file for provider structured output.")
+    parser.add_argument("--output-jsonl", type=Path, help="Append matrix rows to this JSONL file.")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip rows already present in --output-jsonl.")
     parser.add_argument("--max-seconds", type=float, default=1800.0)
     parser.add_argument("--anthropic-max-budget-usd", type=float, default=3.0)
     parser.add_argument("--dry-run", action="store_true")
@@ -51,17 +53,23 @@ def main() -> int:
     args = parse_args()
     budgets = [parse_budget(value) for value in (args.budget or ["quarter"])]
     variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
+    existing = read_existing_rows(args.output_jsonl) if args.skip_existing and args.output_jsonl else {}
     rows: list[dict[str, Any]] = []
     for budget in budgets:
         payload, prompt_summary = prepare_payload(args.prompts, budget)
         prompt = selected_note_text(payload)
         for variant in variants:
-            row = run_or_plan(payload, prompt, prompt_summary, variant, args)
+            key = row_key(prompt_summary["budget_name"], variant)
+            row = existing.get(key) or run_or_plan(payload, prompt, prompt_summary, variant, args)
+            if key in existing:
+                row = {**row, "status": "skipped_existing", "original_status": row.get("status")}
             rows.append(row)
             print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
+            if args.output_jsonl and key not in existing:
+                append_jsonl(args.output_jsonl, row)
     summary = summarize_rows(rows)
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
-    return 0 if all(row["status"] in {"passed", "planned"} for row in rows) else 1
+    return 0 if all(row["status"] in {"passed", "planned", "skipped_existing"} for row in rows) else 1
 
 
 def parse_variant(value: str) -> dict[str, str]:
@@ -120,10 +128,12 @@ class MatrixBlocked(RuntimeError):
 
 def request_code_llm(model: str, prompt: str, args: argparse.Namespace) -> str:
     argv_limit = os.sysconf("SC_ARG_MAX") if hasattr(os, "sysconf") else 1_000_000
-    if len(prompt) > max(100_000, int(argv_limit * 0.75)):
+    schema_chars = len(compact_json(default_schema())) if not args.schema_file else len(str(args.schema_file))
+    estimated_argv_chars = len(prompt) + schema_chars + 4_000
+    if estimated_argv_chars > int(argv_limit * 0.9):
         raise MatrixBlocked(
             "blocked_transport",
-            f"prompt is {len(prompt)} chars; code llm request requires argv and this host ARG_MAX is {argv_limit}",
+            f"estimated argv is {estimated_argv_chars} chars; code llm request requires argv and this host ARG_MAX is {argv_limit}",
         )
     schema_args = ["--schema-file", str(args.schema_file)] if args.schema_file else ["--schema-json", compact_json(default_schema())]
     command = [
@@ -200,6 +210,34 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     return {"schema_version": 1, "summary": True, "run_count": len(rows), "status_counts": counts}
+
+
+def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str]:
+    return (budget_name, variant["name"])
+
+
+def read_existing_rows(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict) and not payload.get("summary") and isinstance(payload.get("variant"), dict):
+                budget = payload.get("budget_name")
+                name = payload["variant"].get("name")
+                if isinstance(budget, str) and isinstance(name, str):
+                    rows[(budget, name)] = payload
+    return rows
+
+
+def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
 
 
 def default_schema() -> dict[str, Any]:

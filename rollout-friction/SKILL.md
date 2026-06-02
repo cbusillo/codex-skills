@@ -56,7 +56,7 @@ commands:
   - name: run-rollout-memory-long-context-matrix
     source: skill
     resource_path: scripts/run_rollout_memory_long_context_matrix.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--dry-run", "--budget", "quarter", "--variant", "sonnet-1m=claude:claude-sonnet-4-6[1m]"]
+    example_argv: ["uv", "run", "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--dry-run", "--budget", "quarter", "--variant", "sonnet-1m=claude:claude-sonnet-4-6[1m]", "--output-jsonl", ".local/rollout-memory/<run-id>/matrix-results.jsonl"]
     purpose: Produce JSONL status rows for approved model/budget comparison runs, including blocked access, timeout, budget, and validation outcomes.
 ---
 
@@ -173,7 +173,8 @@ apply memory updates by itself.
    reviewed candidates as implicit discards.
 8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
    tests. For real approved cloud tests, pass `--allow-private-cloud` and capture
-   stdout JSONL under `.local/`. Treat statuses such as `blocked_access`,
+   stdout JSONL under `.local/`, or pass `--output-jsonl` with `--skip-existing`
+   for resumable runs. Treat statuses such as `blocked_access`,
    `blocked_transport`, `budget_exceeded`, `timeout`, and `failed_validation` as
    first-class results to retry or fix, not as successful reviews.
 
