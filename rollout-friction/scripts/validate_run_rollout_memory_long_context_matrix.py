@@ -12,7 +12,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from argparse import ArgumentParser, Namespace
+from argparse import Namespace
 from pathlib import Path
 from types import ModuleType
 
@@ -46,31 +46,67 @@ def test_parse_variant() -> None:
 
 def test_private_provider_approval_requires_confirmed_providers() -> None:
     module = load_module()
-    parser = ArgumentParser()
-    variants = [
-        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
-        {"name": "opus", "provider": "claude", "model": "opus"},
-    ]
-    module.validate_private_provider_approval(
-        Namespace(dry_run=True, allow_private_cloud=False, confirm_private_provider=[]), variants, parser
-    )
     try:
-        module.validate_private_provider_approval(
-            Namespace(dry_run=False, allow_private_cloud=True, confirm_private_provider=["claude"]), variants, parser
+        module.require_private_provider_approval(
+            Namespace(allow_private_cloud=True, confirm_private_provider=["claude"]),
+            {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
         )
-    except SystemExit:
+    except module.MatrixBlocked as exc:
+        if exc.status != "blocked_approval":
+            raise AssertionError(f"missing provider confirmation should block approval, got {exc.status}") from exc
         pass
     else:
         raise AssertionError("missing provider confirmation should fail")
-    module.validate_private_provider_approval(
+    module.require_private_provider_approval(
         Namespace(
-            dry_run=False,
             allow_private_cloud=True,
             confirm_private_provider=["code-llm", "claude"],
         ),
-        variants,
-        parser,
+        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
     )
+
+
+def test_skip_existing_does_not_require_provider_approval() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        prompts = write_prompts(root)
+        existing = root / "matrix.jsonl"
+        variant = {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"}
+        payload, summary = module.prepare_payload(prompts, ("tiny", 10_000))
+        prompt = module.selected_note_text(payload)
+        summary["prompt_sha256"] = module.sha256_text(prompt)
+        with existing.open("w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "budget_name": summary["budget_name"],
+                        "variant": variant,
+                        "prompt_sha256": summary["prompt_sha256"],
+                        "status": "passed",
+                    }
+                )
+                + "\n"
+            )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                str(prompts),
+                "--budget",
+                "tiny=10000",
+                "--variant",
+                "gpt=code-llm:gpt-5.4",
+                "--output-jsonl",
+                str(existing),
+                "--skip-existing",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    if "skipped_existing" not in result.stdout:
+        raise AssertionError(f"skip-existing should not require provider approval: {result.stdout} {result.stderr}")
 
 
 def test_dry_run_plans_matrix_row() -> None:
@@ -253,6 +289,7 @@ def test_retry_status_removes_default_skip_status() -> None:
 def main() -> int:
     test_parse_variant()
     test_private_provider_approval_requires_confirmed_providers()
+    test_skip_existing_does_not_require_provider_approval()
     test_dry_run_plans_matrix_row()
     test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()

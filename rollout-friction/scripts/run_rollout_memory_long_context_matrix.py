@@ -75,7 +75,6 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
-    validate_private_provider_approval(args, variants, parser)
     args.parsed_variants = variants
     return args
 
@@ -171,6 +170,7 @@ def run_or_plan(
         return row
     started = time.time()
     try:
+        require_private_provider_approval(args, variant)
         if variant["provider"] == "code-llm":
             content = request_code_llm(variant["model"], prompt, args)
         else:
@@ -195,6 +195,18 @@ def run_or_plan(
         row["error"] = str(exc)
     row["elapsed_seconds"] = round(time.time() - started, 3)
     return row
+
+
+def require_private_provider_approval(args: argparse.Namespace, variant: dict[str, str]) -> None:
+    if not args.allow_private_cloud:
+        raise MatrixBlocked("blocked_approval", "--allow-private-cloud is required before provider calls")
+    confirmed = set(args.confirm_private_provider or [])
+    provider = variant["provider"]
+    if provider not in confirmed:
+        raise MatrixBlocked(
+            "blocked_approval",
+            f"--confirm-private-provider must include provider before provider calls: {provider}",
+        )
 
 
 class MatrixBlocked(RuntimeError):
