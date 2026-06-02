@@ -18,6 +18,9 @@ resources:
   - path: scripts/reduce_rollout_memory_reviews.py
     kind: script
     description: Reduce strict-valid local LLM review outputs into a draft apply plan.
+  - path: scripts/prepare_rollout_memory_long_context_review.py
+    kind: script
+    description: Prepare selected-note long-context review prompts and normalize duplicated structured-output captures.
   - path: scripts/validate_rollout_memory_llm_results.py
     kind: script
     description: Validate strict JSON and candidate coverage for local LLM memory-review results.
@@ -42,6 +45,11 @@ commands:
     resource_path: scripts/reduce_rollout_memory_reviews.py
     example_argv: ["uv", "run", "rollout-friction/scripts/reduce_rollout_memory_reviews.py", ".local/rollout-memory/<run-id>/reviews", "--output", ".local/rollout-memory/<run-id>/apply-plan.json"]
     purpose: Build a local draft apply plan from strict-valid review batches.
+  - name: prepare-rollout-memory-long-context-review
+    source: skill
+    resource_path: scripts/prepare_rollout_memory_long_context_review.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/prepare_rollout_memory_long_context_review.py", "prepare", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--budget", "quarter"]
+    purpose: Build selected-note prompt payloads for approved long-context comparison runs.
 ---
 
 # Rollout Friction
@@ -149,6 +157,12 @@ apply memory updates by itself.
    reducer output as an apply-plan draft; inspect suggested updates before
    editing `.local/profile.md`, `.local/people.yaml`, `.local/local-llm.yaml`,
    skills, or repo files.
+7. For explicitly approved cloud or long-context comparison tests, use
+   `prepare_rollout_memory_long_context_review.py` to build selected-note prompts
+   with a `candidate_id_manifest`. Validate outputs with
+   `validate_rollout_memory_llm_results.py --allow-implicit-discards`; this mode
+   still requires every candidate in `reviewed_candidate_ids` and treats omitted
+   reviewed candidates as implicit discards.
 
 ## Friction Signals
 

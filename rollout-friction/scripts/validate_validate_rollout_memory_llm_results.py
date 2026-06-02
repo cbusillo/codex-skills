@@ -112,6 +112,28 @@ def test_reviewed_id_without_disposition_is_incomplete() -> None:
         raise AssertionError(f"expected memcand_b missing disposition: {summary}")
 
 
+def test_implicit_discard_mode_allows_reviewed_omissions() -> None:
+    module = load_module()
+    content = complete_content()
+    content["decisions"] = [
+        {"candidate_id": "memcand_a", "action": "note", "destination": "local_llm_notes"},
+    ]
+    content["discard_reasons"] = []
+    content["reviewed_candidate_ids"] = ["memcand_a", "memcand_b"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        prompt_path = write_json(root / "prompt.json", prompt_payload())
+        result_path = write_json(root / "result.json", result_payload(content))
+        strict = module.validate(prompt_path, result_path)
+        implicit = module.validate(prompt_path, result_path, allow_implicit_discards=True)
+    if strict["ok"]:
+        raise AssertionError(f"strict validation should reject omitted dispositions: {strict}")
+    if not implicit["ok"]:
+        raise AssertionError(f"implicit discard mode should accept reviewed omissions: {implicit}")
+    if implicit["implicit_discard_count"] != 1:
+        raise AssertionError(f"unexpected implicit discard count: {implicit}")
+
+
 def test_rejects_duplicate_reviewed_ids() -> None:
     module = load_module()
     content = complete_content()
@@ -207,6 +229,7 @@ def main() -> int:
     test_accepts_complete_result()
     test_rejects_missing_candidate_coverage()
     test_reviewed_id_without_disposition_is_incomplete()
+    test_implicit_discard_mode_allows_reviewed_omissions()
     test_rejects_duplicate_reviewed_ids()
     test_rejects_overlapping_note_and_discard()
     test_rejects_duplicate_decisions()
