@@ -148,7 +148,7 @@ def main() -> int:
         candidates = [candidate for candidate in candidates if candidate.destination in wanted]
     if args.output_dir:
         diagnostics = write_artifacts(args.output_dir, files, candidates, args)
-        print(json.dumps(diagnostics, indent=2, ensure_ascii=False))
+        print(json.dumps(public_diagnostics(diagnostics), indent=2, ensure_ascii=False))
     elif args.prompt_jsonl:
         for batch in prompt_batches(candidates, args.batch_chars):
             print(json.dumps(batch, ensure_ascii=False))
@@ -575,6 +575,18 @@ def write_artifacts(
     }
     diagnostics_path.write_text(json.dumps(diagnostics, indent=2, ensure_ascii=False), encoding="utf-8")
     return diagnostics
+
+
+def public_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": diagnostics["schema_version"],
+        "source_file_count": diagnostics["source_file_count"],
+        "candidate_count": diagnostics["candidate_count"],
+        "destination_counts": diagnostics["destination_counts"],
+        "bounds": diagnostics["bounds"],
+        "privacy": diagnostics["privacy"],
+        "artifacts_written": sorted(diagnostics["artifacts"]),
+    }
 
 
 def fingerprint_paths(files: list[Path]) -> str:
