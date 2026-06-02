@@ -31,32 +31,87 @@ commands:
   - name: analyze-rollouts
     source: skill
     resource_path: scripts/analyze_rollouts.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/analyze_rollouts.py", "--root", "~/.code/sessions"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/analyze_rollouts.py",
+        "--root",
+        "~/.code/sessions",
+      ]
     purpose: Analyze local rollout/session traces for workflow friction signals.
   - name: extract-rollout-memory
     source: skill
     resource_path: scripts/extract_rollout_memory.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/extract_rollout_memory.py", "--root", "~/.code/sessions", "--trusted-originals", "--output-dir", ".local/rollout-memory/<run-id>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/extract_rollout_memory.py",
+        "--root",
+        "~/.code/sessions",
+        "--trusted-originals",
+        "--output-dir",
+        ".local/rollout-memory/<run-id>",
+      ]
     purpose: Write local candidate and prompt artifacts for durable-memory review.
   - name: review-rollout-memory-batches
     source: skill
     resource_path: scripts/review_rollout_memory_batches.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/review_rollout_memory_batches.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--output-dir", ".local/rollout-memory/<run-id>/reviews"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/review_rollout_memory_batches.py",
+        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
+        "--output-dir",
+        ".local/rollout-memory/<run-id>/reviews",
+      ]
     purpose: Review extractor prompts with a trusted local model and validate per-batch coverage.
   - name: reduce-rollout-memory-reviews
     source: skill
     resource_path: scripts/reduce_rollout_memory_reviews.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/reduce_rollout_memory_reviews.py", ".local/rollout-memory/<run-id>/reviews", "--output", ".local/rollout-memory/<run-id>/apply-plan.json"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/reduce_rollout_memory_reviews.py",
+        ".local/rollout-memory/<run-id>/reviews",
+        "--output",
+        ".local/rollout-memory/<run-id>/apply-plan.json",
+      ]
     purpose: Build a local draft apply plan, including a curated shortlist, from strict-valid review batches.
   - name: prepare-rollout-memory-long-context-review
     source: skill
     resource_path: scripts/prepare_rollout_memory_long_context_review.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/prepare_rollout_memory_long_context_review.py", "prepare", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--budget", "quarter"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/prepare_rollout_memory_long_context_review.py",
+        "prepare",
+        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
+        "--budget",
+        "quarter",
+      ]
     purpose: Build selected-note prompt payloads for approved long-context comparison runs.
   - name: run-rollout-memory-long-context-matrix
     source: skill
     resource_path: scripts/run_rollout_memory_long_context_matrix.py
-    example_argv: ["uv", "run", "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--dry-run", "--budget", "quarter", "--variant", "sonnet-1m=claude:claude-sonnet-4-6[1m]", "--output-jsonl", ".local/rollout-memory/<run-id>/matrix-results.jsonl"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py",
+        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
+        "--dry-run",
+        "--budget",
+        "quarter",
+        "--variant",
+        "sonnet-1m=claude:claude-sonnet-4-6[1m]",
+        "--output-jsonl",
+        ".local/rollout-memory/<run-id>/matrix-results.jsonl",
+      ]
     purpose: Produce JSONL status rows for approved model/budget comparison runs, including blocked access, timeout, budget, and validation outcomes.
 ---
 
@@ -121,14 +176,15 @@ rollout files, session traces, runout files, or agent workflow friction.
    - For cloud, unknown, disabled, or untrusted endpoints, give only redacted
      analyzer output, signal names, and short synthesized observations, not raw
      traces.
-   Use the model index and LM Studio helpers for endpoint/model selection and
-   bounded chat mechanics, while keeping this skill's rollout-specific evidence
-   rules. Use deep or cold-load model roles only for deliberate large-model
-   reviews, not ordinary audits. Otherwise prefer `uv run
-   rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when LM Studio
-   is available. Run at most one scout pass unless the user asks for another.
-   Ask for missing classes or false-positive patterns, then verify every
-   suggestion yourself against maintained sources before acting.
+     Use the model index and LM Studio helpers for endpoint/model selection and
+     bounded chat mechanics, while keeping this skill's rollout-specific evidence
+     rules. Use deep or cold-load model roles only for deliberate large-model
+     reviews, not ordinary audits. Otherwise prefer
+     `uv run rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when
+     LM Studio is available. Run at most one scout pass unless the user asks for
+     another.
+     Ask for missing classes or false-positive patterns, then verify every
+     suggestion yourself against maintained sources before acting.
 5. Classify each finding as one of:
    - `promote-to-skill`
    - `fix-script-or-helper`
@@ -171,6 +227,12 @@ apply memory updates by itself.
    shortlist reveals a useful theme. The shortlist is advisory, not an auto-apply
    list; inspect suggested updates before editing `.local/profile.md`,
    `.local/people.yaml`, `.local/local-llm.yaml`, skills, or repo files.
+   When the apply plan or temporary artifacts include `people_updates`,
+   `people_resolver_smoke_checks`, visible person names, handles, aliases,
+   reviewer/assignee/manager fields, or contact/routing notes, invoke the
+   `people` skill's artifact review workflow before closeout: search the local
+   artifacts for every known alias/handle form, inspect smoke checks, and verify
+   natural names resolve before considering people-memory work complete.
 7. For explicitly approved cloud or long-context comparison tests, use
    `prepare_rollout_memory_long_context_review.py` to build selected-note prompts
    with a `candidate_id_manifest`. Validate outputs with

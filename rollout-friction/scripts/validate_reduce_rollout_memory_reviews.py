@@ -135,6 +135,125 @@ def test_curated_shortlist_suppresses_near_duplicate_topics() -> None:
         raise AssertionError(f"near-duplicate shortlist topics should be collapsed: {shortlist}")
 
 
+def test_people_updates_preserve_resolver_smoke_queries() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-001.prompt.json", {"candidates": [{"candidate_id": "memcand_person"}]})
+        write_json(
+            root / "batch-001.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "memcand_person",
+                                "action": "note",
+                                "destination": "people_updates",
+                            }
+                        ],
+                        "people_updates": [
+                            {
+                                "candidate_id": "memcand_person",
+                                "name": "Mike Banks",
+                                "github_handle": "@Mbanks89",
+                                "aliases": ["Mike", "Michael", "Micheal"],
+                                "role": "planning-manager",
+                                "note": "Mike owns OPW/SYO planning; GitHub handle is @Mbanks89.",
+                            }
+                        ],
+                        "profile_notes": [],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_person"],
+                    }
+                )
+            },
+        )
+        plan = module.reduce_reviews(root)
+    people_update = plan["destinations"]["people_updates"]["updates"][0]
+    queries = people_update.get("resolver_queries")
+    expected = ["@Mbanks89", "Mbanks89", "Michael", "Micheal", "Mike", "Mike Banks"]
+    if queries != expected:
+        raise AssertionError(f"people update should preserve natural resolver queries: {queries}")
+    smoke_queries = [item["query"] for item in plan["people_resolver_smoke_checks"]]
+    if smoke_queries != expected:
+        raise AssertionError(f"smoke checks should include deduped resolver queries: {smoke_queries}")
+
+
+def test_people_dedupe_keeps_same_note_different_people_separate() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root / "batch-001.prompt.json",
+            {"candidates": [{"candidate_id": "memcand_alice"}, {"candidate_id": "memcand_bob"}]},
+        )
+        write_json(
+            root / "batch-001.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "memcand_alice",
+                                "action": "note",
+                                "destination": "people_updates",
+                            },
+                            {
+                                "candidate_id": "memcand_bob",
+                                "action": "note",
+                                "destination": "people_updates",
+                            },
+                        ],
+                        "people_updates": [
+                            {
+                                "candidate_id": "memcand_alice",
+                                "name": "Alice Example",
+                                "github_handle": "@alice-example",
+                                "note": "Planning manager.",
+                            },
+                            {
+                                "candidate_id": "memcand_bob",
+                                "name": "Bob Example",
+                                "github_handle": "@bob-example",
+                                "note": "Planning manager.",
+                            },
+                        ],
+                        "profile_notes": [],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_alice", "memcand_bob"],
+                    }
+                )
+            },
+        )
+        plan = module.reduce_reviews(root)
+    people = plan["destinations"]["people_updates"]
+    if people["count"] != 2:
+        raise AssertionError(f"same-note different people updates should stay separate: {people}")
+
+
+def test_people_query_extraction_splits_separators_and_filters_placeholders() -> None:
+    module = load_module()
+    queries = module.people_queries_from_note(
+        {
+            "candidate_id": "memcand_person",
+            "aliases": ["Kyle/HonkHonk", "Alice | Bob", "unknown", "not provided"],
+            "github_handle": "null",
+            "note": "Known people aliases.",
+        },
+        "Known people aliases.",
+    )
+    expected = ["Alice", "Bob", "HonkHonk", "Kyle"]
+    if queries != expected:
+        raise AssertionError(f"unexpected people queries: {queries}")
+
+
 def test_reduce_reports_failed_batches() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -236,6 +355,9 @@ def main() -> int:
     test_reduce_validated_reviews_to_apply_plan()
     test_curated_shortlist_penalizes_stale_review_history()
     test_curated_shortlist_suppresses_near_duplicate_topics()
+    test_people_updates_preserve_resolver_smoke_queries()
+    test_people_dedupe_keeps_same_note_different_people_separate()
+    test_people_query_extraction_splits_separators_and_filters_placeholders()
     test_reduce_reports_failed_batches()
     test_cli_can_emit_shortlist_only()
     test_reduce_ignores_failed_parent_with_valid_child()
