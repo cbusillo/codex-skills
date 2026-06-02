@@ -214,7 +214,9 @@ apply memory updates by itself.
 1. Run `extract_rollout_memory.py` with explicit time/file bounds and an ignored
    `.local/rollout-memory/<run-id>/` output directory. Use `--trusted-originals`
    only for localhost or trusted-LAN models approved for private local inputs;
-   use `--redact` for cloud, unknown, disabled, or untrusted endpoints.
+   use `--redact` for cloud, unknown, disabled, or untrusted endpoints. Redacted
+   extraction strips obvious secrets, local paths, and person identifiers such as
+   natural names, handles, and emails from candidate text and prompts.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
    `profile`, and `local-llm` separately from `repo-specific` and
    `rollout-friction` candidates so repo details do not pollute central memory.

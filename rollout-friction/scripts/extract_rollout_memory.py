@@ -43,6 +43,19 @@ SECRET_RE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
 PATH_RE = re.compile(r"/(?:Users|home|workspace|workspaces|tmp|var|private)/[^\s,'\"]+")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+MENTION_RE = re.compile(
+    r"(?<![\w/])@[A-Za-z0-9][A-Za-z0-9_.-]{1,38}\b|"
+    r"<@[A-Z0-9]{2,}>|"
+    r"\b[A-Za-z0-9_.-]{2,32}#[0-9]{4}\b"
+)
+PERSON_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:[ '-][A-Z][a-z]+){1,3}\b")
+PUBLIC_PROPER_NAME_PHRASES = {
+    "Every Code",
+    "GitHub Actions",
+    "LM Studio",
+    "OpenAI Codex",
+}
 
 PERSON_RE = re.compile(
     r"\b(people|person|manager|reviewer|assignee|github handle|handle|bot owner|"
@@ -127,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--since")
     parser.add_argument("--until")
     parser.add_argument("--trusted-originals", action="store_true", help="Keep original local text except obvious secrets.")
-    parser.add_argument("--redact", action="store_true", help="Redact paths in addition to obvious secrets.")
+    parser.add_argument("--redact", action="store_true", help="Redact paths and person data in addition to obvious secrets.")
     parser.add_argument("--jsonl", action="store_true", help="Emit candidates as JSONL instead of JSON.")
     parser.add_argument("--prompt-jsonl", action="store_true", help="Emit local-LLM prompt batches as JSONL.")
     parser.add_argument("--output-dir", type=Path, help="Write local artifacts to this ignored/private directory.")
@@ -373,8 +386,22 @@ def clean_text(text: str, args: argparse.Namespace) -> str:
     cleaned = SECRET_RE.sub("<secret-redacted>", text)
     if args.redact:
         cleaned = PATH_RE.sub("<path-redacted>", cleaned)
+        cleaned = redact_person_data(cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
+
+
+def redact_person_data(text: str) -> str:
+    cleaned = EMAIL_RE.sub("<person-email-redacted>", text)
+    cleaned = MENTION_RE.sub("<person-handle-redacted>", cleaned)
+    return PERSON_NAME_RE.sub(redact_person_name, cleaned)
+
+
+def redact_person_name(match: re.Match[str]) -> str:
+    phrase = match.group(0)
+    if phrase in PUBLIC_PROPER_NAME_PHRASES:
+        return phrase
+    return "<person-name-redacted>"
 
 
 def clean_source_file(path: str, args: argparse.Namespace) -> str:
@@ -594,6 +621,7 @@ def privacy_summary(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "trusted_originals": args.trusted_originals,
         "redact_paths": args.redact,
+        "redact_person_data": args.redact,
         "obvious_secrets_stripped": True,
         "local_only": True,
     }
