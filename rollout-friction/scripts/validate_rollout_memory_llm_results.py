@@ -22,7 +22,7 @@ NOTE_KEYS = [
     "local_llm_notes",
     "repo_specific_notes",
 ]
-REQUIRED_KEYS = [*NOTE_KEYS, "discard_reasons", "reviewed_candidate_ids"]
+REQUIRED_KEYS = ["decisions", *NOTE_KEYS, "discard_reasons", "reviewed_candidate_ids"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,7 +77,7 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
             raise ValidationError(f"{key} must be a list")
 
     expected_ids = candidate_ids(prompt)
-    decision_counts = ids_from_decisions(payload.get("decisions"))
+    decision_counts = ids_from_decisions(payload["decisions"])
     reviewed_ids = string_set(payload["reviewed_candidate_ids"])
     reviewed_counts = string_counts(payload["reviewed_candidate_ids"])
     discard_counts = ids_from_discards(payload["discard_reasons"])
@@ -97,7 +97,7 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         if count > 1 and id_ in expected_ids
     )
     overlapping_disposition_ids = sorted((note_ids & discard_ids) & expected_ids)
-    missing_decision_ids = expected_ids - set(decision_counts) if decision_counts else set()
+    missing_decision_ids = expected_ids - set(decision_counts)
     duplicate_decision_ids = sorted(id_ for id_, count in decision_counts.items() if count > 1 and id_ in expected_ids)
     ok = (
         not missing_reviewed_ids

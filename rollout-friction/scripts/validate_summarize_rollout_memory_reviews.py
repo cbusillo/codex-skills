@@ -33,6 +33,19 @@ def write_json(path: Path, payload: object) -> None:
         handle.write(json.dumps(payload))
 
 
+def valid_content(candidate_id: str = "memcand_a") -> dict[str, object]:
+    return {
+        "decisions": [{"candidate_id": candidate_id, "action": "note", "destination": "local_llm_notes"}],
+        "people_updates": [],
+        "profile_notes": [],
+        "rollout_friction_notes": [],
+        "local_llm_notes": [{"candidate_id": candidate_id, "note": "test"}],
+        "repo_specific_notes": [],
+        "discard_reasons": [],
+        "reviewed_candidate_ids": [candidate_id],
+    }
+
+
 def test_summarizes_complete_review_dir() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -42,15 +55,7 @@ def test_summarizes_complete_review_dir() -> None:
             root / "batch-001.result.json",
             {
                 "content": json.dumps(
-                    {
-                        "people_updates": [],
-                        "profile_notes": [],
-                        "rollout_friction_notes": [],
-                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
-                        "repo_specific_notes": [],
-                        "discard_reasons": [],
-                        "reviewed_candidate_ids": ["memcand_a"],
-                    }
+                    valid_content()
                 )
             },
         )
@@ -80,15 +85,7 @@ def test_accepts_split_child_batch_labels() -> None:
             root / "batch-006-a.result.json",
             {
                 "content": json.dumps(
-                    {
-                        "people_updates": [],
-                        "profile_notes": [],
-                        "rollout_friction_notes": [],
-                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
-                        "repo_specific_notes": [],
-                        "discard_reasons": [],
-                        "reviewed_candidate_ids": ["memcand_a"],
-                    }
+                    valid_content()
                 )
             },
         )
@@ -108,15 +105,7 @@ def test_split_children_supersede_failed_parent() -> None:
             root / "batch-006-a.result.json",
             {
                 "content": json.dumps(
-                    {
-                        "people_updates": [],
-                        "profile_notes": [],
-                        "rollout_friction_notes": [],
-                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
-                        "repo_specific_notes": [],
-                        "discard_reasons": [],
-                        "reviewed_candidate_ids": ["memcand_a"],
-                    }
+                    valid_content()
                 )
             },
         )

@@ -185,6 +185,24 @@ def test_rejects_missing_decision() -> None:
         raise AssertionError(f"expected memcand_b missing decision: {summary}")
 
 
+def test_rejects_missing_decisions_array() -> None:
+    module = load_module()
+    content = complete_content()
+    del content["decisions"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            module.validate(
+                write_json(root / "prompt.json", prompt_payload()),
+                write_json(root / "result.json", result_payload(content)),
+            )
+        except module.ValidationError as exc:
+            if "decisions" not in str(exc):
+                raise AssertionError(f"expected decisions missing error, got {exc}") from exc
+            return
+    raise AssertionError("expected missing decisions array to fail validation")
+
+
 def main() -> int:
     test_accepts_complete_result()
     test_rejects_missing_candidate_coverage()
@@ -193,6 +211,7 @@ def main() -> int:
     test_rejects_overlapping_note_and_discard()
     test_rejects_duplicate_decisions()
     test_rejects_missing_decision()
+    test_rejects_missing_decisions_array()
     print("ok validate-validate-rollout-memory-llm-results")
     return 0
 

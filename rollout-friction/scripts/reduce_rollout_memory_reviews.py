@@ -87,7 +87,7 @@ def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, 
         "review_dir": str(review_dir),
         "reviewed_batch_count": reviewed_batches,
         "failed_batch_count": len(failed_batches),
-        "failed_batches": failed_batches if include_failed or failed_batches else [],
+        "failed_batches": failed_batches if include_failed else [],
         "discard_count": discard_count,
         "destinations": {
             key: {

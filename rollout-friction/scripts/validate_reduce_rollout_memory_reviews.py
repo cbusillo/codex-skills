@@ -35,6 +35,11 @@ def write_json(path: Path, payload: object) -> None:
 
 def review_content() -> dict[str, object]:
     return {
+        "decisions": [
+            {"candidate_id": "memcand_a", "action": "note", "destination": "profile_notes"},
+            {"candidate_id": "memcand_b", "action": "note", "destination": "profile_notes"},
+            {"candidate_id": "memcand_c", "action": "discard", "destination": "discard_reasons"},
+        ],
         "people_updates": [],
         "profile_notes": [
             {"candidate_id": "memcand_a", "note": "Prefer validated memory reviews before applying facts."},
@@ -74,8 +79,13 @@ def test_reduce_reports_failed_batches() -> None:
         root = Path(tmp)
         write_json(root / "batch-001.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
         plan = module.reduce_reviews(root)
+        plan_with_failed = module.reduce_reviews(root, include_failed=True)
     if plan["failed_batch_count"] != 1:
         raise AssertionError(f"missing result should be reported as failed: {plan}")
+    if plan["failed_batches"]:
+        raise AssertionError(f"failed details should be hidden by default: {plan}")
+    if len(plan_with_failed["failed_batches"]) != 1:
+        raise AssertionError(f"failed details should be included when requested: {plan_with_failed}")
 
 
 def test_reduce_ignores_failed_parent_with_valid_child() -> None:
@@ -90,6 +100,9 @@ def test_reduce_ignores_failed_parent_with_valid_child() -> None:
             {
                 "content": json.dumps(
                     {
+                        "decisions": [
+                            {"candidate_id": "memcand_a", "action": "note", "destination": "profile_notes"}
+                        ],
                         "people_updates": [],
                         "profile_notes": [{"candidate_id": "memcand_a", "note": "Keep split child output."}],
                         "rollout_friction_notes": [],
