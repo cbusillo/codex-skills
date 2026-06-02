@@ -12,7 +12,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from types import ModuleType
 
@@ -42,6 +42,35 @@ def test_parse_variant() -> None:
     variant = module.parse_variant("sonnet-1m=claude:claude-sonnet-4-6[1m]")
     if variant != {"name": "sonnet-1m", "provider": "claude", "model": "claude-sonnet-4-6[1m]"}:
         raise AssertionError(f"unexpected variant: {variant}")
+
+
+def test_private_provider_approval_requires_confirmed_providers() -> None:
+    module = load_module()
+    parser = ArgumentParser()
+    variants = [
+        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+        {"name": "opus", "provider": "claude", "model": "opus"},
+    ]
+    module.validate_private_provider_approval(
+        Namespace(dry_run=True, allow_private_cloud=False, confirm_private_provider=[]), variants, parser
+    )
+    try:
+        module.validate_private_provider_approval(
+            Namespace(dry_run=False, allow_private_cloud=True, confirm_private_provider=["claude"]), variants, parser
+        )
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("missing provider confirmation should fail")
+    module.validate_private_provider_approval(
+        Namespace(
+            dry_run=False,
+            allow_private_cloud=True,
+            confirm_private_provider=["code-llm", "claude"],
+        ),
+        variants,
+        parser,
+    )
 
 
 def test_dry_run_plans_matrix_row() -> None:
@@ -223,6 +252,7 @@ def test_retry_status_removes_default_skip_status() -> None:
 
 def main() -> int:
     test_parse_variant()
+    test_private_provider_approval_requires_confirmed_providers()
     test_dry_run_plans_matrix_row()
     test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()

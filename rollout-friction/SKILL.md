@@ -24,6 +24,12 @@ resources:
   - path: scripts/run_rollout_memory_long_context_matrix.py
     kind: script
     description: Run stdout-only selected-note review checks across model, budget, and provider variants.
+  - path: scripts/lm_studio_scout.py
+    kind: script
+    description: Run a bounded trusted-local LM Studio scout pass over redacted rollout analysis.
+  - path: scripts/benchmark_lm_studio.py
+    kind: script
+    description: Benchmark local LM Studio models for machine-local rollout review diagnostics.
   - path: scripts/validate_rollout_memory_llm_results.py
     kind: script
     description: Validate strict JSON and candidate coverage for local LLM memory-review results.
@@ -108,7 +114,7 @@ commands:
         "--budget",
         "quarter",
         "--variant",
-        "sonnet-1m=claude:claude-sonnet-4-6[1m]",
+        "gpt-5.4=code-llm:gpt-5.4",
         "--output-jsonl",
         ".local/rollout-memory/<run-id>/matrix-results.jsonl",
       ]
@@ -240,13 +246,15 @@ apply memory updates by itself.
    still requires every candidate in `reviewed_candidate_ids` and treats omitted
    reviewed candidates as implicit discards.
 8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
-   tests. For real approved cloud tests, pass `--allow-private-cloud` and capture
-   stdout JSONL under `.local/`; use `--output-dir` for normalized per-row cloud
-   artifacts that need later qualitative comparison. Pass `--output-jsonl` with
-   `--skip-existing` for resumable runs. By default, resumable runs skip only
-   existing `passed` rows; use `--skip-status` only when intentionally preserving
-   another status, and `--retry-status` when rerunning a previously skipped
-   status after an access window or harness fix. Treat statuses such as
+   tests. For real approved cloud tests, pass both `--allow-private-cloud` and
+   `--confirm-private-provider <provider>` for each provider that may receive
+   private prompt content in that run. Capture stdout JSONL under `.local/`; use
+   `--output-dir` for normalized per-row cloud artifacts that need later
+   qualitative comparison. Pass `--output-jsonl` with `--skip-existing` for
+   resumable runs. By default, resumable runs skip only existing `passed` rows;
+   use `--skip-status` only when intentionally preserving another status, and
+   `--retry-status` when rerunning a previously skipped status after an access
+   window or harness fix. Treat statuses such as
    `prompt_too_large`, `blocked_access`, `blocked_transport`, `budget_exceeded`,
    `timeout`, and `failed_validation` as first-class results to retry or fix, not
    as successful reviews.

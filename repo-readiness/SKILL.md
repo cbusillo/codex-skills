@@ -76,7 +76,10 @@ context and should not affect readiness for the active repo/branch.
 6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
    For stacked PRs, include whether a rollup/integration PR would be safer or
-   faster than merging each layer and rerunning expensive checks repeatedly.
+   faster than merging each layer and rerunning expensive checks repeatedly,
+   unless repo metadata or task context says Launchplane owns the merge train.
+   For Launchplane-managed trains, verify or route through `launchplane` instead
+   of recommending a hand-built GitHub rollup.
 7. If UI was touched, use `browser-ui-review` for browser-visible validation.
 8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.

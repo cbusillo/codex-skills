@@ -1,7 +1,8 @@
 # Local Profile Example
 
-Copy this file to `.local/profile.md` for private, machine-specific context.
-The copied file is ignored by git.
+Optional: copy this file to `.local/profile.md` only when you want private,
+machine-specific context. The copied file is ignored by git, and skills continue
+normally when it is absent.
 
 Use this for preferences such as:
 

@@ -49,7 +49,15 @@ commands:
   - name: github-pr-create
     source: skill
     resource_path: scripts/gh-pr.py
-    example_argv: ["scripts/gh-pr.py", "create", "--title", "<title>", "--body-file", "<file>"]
+    example_argv:
+      [
+        "scripts/gh-pr.py",
+        "create",
+        "--title",
+        "<title>",
+        "--body-file",
+        "<file>",
+      ]
     purpose: Creates pull requests through the helper with safe body handling.
   - name: github-pr-checks
     source: skill
@@ -59,7 +67,15 @@ commands:
   - name: github-pr-merge
     source: skill
     resource_path: scripts/gh-pr.py
-    example_argv: ["scripts/gh-pr.py", "merge", "<pr>", "--method", "merge", "--delete-branch"]
+    example_argv:
+      [
+        "scripts/gh-pr.py",
+        "merge",
+        "<pr>",
+        "--method",
+        "merge",
+        "--delete-branch",
+      ]
     purpose: Merges pull requests through the helper with normalized defaults.
   - name: github-issue-create
     source: skill
@@ -86,7 +102,15 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-pr.py
-          example_argv: ["scripts/gh-pr.py", "create", "--title", "<title>", "--body-file", "<file>"]
+          example_argv:
+            [
+              "scripts/gh-pr.py",
+              "create",
+              "--title",
+              "<title>",
+              "--body-file",
+              "<file>",
+            ]
           purpose: Creates PRs through the configured automation token and preserves body formatting.
     - id: prefer-gh-pr-edit-helper
       match:
@@ -96,7 +120,8 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-pr.py
-          example_argv: ["scripts/gh-pr.py", "edit", "<pr>", "--body-file", "<file>"]
+          example_argv:
+            ["scripts/gh-pr.py", "edit", "<pr>", "--body-file", "<file>"]
           purpose: Edits PR metadata or body through the configured automation token and safe body-file handling.
     - id: prefer-gh-pr-comment-helper
       match:
@@ -106,7 +131,8 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-pr.py
-          example_argv: ["scripts/gh-pr.py", "comment", "<pr>", "--body-file", "<file>"]
+          example_argv:
+            ["scripts/gh-pr.py", "comment", "<pr>", "--body-file", "<file>"]
           purpose: Posts PR comments with safe Markdown/body-file handling.
         - kind: script
           path: scripts/gh-comment
@@ -120,7 +146,15 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-pr.py
-          example_argv: ["scripts/gh-pr.py", "merge", "<pr>", "--method", "merge", "--delete-branch"]
+          example_argv:
+            [
+              "scripts/gh-pr.py",
+              "merge",
+              "<pr>",
+              "--method",
+              "merge",
+              "--delete-branch",
+            ]
           purpose: Performs the approved merge through the REST helper with normalized defaults and optional branch cleanup.
     - id: prefer-gh-issue-create-helper
       match:
@@ -204,7 +238,10 @@ when no helper covers the operation, and route those calls through
   lands through a PR. Do not use `--squash` or `--rebase` unless the user
   explicitly asks, repo policy requires it, or you ask and receive confirmation.
   For stacked PRs, consider a rollup branch when merging each layer would rerun
-  expensive checks or create avoidable conflict churn.
+  expensive checks or create avoidable conflict churn, unless repo metadata or
+  task context says Launchplane owns the merge train. In Launchplane-managed
+  trains, do not hand-collapse stacks in GitHub; delegate stack handling to the
+  `launchplane` workflow.
 - **Accidental Local Default-Branch Merge Recovery**: If implementation work is
   accidentally merged into a protected/default/shared branch locally, preserve
   the commit or branch if needed, restore the local protected branch to the
@@ -262,7 +299,8 @@ when no helper covers the operation, and route those calls through
 ## Diagnostics & Hygiene
 
 - **CI Failure**: Use the `github-ci-diagnose.py` helper to classify and fix
-  failures.
+  failures when available. Raw `gh run view` / `gh api` log commands are
+  fallback diagnostics or watcher-specific probes, not the preferred path.
 - **Hygiene**: Use `github-repo-snapshot.sh` for situational snapshots and clean
   up merged task branches/worktrees only when doing so cannot remove unrelated
   user work.

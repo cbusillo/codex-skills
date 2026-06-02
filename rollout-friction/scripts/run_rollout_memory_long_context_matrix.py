@@ -66,16 +66,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anthropic-max-budget-usd", type=float, default=3.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-private-cloud", action="store_true")
+    parser.add_argument(
+        "--confirm-private-provider",
+        action="append",
+        default=[],
+        choices=["code-llm", "claude"],
+        help="Confirm a provider that may receive private prompt content in this run. Required with --allow-private-cloud.",
+    )
     args = parser.parse_args()
-    if not args.dry_run and not args.allow_private_cloud:
-        parser.error("--allow-private-cloud is required for non-dry-run provider calls")
+    variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
+    validate_private_provider_approval(args, variants, parser)
+    args.parsed_variants = variants
     return args
 
 
 def main() -> int:
     args = parse_args()
     budgets = [parse_budget(value) for value in (args.budget or ["quarter"])]
-    variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
+    variants = args.parsed_variants
     existing = read_existing_rows(args.output_jsonl) if args.skip_existing and args.output_jsonl else {}
     skip_statuses = parse_status_filter(args.skip_status, DEFAULT_SKIP_STATUSES) - parse_status_filter(
         args.retry_status, set()
@@ -128,6 +136,22 @@ def parse_variant(value: str) -> dict[str, str]:
     if not sep or not sep2 or provider not in {"code-llm", "claude"} or not name.strip() or not model:
         raise SystemExit(f"error: invalid variant {value!r}; expected NAME=PROVIDER:MODEL")
     return {"name": name.strip(), "provider": provider, "model": model}
+
+
+def validate_private_provider_approval(
+    args: argparse.Namespace, variants: list[dict[str, str]], parser: argparse.ArgumentParser
+) -> None:
+    if args.dry_run:
+        return
+    providers = sorted({variant["provider"] for variant in variants})
+    if not args.allow_private_cloud:
+        parser.error("--allow-private-cloud is required for non-dry-run provider calls")
+    confirmed = set(args.confirm_private_provider or [])
+    missing = [provider for provider in providers if provider not in confirmed]
+    if missing:
+        parser.error(
+            "--confirm-private-provider must include each non-dry-run provider: " + ", ".join(missing)
+        )
 
 
 def run_or_plan(
