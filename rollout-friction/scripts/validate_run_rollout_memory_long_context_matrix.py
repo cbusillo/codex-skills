@@ -91,6 +91,15 @@ def test_command_error_message_uses_stdout() -> None:
         raise AssertionError(f"expected stdout in command error message: {message}")
 
 
+def test_code_llm_command_uses_message_file() -> None:
+    module = load_module()
+    command = module.code_llm_command("gpt-5.4", Path("prompt.txt"), ["--schema-file", "schema.json"])
+    if "--message-file" not in command or "--message" in command:
+        raise AssertionError(f"code llm command should use file-backed prompt input: {command}")
+    if "prompt.txt" not in command:
+        raise AssertionError(f"prompt path should be passed to code llm command: {command}")
+
+
 def test_default_schema_is_strict_object() -> None:
     module = load_module()
     schema = module.default_schema()
@@ -199,6 +208,7 @@ def main() -> int:
     test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
+    test_code_llm_command_uses_message_file()
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
     test_existing_rows_are_not_keyed_by_alias_only()
