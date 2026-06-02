@@ -1,0 +1,750 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
+# ///
+"""Read-only GitHub work rollup collector and renderer."""
+# pyright: reportMissingModuleSource=false
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone, tzinfo
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import yaml  # type: ignore[import-untyped]
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parents[1]
+GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-with-env-token")
+DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
+SCRIPT_VERSION = 1
+SUMMARY_LEVELS = {"concise", "standard", "detailed"}
+BUCKET_ORDER = [
+    "needs_attention",
+    "blocked",
+    "waiting",
+    "ready_for_review",
+    "ready_for_merge_decision",
+    "in_progress",
+    "stale_or_needs_reconciliation",
+    "recently_completed",
+]
+
+
+class RollupError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Window:
+    since: datetime
+    until: datetime
+    label: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Collect a read-only GitHub work rollup.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional local YAML config.")
+    parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
+    parser.add_argument("--repo-owner", action="append", default=[], help="Owner/org whose repos should be scanned.")
+    parser.add_argument("--subject", action="append", default=[], help="GitHub login to highlight. May be repeated.")
+    parser.add_argument("--window", help="Lookback window such as 24h, 7d, or 1w.")
+    parser.add_argument("--since", help="UTC ISO timestamp for window start.")
+    parser.add_argument("--until", help="UTC ISO timestamp for window end.")
+    parser.add_argument("--timezone", help="IANA timezone label for report display metadata.")
+    parser.add_argument("--summary-level", choices=sorted(SUMMARY_LEVELS), help="concise, standard, or detailed.")
+    parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    parser.add_argument("--output", type=Path, help="Write rendered output to this path.")
+    parser.add_argument("--limit-repos", type=int, default=25)
+    parser.add_argument("--limit-items", type=int, default=50)
+    parser.add_argument("--include-bots", action="store_true")
+    parser.add_argument("--include-external-activity", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    config = load_config(args.config)
+    settings = resolve_settings(args, config)
+    try:
+        payload = collect_rollup(settings)
+    except RollupError as exc:
+        payload = failure_payload(settings, str(exc))
+        rendered = render_payload(payload, args.format)
+        write_or_print(rendered, args.output or settings.get("output_path"))
+        return 1
+    rendered = render_payload(payload, args.format)
+    write_or_print(rendered, args.output or settings.get("output_path"))
+    return 0
+
+
+def read_text_file(path: Path) -> str:
+    with path.open("r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def put_text_file(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def load_config(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    parsed = yaml.safe_load(read_text_file(path))
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"error: {path} must contain a YAML mapping")
+    return parsed
+
+
+def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    window = resolve_window(args, config)
+    explicit_scope = bool(args.repo or args.repo_owner or args.subject)
+    repos = unique(args.repo if explicit_scope else as_str_list(config.get("repositories")))
+    owners = unique(args.repo_owner if explicit_scope else as_str_list(config.get("repo_owners")))
+    subjects = unique(args.subject if explicit_scope else as_str_list(config.get("subjects")))
+    summary_level = args.summary_level or str(config.get("summary_level") or "standard")
+    if summary_level not in SUMMARY_LEVELS:
+        raise SystemExit(f"error: summary_level must be one of {', '.join(sorted(SUMMARY_LEVELS))}")
+    return {
+        "config_path": str(args.config) if args.config else None,
+        "timezone": args.timezone or str(config.get("timezone") or "UTC"),
+        "report_recipient": str(config.get("report_recipient") or "GitHub work"),
+        "window": window,
+        "repositories": repos,
+        "repo_owners": owners,
+        "subjects": subjects,
+        "summary_level": summary_level,
+        "output_path": str(args.output or config.get("output_path") or ""),
+        "include_external_activity": bool(args.include_external_activity or config.get("include_external_activity")),
+        "include_bots": bool(args.include_bots or config.get("include_bots")),
+        "noise_filters": config.get("noise_filters") if isinstance(config.get("noise_filters"), dict) else {},
+        "priority_sections": config.get("priority_sections") if isinstance(config.get("priority_sections"), list) else [],
+        "limit_repos": args.limit_repos,
+        "limit_items": args.limit_items,
+    }
+
+
+def resolve_window(args: argparse.Namespace, config: dict[str, Any]) -> Window:
+    until = parse_timestamp(args.until) or datetime.now(timezone.utc)
+    since = parse_timestamp(args.since)
+    label = args.window or str(config.get("default_window") or "24h")
+    if since is None:
+        since = until - timedelta(hours=parse_duration_hours(label))
+    if since >= until:
+        raise SystemExit("error: --since must be before --until")
+    return Window(since=since, until=until, label=label)
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_duration_hours(value: str) -> float:
+    text = value.strip().casefold().replace("_", " ")
+    text = re.sub(r"^(past|last)\s+", "", text)
+    aliases = {"day": 24.0, "24h": 24.0, "week": 168.0, "7d": 168.0}
+    if text in aliases:
+        return aliases[text]
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours)", text)
+    if match:
+        return float(match.group(1))
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(d|day|days)", text)
+    if match:
+        return float(match.group(1)) * 24.0
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(w|week|weeks)", text)
+    if match:
+        return float(match.group(1)) * 168.0
+    raise SystemExit(f"error: unsupported window {value!r}")
+
+
+def as_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return []
+
+
+def unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        stripped = value.strip()
+        key = stripped.casefold()
+        if stripped and key not in seen:
+            seen.add(key)
+            result.append(stripped)
+    return result
+
+
+def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
+    preflight = github_preflight(settings)
+    repos = resolve_repositories(settings)
+    if not repos and not settings["subjects"]:
+        raise RollupError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
+    settings = {**settings, "resolved_repositories": repos}
+    items: list[dict[str, Any]] = []
+    for repo in repos:
+        items.extend(collect_repo_items(repo, settings))
+    if settings["subjects"] and (settings["include_external_activity"] or not repos):
+        items.extend(collect_subject_items(settings))
+    buckets = bucket_items(items, settings)
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "script_version": SCRIPT_VERSION,
+        "generated_at": format_ts(datetime.now(timezone.utc)),
+        "window": window_json(settings["window"]),
+        "timezone": settings["timezone"],
+        "report_recipient": settings["report_recipient"],
+        "repositories": repos,
+        "subjects": settings["subjects"],
+        "summary_level": settings["summary_level"],
+        "preflight": preflight,
+        "buckets": buckets,
+        "display_window": display_window_json(settings["window"], settings["timezone"]),
+        "priority_sections": priority_sections(items, settings),
+        "limitations": limitations(settings, repos),
+    }
+
+
+def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
+    checks = []
+    for command in ([GH, "auth", "status"], [GH, "api", "user", "--jq", "{login:.login,id:.id,name:.name}"]):
+        result = run(command)
+        checks.append(command_summary(command, result))
+        if result.returncode != 0:
+            raise RollupError(f"GitHub preflight failed: {' '.join(command)}\n{trim(result.stderr or result.stdout)}")
+    owners = settings.get("repo_owners") or []
+    if owners:
+        command = [GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"]
+        result = run(command)
+        checks.append(command_summary(command, result))
+        if result.returncode != 0:
+            raise RollupError(f"GitHub repo preflight failed for {owners[0]}: {trim(result.stderr or result.stdout)}")
+    return {"ok": True, "checks": checks}
+
+
+def resolve_repositories(settings: dict[str, Any]) -> list[str]:
+    repos = list(settings["repositories"])
+    for owner in settings["repo_owners"]:
+        command = [GH, "repo", "list", owner, "--limit", str(settings["limit_repos"]), "--json", "nameWithOwner,isArchived"]
+        result = run(command)
+        if result.returncode != 0:
+            raise RollupError(f"Unable to list repositories for {owner}: {trim(result.stderr or result.stdout)}")
+        for entry in json.loads(result.stdout or "[]"):
+            if isinstance(entry, dict) and not entry.get("isArchived") and isinstance(entry.get("nameWithOwner"), str):
+                repos.append(entry["nameWithOwner"])
+    return unique(repos)
+
+
+def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        *collect_prs(repo, "open", settings),
+        *collect_prs(repo, "closed", settings),
+        *collect_prs(repo, "merged", settings),
+        *collect_issues(repo, "open", settings),
+        *collect_issues(repo, "closed", settings),
+    ]
+
+
+def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    since_day = settings["window"].since.date().isoformat()
+    for subject in settings["subjects"]:
+        for qualifier in ("author", "commenter", "mentions"):
+            query = f"{qualifier}:{subject} updated:>={since_day}"
+            result = run(
+                [
+                    GH,
+                    "api",
+                    "--method",
+                    "GET",
+                    "search/issues",
+                    "-f",
+                    f"q={query}",
+                    "-f",
+                    f"per_page={settings['limit_items']}",
+                ]
+            )
+            if result.returncode != 0:
+                rows.append(collection_error(f"subject:{subject}", "search", qualifier, result))
+                continue
+            for entry in json.loads(result.stdout or "{}").get("items") or []:
+                if not isinstance(entry, dict) or not subject_item_in_window(entry, settings["window"]):
+                    continue
+                key = str(entry.get("html_url") or entry.get("url") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if should_skip_bot(login_from(entry.get("user")), entry.get("user"), settings):
+                    continue
+                rows.append(normalize_search_item(entry, subject, qualifier, settings))
+    return rows
+
+
+def collect_prs(repo: str, state: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    fields = "number,title,url,author,labels,reviewDecision,isDraft,createdAt,updatedAt,closedAt,mergedAt,baseRefName"
+    result = run(
+        [
+            GH,
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            state,
+            "--limit",
+            str(settings["limit_items"]),
+            "--search",
+            search_window(settings["window"]),
+            "--json",
+            fields,
+        ]
+    )
+    if result.returncode != 0:
+        return [collection_error(repo, "pr", state, result)]
+    rows = []
+    for entry in json.loads(result.stdout or "[]"):
+        if not isinstance(entry, dict) or not item_in_window(entry, state, settings["window"]):
+            continue
+        if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
+            continue
+        rows.append(normalize_pr(repo, state, entry, settings))
+    return rows
+
+
+def collect_issues(repo: str, state: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    fields = "number,title,url,author,labels,assignees,createdAt,updatedAt,closedAt,stateReason"
+    result = run(
+        [
+            GH,
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            state,
+            "--limit",
+            str(settings["limit_items"]),
+            "--search",
+            search_window(settings["window"]),
+            "--json",
+            fields,
+        ]
+    )
+    if result.returncode != 0:
+        return [collection_error(repo, "issue", state, result)]
+    rows = []
+    for entry in json.loads(result.stdout or "[]"):
+        if not isinstance(entry, dict) or not item_in_window(entry, state, settings["window"]):
+            continue
+        if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
+            continue
+        rows.append(normalize_issue(repo, state, entry, settings))
+    return rows
+
+
+def item_in_window(entry: dict[str, Any], state: str, window: Window) -> bool:
+    key = "mergedAt" if state == "merged" else "closedAt" if state == "closed" else "updatedAt"
+    value = entry.get(key) or entry.get("updatedAt") or entry.get("createdAt")
+    when = parse_timestamp(value) if isinstance(value, str) else None
+    return when is not None and window.since <= when <= window.until
+
+
+def subject_item_in_window(entry: dict[str, Any], window: Window) -> bool:
+    value = entry.get("updated_at") or entry.get("created_at")
+    when = parse_timestamp(value) if isinstance(value, str) else None
+    return when is not None and window.since <= when <= window.until
+
+
+def normalize_search_item(entry: dict[str, Any], subject: str, qualifier: str, settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    state = str(entry.get("state") or "open")
+    is_pr = isinstance(entry.get("pull_request"), dict)
+    kind = "pr" if is_pr else "issue"
+    repo = repo_from_search_url(entry.get("repository_url")) or "external"
+    configured_repos = set(as_str_list(settings.get("resolved_repositories") or settings.get("repositories")))
+    if kind == "pr":
+        bucket = classify_pr("closed" if state == "closed" else "open", search_pr_entry(entry), labels)
+    else:
+        bucket = classify_issue("closed" if state == "closed" else "open", labels)
+    return {
+        "kind": kind,
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or f"{kind} involving {subject}",
+        "url": entry.get("html_url"),
+        "author": login_from(entry.get("user")),
+        "labels": labels,
+        "state": state,
+        "updated_at": entry.get("updated_at"),
+        "completed_at": entry.get("closed_at") if state == "closed" else None,
+        "bucket": bucket,
+        "subject": subject,
+        "subject_match": qualifier,
+        "handoff": "github for explicit follow-up on external subject activity" if configured_repos and repo not in configured_repos else None,
+        "priority": priority_score(labels, settings),
+    }
+
+
+def repo_from_search_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    marker = "/repos/"
+    if marker not in value:
+        return None
+    return value.rsplit(marker, 1)[1]
+
+
+def search_pr_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "isDraft": False,
+        "reviewDecision": "",
+        "updatedAt": entry.get("updated_at"),
+        "closedAt": entry.get("closed_at"),
+    }
+
+
+def search_window(window: Window) -> str:
+    return f"updated:>={window.since.date().isoformat()}"
+
+
+def should_skip_bot(login: str | None, actor: object, settings: dict[str, Any]) -> bool:
+    if settings.get("include_bots"):
+        return False
+    if login and (login.casefold().endswith("[bot]") or login.casefold() in {"dependabot", "github-actions"}):
+        return True
+    return isinstance(actor, dict) and str(actor.get("type") or "").casefold() == "bot"
+
+
+def normalize_pr(repo: str, state: str, entry: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    return {
+        "kind": "pr",
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or "untitled PR",
+        "url": entry.get("url"),
+        "author": login_from(entry.get("author")),
+        "labels": labels,
+        "state": state,
+        "review_decision": entry.get("reviewDecision") or "",
+        "draft": bool(entry.get("isDraft")),
+        "updated_at": entry.get("updatedAt"),
+        "completed_at": entry.get("mergedAt") if state == "merged" else None,
+        "bucket": classify_pr(state, entry, labels),
+        "handoff": handoff_for_pr(state, entry, labels),
+        "priority": priority_score(labels, settings),
+    }
+
+
+def normalize_issue(repo: str, state: str, entry: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    return {
+        "kind": "issue",
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or "untitled issue",
+        "url": entry.get("url"),
+        "author": login_from(entry.get("author")),
+        "labels": labels,
+        "state": state,
+        "assignees": [login_from(item) for item in entry.get("assignees") or [] if login_from(item)],
+        "updated_at": entry.get("updatedAt"),
+        "completed_at": entry.get("closedAt") if state == "closed" else None,
+        "bucket": classify_issue(state, labels),
+        "handoff": handoff_for_issue(state, labels),
+        "priority": priority_score(labels, settings),
+    }
+
+
+def labels_from(entry: dict[str, Any]) -> list[str]:
+    labels = []
+    for label in entry.get("labels") or []:
+        if isinstance(label, dict) and isinstance(label.get("name"), str):
+            labels.append(label["name"])
+        elif isinstance(label, str):
+            labels.append(label)
+    return labels
+
+
+def login_from(value: object) -> str | None:
+    return value.get("login") if isinstance(value, dict) and isinstance(value.get("login"), str) else None
+
+
+def classify_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str:
+    label_keys = {label.casefold() for label in labels}
+    if state in {"merged", "closed"}:
+        return "recently_completed"
+    if "blocked" in label_keys or "plan:blocked" in label_keys:
+        return "blocked"
+    if "waiting" in label_keys or "plan:waiting" in label_keys:
+        return "waiting"
+    if entry.get("isDraft"):
+        return "in_progress"
+    if "ready-to-merge" in label_keys or entry.get("reviewDecision") == "APPROVED":
+        return "ready_for_merge_decision"
+    if "needs-attention" in label_keys or "needs attention" in label_keys:
+        return "needs_attention"
+    return "ready_for_review"
+
+
+def classify_issue(state: str, labels: list[str]) -> str:
+    label_keys = {label.casefold() for label in labels}
+    if state == "closed":
+        return "recently_completed"
+    if "blocked" in label_keys or "plan:blocked" in label_keys:
+        return "blocked"
+    if "waiting" in label_keys or "plan:waiting" in label_keys:
+        return "waiting"
+    if "stale" in label_keys or "plan:stale" in label_keys:
+        return "stale_or_needs_reconciliation"
+    if "needs-attention" in label_keys or "needs attention" in label_keys:
+        return "needs_attention"
+    return "in_progress"
+
+
+def handoff_for_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str | None:
+    if state == "merged":
+        return None
+    if entry.get("reviewDecision") == "APPROVED" or "ready-to-merge" in {label.casefold() for label in labels}:
+        return "repo-readiness or github for a fresh merge decision"
+    return "babysit-pr if this PR needs active monitoring"
+
+
+def handoff_for_issue(state: str, labels: list[str]) -> str | None:
+    if state == "closed":
+        return None
+    label_keys = {label.casefold() for label in labels}
+    if any(label.startswith("plan:") or label == "plan" for label in label_keys):
+        return "github-plan for planning reconciliation"
+    return None
+
+
+def priority_score(labels: list[str], settings: dict[str, Any]) -> int:
+    raw_filters = settings.get("noise_filters")
+    filters: dict[str, Any] = raw_filters if isinstance(raw_filters, dict) else {}
+    noise_labels = {label.casefold() for label in as_str_list(filters.get("labels"))}
+    score = 0
+    for label in labels:
+        key = label.casefold()
+        if key in noise_labels:
+            score -= 5
+        if key in {"security", "urgent", "production", "regression", "needs-attention"}:
+            score += 10
+    return score
+
+
+def collection_error(repo: str, kind: str, state: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "kind": "collection_error",
+        "repo": repo,
+        "state": state,
+        "source_kind": kind,
+        "title": f"Unable to collect {state} {kind}s",
+        "error": trim(result.stderr or result.stdout),
+        "bucket": "needs_attention",
+        "priority": 100,
+    }
+
+
+def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKET_ORDER}
+    sorted_items = sorted(items, key=item_sort_key)
+    for item in sorted_items:
+        buckets.setdefault(str(item.get("bucket") or "in_progress"), []).append(item)
+    level = settings["summary_level"]
+    limit = 5 if level == "concise" else 12 if level == "standard" else settings["limit_items"]
+    return {bucket: rows[:limit] for bucket, rows in buckets.items() if rows}
+
+
+def item_sort_key(row: dict[str, Any]) -> tuple[int, float]:
+    priority = -int(row.get("priority") or 0)
+    updated = parse_timestamp(str(row.get("updated_at") or ""))
+    timestamp = updated.timestamp() if updated else 0.0
+    return priority, -timestamp
+
+
+def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = []
+    for raw in settings.get("priority_sections") or []:
+        if not isinstance(raw, dict):
+            continue
+        repos = set(as_str_list(raw.get("repositories")))
+        if not repos:
+            continue
+        matched = [item for item in items if item.get("repo") in repos]
+        if matched:
+            sections.append({"name": str(raw.get("name") or "Priority Section"), "items": matched[:10]})
+    return sections
+
+
+def limitations(settings: dict[str, Any], repos: list[str]) -> list[str]:
+    out = []
+    if not settings["subjects"]:
+        out.append("No subjects configured; rollup is repository-scoped only.")
+    elif repos and not settings["include_external_activity"]:
+        out.append("Subject search outside configured repositories was skipped because include_external_activity is false.")
+    if settings["repo_owners"] and len(repos) >= settings["limit_repos"]:
+        out.append("Repository owner scan reached --limit-repos; some repos may be omitted.")
+    out.append("Read-only v1 does not inspect Project fields, deployment state, or full review timelines.")
+    return out
+
+
+def failure_payload(settings: dict[str, Any], error: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "schema_version": 1,
+        "script_version": SCRIPT_VERSION,
+        "generated_at": format_ts(datetime.now(timezone.utc)),
+        "window": window_json(settings["window"]),
+        "display_window": display_window_json(settings["window"], settings["timezone"]),
+        "timezone": settings["timezone"],
+        "report_recipient": settings["report_recipient"],
+        "error": error,
+        "next_step": "Run `gh auth status` and verify the configured repo/owner is accessible.",
+    }
+
+
+def render_payload(payload: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if not payload.get("ok"):
+        return render_failure(payload)
+    return render_markdown(payload)
+
+
+def render_markdown(payload: dict[str, Any]) -> str:
+    display_window = payload.get("display_window") or payload["window"]
+    lines = [
+        f"# GitHub Work Rollup for {payload['report_recipient']}",
+        "",
+        f"Window: {display_window['since']} to {display_window['until']} ({payload['timezone']})",
+        f"Sources: {', '.join(payload['repositories'])}",
+        "",
+        "## Executive Summary",
+    ]
+    buckets = payload.get("buckets") or {}
+    if buckets.get("needs_attention"):
+        lines.append(f"{len(buckets['needs_attention'])} item(s) need attention.")
+    elif buckets.get("blocked") or buckets.get("waiting"):
+        lines.append("Some work is blocked or waiting; no urgent attention items were detected.")
+    else:
+        lines.append("No urgent GitHub work detected in the configured window.")
+    for bucket in BUCKET_ORDER:
+        rows = buckets.get(bucket) or []
+        if not rows:
+            continue
+        lines.extend(["", f"## {bucket.replace('_', ' ').title()}"])
+        for item in rows:
+            lines.append(render_item(item))
+    for section in payload.get("priority_sections") or []:
+        lines.extend(["", f"## {section['name']}"])
+        for item in section.get("items") or []:
+            lines.append(render_item(item))
+    limitations_list = payload.get("limitations") or []
+    if limitations_list:
+        lines.extend(["", "## Source Notes"])
+        lines.extend(f"- {item}" for item in limitations_list)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_failure(payload: dict[str, Any]) -> str:
+    display_window = payload.get("display_window") or payload["window"]
+    return "\n".join(
+        [
+            "# GitHub Work Rollup Failed",
+            "",
+            f"Attempted: {payload['generated_at']} ({payload['timezone']})",
+            f"Window: {display_window['since']} to {display_window['until']}",
+            "",
+            "## Failure",
+            str(payload["error"]),
+            "",
+            "## Next Step",
+            str(payload["next_step"]),
+        ]
+    ) + "\n"
+
+
+def render_item(item: dict[str, Any]) -> str:
+    ref = f"{item.get('repo')}#{item.get('number')}" if item.get("number") else str(item.get("repo") or "")
+    url = item.get("url")
+    link = f"[{ref}]({url})" if url else ref
+    handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
+    error = f" Error: {item['error']}" if item.get("error") else ""
+    return f"- {link} {item.get('title')}{handoff}{error}"
+
+
+def write_or_print(rendered: str, output: str | Path | None) -> None:
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        put_text_file(path, rendered)
+        return
+    print(rendered, end="")
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def command_summary(command: list[str], result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {"command": command[:3], "returncode": result.returncode, "stderr": trim(result.stderr)}
+
+
+def trim(value: str, limit: int = 700) -> str:
+    text = " ".join((value or "").split())
+    return text[:limit]
+
+
+def window_json(window: Window) -> dict[str, str]:
+    return {"since": format_ts(window.since), "until": format_ts(window.until), "label": window.label}
+
+
+def display_window_json(window: Window, timezone_name: str) -> dict[str, str]:
+    display_tz: tzinfo
+    try:
+        display_tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        display_tz = timezone.utc
+    return {
+        "since": window.since.astimezone(display_tz).replace(microsecond=0).isoformat(),
+        "until": window.until.astimezone(display_tz).replace(microsecond=0).isoformat(),
+        "label": window.label,
+    }
+
+
+def format_ts(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
