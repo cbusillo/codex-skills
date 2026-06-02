@@ -39,6 +39,17 @@ PEOPLE_QUERY_KEYS = (
     "aliases",
 )
 HANDLE_RE = re.compile(r"(?<![\w/])@[A-Za-z0-9][A-Za-z0-9_-]{1,38}\b")
+PLACEHOLDER_QUERIES = {
+    "n/a",
+    "na",
+    "none",
+    "not applicable",
+    "not provided",
+    "null",
+    "tbd",
+    "unknown",
+    "unspecified",
+}
 DEFAULT_SHORTLIST_LIMIT = 30
 BUCKET_PRIORITY = {
     "profile_notes": 5,
@@ -196,6 +207,7 @@ def normalize_note(item: dict[str, Any], batch_label: str, bucket: str) -> dict[
         queries = people_queries_from_note(item, text)
         if queries:
             normalized["resolver_queries"] = queries
+            normalized["people_identity_key"] = people_identity_key(queries)
     return normalized
 
 
@@ -297,6 +309,8 @@ def shortlist_note(note: dict[str, Any]) -> dict[str, Any]:
     }
     if "resolver_queries" in note:
         result["resolver_queries"] = note["resolver_queries"]
+    if "people_identity_key" in note:
+        result["people_identity_key"] = note["people_identity_key"]
     return result
 
 
@@ -356,7 +370,7 @@ def split_people_query_text(value: str) -> list[str]:
     stripped = value.strip()
     if not stripped:
         return []
-    parts = re.split(r"[,;]", stripped)
+    parts = re.split(r"[,;/|]", stripped)
     return [part.strip() for part in parts if part.strip()]
 
 
@@ -367,9 +381,22 @@ def clean_people_query(value: str) -> str | None:
     if len(query) > 80:
         return None
     lowered = query.casefold()
-    if lowered in {"github", "user", "reviewer", "manager", "collaborator", "person"}:
+    if lowered in {
+        "github",
+        "user",
+        "reviewer",
+        "manager",
+        "collaborator",
+        "person",
+        *PLACEHOLDER_QUERIES,
+    }:
         return None
     return query
+
+
+def people_identity_key(queries: list[str]) -> str:
+    normalized = [query.casefold().lstrip("@") for query in queries]
+    return "people:" + ",".join(sorted(set(normalized)))
 
 
 def keeper_score(note: dict[str, Any]) -> int:
@@ -424,7 +451,11 @@ def is_near_duplicate_topic(topic: set[str], existing_topics: list[set[str]]) ->
 
 
 def canonical_note_key(note: dict[str, Any]) -> str:
-    return " ".join(str(note.get("text") or "").casefold().split())
+    parts = [str(note.get("bucket") or ""), " ".join(str(note.get("text") or "").casefold().split())]
+    identity_key = note.get("people_identity_key")
+    if isinstance(identity_key, str) and identity_key:
+        parts.append(identity_key)
+    return "\0".join(parts)
 
 
 def split_child_parents(review_dir: Path) -> set[str]:
