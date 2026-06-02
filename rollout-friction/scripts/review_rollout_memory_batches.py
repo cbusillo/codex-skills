@@ -129,7 +129,18 @@ def review_batch(batch: dict[str, Any], batch_no: int | str, args: argparse.Name
     last_summary: dict[str, Any] = {}
     for attempt in range(1, attempts + 1):
         started = time.time()
-        envelope = chat(batch, args, retry_attempt=attempt)
+        try:
+            envelope = chat(batch, args, retry_attempt=attempt)
+        except PromptTooLargeError as exc:
+            last_summary = {
+                "ok": False,
+                "batch": batch_no,
+                "attempt": attempt,
+                "error": str(exc),
+                "prompt_too_large": True,
+            }
+            write_json(validation_path, last_summary)
+            break
         envelope["elapsed_seconds"] = round(time.time() - started, 3)
         envelope["attempt"] = attempt
         write_json(result_path, envelope)
@@ -213,7 +224,9 @@ def batch_label_for_path(batch_no: int | str) -> str:
 def chat(batch: dict[str, Any], args: argparse.Namespace, retry_attempt: int) -> dict[str, Any]:
     prompt = json.dumps(batch, ensure_ascii=False)
     if len(prompt) > args.max_input_chars:
-        prompt = prompt[: args.max_input_chars]
+        raise PromptTooLargeError(
+            f"prompt is {len(prompt)} chars, exceeds --max-input-chars={args.max_input_chars}; split the batch"
+        )
     system = args.system
     if retry_attempt > 1:
         system += " Previous output was incomplete. Re-review the batch and cover every candidate_id."
@@ -243,6 +256,10 @@ def chat(batch: dict[str, Any], args: argparse.Namespace, retry_attempt: int) ->
 
 
 class LocalReviewError(RuntimeError):
+    pass
+
+
+class PromptTooLargeError(LocalReviewError):
     pass
 
 

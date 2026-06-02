@@ -188,6 +188,22 @@ def test_candidate_ids_are_stable() -> None:
         raise AssertionError(f"unexpected candidate id shape: {first[0].candidate_id}")
 
 
+def test_dedupe_keeps_distinct_long_common_prefixes() -> None:
+    namespace, module = args(max_record_chars=2_000)
+    prefix = "Remember " + ("shared workflow detail " * 60)
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                response_item("user", prefix + "first durable preference for qwen3-coder-64b."),
+                response_item("user", prefix + "second durable preference for qwen3-coder-next."),
+            ],
+        )
+        candidates = module.extract([trace], namespace)
+    if len(candidates) != 2:
+        raise AssertionError(f"expected both same-prefix candidates to survive dedupe, got {len(candidates)}")
+
+
 def test_classifies_repo_specific_details() -> None:
     namespace, module = args()
     with tempfile.TemporaryDirectory() as tmp:
@@ -250,6 +266,7 @@ def main() -> int:
     test_redact_mode_removes_paths_but_keeps_trusted_originals()
     test_prompt_batches_emit_destination_aware_task()
     test_candidate_ids_are_stable()
+    test_dedupe_keeps_distinct_long_common_prefixes()
     test_classifies_repo_specific_details()
     test_output_dir_writes_local_artifacts()
     test_destination_filter_matches_cli_behavior()

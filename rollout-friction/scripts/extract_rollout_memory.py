@@ -216,7 +216,7 @@ def extract(files: list[Path], args: argparse.Namespace) -> list[Candidate]:
             text = clean_text(event.text, args)
             if not text:
                 continue
-            dedupe_key = (destination, event.file, canonical_text(text)[:900])
+            dedupe_key = (destination, event.file, canonical_text_digest(text))
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
@@ -386,6 +386,10 @@ def clean_source_file(path: str, args: argparse.Namespace) -> str:
 
 def canonical_text(text: str) -> str:
     return " ".join(text.casefold().split())
+
+
+def canonical_text_digest(text: str) -> str:
+    return hashlib.sha256(canonical_text(text).encode("utf-8")).hexdigest()
 
 
 def find_timestamp(value: Any) -> str | None:

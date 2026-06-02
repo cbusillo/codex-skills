@@ -84,11 +84,54 @@ def test_batch_label_for_path() -> None:
         raise AssertionError("string child labels should be preserved")
 
 
+def oversize_args(root: Path) -> Namespace:
+    return Namespace(
+        output_dir=root,
+        skip_existing=False,
+        retry_incomplete=0,
+        base_url="http://127.0.0.1:1234/v1",
+        model="qwen3-coder-64b",
+        timeout=30.0,
+        max_tokens=100,
+        max_input_chars=10,
+        temperature=0.1,
+        system="test",
+    )
+
+
+def test_chat_rejects_oversize_prompts() -> None:
+    module = load_module()
+    batch = {"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 50}]}
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            module.chat(batch, oversize_args(Path(tmp)), retry_attempt=1)
+        except module.PromptTooLargeError:
+            return
+    raise AssertionError("expected oversized prompt to be rejected")
+
+
+def test_review_batch_records_oversize_prompt_failure() -> None:
+    module = load_module()
+    batch = {"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 50}]}
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.review_batch(batch, 1, oversize_args(root))
+        validation_path = root / "batch-001.validation.json"
+        with validation_path.open("r", encoding="utf-8") as handle:
+            validation = json.load(handle)
+    if summary["ok"]:
+        raise AssertionError(f"oversize prompt should fail batch: {summary}")
+    if not summary.get("prompt_too_large") or not validation.get("prompt_too_large"):
+        raise AssertionError(f"oversize prompt should be recorded: {summary}, {validation}")
+
+
 def main() -> int:
     test_selects_batch_range_and_limit()
     test_write_summary_counts_results()
     test_split_batch_halves_candidates()
     test_batch_label_for_path()
+    test_chat_rejects_oversize_prompts()
+    test_review_batch_records_oversize_prompt_failure()
     print("ok validate-review-rollout-memory-batches")
     return 0
 
