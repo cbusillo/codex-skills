@@ -20,6 +20,10 @@ DEFAULT_BUDGETS = {
 }
 
 
+class PromptTooLargeError(ValueError):
+    """Raised when the next prompt batch cannot fit inside the requested budget."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare selected-note long-context rollout memory prompts.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -38,7 +42,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.command == "prepare":
-        payload, summary = prepare_payload(args.prompts, parse_budget(args.budget))
+        try:
+            payload, summary = prepare_payload(args.prompts, parse_budget(args.budget))
+        except PromptTooLargeError as exc:
+            raise SystemExit(f"error: {exc}") from exc
         if args.format == "payload":
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         elif args.format == "summary":
@@ -109,6 +116,10 @@ def select_batches(batches: list[dict[str, Any]], char_budget: int) -> tuple[lis
     for batch in batches:
         batch_chars = len(json.dumps(batch, ensure_ascii=False))
         if input_chars + batch_chars > char_budget:
+            if not selected:
+                raise PromptTooLargeError(
+                    f"first batch is {batch_chars} chars, which exceeds requested budget of {char_budget} chars"
+                )
             break
         selected.append(batch)
         input_chars += batch_chars
@@ -161,7 +172,12 @@ def extract_first_json_object(text: str) -> str:
         if char != "{":
             continue
         try:
-            return extract_json_object_at(text, offset)
+            candidate = extract_json_object_at(text, offset)
+            payload = json.loads(candidate)
+            if isinstance(payload, dict):
+                return candidate
+        except json.JSONDecodeError:
+            continue
         except ValueError:
             continue
     raise ValueError("capture does not contain a complete JSON object")

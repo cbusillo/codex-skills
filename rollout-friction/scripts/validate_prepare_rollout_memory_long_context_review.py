@@ -79,12 +79,33 @@ def test_extracts_first_json_object_after_leading_text() -> None:
         raise AssertionError(f"unexpected extracted object after prose: {first}")
 
 
+def test_extracts_first_json_object_after_invalid_braces() -> None:
+    module = load_module()
+    capture = 'Thinking aloud {not json} then {"ok":true,"nested":{"value":"}"}}'
+    first = module.extract_first_json_object(capture)
+    if json.loads(first) != {"ok": True, "nested": {"value": "}"}}:
+        raise AssertionError(f"unexpected extracted object after invalid braces: {first}")
+
+
+def test_rejects_balanced_non_json_braces() -> None:
+    module = load_module()
+    try:
+        module.extract_first_json_object("Thinking aloud {not json}")
+    except ValueError:
+        return
+    raise AssertionError("balanced non-JSON braces should not be extracted as payload")
+
+
 def test_select_batches_enforces_first_batch_budget() -> None:
     module = load_module()
     batches = [{"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 100}]}]
-    selected, input_chars = module.select_batches(batches, 10)
-    if selected or input_chars:
-        raise AssertionError(f"oversized first batch should not be selected: {selected}, {input_chars}")
+    try:
+        module.select_batches(batches, 10)
+    except module.PromptTooLargeError as exc:
+        if "first batch" not in str(exc):
+            raise AssertionError(f"unexpected budget error: {exc}") from exc
+    else:
+        raise AssertionError("expected oversized first batch to raise PromptTooLargeError")
 
 
 def main() -> int:
@@ -92,6 +113,8 @@ def main() -> int:
     test_selected_note_prompt_instructs_manifest_copy()
     test_extracts_first_json_object_from_duplicated_capture()
     test_extracts_first_json_object_after_leading_text()
+    test_extracts_first_json_object_after_invalid_braces()
+    test_rejects_balanced_non_json_braces()
     test_select_batches_enforces_first_batch_budget()
     print("ok validate-prepare-rollout-memory-long-context-review")
     return 0

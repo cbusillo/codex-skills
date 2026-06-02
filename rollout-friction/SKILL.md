@@ -174,9 +174,13 @@ apply memory updates by itself.
 8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
    tests. For real approved cloud tests, pass `--allow-private-cloud` and capture
    stdout JSONL under `.local/`, or pass `--output-jsonl` with `--skip-existing`
-   for resumable runs. Treat statuses such as `blocked_access`,
-   `blocked_transport`, `budget_exceeded`, `timeout`, and `failed_validation` as
-   first-class results to retry or fix, not as successful reviews.
+   for resumable runs. By default, resumable runs skip only existing `passed`
+   rows; use `--skip-status` only when intentionally preserving another status,
+   and `--retry-status` when rerunning a previously skipped status after an
+   access window or harness fix. Treat statuses such as `prompt_too_large`,
+   `blocked_access`, `blocked_transport`, `budget_exceeded`, `timeout`, and
+   `failed_validation` as first-class results to retry or fix, not as successful
+   reviews.
 
 ## Friction Signals
 

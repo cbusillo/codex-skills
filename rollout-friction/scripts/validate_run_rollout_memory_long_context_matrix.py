@@ -50,6 +50,7 @@ def test_dry_run_plans_matrix_row() -> None:
         prompts = write_prompts(Path(tmp))
         payload, summary = module.prepare_payload(prompts, ("tiny", 10_000))
         prompt = module.selected_note_text(payload)
+        summary["prompt_sha256"] = module.sha256_text(prompt)
         row = module.run_or_plan(
             payload,
             prompt,
@@ -61,17 +62,16 @@ def test_dry_run_plans_matrix_row() -> None:
         raise AssertionError(f"unexpected dry-run row: {row}")
 
 
-def test_oversized_budget_reports_prompt_too_large() -> None:
+def test_prompt_too_large_row() -> None:
     module = load_module()
-    payload = {"candidates": []}
-    row = module.run_or_plan(
-        payload,
-        "prompt",
-        {"budget_name": "tiny", "candidate_count": 0, "input_chars": 0},
+    error = module.PromptTooLargeError("too big")
+    summary = module.prompt_too_large_summary(Path("prompts.jsonl"), ("tiny", 10), error)
+    row = module.prompt_too_large_row(
+        summary,
         {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
-        Namespace(dry_run=False),
+        error,
     )
-    if row["status"] != "prompt_too_large":
+    if row["status"] != "prompt_too_large" or row["prompt_chars"] != 0:
         raise AssertionError(f"expected prompt_too_large: {row}")
 
 
@@ -110,33 +110,73 @@ def test_existing_rows_are_keyed_by_budget_and_variant() -> None:
                     {
                         "budget_name": "quarter",
                         "variant": {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+                        "prompt_sha256": "abc",
                         "status": "passed",
                     }
                 )
                 + "\n"
             )
         rows = module.read_existing_rows(path)
-    if ("quarter", "gpt") not in rows or rows[("quarter", "gpt")]["status"] != "passed":
+    key = ("quarter", "gpt", "code-llm", "gpt-5.4")
+    if key not in rows or rows[key]["status"] != "passed":
         raise AssertionError(f"unexpected existing rows: {rows}")
+
+
+def test_existing_rows_are_not_keyed_by_alias_only() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "results.jsonl"
+        with path.open("w", encoding="utf-8") as handle:
+            for provider, model in [("code-llm", "gpt-5.4"), ("claude", "opus")]:
+                handle.write(
+                    json.dumps(
+                        {
+                            "budget_name": "quarter",
+                            "variant": {"name": "same", "provider": provider, "model": model},
+                            "prompt_sha256": model,
+                            "status": "passed",
+                        }
+                    )
+                    + "\n"
+                )
+        rows = module.read_existing_rows(path)
+    if len(rows) != 2:
+        raise AssertionError(f"same variant alias should not collapse distinct provider/model rows: {rows}")
 
 
 def test_skip_existing_defaults_to_requested_statuses() -> None:
     module = load_module()
-    if not module.should_skip_existing({"status": "passed"}, {"passed"}):
+    summary = {"prompt_sha256": "abc"}
+    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "abc"}, {"passed"}, summary) is None:
         raise AssertionError("passed rows should skip by default")
-    if module.should_skip_existing({"status": "failed_json"}, {"passed"}):
+    if module.reusable_existing_row({"status": "failed_json", "prompt_sha256": "abc"}, {"passed"}, summary) is not None:
         raise AssertionError("failed rows should not skip by default")
+    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "old"}, {"passed"}, summary) is not None:
+        raise AssertionError("passed rows from a different prompt should not skip")
+    if module.reusable_existing_row({"status": "passed"}, {"passed"}, summary) is not None:
+        raise AssertionError("legacy rows without prompt fingerprints should not skip")
+
+
+def test_retry_status_removes_default_skip_status() -> None:
+    module = load_module()
+    skip_statuses = module.parse_status_filter([], module.DEFAULT_SKIP_STATUSES) - module.parse_status_filter(
+        ["passed"], set()
+    )
+    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "abc"}, skip_statuses, {"prompt_sha256": "abc"}) is not None:
+        raise AssertionError("retry-status should make passed rows runnable again")
 
 
 def main() -> int:
     test_parse_variant()
     test_dry_run_plans_matrix_row()
-    test_oversized_budget_reports_prompt_too_large()
+    test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
+    test_existing_rows_are_not_keyed_by_alias_only()
     test_skip_existing_defaults_to_requested_statuses()
+    test_retry_status_removes_default_skip_status()
     print("ok validate-run-rollout-memory-long-context-matrix")
     return 0
 

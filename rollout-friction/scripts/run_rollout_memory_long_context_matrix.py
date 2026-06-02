@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -16,7 +17,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from prepare_rollout_memory_long_context_review import extract_first_json_object, parse_budget, prepare_payload, selected_note_text
+from prepare_rollout_memory_long_context_review import (
+    PromptTooLargeError,
+    extract_first_json_object,
+    parse_budget,
+    prepare_payload,
+    selected_note_text,
+)
 from validate_rollout_memory_llm_results import ValidationError, validate_content
 
 
@@ -29,6 +36,8 @@ DEFAULT_SYSTEM = (
     "You are a strict selected-note memory reviewer. Return only JSON that matches the schema. "
     "Do not quote raw private snippets. Copy candidate_id_manifest verbatim into reviewed_candidate_ids."
 )
+DEFAULT_SKIP_STATUSES = {"passed"}
+SUCCESS_STATUSES = {"passed", "planned", "skipped_existing"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="When --skip-existing is set, skip existing rows with this status. Defaults to passed.",
     )
+    parser.add_argument(
+        "--retry-status",
+        action="append",
+        default=[],
+        help="Existing status to retry even if it is included by --skip-status. May be repeated.",
+    )
     parser.add_argument("--max-seconds", type=float, default=1800.0)
     parser.add_argument("--anthropic-max-budget-usd", type=float, default=3.0)
     parser.add_argument("--dry-run", action="store_true")
@@ -60,17 +75,32 @@ def main() -> int:
     budgets = [parse_budget(value) for value in (args.budget or ["quarter"])]
     variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
     existing = read_existing_rows(args.output_jsonl) if args.skip_existing and args.output_jsonl else {}
-    skip_statuses = set(args.skip_status or ["passed"])
+    skip_statuses = parse_status_filter(args.skip_status, DEFAULT_SKIP_STATUSES) - parse_status_filter(
+        args.retry_status, set()
+    )
     rows: list[dict[str, Any]] = []
     for budget in budgets:
-        payload, prompt_summary = prepare_payload(args.prompts, budget)
-        prompt = selected_note_text(payload)
+        prompt_error: PromptTooLargeError | None = None
+        try:
+            payload, prompt_summary = prepare_payload(args.prompts, budget)
+            prompt = selected_note_text(payload)
+            prompt_summary["prompt_sha256"] = sha256_text(prompt)
+        except PromptTooLargeError as exc:
+            payload = None
+            prompt = None
+            prompt_summary = prompt_too_large_summary(args.prompts, budget, exc)
+            prompt_error = exc
         for variant in variants:
             key = row_key(prompt_summary["budget_name"], variant)
             existing_row = existing.get(key)
-            if should_skip_existing(existing_row, skip_statuses):
-                row = {**existing_row, "status": "skipped_existing", "original_status": existing_row.get("status")}
+            reusable_row = reusable_existing_row(existing_row, skip_statuses, prompt_summary)
+            if reusable_row is not None:
+                row = {**reusable_row, "status": "skipped_existing", "original_status": reusable_row.get("status")}
+            elif prompt_error is not None:
+                row = prompt_too_large_row(prompt_summary, variant, prompt_error)
             else:
+                if payload is None or prompt is None:
+                    raise AssertionError("prompt payload should exist when no prompt error was recorded")
                 row = run_or_plan(payload, prompt, prompt_summary, variant, args)
             if row.get("status") != "skipped_existing" and args.output_jsonl:
                 append_jsonl(args.output_jsonl, row)
@@ -78,7 +108,16 @@ def main() -> int:
             print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
     summary = summarize_rows(rows)
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
-    return 0 if all(row["status"] in {"passed", "planned", "skipped_existing"} for row in rows) else 1
+    return 0 if all(row["status"] in SUCCESS_STATUSES for row in rows) else 1
+
+
+def parse_status_filter(values: list[str], default: set[str]) -> set[str]:
+    if not values:
+        return set(default)
+    statuses: set[str] = set()
+    for value in values:
+        statuses.update(status.strip() for status in value.split(",") if status.strip())
+    return statuses
 
 
 def parse_variant(value: str) -> dict[str, str]:
@@ -99,14 +138,10 @@ def run_or_plan(
         "candidate_count": prompt_summary["candidate_count"],
         "input_chars": prompt_summary["input_chars"],
         "prompt_chars": len(prompt),
+        "prompt_sha256": prompt_summary["prompt_sha256"],
     }
     if args.dry_run:
         row["status"] = "planned"
-        return row
-    if not payload.get("candidates"):
-        row["status"] = "prompt_too_large"
-        row["error"] = "no prompt batch fits within the requested budget"
-        row["elapsed_seconds"] = 0.0
         return row
     started = time.time()
     try:
@@ -138,6 +173,35 @@ class MatrixBlocked(RuntimeError):
     def __init__(self, status: str, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+def prompt_too_large_summary(prompts_path: Path, budget: tuple[str, int], exc: PromptTooLargeError) -> dict[str, Any]:
+    budget_name, char_budget = budget
+    return {
+        "schema_version": 1,
+        "source": str(prompts_path),
+        "budget_name": budget_name,
+        "char_budget": char_budget,
+        "input_chars": 0,
+        "batch_count": 0,
+        "candidate_count": 0,
+        "error": str(exc),
+    }
+
+
+def prompt_too_large_row(prompt_summary: dict[str, Any], variant: dict[str, str], exc: PromptTooLargeError) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "budget_name": prompt_summary["budget_name"],
+        "variant": variant,
+        "candidate_count": prompt_summary["candidate_count"],
+        "input_chars": prompt_summary["input_chars"],
+        "prompt_chars": 0,
+        "prompt_sha256": prompt_summary.get("prompt_sha256"),
+        "status": "prompt_too_large",
+        "error": str(exc),
+        "elapsed_seconds": 0.0,
+    }
 
 
 def request_code_llm(model: str, prompt: str, args: argparse.Namespace) -> str:
@@ -228,16 +292,21 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"schema_version": 1, "summary": True, "run_count": len(rows), "status_counts": counts}
 
 
-def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str]:
-    return (budget_name, variant["name"])
+def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str, str, str]:
+    return (budget_name, variant["name"], variant["provider"], variant["model"])
 
 
-def should_skip_existing(row: dict[str, Any] | None, skip_statuses: set[str]) -> bool:
-    return bool(row and row.get("status") in skip_statuses)
+def reusable_existing_row(
+    row: dict[str, Any] | None, skip_statuses: set[str], prompt_summary: dict[str, Any]
+) -> dict[str, Any] | None:
+    if isinstance(row, dict) and row.get("status") in skip_statuses:
+        if row.get("prompt_sha256") == prompt_summary.get("prompt_sha256"):
+            return row
+    return None
 
 
-def read_existing_rows(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    rows: dict[tuple[str, str], dict[str, Any]] = {}
+def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     if not path.exists():
         return rows
     with path.open("r", encoding="utf-8") as handle:
@@ -248,9 +317,20 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
             if isinstance(payload, dict) and not payload.get("summary") and isinstance(payload.get("variant"), dict):
                 budget = payload.get("budget_name")
                 name = payload["variant"].get("name")
-                if isinstance(budget, str) and isinstance(name, str):
-                    rows[(budget, name)] = payload
+                provider = payload["variant"].get("provider")
+                model = payload["variant"].get("model")
+                if (
+                    isinstance(budget, str)
+                    and isinstance(name, str)
+                    and isinstance(provider, str)
+                    and isinstance(model, str)
+                ):
+                    rows[(budget, name, provider, model)] = payload
     return rows
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
