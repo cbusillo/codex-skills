@@ -121,10 +121,41 @@ def test_reduce_ignores_failed_parent_with_valid_child() -> None:
         raise AssertionError(f"valid child note should be reduced: {plan}")
 
 
+def test_reduce_ignores_missing_parent_result_with_valid_child() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-006.prompt.json", {"candidates": [{"candidate_id": "memcand_parent"}]})
+        write_json(root / "batch-006-a.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        write_json(
+            root / "batch-006-a.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "decisions": [
+                            {"candidate_id": "memcand_a", "action": "note", "destination": "profile_notes"}
+                        ],
+                        "people_updates": [],
+                        "profile_notes": [{"candidate_id": "memcand_a", "note": "Keep split child output."}],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_a"],
+                    }
+                )
+            },
+        )
+        plan = module.reduce_reviews(root, include_failed=True)
+    if plan["failed_batch_count"] != 0 or plan["failed_batches"]:
+        raise AssertionError(f"missing split parent result should be ignored: {plan}")
+
+
 def main() -> int:
     test_reduce_validated_reviews_to_apply_plan()
     test_reduce_reports_failed_batches()
     test_reduce_ignores_failed_parent_with_valid_child()
+    test_reduce_ignores_missing_parent_result_with_valid_child()
     print("ok validate-reduce-rollout-memory-reviews")
     return 0
 

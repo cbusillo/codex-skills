@@ -97,7 +97,8 @@ def validate(prompt_path: Path, result_path: Path, allow_implicit_discards: bool
     missing_reviewed_ids = expected_ids - reviewed_ids
     missing_disposition_ids = expected_ids - disposition_ids
     missing_ids = sorted(expected_ids - covered_ids)
-    unknown_ids = sorted((reviewed_ids | disposition_ids) - expected_ids)
+    explicit_decision_ids = set(decision_counts)
+    unknown_ids = sorted((reviewed_ids | disposition_ids | explicit_decision_ids) - expected_ids)
     duplicate_reviewed_ids = sorted(id_ for id_, count in reviewed_counts.items() if count > 1)
     duplicate_disposition_ids = sorted(
         id_
@@ -105,7 +106,6 @@ def validate(prompt_path: Path, result_path: Path, allow_implicit_discards: bool
         if count > 1 and id_ in expected_ids
     )
     overlapping_disposition_ids = sorted((note_ids & discard_ids) & expected_ids)
-    explicit_decision_ids = set(decision_counts)
     missing_decision_ids = expected_ids - set(decision_counts)
     duplicate_decision_ids = sorted(id_ for id_, count in decision_counts.items() if count > 1 and id_ in expected_ids)
     strict_ok = (

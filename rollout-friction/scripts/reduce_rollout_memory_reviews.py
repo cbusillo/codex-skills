@@ -44,7 +44,7 @@ def main() -> int:
             handle.write(text)
             handle.write("\n")
     print(text)
-    return 0 if not plan["failed_batches"] else 1
+    return 0 if plan["failed_batch_count"] == 0 else 1
 
 
 def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, Any]:
@@ -58,7 +58,8 @@ def reduce_reviews(review_dir: Path, include_failed: bool = False) -> dict[str, 
         result_path = review_dir / f"{stem}.result.json"
         batch_label = stem.removeprefix("batch-")
         if not result_path.exists():
-            failed_batches.append({"batch": batch_label, "error": "missing result"})
+            if batch_label not in child_parents:
+                failed_batches.append({"batch": batch_label, "error": "missing result"})
             continue
         try:
             validation = validate(prompt_path, result_path)

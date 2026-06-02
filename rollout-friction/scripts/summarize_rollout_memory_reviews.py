@@ -45,7 +45,10 @@ def summarize(review_dir: Path) -> dict[str, Any]:
         result_path = review_dir / f"{stem}.result.json"
         batch_no = stem.removeprefix("batch-")
         if not result_path.exists():
-            summaries.append({"ok": False, "batch": batch_no, "error": "missing result", "result": str(result_path)})
+            validation = {"ok": False, "batch": batch_no, "error": "missing result", "result": str(result_path)}
+            if batch_no in child_parents:
+                validation["superseded_by_split_children"] = True
+            summaries.append(validation)
             continue
         try:
             validation = validate(prompt_path, result_path)

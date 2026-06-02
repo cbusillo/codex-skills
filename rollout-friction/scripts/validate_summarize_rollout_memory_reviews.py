@@ -114,11 +114,31 @@ def test_split_children_supersede_failed_parent() -> None:
         raise AssertionError(f"split child should supersede failed parent: {summary}")
 
 
+def test_split_children_supersede_missing_parent_result() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-006.prompt.json", {"candidates": [{"candidate_id": "memcand_parent"}]})
+        write_json(root / "batch-006-a.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        write_json(
+            root / "batch-006-a.result.json",
+            {
+                "content": json.dumps(
+                    valid_content()
+                )
+            },
+        )
+        summary = module.summarize(root)
+    if summary["failed_count"] != 0 or summary["superseded_parent_count"] != 1:
+        raise AssertionError(f"split child should supersede missing parent result: {summary}")
+
+
 def main() -> int:
     test_summarizes_complete_review_dir()
     test_marks_missing_result_failed()
     test_accepts_split_child_batch_labels()
     test_split_children_supersede_failed_parent()
+    test_split_children_supersede_missing_parent_result()
     print("ok validate-summarize-rollout-memory-reviews")
     return 0
 

@@ -207,6 +207,24 @@ def test_rejects_missing_decision() -> None:
         raise AssertionError(f"expected memcand_b missing decision: {summary}")
 
 
+def test_rejects_unknown_decision_ids() -> None:
+    module = load_module()
+    content = complete_content()
+    content["decisions"].append(
+        {"candidate_id": "memcand_unknown", "action": "discard", "destination": "discard_reasons"}
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected unknown decision id to fail: {summary}")
+    if summary["unknown_candidate_ids"] != ["memcand_unknown"]:
+        raise AssertionError(f"expected memcand_unknown to be reported unknown: {summary}")
+
+
 def test_rejects_missing_decisions_array() -> None:
     module = load_module()
     content = complete_content()
@@ -234,6 +252,7 @@ def main() -> int:
     test_rejects_overlapping_note_and_discard()
     test_rejects_duplicate_decisions()
     test_rejects_missing_decision()
+    test_rejects_unknown_decision_ids()
     test_rejects_missing_decisions_array()
     print("ok validate-validate-rollout-memory-llm-results")
     return 0
