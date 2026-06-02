@@ -146,17 +146,17 @@ def test_redact_mode_removes_paths_but_keeps_trusted_originals() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         trace = write_trace(
             Path(tmp),
-            [response_item("user", "Remember local config path /Users/cbusillo/Developer/.code/local.env.")],
+            [response_item("user", "Remember local config path /Users/example/Developer/.code/local.env.")],
         )
         redacted = module.extract([trace], redact_args)[0].text
         redacted_source = module.extract([trace], redact_args)[0].source_file
         original_candidate = module.extract([trace], trusted_args)[0]
         original = original_candidate.text
-    if "/Users/cbusillo" in redacted:
+    if "/Users/example" in redacted:
         raise AssertionError(f"redact mode leaked path: {redacted}")
     if "/" in redacted_source and "<path-redacted>" not in redacted_source:
         raise AssertionError(f"redact mode leaked source path: {redacted_source}")
-    if "/Users/cbusillo" not in original:
+    if "/Users/example" not in original:
         raise AssertionError(f"trusted originals should preserve path: {original}")
     if str(trace) != original_candidate.source_file:
         raise AssertionError(f"trusted originals should preserve source path: {original_candidate.source_file}")

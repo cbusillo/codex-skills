@@ -15,17 +15,26 @@ commands:
   - name: pr-snapshot
     source: skill
     resource_path: scripts/gh_pr_watch.py
-    example_argv: ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--once"]
+    example_argv:
+      ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--once"]
     purpose: Emit one JSON snapshot of PR review, CI, and mergeability state.
   - name: pr-watch
     source: skill
     resource_path: scripts/gh_pr_watch.py
-    example_argv: ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
+    example_argv:
+      ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
     purpose: Continuously emit JSONL snapshots while babysitting a PR.
   - name: retry-failed-checks
     source: skill
     resource_path: scripts/gh_pr_watch.py
-    example_argv: ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--retry-failed-now"]
+    example_argv:
+      [
+        "python3",
+        "scripts/gh_pr_watch.py",
+        "--pr",
+        "auto",
+        "--retry-failed-now",
+      ]
     purpose: Rerun failed jobs for the current PR when watcher policy recommends it.
 workflow_defaults:
   - name: pr_target
@@ -42,6 +51,7 @@ workflow_defaults:
 # PR Babysitter
 
 ## Objective
+
 Babysit a PR persistently until one of these terminal outcomes occurs:
 
 - The PR is merged or closed.
@@ -60,6 +70,7 @@ merge/release policy. Do not infer release intent from package metadata or PR
 titles unless the repo metadata or docs say to do so.
 
 ## Inputs
+
 Accept any of the following:
 
 - No PR argument: infer the PR from the current branch (`--pr auto`)
@@ -111,6 +122,7 @@ python3 scripts/gh_pr_watch.py --pr <number-or-url> --once
 ```
 
 ## CI Failure Classification
+
 Use `gh` commands to inspect failed runs before deciding to rerun.
 
 - `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
@@ -131,6 +143,7 @@ If classification is ambiguous, perform one manual diagnosis attempt before choo
 Read `references/heuristics.md` for a concise checklist.
 
 ## Review Comment Handling
+
 The watcher surfaces review items from:
 
 - PR issue comments
@@ -157,6 +170,10 @@ If a code review comment/thread is already marked as resolved in GitHub, treat i
 ## Git Safety Rules
 
 - Work only on the PR head branch.
+- Before editing or pushing, verify the current branch, repo default branch, and
+  PR head branch. If the PR head is the default branch, a shared/release branch,
+  or otherwise protected, do not patch or push it directly; switch to a safe task
+  branch and use the `github` workflow to update or replace the PR.
 - Avoid destructive git commands.
 - Do not switch branches unless necessary to recover context.
 - Before editing, check for unrelated uncommitted changes. If present, stop and ask the user.
@@ -171,6 +188,7 @@ Commit message examples:
 - `fix: address PR review feedback (#<n>)`
 
 ## Monitoring Loop Pattern
+
 Use this loop in a live Codex session:
 
 1. Run `--once`.
@@ -193,6 +211,7 @@ Do not hand control back to the user after a review-fix push just because a new 
 If a `--watch` process is still running and no strict stop condition has been reached, the babysitting task is still in progress; keep streaming/consuming watcher output instead of ending the turn.
 
 ## Polling Cadence
+
 Keep review polling aggressive and continue monitoring even after CI turns green:
 
 - While CI is not green (pending/running/queued or failing): poll every 1 minute.
@@ -202,6 +221,7 @@ Keep review polling aggressive and continue monitoring even after CI turns green
 - If any poll shows the PR is merged or otherwise closed: stop polling immediately and report the terminal state.
 
 ## Stop Conditions (Strict)
+
 Stop only when one of the following is true:
 
 - PR merged or closed (stop as soon as a poll/snapshot confirms this).
@@ -218,6 +238,7 @@ Keep polling when:
 - The PR is green but part of an active fix train or slow review system; report readiness as provisional and keep watching until the user asks to stop or merge.
 
 ## Output Expectations
+
 Provide concise progress updates while monitoring and a final summary that includes:
 
 - During long unchanged monitoring periods, avoid emitting a full update on every poll; summarize only status changes plus occasional heartbeat updates.

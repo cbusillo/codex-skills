@@ -23,17 +23,36 @@ commands:
   - name: local-llm-inventory
     source: skill
     resource_path: scripts/lm_studio_inventory.py
-    example_argv: ["uv", "run", "local-llm/scripts/lm_studio_inventory.py", "--json"]
+    example_argv:
+      ["uv", "run", "local-llm/scripts/lm_studio_inventory.py", "--json"]
     purpose: Lists configured endpoint trust/locality and available model IDs.
   - name: local-llm-chat
     source: skill
     resource_path: scripts/lm_studio_chat.py
-    example_argv: ["uv", "run", "local-llm/scripts/lm_studio_chat.py", "--role", "rollout_scout", "--prompt", "Reply with OK", "--json"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "local-llm/scripts/lm_studio_chat.py",
+        "--role",
+        "rollout_scout",
+        "--prompt",
+        "Reply with OK",
+        "--json",
+      ]
     purpose: Sends one bounded prompt through a role or explicit model.
   - name: local-llm-benchmark
     source: skill
     resource_path: scripts/lm_studio_benchmark.py
-    example_argv: ["uv", "run", "local-llm/scripts/lm_studio_benchmark.py", "--role", "rollout_scout", "--json"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "local-llm/scripts/lm_studio_benchmark.py",
+        "--role",
+        "rollout_scout",
+        "--json",
+      ]
     purpose: Benchmarks one or more role/model candidates before changing model defaults.
 workflow_defaults:
   - name: default_endpoint
@@ -55,6 +74,11 @@ Public model curation lives in `references/model-index.yaml`. Machine-specific e
 Use repo-root `.local/` for private config. Keeping private files out of skill folders preserves skill portability while still giving each skill a clear private filename.
 
 Copy the shape from `references/local-llm.local.example.yaml` when creating private config. Do not commit real hostnames, LAN addresses, tokens, installed-model inventories tied to a private machine, or private benchmark notes.
+
+When endpoint URLs, ports, trust scope, or preferred model IDs change, update the
+private config before data-heavy runs and run a lightweight inventory check. Bump
+the config `version` only for schema changes, not routine endpoint or model
+rotation.
 
 ## Locality
 
@@ -105,6 +129,12 @@ Benchmark output is local machine evidence, not public truth. Keep private endpo
 LM Studio exposes local models through OpenAI-compatible endpoints such as `/v1/models` and `/v1/chat/completions`. The `lms` CLI can list, download, load, and unload models. These scripts use the HTTP API because it also works for compatible local or private endpoints.
 
 Large reasoning models may return no assistant content when `max_tokens` is too low because the budget is consumed by reasoning. Increase `max_tokens` for deep models before declaring them unusable.
+
+If a configured local endpoint is unavailable, say so plainly and keep private
+inputs local. Do not silently fall back to cloud. For private workflows, either
+retry after the local endpoint is healthy, switch to another configured trusted
+local/private endpoint, or ask for explicit approval for the exact cloud
+destination and input scope.
 
 ## Related Skills
 

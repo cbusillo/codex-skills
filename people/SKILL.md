@@ -88,8 +88,9 @@ uv run people/scripts/resolve_person.py "<name-or-handle>"
 
 Prefer exact configured aliases and handles over fuzzy guessing. Never use fuzzy
 or ambiguous resolution for write actions such as assigning, mentioning, routing,
-or commenting. Treat any non-`exact`, non-`id`, non-`contact`, non-`name`, or
-non-`compact` confidence as lookup-only context.
+or commenting. Treat only `status: matched` results with `confidence` of `id`,
+`contact`, `name`, or `compact` as write-safe identity context; fuzzy matches,
+ambiguous results, and unknown confidence values are lookup-only.
 
 ## Artifact Review Workflow
 
@@ -145,6 +146,12 @@ If an issue, comment, PR, review, or commit actor does not resolve to a known
 person or configured bot alias, treat the actor as unknown: verify claims from
 live evidence, avoid assuming intent or authority, and call out the uncertainty
 when it affects the work.
+
+Refresh the private index when artifact review or live evidence shows a durable
+rename, new handle, role/relationship correction, or repeated unresolved natural
+name that should resolve. Do not treat old aliases as stale unless the user or a
+maintained source confirms the replacement; keep useful former spellings as
+aliases when they still appear in history.
 
 ## Privacy Rules
 

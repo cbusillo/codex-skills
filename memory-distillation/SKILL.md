@@ -48,7 +48,8 @@ clean, prune, archive, reset, or distill memories.
 - **People local config**: when the optional `people` skill and
   `.local/people.yaml` are available, treat them as the maintained private
   source for durable person identity, aliases, bot aliases, contact surfaces,
-  company/team, actor trust hints, role hints, and preferred contact context.
+  company/team, stable relationship hints, actor trust hints, role hints, and
+  preferred contact context.
 
 ## Audit Workflow
 
@@ -97,9 +98,10 @@ When distilling Chronicle:
    recommendation, and any approved writes after reading the scout output. Do
    not send raw Chronicle data to remote services unless the user explicitly
    approves the exact destination and scope. When the optional `local-llm` skill
-   is available, use it for local endpoint/model selection and bounded chat
-   mechanics; keep this skill's memory-specific evidence, redaction, and write
-   rules in force.
+   is available, use it to verify endpoint locality and trust before passing raw
+   Chronicle input; if locality is cloud, unknown, disabled, or untrusted, abort
+   or require explicit approval for the exact destination and scope. Keep this
+   skill's memory-specific evidence, redaction, and write rules in force.
 3. Use sampling first, then chunked full-archive passes if the sample shows real
    value. For full passes, use a map/reduce flow that helps find recurring
    evidence, then have the Every Code agent review those scout notes before

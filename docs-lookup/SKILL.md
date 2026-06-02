@@ -63,6 +63,11 @@ this environment's setup or access path, and the owning operator skill for
 read-only inventory, managed product/runtime state, production checks, or
 mutations.
 
+This skill may identify the source-of-truth route and relevant docs. Once the
+request needs live tenant/account identity, current record or runtime inventory,
+health evidence, production status, or any mutation, switch to the owning
+operator skill such as `infra-ops` or `launchplane`.
+
 ## Local Operational Context
 
 Use local operational context when the task is about how this particular
