@@ -26,6 +26,7 @@ from typing import Any, Iterable, NamedTuple
 DEFAULT_MAX_FILES = 25
 DEFAULT_MAX_BYTES = 3_000_000
 DEFAULT_CONTEXT_CHARS = 180
+TEXT_LIMITATION_DISPLAY_LIMIT = 8
 
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
 STRUCTURED_TRACE_SUFFIXES = {".json", ".jsonl", ".log"}
@@ -86,12 +87,12 @@ INVESTIGATION_NOISE_RE = re.compile(
     re.I,
 )
 INJECTED_CONTEXT_NOISE_RE = re.compile(
-    r"\b(AGENTS\.md instructions|<INSTRUCTIONS>|</INSTRUCTIONS>|<environment_context>|"
+    r"(?:\bAGENTS\.md instructions\b|<INSTRUCTIONS>|</INSTRUCTIONS>|<environment_context>|"
     r"Available skills|How to use skills|Knowledge cutoff|Current date|approval_policy|"
     r"sandbox_mode|You are Codex|You are an AI assistant|Desired oververbosity|"
-    r"Review only the provided code change scope|User initiated a review task)\b|"
-    r"(?:^|\n)\s*```[a-z0-9_-]*\s*(?:\n|$)|"
-    r"\b(?:def|class|import|from|const|let|var|function)\s+[A-Za-z_][A-Za-z0-9_]*|"
+    r"Review only the provided code change scope|User initiated a review task)|"
+    r"(?:^|\s)```[a-z0-9_-]*(?:\s|$)|"
+    r"^(?:def|class|import|from|const|let|var|function)\s+[A-Za-z_][A-Za-z0-9_]*|"
     r"\b(?:apply_patch|Begin Patch|End Patch|diff --git)\b",
     re.I,
 )
@@ -520,23 +521,63 @@ def parse_timestamp_arg(value: str, flag: str) -> float:
     return parsed
 
 
-def iter_candidate_files(paths: list[Path], max_files: int) -> list[Path]:
+def iter_candidate_files(paths: list[Path], max_files: int) -> tuple[list[Path], list[Limitation]]:
     explicit_files: list[Path] = []
     discovered_files: list[Path] = []
+    limitations: list[Limitation] = []
+    missing_inputs = 0
+    skipped_directory_candidates = 0
+    directory_entry_limit = max(max_files * 200, 1000)
     for path in paths:
         expanded = path.expanduser()
         if expanded.is_file():
             explicit_files.append(expanded)
         elif expanded.is_dir():
+            visited_entries = 0
             for child in expanded.rglob("*"):
+                visited_entries += 1
+                if visited_entries > directory_entry_limit:
+                    limitations.append(
+                        Limitation(
+                            "file_discovery_limit",
+                            "directory walk stopped after the bounded discovery entry limit",
+                            file=expanded,
+                            file_count=visited_entries - 1,
+                            limit=directory_entry_limit,
+                        )
+                    )
+                    break
                 if is_candidate_file(child):
+                    if len(discovered_files) >= max_files:
+                        skipped_directory_candidates += 1
+                        break
                     discovered_files.append(child)
+        else:
+            missing_inputs += 1
+
+    if missing_inputs:
+        limitations.append(
+            Limitation(
+                "missing_path",
+                "one or more explicit input paths did not exist or were not readable as files/directories",
+                file_count=missing_inputs,
+            )
+        )
 
     explicit = sorted(unique_paths(explicit_files), key=path_mtime, reverse=True)
     explicit_set = set(explicit)
     discovered = [path for path in unique_paths(discovered_files) if path not in explicit_set]
+    if skipped_directory_candidates:
+        limitations.append(
+            Limitation(
+                "file_count_limit",
+                "directory scan stopped after --max-files candidate files",
+                file_count=skipped_directory_candidates,
+                limit=max_files,
+            )
+        )
     discovered = sorted(discovered, key=path_mtime, reverse=True)[:max_files]
-    return explicit + discovered
+    return explicit + discovered, limitations
 
 
 def plan_scan_targets(
@@ -547,11 +588,11 @@ def plan_scan_targets(
     targets: list[ScanTarget] = []
     limitations: list[Limitation] = []
     remaining = max_bytes
+    skipped_after_budget = 0
     for path in files:
         try:
             file_bytes = path.stat().st_size
         except OSError as exc:
-            targets.append(ScanTarget(path, min(max_file_bytes, remaining), 0, False))
             limitations.append(
                 Limitation(
                     "scanner_io_error",
@@ -561,15 +602,7 @@ def plan_scan_targets(
             )
             continue
         if remaining <= 0:
-            limitations.append(
-                Limitation(
-                    "total_byte_limit",
-                    "file skipped because the scan reached --max-bytes before this file",
-                    file=path,
-                    byte_count=file_bytes,
-                    limit=max_bytes,
-                )
-            )
+            skipped_after_budget += 1
             continue
         read_bytes = min(file_bytes, max_file_bytes, remaining)
         truncated = file_bytes > read_bytes
@@ -586,12 +619,12 @@ def plan_scan_targets(
             )
         targets.append(ScanTarget(path, read_bytes, file_bytes, truncated))
         remaining -= read_bytes
-    if len(targets) < len(files):
+    if skipped_after_budget:
         limitations.append(
             Limitation(
                 "total_byte_limit",
                 "some candidate files were skipped after the total scan byte budget was exhausted",
-                file_count=len(files) - len(targets),
+                file_count=skipped_after_budget,
                 limit=max_bytes,
             )
         )
@@ -1028,13 +1061,14 @@ def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitatio
     print(f"Scanned {len(targets)} file(s).")
     if limitations:
         print("Scan limitations:")
-        for limitation in limitations[:8]:
+        for limitation in limitations[:TEXT_LIMITATION_DISPLAY_LIMIT]:
             suffix = f" file_id={stable_file_id(limitation.file)}" if limitation.file is not None else ""
             count = f" file_count={limitation.file_count}" if limitation.file_count is not None else ""
             limit = f" limit={limitation.limit}" if limitation.limit is not None else ""
             print(f"- {limitation.kind}:{suffix}{count}{limit} {limitation.message}")
-        if len(limitations) > 8:
-            print(f"- {len(limitations) - 8} additional limitation(s) omitted from text output; use --json for full details.")
+        if len(limitations) > TEXT_LIMITATION_DISPLAY_LIMIT:
+            omitted_count = len(limitations) - TEXT_LIMITATION_DISPLAY_LIMIT
+            print(f"- {omitted_count} additional limitation(s) omitted from text output; use --json for full details.")
     if not findings:
         print("No friction signals met reporting thresholds.")
         return
@@ -1061,8 +1095,9 @@ def severity_rank(severity: str) -> int:
 def main() -> int:
     args = parse_args()
     paths = args.paths or [args.root]
-    files = iter_candidate_files(paths, args.max_files)
-    targets, limitations = plan_scan_targets(files, args.max_bytes, args.max_file_bytes)
+    files, limitations = iter_candidate_files(paths, args.max_files)
+    targets, scan_limitations = plan_scan_targets(files, args.max_bytes, args.max_file_bytes)
+    limitations.extend(scan_limitations)
     findings = scan(
         targets,
         args.max_bytes,

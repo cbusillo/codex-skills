@@ -44,7 +44,7 @@ def assert_signals(texts: list[str], expected: set[str]) -> None:
             Path(tmp),
             [{"type": "event_msg", "payload": {"aggregated_output": text}} for text in texts],
         )
-        files = module.iter_candidate_files([trace], max_files=10)
+        files, _limitations = module.iter_candidate_files([trace], max_files=10)
         findings = module.scan(files, max_bytes=100_000, context_chars=240)
     actual = set(findings)
     missing = expected - actual
@@ -346,10 +346,12 @@ def test_explicit_files_are_not_capped_by_directory_limit() -> None:
         directory_trace.write_text('{"message":"directory trace"}\n', encoding="utf-8")
         explicit_trace.write_text("explicit trace without rollout name\n", encoding="utf-8")
 
-        files = module.iter_candidate_files([root, explicit_trace], max_files=0)
+        files, limitations = module.iter_candidate_files([root, explicit_trace], max_files=0)
 
     if files != [explicit_trace]:
         raise AssertionError(f"explicit files should bypass directory max_files cap, got {files!r}")
+    if not any(limitation.kind == "file_count_limit" for limitation in limitations):
+        raise AssertionError(f"directory cap should be reported as a limitation: {limitations}")
 
 
 def test_paths_file_supplies_many_explicit_files() -> None:
@@ -407,13 +409,40 @@ def test_total_byte_budget_reports_scan_limitations() -> None:
         first.write_text('{"message":"GraphQL rate limit"}\n' * 20, encoding="utf-8")
         second.write_text('{"message":"No runs found for workflow CodeQL"}\n', encoding="utf-8")
 
-        files = module.iter_candidate_files([first, second], max_files=10)
+        files, _limitations = module.iter_candidate_files([first, second], max_files=10)
         targets, limitations = module.plan_scan_targets(files, max_bytes=30, max_file_bytes=30)
 
     if sum(target.read_bytes for target in targets) > 30:
         raise AssertionError(f"planned scan exceeded total byte budget: {targets}")
     if not any(limitation.kind == "total_byte_limit" for limitation in limitations):
         raise AssertionError(f"expected total byte limit to be reported: {limitations}")
+    if sum(1 for limitation in limitations if limitation.kind == "total_byte_limit") != 1:
+        raise AssertionError(f"total byte limit should be summarized once: {limitations}")
+
+
+def test_missing_explicit_path_reports_limitation() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "missing-session.jsonl"
+        files, limitations = module.iter_candidate_files([missing], max_files=10)
+
+    if files:
+        raise AssertionError(f"missing paths should not become scan files: {files}")
+    if not any(limitation.kind == "missing_path" for limitation in limitations):
+        raise AssertionError(f"missing explicit path should be reported: {limitations}")
+
+
+def test_directory_discovery_reports_entry_limit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for index in range(1005):
+            (root / f"note-{index}.tmp").write_text("not a trace\n", encoding="utf-8")
+
+        _files, limitations = module.iter_candidate_files([root], max_files=0)
+
+    if not any(limitation.kind == "file_discovery_limit" for limitation in limitations):
+        raise AssertionError(f"broad roots should report bounded discovery limits: {limitations}")
 
 
 def test_skill_docs_are_not_directory_candidates() -> None:
@@ -426,7 +455,7 @@ def test_skill_docs_are_not_directory_candidates() -> None:
         skill_doc.write_text("GraphQL rate limit docs example\n", encoding="utf-8")
         real_trace.write_text("GraphQL rate limit real trace\n", encoding="utf-8")
 
-        files = module.iter_candidate_files([root], max_files=10)
+        files, _limitations = module.iter_candidate_files([root], max_files=10)
 
     if skill_doc in files:
         raise AssertionError("skill docs should not be discovered as rollout trace candidates")
@@ -447,7 +476,7 @@ def test_neutral_structured_traces_are_directory_candidates() -> None:
         neutral_log.write_text("GraphQL rate limit\n", encoding="utf-8")
         neutral_md.write_text("GraphQL rate limit\n", encoding="utf-8")
 
-        files = module.iter_candidate_files([root], max_files=10)
+        files, _limitations = module.iter_candidate_files([root], max_files=10)
 
     if neutral_json not in files:
         raise AssertionError("neutral .json traces should be discoverable from a root directory")
@@ -792,7 +821,7 @@ def test_since_and_after_line_bound_scan_records() -> None:
                 {"timestamp": "2026-05-28T19:00:00Z", "message": "No runs found for workflow CodeQL"},
             ],
         )
-        files = module.iter_candidate_files([trace], max_files=10)
+        files, _limitations = module.iter_candidate_files([trace], max_files=10)
         findings = module.scan(
             files,
             max_bytes=100_000,
@@ -879,6 +908,28 @@ def test_suppression_filters_injected_context_and_code_snippets() -> None:
     finding = findings.get("github_graphql_rate_limit")
     if finding is None or finding.structured_count != 1:
         raise AssertionError("structured helper finding should survive injected-context suppression")
+
+
+def test_suppression_preserves_real_command_failures() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "error: import of module widgets failed; Command failed"},
+                {"message": "status=error function=run_smoke_test process exited with code 1"},
+                {"message": "Command failed again while validating the rollout"},
+            ],
+        )
+        findings = module.scan(
+            [trace],
+            max_bytes=100_000,
+            context_chars=240,
+            suppress_investigation_noise=True,
+        )
+
+    if "repeated_command_failure" not in findings:
+        raise AssertionError("real command failures should survive injected-context suppression")
 
 
 def test_nested_wrapped_helper_payload_retains_structured_context() -> None:
@@ -971,6 +1022,8 @@ def main() -> int:
     test_paths_file_supplies_many_explicit_files()
     test_space_joined_existing_paths_fail_fast()
     test_total_byte_budget_reports_scan_limitations()
+    test_missing_explicit_path_reports_limitation()
+    test_directory_discovery_reports_entry_limit()
     test_skill_docs_are_not_directory_candidates()
     test_neutral_structured_traces_are_directory_candidates()
     test_redaction_covers_local_path_shapes()
@@ -989,6 +1042,7 @@ def main() -> int:
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
     test_suppression_filters_injected_context_and_code_snippets()
+    test_suppression_preserves_real_command_failures()
     test_nested_wrapped_helper_payload_retains_structured_context()
     test_non_structured_nested_payload_strings_are_preserved()
     test_status_wrapper_does_not_make_discussion_structured()
