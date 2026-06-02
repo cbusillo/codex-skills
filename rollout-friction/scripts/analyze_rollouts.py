@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from typing import Any, Iterable, NamedTuple
 DEFAULT_MAX_FILES = 25
 DEFAULT_MAX_BYTES = 3_000_000
 DEFAULT_CONTEXT_CHARS = 180
+TEXT_LIMITATION_DISPLAY_LIMIT = 8
 
 ROLL_OUT_SUFFIXES = {".jsonl", ".json", ".log", ".txt", ".md"}
 STRUCTURED_TRACE_SUFFIXES = {".json", ".jsonl", ".log"}
@@ -82,6 +84,16 @@ INVESTIGATION_NOISE_RE = re.compile(
     r"\b(GraphQL|rate limit|error|failed|blocked|timeout|grep|pattern|signal)\b|"
     r"\bgrep\b[^\n]{0,160}\b(GraphQL|rate limit|error|failed|blocked|timeout)\b|"
     r"\bassistant\b[^\n]{0,160}\b(discussion|summary|mentioned|investigation)\b",
+    re.I,
+)
+INJECTED_CONTEXT_NOISE_RE = re.compile(
+    r"(?:\bAGENTS\.md instructions\b|<INSTRUCTIONS>|</INSTRUCTIONS>|<environment_context>|"
+    r"Available skills|How to use skills|Knowledge cutoff|Current date|approval_policy|"
+    r"sandbox_mode|You are Codex|You are an AI assistant|Desired oververbosity|"
+    r"Review only the provided code change scope|User initiated a review task)|"
+    r"(?:^|\s)```[a-z0-9_-]*(?:\s|$)|"
+    r"^(?:def|class|import|from|const|let|var|function)\s+[A-Za-z_][A-Za-z0-9_]*|"
+    r"\b(?:apply_patch|Begin Patch|End Patch|diff --git)\b",
     re.I,
 )
 AUTH_LOGIN_NOISE_RE = re.compile(
@@ -239,6 +251,22 @@ class Fragment(NamedTuple):
     text: str
     summary: bool
     structured: bool = False
+
+
+class Limitation(NamedTuple):
+    kind: str
+    message: str
+    file: Path | None = None
+    file_count: int | None = None
+    byte_count: int | None = None
+    limit: int | None = None
+
+
+class ScanTarget(NamedTuple):
+    path: Path
+    read_bytes: int
+    file_bytes: int
+    truncated: bool
 
 
 SIGNALS: list[Signal] = [
@@ -406,9 +434,19 @@ SIGNALS: list[Signal] = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan local rollout/session traces for workflow friction.")
     parser.add_argument("paths", nargs="*", type=Path, help="Files or directories to scan.")
+    parser.add_argument(
+        "--paths-file",
+        type=Path,
+        help="Read newline- or NUL-delimited trace paths from this file; use '-' for stdin.",
+    )
     parser.add_argument("--root", type=Path, help="Directory to scan when no paths are provided.")
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
-    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="Total bytes to read across all scanned files.")
+    parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        help="Maximum bytes to read from any one file; defaults to --max-bytes.",
+    )
     parser.add_argument("--context-chars", type=int, default=DEFAULT_CONTEXT_CHARS)
     parser.add_argument("--since", help="Only scan timestamped JSON records at or after this ISO timestamp.")
     parser.add_argument("--until", help="Only scan timestamped JSON records before or at this ISO timestamp.")
@@ -421,13 +459,59 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a readable report.")
     args = parser.parse_args()
+    paths_from_file = load_paths_file(args.paths_file, parser) if args.paths_file else []
+    args.paths = paths_from_file + args.paths
+    validate_path_arguments(args.paths, parser)
     if not args.paths and not args.root:
-        parser.error("provide at least one trace path or an explicit --root")
+        parser.error("provide at least one trace path, --paths-file, or an explicit --root")
+    if args.max_files < 0:
+        parser.error("--max-files must be non-negative")
+    if args.max_bytes < 0:
+        parser.error("--max-bytes must be non-negative")
+    if args.max_file_bytes is not None and args.max_file_bytes < 0:
+        parser.error("--max-file-bytes must be non-negative")
+    if args.max_file_bytes is None:
+        args.max_file_bytes = args.max_bytes
     if args.after_line is not None and args.after_line < 0:
         parser.error("--after-line must be non-negative")
     args.since_ts = parse_timestamp_arg(args.since, "--since") if args.since else None
     args.until_ts = parse_timestamp_arg(args.until, "--until") if args.until else None
     return args
+
+
+def load_paths_file(path: Path, parser: argparse.ArgumentParser) -> list[Path]:
+    try:
+        if str(path) == "-":
+            content = sys.stdin.buffer.read()
+        else:
+            content = path.expanduser().read_bytes()
+    except OSError as exc:
+        parser.error(f"unable to read --paths-file {path}: {exc}")
+    if not content.strip(b"\0\n\r\t "):
+        return []
+    parts = content.split(b"\0") if b"\0" in content else content.splitlines()
+    paths: list[Path] = []
+    for raw in parts:
+        text = raw.decode("utf-8", errors="surrogateescape").strip()
+        if text:
+            paths.append(Path(text))
+    return paths
+
+
+def validate_path_arguments(paths: list[Path], parser: argparse.ArgumentParser) -> None:
+    for path in paths:
+        text = str(path)
+        if not any(char.isspace() for char in text):
+            continue
+        tokens = shlex.split(text)
+        if len(tokens) < 2:
+            continue
+        existing = [token for token in tokens if Path(token).expanduser().exists()]
+        if len(existing) >= 2:
+            parser.error(
+                "one positional path argument appears to contain multiple existing paths separated by whitespace; "
+                "pass each path as a separate argv entry or use --paths-file"
+            )
 
 
 def parse_timestamp_arg(value: str, flag: str) -> float:
@@ -437,23 +521,114 @@ def parse_timestamp_arg(value: str, flag: str) -> float:
     return parsed
 
 
-def iter_candidate_files(paths: list[Path], max_files: int) -> list[Path]:
+def iter_candidate_files(paths: list[Path], max_files: int) -> tuple[list[Path], list[Limitation]]:
     explicit_files: list[Path] = []
     discovered_files: list[Path] = []
+    limitations: list[Limitation] = []
+    missing_inputs = 0
+    skipped_directory_candidates = 0
+    directory_entry_limit = max(max_files * 200, 1000)
     for path in paths:
         expanded = path.expanduser()
         if expanded.is_file():
             explicit_files.append(expanded)
         elif expanded.is_dir():
+            visited_entries = 0
             for child in expanded.rglob("*"):
+                visited_entries += 1
+                if visited_entries > directory_entry_limit:
+                    limitations.append(
+                        Limitation(
+                            "file_discovery_limit",
+                            "directory walk stopped after the bounded discovery entry limit",
+                            file=expanded,
+                            file_count=visited_entries - 1,
+                            limit=directory_entry_limit,
+                        )
+                    )
+                    break
                 if is_candidate_file(child):
+                    if len(discovered_files) >= max_files:
+                        skipped_directory_candidates += 1
+                        break
                     discovered_files.append(child)
+        else:
+            missing_inputs += 1
+
+    if missing_inputs:
+        limitations.append(
+            Limitation(
+                "missing_path",
+                "one or more explicit input paths did not exist or were not readable as files/directories",
+                file_count=missing_inputs,
+            )
+        )
 
     explicit = sorted(unique_paths(explicit_files), key=path_mtime, reverse=True)
     explicit_set = set(explicit)
     discovered = [path for path in unique_paths(discovered_files) if path not in explicit_set]
+    if skipped_directory_candidates:
+        limitations.append(
+            Limitation(
+                "file_count_limit",
+                "directory scan stopped after --max-files candidate files",
+                file_count=skipped_directory_candidates,
+                limit=max_files,
+            )
+        )
     discovered = sorted(discovered, key=path_mtime, reverse=True)[:max_files]
-    return explicit + discovered
+    return explicit + discovered, limitations
+
+
+def plan_scan_targets(
+    files: list[Path],
+    max_bytes: int,
+    max_file_bytes: int,
+) -> tuple[list[ScanTarget], list[Limitation]]:
+    targets: list[ScanTarget] = []
+    limitations: list[Limitation] = []
+    remaining = max_bytes
+    skipped_after_budget = 0
+    for path in files:
+        try:
+            file_bytes = path.stat().st_size
+        except OSError as exc:
+            limitations.append(
+                Limitation(
+                    "scanner_io_error",
+                    f"unable to stat file before scan: {exc}",
+                    file=path,
+                )
+            )
+            continue
+        if remaining <= 0:
+            skipped_after_budget += 1
+            continue
+        read_bytes = min(file_bytes, max_file_bytes, remaining)
+        truncated = file_bytes > read_bytes
+        if truncated:
+            limitation_kind = "per_file_byte_limit" if read_bytes == max_file_bytes else "total_byte_limit"
+            limitations.append(
+                Limitation(
+                    limitation_kind,
+                    "file was partially scanned because a byte limit was reached",
+                    file=path,
+                    byte_count=file_bytes,
+                    limit=max_file_bytes if limitation_kind == "per_file_byte_limit" else max_bytes,
+                )
+            )
+        targets.append(ScanTarget(path, read_bytes, file_bytes, truncated))
+        remaining -= read_bytes
+    if skipped_after_budget:
+        limitations.append(
+            Limitation(
+                "total_byte_limit",
+                "some candidate files were skipped after the total scan byte budget was exhausted",
+                file_count=skipped_after_budget,
+                limit=max_bytes,
+            )
+        )
+    return targets, limitations
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -632,6 +807,8 @@ def iter_lines(
     after_file: Path | None = None,
     after_line: int | None = None,
 ) -> Iterable[tuple[int, str, bool, bool]]:
+    if max_bytes <= 0:
+        return
     try:
         with path.open("rb") as handle:
             data = handle.read(max_bytes + 1)
@@ -679,7 +856,7 @@ def iter_lines(
 
 
 def scan(
-    files: list[Path],
+    files: list[Path] | list[ScanTarget],
     max_bytes: int,
     context_chars: int,
     since_ts: float | None = None,
@@ -690,14 +867,20 @@ def scan(
 ) -> dict[str, Finding]:
     findings: dict[str, Finding] = {signal.name: Finding(signal) for signal in SIGNALS}
     seen_hits: set[tuple[Path, int, str, str, int]] = set()
-    for path in files:
+    for file_or_target in files:
+        if isinstance(file_or_target, ScanTarget):
+            path = file_or_target.path
+            read_bytes = file_or_target.read_bytes
+        else:
+            path = file_or_target
+            read_bytes = max_bytes
         line_signal_texts: dict[tuple[Path, int, str], set[str]] = {}
         for line_no, text, is_summary, is_structured in iter_lines(
-            path, max_bytes, since_ts, until_ts, after_file, after_line
+            path, read_bytes, since_ts, until_ts, after_file, after_line
         ):
             if is_meta_echo(text):
                 continue
-            if suppress_investigation_noise and not is_structured and is_investigation_noise(text):
+            if suppress_investigation_noise and not is_structured and is_suppressed_noise(text):
                 continue
             matched_auth_login_noise = bool(AUTH_LOGIN_NOISE_RE.search(text))
             for signal in SIGNALS:
@@ -802,6 +985,11 @@ def is_investigation_noise(text: str) -> bool:
     return bool(INVESTIGATION_NOISE_RE.search(normalized))
 
 
+def is_suppressed_noise(text: str) -> bool:
+    normalized = canonical_hit_text(" ".join(text.strip().split()))
+    return bool(INVESTIGATION_NOISE_RE.search(normalized) or INJECTED_CONTEXT_NOISE_RE.search(normalized))
+
+
 def stable_file_id(path: Path) -> str:
     return hashlib.sha256(str(path).encode("utf-8", errors="replace")).hexdigest()[:12]
 
@@ -833,21 +1021,54 @@ def finding_to_json(finding: Finding) -> dict[str, Any]:
     }
 
 
-def emit_json(files: list[Path], findings: dict[str, Finding]) -> None:
+def limitation_to_json(limitation: Limitation) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "kind": limitation.kind,
+        "message": limitation.message,
+    }
+    if limitation.file is not None:
+        payload["file_id"] = stable_file_id(limitation.file)
+        payload["suffix"] = limitation.file.suffix
+    if limitation.file_count is not None:
+        payload["file_count"] = limitation.file_count
+    if limitation.byte_count is not None:
+        payload["byte_count"] = limitation.byte_count
+    if limitation.limit is not None:
+        payload["limit"] = limitation.limit
+    return payload
+
+
+def emit_json(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
     payload = {
         "ok": True,
         "scanned_files": [
-            {"id": stable_file_id(path), "suffix": path.suffix, "bytes": path.stat().st_size}
-            for path in files
-            if path.exists()
+            {
+                "id": stable_file_id(target.path),
+                "suffix": target.path.suffix,
+                "bytes": target.file_bytes,
+                "scanned_bytes": target.read_bytes,
+                "truncated": target.truncated,
+            }
+            for target in targets
         ],
+        "scan_limitations": [limitation_to_json(limitation) for limitation in limitations],
         "findings": [finding_to_json(finding) for finding in findings.values()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def emit_text(files: list[Path], findings: dict[str, Finding]) -> None:
-    print(f"Scanned {len(files)} file(s).")
+def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
+    print(f"Scanned {len(targets)} file(s).")
+    if limitations:
+        print("Scan limitations:")
+        for limitation in limitations[:TEXT_LIMITATION_DISPLAY_LIMIT]:
+            suffix = f" file_id={stable_file_id(limitation.file)}" if limitation.file is not None else ""
+            count = f" file_count={limitation.file_count}" if limitation.file_count is not None else ""
+            limit = f" limit={limitation.limit}" if limitation.limit is not None else ""
+            print(f"- {limitation.kind}:{suffix}{count}{limit} {limitation.message}")
+        if len(limitations) > TEXT_LIMITATION_DISPLAY_LIMIT:
+            omitted_count = len(limitations) - TEXT_LIMITATION_DISPLAY_LIMIT
+            print(f"- {omitted_count} additional limitation(s) omitted from text output; use --json for full details.")
     if not findings:
         print("No friction signals met reporting thresholds.")
         return
@@ -874,9 +1095,11 @@ def severity_rank(severity: str) -> int:
 def main() -> int:
     args = parse_args()
     paths = args.paths or [args.root]
-    files = iter_candidate_files(paths, args.max_files)
+    files, limitations = iter_candidate_files(paths, args.max_files)
+    targets, scan_limitations = plan_scan_targets(files, args.max_bytes, args.max_file_bytes)
+    limitations.extend(scan_limitations)
     findings = scan(
-        files,
+        targets,
         args.max_bytes,
         args.context_chars,
         since_ts=args.since_ts,
@@ -886,9 +1109,9 @@ def main() -> int:
         suppress_investigation_noise=args.suppress_investigation_noise,
     )
     if args.json:
-        emit_json(files, findings)
+        emit_json(targets, findings, limitations)
     else:
-        emit_text(files, findings)
+        emit_text(targets, findings, limitations)
     return 0
 
 
