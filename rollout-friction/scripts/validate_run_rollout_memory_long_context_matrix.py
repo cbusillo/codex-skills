@@ -118,7 +118,7 @@ def test_existing_rows_are_keyed_by_budget_and_variant() -> None:
             )
         rows = module.read_existing_rows(path)
     key = ("quarter", "gpt", "code-llm", "gpt-5.4")
-    if key not in rows or rows[key]["status"] != "passed":
+    if key not in rows or rows[key][0]["status"] != "passed":
         raise AssertionError(f"unexpected existing rows: {rows}")
 
 
@@ -144,16 +144,41 @@ def test_existing_rows_are_not_keyed_by_alias_only() -> None:
         raise AssertionError(f"same variant alias should not collapse distinct provider/model rows: {rows}")
 
 
+def test_existing_rows_preserve_history_for_resume() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "results.jsonl"
+        variant = {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"}
+        with path.open("w", encoding="utf-8") as handle:
+            for status, prompt_sha256 in [("passed", "abc"), ("failed_json", "abc"), ("passed", "other")]:
+                handle.write(
+                    json.dumps(
+                        {
+                            "budget_name": "quarter",
+                            "variant": variant,
+                            "prompt_sha256": prompt_sha256,
+                            "status": status,
+                        }
+                    )
+                    + "\n"
+                )
+        rows = module.read_existing_rows(path)
+    key = ("quarter", "gpt", "code-llm", "gpt-5.4")
+    reusable = module.reusable_existing_row(rows[key], {"passed"}, {"prompt_sha256": "abc"})
+    if reusable is None or reusable["prompt_sha256"] != "abc" or reusable["status"] != "passed":
+        raise AssertionError(f"should find older matching passed row in append-only history: {rows}")
+
+
 def test_skip_existing_defaults_to_requested_statuses() -> None:
     module = load_module()
     summary = {"prompt_sha256": "abc"}
-    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "abc"}, {"passed"}, summary) is None:
+    if module.reusable_existing_row([{"status": "passed", "prompt_sha256": "abc"}], {"passed"}, summary) is None:
         raise AssertionError("passed rows should skip by default")
-    if module.reusable_existing_row({"status": "failed_json", "prompt_sha256": "abc"}, {"passed"}, summary) is not None:
+    if module.reusable_existing_row([{"status": "failed_json", "prompt_sha256": "abc"}], {"passed"}, summary) is not None:
         raise AssertionError("failed rows should not skip by default")
-    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "old"}, {"passed"}, summary) is not None:
+    if module.reusable_existing_row([{"status": "passed", "prompt_sha256": "old"}], {"passed"}, summary) is not None:
         raise AssertionError("passed rows from a different prompt should not skip")
-    if module.reusable_existing_row({"status": "passed"}, {"passed"}, summary) is not None:
+    if module.reusable_existing_row([{"status": "passed"}], {"passed"}, summary) is not None:
         raise AssertionError("legacy rows without prompt fingerprints should not skip")
 
 
@@ -162,7 +187,9 @@ def test_retry_status_removes_default_skip_status() -> None:
     skip_statuses = module.parse_status_filter([], module.DEFAULT_SKIP_STATUSES) - module.parse_status_filter(
         ["passed"], set()
     )
-    if module.reusable_existing_row({"status": "passed", "prompt_sha256": "abc"}, skip_statuses, {"prompt_sha256": "abc"}) is not None:
+    if module.reusable_existing_row(
+        [{"status": "passed", "prompt_sha256": "abc"}], skip_statuses, {"prompt_sha256": "abc"}
+    ) is not None:
         raise AssertionError("retry-status should make passed rows runnable again")
 
 
@@ -175,6 +202,7 @@ def main() -> int:
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
     test_existing_rows_are_not_keyed_by_alias_only()
+    test_existing_rows_preserve_history_for_resume()
     test_skip_existing_defaults_to_requested_statuses()
     test_retry_status_removes_default_skip_status()
     print("ok validate-run-rollout-memory-long-context-matrix")
