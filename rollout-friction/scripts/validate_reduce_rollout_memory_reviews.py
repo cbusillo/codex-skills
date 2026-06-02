@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -71,6 +72,67 @@ def test_reduce_validated_reviews_to_apply_plan() -> None:
         raise AssertionError(f"candidate ids should merge during dedupe: {update}")
     if plan["discard_count"] != 1 or plan["failed_batch_count"] != 0:
         raise AssertionError(f"unexpected reduce summary: {plan}")
+    shortlist = plan["curated_shortlist"]
+    if shortlist["count"] < 1 or shortlist["updates"][0]["support_count"] != 2:
+        raise AssertionError(f"shortlist should prefer supported deduped notes: {shortlist}")
+
+
+def test_curated_shortlist_penalizes_stale_review_history() -> None:
+    module = load_module()
+    reduced = {
+        "profile_notes": [
+            module.annotate_note(
+                {
+                    "id": "keep",
+                    "bucket": "profile_notes",
+                    "text": "User prefers local-only review for private memory evidence.",
+                    "candidate_ids": ["memcand_keep"],
+                    "source_batches": ["001"],
+                }
+            ),
+            module.annotate_note(
+                {
+                    "id": "stale",
+                    "bucket": "profile_notes",
+                    "text": "PR #123 merged with green checks after review identified a bug.",
+                    "candidate_ids": ["memcand_stale"],
+                    "source_batches": ["002"],
+                }
+            ),
+        ]
+    }
+    shortlist = module.curate_shortlist(reduced, 1)
+    if shortlist[0]["id"] != "keep" or shortlist[0]["stale_or_transient"]:
+        raise AssertionError(f"shortlist should prefer durable facts over stale review history: {shortlist}")
+
+
+def test_curated_shortlist_suppresses_near_duplicate_topics() -> None:
+    module = load_module()
+    reduced = {
+        "profile_notes": [
+            module.annotate_note(
+                {
+                    "id": "taxonomy-a",
+                    "bucket": "profile_notes",
+                    "text": "Canonical taxonomy: product Every Code; command is code; CODE_HOME is primary.",
+                    "candidate_ids": ["memcand_a"],
+                    "source_batches": ["001"],
+                }
+            ),
+            module.annotate_note(
+                {
+                    "id": "taxonomy-b",
+                    "bucket": "profile_notes",
+                    "text": "Canonical taxonomy says Every Code is the product, code is the command, and CODE_HOME is primary.",
+                    "candidate_ids": ["memcand_b"],
+                    "source_batches": ["002"],
+                }
+            ),
+        ]
+    }
+    shortlist = module.curate_shortlist(reduced, 5)
+    if len(shortlist) != 1:
+        raise AssertionError(f"near-duplicate shortlist topics should be collapsed: {shortlist}")
 
 
 def test_reduce_reports_failed_batches() -> None:
@@ -86,6 +148,25 @@ def test_reduce_reports_failed_batches() -> None:
         raise AssertionError(f"failed details should be hidden by default: {plan}")
     if len(plan_with_failed["failed_batches"]) != 1:
         raise AssertionError(f"failed details should be included when requested: {plan_with_failed}")
+
+
+def test_cli_can_emit_shortlist_only() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root / "batch-001.prompt.json",
+            {"candidates": [{"candidate_id": "memcand_a"}, {"candidate_id": "memcand_b"}, {"candidate_id": "memcand_c"}]},
+        )
+        write_json(root / "batch-001.result.json", {"content": json.dumps(review_content())})
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(root), "--format", "shortlist"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    payload = json.loads(result.stdout)
+    if "updates" not in payload or "destinations" in payload:
+        raise AssertionError(f"shortlist format should emit curated shortlist only: {payload}")
 
 
 def test_reduce_ignores_failed_parent_with_valid_child() -> None:
@@ -153,7 +234,10 @@ def test_reduce_ignores_missing_parent_result_with_valid_child() -> None:
 
 def main() -> int:
     test_reduce_validated_reviews_to_apply_plan()
+    test_curated_shortlist_penalizes_stale_review_history()
+    test_curated_shortlist_suppresses_near_duplicate_topics()
     test_reduce_reports_failed_batches()
+    test_cli_can_emit_shortlist_only()
     test_reduce_ignores_failed_parent_with_valid_child()
     test_reduce_ignores_missing_parent_result_with_valid_child()
     print("ok validate-reduce-rollout-memory-reviews")
