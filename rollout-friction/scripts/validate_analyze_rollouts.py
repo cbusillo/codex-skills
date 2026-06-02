@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -349,6 +350,70 @@ def test_explicit_files_are_not_capped_by_directory_limit() -> None:
 
     if files != [explicit_trace]:
         raise AssertionError(f"explicit files should bypass directory max_files cap, got {files!r}")
+
+
+def test_paths_file_supplies_many_explicit_files() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = root / "first-session.jsonl"
+        second = root / "second-session.jsonl"
+        paths_file = root / "paths.txt"
+        first.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
+        second.write_text('{"message":"No runs found for workflow CodeQL"}\n', encoding="utf-8")
+        paths_file.write_text(f"{first}\n{second}\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--paths-file", str(paths_file), "--max-files", "0", "--json"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        payload = json.loads(result.stdout)
+
+    if len(payload["scanned_files"]) != 2:
+        raise AssertionError(f"--paths-file should scan both explicit files: {payload}")
+    actual = {finding["signal"] for finding in payload["findings"]}
+    if {"github_graphql_rate_limit", "github_workflow_wait_miss"} - actual:
+        raise AssertionError(f"--paths-file scan missed expected findings: {payload}")
+
+
+def test_space_joined_existing_paths_fail_fast() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = root / "first-session.jsonl"
+        second = root / "second-session.jsonl"
+        first.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
+        second.write_text('{"message":"GraphQL rate limit"}\n', encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), f"{first} {second}", "--json"],
+            text=True,
+            capture_output=True,
+        )
+
+    if result.returncode == 0:
+        raise AssertionError("space-joined existing paths should fail fast")
+    if "--paths-file" not in result.stderr or "separate argv" not in result.stderr:
+        raise AssertionError(f"space-joined path error should explain safer input modes: {result.stderr}")
+
+
+def test_total_byte_budget_reports_scan_limitations() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = root / "a-session.jsonl"
+        second = root / "b-session.jsonl"
+        first.write_text('{"message":"GraphQL rate limit"}\n' * 20, encoding="utf-8")
+        second.write_text('{"message":"No runs found for workflow CodeQL"}\n', encoding="utf-8")
+
+        files = module.iter_candidate_files([first, second], max_files=10)
+        targets, limitations = module.plan_scan_targets(files, max_bytes=30, max_file_bytes=30)
+
+    if sum(target.read_bytes for target in targets) > 30:
+        raise AssertionError(f"planned scan exceeded total byte budget: {targets}")
+    if not any(limitation.kind == "total_byte_limit" for limitation in limitations):
+        raise AssertionError(f"expected total byte limit to be reported: {limitations}")
 
 
 def test_skill_docs_are_not_directory_candidates() -> None:
@@ -781,6 +846,41 @@ def test_investigation_noise_suppression_preserves_structured_payloads() -> None
         raise AssertionError("investigation noise should be suppressed without hiding structured payloads")
 
 
+def test_suppression_filters_injected_context_and_code_snippets() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "message": "AGENTS.md instructions include error handling examples: Command failed, process exited with code 1, error: example"
+                },
+                {
+                    "message": "```python\ndef example():\n    raise RuntimeError('Command failed')\n```"
+                },
+                {
+                    "payload": {
+                        "output": json.dumps(
+                            {"status": "error", "error_reason": "GraphQL rate limit from helper"}
+                        )
+                    }
+                },
+            ],
+        )
+        findings = module.scan(
+            [trace],
+            max_bytes=100_000,
+            context_chars=240,
+            suppress_investigation_noise=True,
+        )
+
+    if "repeated_command_failure" in findings:
+        raise AssertionError("injected instruction/code snippet noise should not inflate command failures")
+    finding = findings.get("github_graphql_rate_limit")
+    if finding is None or finding.structured_count != 1:
+        raise AssertionError("structured helper finding should survive injected-context suppression")
+
+
 def test_nested_wrapped_helper_payload_retains_structured_context() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -868,6 +968,9 @@ def main() -> int:
     test_structured_json_record_counts_distinct_repeated_hits()
     test_pretty_json_array_counts_top_level_records()
     test_explicit_files_are_not_capped_by_directory_limit()
+    test_paths_file_supplies_many_explicit_files()
+    test_space_joined_existing_paths_fail_fast()
+    test_total_byte_budget_reports_scan_limitations()
     test_skill_docs_are_not_directory_candidates()
     test_neutral_structured_traces_are_directory_candidates()
     test_redaction_covers_local_path_shapes()
@@ -885,6 +988,7 @@ def main() -> int:
     test_structured_payload_counts_are_separate_from_broad_context()
     test_since_and_after_line_bound_scan_records()
     test_investigation_noise_suppression_preserves_structured_payloads()
+    test_suppression_filters_injected_context_and_code_snippets()
     test_nested_wrapped_helper_payload_retains_structured_context()
     test_non_structured_nested_payload_strings_are_preserved()
     test_status_wrapper_does_not_make_discussion_structured()

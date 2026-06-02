@@ -51,7 +51,11 @@ rollout files, session traces, runout files, or agent workflow friction.
 1. Identify the relevant trace sources. Prefer recent, scoped rollout/session
    files over broad historical scans.
 2. Run `uv run rollout-friction/scripts/analyze_rollouts.py` with explicit paths
-   or an explicit bounded `--root`. Keep analysis local.
+   or an explicit bounded `--root`. For many recent files, write the paths to a
+   newline- or NUL-delimited file and pass `--paths-file`; do not pass one
+   space-joined path string. Keep `--max-files`, total `--max-bytes`, and
+   optional `--max-file-bytes` bounded, and read `scan_limitations` separately
+   from findings when judging degraded scans. Keep analysis local.
 3. Review the findings and inspect only the minimum raw trace snippets needed to
    understand high-value signals.
 4. If a local LLM is useful, use it only as a private bounded scout. When the
