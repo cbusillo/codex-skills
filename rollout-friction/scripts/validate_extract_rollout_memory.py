@@ -140,13 +140,23 @@ def test_classifies_people_local_llm_and_friction() -> None:
             raise AssertionError(f"missing {expected} from {destinations}")
 
 
-def test_redact_mode_removes_paths_but_keeps_trusted_originals() -> None:
+def test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals() -> None:
     redact_args, module = args(redact=True, trusted_originals=False)
     trusted_args, _module = args(redact=False, trusted_originals=True)
     with tempfile.TemporaryDirectory() as tmp:
         trace = write_trace(
             Path(tmp),
-            [response_item("user", "Remember local config path /Users/example/Developer/.code/local.env.")],
+            [
+                response_item(
+                    "user",
+                    (
+                        "Remember local config path /Users/example/Developer/.code/local.env. "
+                        "Jackie Example is the manager; GitHub handle @jackie-example, "
+                        "Slack <@U12345>, Discord jackie-example#1234, email jackie@example.test. "
+                        "Every Code should remain readable."
+                    ),
+                )
+            ],
         )
         redacted = module.extract([trace], redact_args)[0].text
         redacted_source = module.extract([trace], redact_args)[0].source_file
@@ -156,10 +166,31 @@ def test_redact_mode_removes_paths_but_keeps_trusted_originals() -> None:
         raise AssertionError(f"redact mode leaked path: {redacted}")
     if "/" in redacted_source and "<path-redacted>" not in redacted_source:
         raise AssertionError(f"redact mode leaked source path: {redacted_source}")
+    for leaked in ("Jackie Example", "@jackie-example", "<@U12345>", "jackie-example#1234", "jackie@example.test"):
+        if leaked in redacted:
+            raise AssertionError(f"redact mode leaked person data {leaked!r}: {redacted}")
+    for marker in ("<person-name-redacted>", "<person-handle-redacted>", "<person-email-redacted>"):
+        if marker not in redacted:
+            raise AssertionError(f"redact mode should include marker {marker}: {redacted}")
+    if "Every Code" not in redacted:
+        raise AssertionError(f"redact mode should preserve public product names: {redacted}")
     if "/Users/example" not in original:
         raise AssertionError(f"trusted originals should preserve path: {original}")
+    if "Jackie Example" not in original or "@jackie-example" not in original or "jackie@example.test" not in original:
+        raise AssertionError(f"trusted originals should preserve person data: {original}")
     if str(trace) != original_candidate.source_file:
         raise AssertionError(f"trusted originals should preserve source path: {original_candidate.source_file}")
+
+
+def test_redact_mode_records_person_data_privacy_summary() -> None:
+    redact_args, module = args(redact=True, trusted_originals=False)
+    trusted_args, _module = args(redact=False, trusted_originals=True)
+    redacted_privacy = module.privacy_summary(redact_args)
+    trusted_privacy = module.privacy_summary(trusted_args)
+    if not redacted_privacy.get("redact_person_data"):
+        raise AssertionError(f"redact diagnostics should report person-data redaction: {redacted_privacy}")
+    if trusted_privacy.get("redact_person_data"):
+        raise AssertionError(f"trusted originals should not report person-data redaction: {trusted_privacy}")
 
 
 def test_prompt_batches_emit_destination_aware_task() -> None:
@@ -285,7 +316,8 @@ def main() -> int:
     test_skips_session_meta_base_instructions()
     test_context_window_preserves_neighboring_turns()
     test_classifies_people_local_llm_and_friction()
-    test_redact_mode_removes_paths_but_keeps_trusted_originals()
+    test_redact_mode_removes_paths_and_person_data_but_keeps_trusted_originals()
+    test_redact_mode_records_person_data_privacy_summary()
     test_prompt_batches_emit_destination_aware_task()
     test_candidate_ids_are_stable()
     test_dedupe_keeps_distinct_long_common_prefixes()
