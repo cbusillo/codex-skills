@@ -31,6 +31,16 @@ SYSTEM_OVERRIDE_NAMES = {
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
+ALLOWED_OPENAI_INTERFACE_KEYS = {
+    "display_name",
+    "short_description",
+    "icon_small",
+    "icon_large",
+    "brand_color",
+    "default_prompt",
+}
+ALLOWED_OPENAI_TOP_LEVEL_KEYS = {"interface", "dependencies", "policy"}
+HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 EXAMPLE_MARKERS = (
     "**example",
     "**examples",
@@ -153,10 +163,37 @@ def validate_openai_yaml(skill_dir: Path) -> list[str]:
     if not isinstance(parsed, dict):
         return [f"{path.relative_to(ROOT)}: must be a YAML mapping"]
 
+    for key in parsed:
+        if key not in ALLOWED_OPENAI_TOP_LEVEL_KEYS:
+            errors.append(f"{path.relative_to(ROOT)}: unexpected top-level key {key!r}")
+
     interface = parsed.get("interface")
     if interface is not None and not isinstance(interface, dict):
         errors.append(f"{path.relative_to(ROOT)}: interface must be a mapping")
     elif isinstance(interface, dict):
+        for key in interface:
+            if key not in ALLOWED_OPENAI_INTERFACE_KEYS:
+                errors.append(f"{path.relative_to(ROOT)}: unexpected interface key {key!r}")
+        for key in ("display_name", "short_description"):
+            value = interface.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{path.relative_to(ROOT)}: interface.{key} must be a non-empty string")
+        short_description = interface.get("short_description")
+        if isinstance(short_description, str) and not (25 <= len(short_description) <= 64):
+            errors.append(
+                f"{path.relative_to(ROOT)}: interface.short_description must be 25-64 characters (got {len(short_description)})"
+            )
+        default_prompt = interface.get("default_prompt")
+        if default_prompt is not None:
+            if not isinstance(default_prompt, str) or not default_prompt.strip():
+                errors.append(f"{path.relative_to(ROOT)}: interface.default_prompt must be a non-empty string")
+            elif f"${skill_dir.name}" not in default_prompt:
+                errors.append(
+                    f"{path.relative_to(ROOT)}: interface.default_prompt must mention ${skill_dir.name}"
+                )
+        brand_color = interface.get("brand_color")
+        if brand_color is not None and (not isinstance(brand_color, str) or not HEX_COLOR_RE.match(brand_color)):
+            errors.append(f"{path.relative_to(ROOT)}: interface.brand_color must be a #RRGGBB string")
         for key in ("icon_small", "icon_large"):
             value = interface.get(key)
             if value is None:
@@ -173,11 +210,51 @@ def validate_openai_yaml(skill_dir: Path) -> list[str]:
     policy = parsed.get("policy")
     if policy is not None and not isinstance(policy, dict):
         errors.append(f"{path.relative_to(ROOT)}: policy must be a mapping")
+    elif isinstance(policy, dict):
+        for key, value in policy.items():
+            if key != "allow_implicit_invocation":
+                errors.append(f"{path.relative_to(ROOT)}: unexpected policy key {key!r}")
+            elif not isinstance(value, bool):
+                errors.append(f"{path.relative_to(ROOT)}: policy.allow_implicit_invocation must be a boolean")
 
     dependencies = parsed.get("dependencies")
     if dependencies is not None and not isinstance(dependencies, dict):
         errors.append(f"{path.relative_to(ROOT)}: dependencies must be a mapping")
+    elif isinstance(dependencies, dict):
+        errors.extend(validate_openai_dependencies(path, dependencies))
 
+    return errors
+
+
+def validate_openai_dependencies(path: Path, dependencies: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for key in dependencies:
+        if key != "tools":
+            errors.append(f"{path.relative_to(ROOT)}: unexpected dependencies key {key!r}")
+    tools = dependencies.get("tools")
+    if tools is None:
+        return errors
+    if not isinstance(tools, list):
+        errors.append(f"{path.relative_to(ROOT)}: dependencies.tools must be a list")
+        return errors
+    for index, tool in enumerate(tools):
+        prefix = f"{path.relative_to(ROOT)}: dependencies.tools[{index}]"
+        if not isinstance(tool, dict):
+            errors.append(f"{prefix} must be a mapping")
+            continue
+        for key in tool:
+            if key not in {"type", "value", "description", "transport", "url"}:
+                errors.append(f"{prefix} has unexpected key {key!r}")
+        for key in ("type", "value", "description"):
+            value = tool.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{prefix}.{key} must be a non-empty string")
+        if tool.get("type") != "mcp":
+            errors.append(f"{prefix}.type must be 'mcp'")
+        for key in ("transport", "url"):
+            value = tool.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                errors.append(f"{prefix}.{key} must be a non-empty string when present")
     return errors
 
 
