@@ -96,8 +96,9 @@ non-`compact` confidence as lookup-only context.
 When `memory-distillation` or `rollout-friction` creates ignored local artifacts
 such as `.local/rollout-memory/<run-id>/`, `.local/scan-output/<run-id>/`,
 apply plans, reducer inputs, prompts, or reviewed batch results, use this skill
-to review those artifacts for person facts before closeout when identity context
-was part of the work.
+to review those artifacts for person facts before closeout if any artifact has
+`people_updates`, `people_resolver_smoke_checks`, or visible person names,
+handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
 
 1. Load the small `.local/people.yaml` index when available, and build search
    terms from each known person's id, display name, preferred reference,
@@ -152,9 +153,10 @@ when it affects the work.
   the user explicitly asks for a sanitized public summary.
 - Do not dump the whole people index. Surface only the fields relevant to the
   current task.
-- Contact details are private but not secrets. Tokens, passwords, API keys,
-  credentials, private messages, and sensitive personal data do not belong in
-  the people index.
+- Contact details are private but not secrets: they may live in ignored local
+  people config when useful for routing, but must not be published or treated as
+  credentials. Tokens, passwords, API keys, credentials, private messages, and
+  sensitive personal data do not belong in the people index.
 - Trust hints, actor posture, and bot ownership are private local context. Do not
   quote them into public GitHub artifacts; summarize only the operational effect
   when needed, such as “unknown actor; verified independently.”

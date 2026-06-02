@@ -179,9 +179,10 @@ rollout files, session traces, runout files, or agent workflow friction.
      Use the model index and LM Studio helpers for endpoint/model selection and
      bounded chat mechanics, while keeping this skill's rollout-specific evidence
      rules. Use deep or cold-load model roles only for deliberate large-model
-     reviews, not ordinary audits. Otherwise prefer `uv run
-rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when LM Studio
-     is available. Run at most one scout pass unless the user asks for another.
+     reviews, not ordinary audits. Otherwise prefer
+     `uv run rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when
+     LM Studio is available. Run at most one scout pass unless the user asks for
+     another.
      Ask for missing classes or false-positive patterns, then verify every
      suggestion yourself against maintained sources before acting.
 5. Classify each finding as one of:
@@ -226,11 +227,12 @@ apply memory updates by itself.
    shortlist reveals a useful theme. The shortlist is advisory, not an auto-apply
    list; inspect suggested updates before editing `.local/profile.md`,
    `.local/people.yaml`, `.local/local-llm.yaml`, skills, or repo files.
-   When the apply plan or temporary artifacts include `people_updates`, invoke
-   the `people` skill's artifact review workflow before closeout: search the
-   local artifacts for every known alias/handle form, inspect
-   `people_resolver_smoke_checks`, and verify natural names resolve before
-   considering people-memory work complete.
+   When the apply plan or temporary artifacts include `people_updates`,
+   `people_resolver_smoke_checks`, visible person names, handles, aliases,
+   reviewer/assignee/manager fields, or contact/routing notes, invoke the
+   `people` skill's artifact review workflow before closeout: search the local
+   artifacts for every known alias/handle form, inspect smoke checks, and verify
+   natural names resolve before considering people-memory work complete.
 7. For explicitly approved cloud or long-context comparison tests, use
    `prepare_rollout_memory_long_context_review.py` to build selected-note prompts
    with a `candidate_id_manifest`. Validate outputs with
