@@ -41,6 +41,7 @@ BUCKET_ORDER = [
     "stale_or_needs_reconciliation",
     "recently_completed",
 ]
+ACTIONABLE_PRIORITY_BUCKETS = {bucket for bucket in BUCKET_ORDER if bucket != "recently_completed"}
 
 
 class RollupError(RuntimeError):
@@ -202,18 +203,79 @@ def unique(values: list[str]) -> list[str]:
     return result
 
 
+def deduplicate_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for item in items:
+        key = item_identity(item)
+        if key in seen:
+            seen[key] = merge_duplicate_item(seen[key], item)
+        else:
+            seen[key] = dict(item)
+    return list(seen.values())
+
+
+def item_identity(item: dict[str, Any]) -> str:
+    kind = item.get("kind")
+    repo = item.get("repo")
+    number = item.get("number")
+    if kind and repo and number is not None:
+        return f"{kind}:{repo}:{number}"
+    if item.get("url"):
+        return str(item["url"])
+    return f"{kind}:{repo}:{item.get('title')}:{item.get('updated_at')}"
+
+
+def merge_duplicate_item(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    primary = preferred_item(existing, incoming)
+    merged = dict(primary)
+    for field, singular in (("subjects", "subject"), ("subject_matches", "subject_match")):
+        values = as_str_list(existing.get(field)) + as_str_list(incoming.get(field))
+        values.extend(value for value in (existing.get(singular), incoming.get(singular)) if isinstance(value, str))
+        if values:
+            merged[field] = unique(values)
+    merged["priority"] = max(int(existing.get("priority") or 0), int(incoming.get("priority") or 0))
+    if merged.get("bucket") == "recently_completed":
+        merged["handoff"] = None
+    elif not merged.get("handoff"):
+        merged["handoff"] = existing.get("handoff") or incoming.get("handoff")
+    return merged
+
+
+def preferred_item(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    first_score = item_detail_score(first)
+    second_score = item_detail_score(second)
+    return second if second_score > first_score else first
+
+
+def item_detail_score(item: dict[str, Any]) -> int:
+    score = 0
+    if item.get("state") == "merged":
+        score += 20
+    if item.get("state") == "closed":
+        score += 10
+    for field in ("review_decision", "draft", "assignees", "completed_at"):
+        if field in item:
+            score += 3
+    if item.get("kind") != "collection_error":
+        score += 1
+    return score
+
+
 def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
     preflight = github_preflight(settings)
     repos = resolve_repositories(settings)
     if not repos and not settings["subjects"]:
         raise RollupError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
     settings = {**settings, "resolved_repositories": repos}
+    settings.setdefault("collection_warnings", [])
     items: list[dict[str, Any]] = []
     for repo in repos:
         items.extend(collect_repo_items(repo, settings))
     if settings["subjects"] and (settings["include_external_activity"] or not repos):
         items.extend(collect_subject_items(settings))
+    items = deduplicate_items(items)
     buckets = bucket_items(items, settings)
+    collection_warnings = collection_warnings_from(settings)
     return {
         "ok": True,
         "schema_version": 1,
@@ -227,9 +289,10 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "summary_level": settings["summary_level"],
         "preflight": preflight,
         "buckets": buckets,
+        "summary": summary_counts(buckets, collection_warnings),
         "display_window": display_window_json(settings["window"], settings["timezone"]),
         "priority_sections": priority_sections(items, settings),
-        "limitations": limitations(settings, repos),
+        "limitations": [*limitations(settings, repos), *collection_warnings],
     }
 
 
@@ -360,6 +423,10 @@ def collect_issues(repo: str, state: str, settings: dict[str, Any]) -> list[dict
         ]
     )
     if result.returncode != 0:
+        err_msg = (result.stderr or result.stdout or "").casefold()
+        if "disabled issues" in err_msg or "issues are disabled" in err_msg:
+            add_collection_warning(settings, f"Issues are disabled for {repo}.")
+            return []
         return [collection_error(repo, "issue", state, result)]
     rows = []
     for entry in json.loads(result.stdout or "[]"):
@@ -409,7 +476,7 @@ def normalize_search_item(entry: dict[str, Any], subject: str, qualifier: str, s
         "bucket": bucket,
         "subject": subject,
         "subject_match": qualifier,
-        "handoff": "github for explicit follow-up on external subject activity" if configured_repos and repo not in configured_repos else None,
+        "handoff": ("github for explicit follow-up on external subject activity" if configured_repos and repo not in configured_repos else None) if state != "closed" else None,
         "priority": priority_score(labels, settings),
     }
 
@@ -532,7 +599,7 @@ def classify_issue(state: str, labels: list[str]) -> str:
 
 
 def handoff_for_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str | None:
-    if state == "merged":
+    if state in {"merged", "closed"}:
         return None
     if entry.get("reviewDecision") == "APPROVED" or "ready-to-merge" in {label.casefold() for label in labels}:
         return "repo-readiness or github for a fresh merge decision"
@@ -575,6 +642,17 @@ def collection_error(repo: str, kind: str, state: str, result: subprocess.Comple
     }
 
 
+def add_collection_warning(settings: dict[str, Any], warning: str) -> None:
+    warnings = settings.setdefault("collection_warnings", [])
+    if isinstance(warnings, list) and warning not in warnings:
+        warnings.append(warning)
+
+
+def collection_warnings_from(settings: dict[str, Any]) -> list[str]:
+    warnings = settings.get("collection_warnings")
+    return [warning for warning in warnings if isinstance(warning, str)] if isinstance(warnings, list) else []
+
+
 def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     buckets: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKET_ORDER}
     sorted_items = sorted(items, key=item_sort_key)
@@ -583,6 +661,13 @@ def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[
     level = settings["summary_level"]
     limit = 5 if level == "concise" else 12 if level == "standard" else settings["limit_items"]
     return {bucket: rows[:limit] for bucket, rows in buckets.items() if rows}
+
+
+def summary_counts(buckets: dict[str, list[dict[str, Any]]], collection_warnings: list[str]) -> dict[str, int]:
+    return {
+        **{bucket: len(buckets.get(bucket) or []) for bucket in BUCKET_ORDER},
+        "collection_warnings": len(collection_warnings),
+    }
 
 
 def item_sort_key(row: dict[str, Any]) -> tuple[int, float]:
@@ -594,15 +679,34 @@ def item_sort_key(row: dict[str, Any]) -> tuple[int, float]:
 
 def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
     sections = []
+    sorted_items = sorted(items, key=item_sort_key)
     for raw in settings.get("priority_sections") or []:
         if not isinstance(raw, dict):
             continue
         repos = set(as_str_list(raw.get("repositories")))
         if not repos:
             continue
-        matched = [item for item in items if item.get("repo") in repos]
-        if matched:
-            sections.append({"name": str(raw.get("name") or "Priority Section"), "items": matched[:10]})
+        max_completed = int(raw.get("max_recently_completed") or 3)
+        matched = [
+            item
+            for item in sorted_items
+            if item.get("repo") in repos
+            and item.get("bucket") in ACTIONABLE_PRIORITY_BUCKETS
+        ]
+        completed = [
+            item
+            for item in sorted_items
+            if item.get("repo") in repos and item.get("bucket") == "recently_completed"
+        ]
+        if matched or completed:
+            sections.append(
+                {
+                    "name": str(raw.get("name") or "Priority Section"),
+                    "items": matched[:10],
+                    "recently_completed": completed[:max_completed],
+                    "recently_completed_count": len(completed),
+                }
+            )
     return sections
 
 
@@ -647,17 +751,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"# GitHub Work Rollup for {payload['report_recipient']}",
         "",
         f"Window: {display_window['since']} to {display_window['until']} ({payload['timezone']})",
-        f"Sources: {', '.join(payload['repositories'])}",
+        render_sources(payload.get("repositories") or [], payload.get("subjects") or []),
         "",
         "## Executive Summary",
     ]
     buckets = payload.get("buckets") or {}
-    if buckets.get("needs_attention"):
-        lines.append(f"{len(buckets['needs_attention'])} item(s) need attention.")
-    elif buckets.get("blocked") or buckets.get("waiting"):
-        lines.append("Some work is blocked or waiting; no urgent attention items were detected.")
-    else:
-        lines.append("No urgent GitHub work detected in the configured window.")
+    lines.extend(render_executive_summary(payload.get("summary") or summary_counts(buckets, [])))
     for bucket in BUCKET_ORDER:
         rows = buckets.get(bucket) or []
         if not rows:
@@ -667,13 +766,79 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append(render_item(item))
     for section in payload.get("priority_sections") or []:
         lines.extend(["", f"## {section['name']}"])
-        for item in section.get("items") or []:
-            lines.append(render_item(item))
+        lines.extend(render_priority_section(section))
     limitations_list = payload.get("limitations") or []
     if limitations_list:
         lines.extend(["", "## Source Notes"])
         lines.extend(f"- {item}" for item in limitations_list)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_sources(repos: list[str], subjects: list[str]) -> str:
+    subject_text = f"; subjects: {', '.join(subjects)}" if subjects else ""
+    if len(repos) <= 5:
+        return f"Sources: {', '.join(repos) or 'none'}{subject_text}"
+    by_owner: dict[str, list[str]] = {}
+    for repo in repos:
+        owner, name = repo.split("/", 1) if "/" in repo else (repo, "")
+        by_owner.setdefault(owner, []).append(name if name else repo)
+    grouped = [f"- **{owner}**: {', '.join(sorted(names))}" for owner, names in sorted(by_owner.items())]
+    return (
+        f"Sources: {len(repos)} repositories{subject_text}\n"
+        "<details>\n"
+        "<summary>Show repositories</summary>\n\n"
+        + "\n".join(grouped)
+        + "\n</details>"
+    )
+
+
+def render_executive_summary(summary: dict[str, int]) -> list[str]:
+    attention = summary.get("needs_attention", 0)
+    warnings = summary.get("collection_warnings", 0)
+    if attention:
+        headline = f"{attention} item(s) need attention."
+    else:
+        headline = "No actual attention items detected."
+    counts = [
+        f"waiting: {summary.get('waiting', 0)}",
+        f"ready for review: {summary.get('ready_for_review', 0)}",
+        f"ready for merge: {summary.get('ready_for_merge_decision', 0)}",
+        f"in progress: {summary.get('in_progress', 0)}",
+        f"completed: {summary.get('recently_completed', 0)}",
+    ]
+    if warnings:
+        counts.append(f"collection warnings: {warnings}")
+    return [headline, "Counts: " + " | ".join(counts)]
+
+
+def render_priority_section(section: dict[str, Any]) -> list[str]:
+    lines = render_priority_section_items(section.get("items") or [])
+    completed = section.get("recently_completed") or []
+    completed_count = int(section.get("recently_completed_count") or 0)
+    if completed:
+        lines.append("### Recently Completed")
+        lines.extend(render_item(item, include_handoff=False) for item in completed)
+        remaining = completed_count - len(completed)
+        if remaining > 0:
+            lines.append(f"- {remaining} more recently completed item(s).")
+    return lines
+
+
+def render_priority_section_items(items: list[dict[str, Any]]) -> list[str]:
+    if not items:
+        return ["No actionable open items in this focus area."]
+    lines: list[str] = []
+    by_bucket: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        bucket = str(item.get("bucket") or "in_progress")
+        by_bucket.setdefault(bucket, []).append(item)
+    for bucket in BUCKET_ORDER:
+        rows = by_bucket.get(bucket)
+        if not rows:
+            continue
+        lines.append(f"### {bucket.replace('_', ' ').title()}")
+        lines.extend(render_item(item, include_handoff=False) for item in rows)
+    return lines
 
 
 def render_failure(payload: dict[str, Any]) -> str:
@@ -694,11 +859,11 @@ def render_failure(payload: dict[str, Any]) -> str:
     ) + "\n"
 
 
-def render_item(item: dict[str, Any]) -> str:
+def render_item(item: dict[str, Any], include_handoff: bool = True) -> str:
     ref = f"{item.get('repo')}#{item.get('number')}" if item.get("number") else str(item.get("repo") or "")
     url = item.get("url")
     link = f"[{ref}]({url})" if url else ref
-    handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
+    handoff = f" Handoff: {item['handoff']}." if include_handoff and item.get("handoff") and item.get("bucket") != "recently_completed" else ""
     error = f" Error: {item['error']}" if item.get("error") else ""
     return f"- {link} {item.get('title')}{handoff}{error}"
 
