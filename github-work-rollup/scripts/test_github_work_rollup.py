@@ -337,5 +337,166 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all("updated:>=2026-06-01" in command for command in list_commands)
 
 
+def test_deduplicate_items_merges_subject_matches() -> None:
+    items = [
+        {
+            "kind": "pr",
+            "repo": "owner/repo",
+            "number": 1,
+            "url": "https://github.com/owner/repo/pull/1",
+            "title": "A PR",
+            "state": "open",
+            "review_decision": "APPROVED",
+        },
+        {
+            "kind": "pr",
+            "repo": "owner/repo",
+            "number": 1,
+            "url": "https://github.com/owner/repo/pull/1",
+            "title": "A PR",
+            "state": "open",
+            "subject": "user1",
+            "subject_match": "author",
+        },
+        {
+            "kind": "pr",
+            "repo": "owner/repo",
+            "number": 1,
+            "url": "https://github.com/owner/repo/pull/1",
+            "title": "A PR",
+            "state": "open",
+            "subject": "user2",
+            "subject_match": "commenter",
+        },
+    ]
+    deduped = github_work_rollup.deduplicate_items(items)
+    assert len(deduped) == 1
+    item = deduped[0]
+    assert item["review_decision"] == "APPROVED"
+    assert set(item["subjects"]) == {"user1", "user2"}
+    assert set(item["subject_matches"]) == {"author", "commenter"}
+
+
+def test_disabled_issues_returns_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="Error: the 'owner/repo' repository has disabled issues",
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+
+    settings = {
+        "limit_items": 10,
+        "window": github_work_rollup.Window(
+            datetime(2026, 6, 1, tzinfo=timezone.utc),
+            datetime(2026, 6, 2, tzinfo=timezone.utc),
+            "24h",
+        ),
+    }
+    res = github_work_rollup.collect_issues("owner/repo", "open", settings)
+    assert res == []
+    assert settings["collection_warnings"] == ["Issues are disabled for owner/repo."]
+
+
+def test_handoff_for_pr_closed_or_merged_is_none() -> None:
+    assert github_work_rollup.handoff_for_pr("closed", {}, []) is None
+    assert github_work_rollup.handoff_for_pr("merged", {}, []) is None
+    assert github_work_rollup.handoff_for_pr("open", {}, []) == "babysit-pr if this PR needs active monitoring"
+
+
+def test_render_markdown_collapsible_sources() -> None:
+    payload = {
+        "ok": True,
+        "report_recipient": "Chris",
+        "timezone": "America/New_York",
+        "window": {"since": "2026-06-02T14:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "2h"},
+        "display_window": {"since": "2026-06-02T10:00:00-04:00", "until": "2026-06-02T12:00:00-04:00", "label": "2h"},
+        "repositories": [f"owner/repo{i}" for i in range(10)],
+        "subjects": ["example-user"],
+        "buckets": {},
+        "priority_sections": [],
+        "limitations": [],
+    }
+    rendered = github_work_rollup.render_markdown(payload)
+    assert "Sources: 10 repositories" in rendered
+    assert "subjects: example-user" in rendered
+    assert "<details>" in rendered
+    assert "<summary>Show repositories</summary>" in rendered
+
+
+def test_summary_counts_and_rendering_exclude_collection_warnings_from_attention() -> None:
+    summary = github_work_rollup.summary_counts(
+        {"waiting": [{"title": "wait"}], "recently_completed": [{"title": "done"}]},
+        ["Issues are disabled for owner/repo."],
+    )
+
+    lines = github_work_rollup.render_executive_summary(summary)
+
+    assert lines[0] == "No actual attention items detected."
+    assert "waiting: 1" in lines[1]
+    assert "completed: 1" in lines[1]
+    assert "collection warnings: 1" in lines[1]
+
+
+def test_render_item_suppresses_completed_handoff() -> None:
+    rendered = github_work_rollup.render_item(
+        {
+            "repo": "owner/repo",
+            "number": 1,
+            "title": "Merged PR",
+            "url": "https://github.com/owner/repo/pull/1",
+            "bucket": "recently_completed",
+            "handoff": "babysit-pr if this PR needs active monitoring",
+        }
+    )
+
+    assert "Handoff" not in rendered
+
+
+def test_priority_sections_filter_completed_by_default() -> None:
+    sections = github_work_rollup.priority_sections(
+        [
+            {"repo": "owner/repo", "bucket": "recently_completed", "title": "done", "updated_at": "2026-06-02T10:00:00Z"},
+            {"repo": "owner/repo", "bucket": "ready_for_review", "title": "review", "updated_at": "2026-06-02T11:00:00Z"},
+        ],
+        {"priority_sections": [{"name": "Focus", "repositories": ["owner/repo"]}]},
+    )
+
+    assert len(sections) == 1
+    assert [item["title"] for item in sections[0]["items"]] == ["review"]
+    assert [item["title"] for item in sections[0]["recently_completed"]] == ["done"]
+
+
+def test_render_priority_section_keeps_completed_summary_without_handoffs() -> None:
+    rendered = "\n".join(
+        github_work_rollup.render_priority_section(
+            {
+                "name": "Focus",
+                "items": [],
+                "recently_completed": [
+                    {
+                        "repo": "owner/repo",
+                        "number": 1,
+                        "title": "Done PR",
+                        "url": "https://github.com/owner/repo/pull/1",
+                        "bucket": "recently_completed",
+                        "handoff": "babysit-pr if this PR needs active monitoring",
+                    }
+                ],
+                "recently_completed_count": 4,
+            }
+        )
+    )
+
+    assert "No actionable open items" in rendered
+    assert "### Recently Completed" in rendered
+    assert "Done PR" in rendered
+    assert "3 more recently completed" in rendered
+    assert "Handoff" not in rendered
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
