@@ -15,6 +15,9 @@ resources:
   - path: scripts/review_rollout_memory_batches.py
     kind: script
     description: Run trusted-local LLM review over extractor prompt batches and validate coverage.
+  - path: scripts/reduce_rollout_memory_reviews.py
+    kind: script
+    description: Reduce strict-valid local LLM review outputs into a draft apply plan.
   - path: scripts/validate_rollout_memory_llm_results.py
     kind: script
     description: Validate strict JSON and candidate coverage for local LLM memory-review results.
@@ -34,6 +37,11 @@ commands:
     resource_path: scripts/review_rollout_memory_batches.py
     example_argv: ["uv", "run", "rollout-friction/scripts/review_rollout_memory_batches.py", ".local/rollout-memory/<run-id>/llm-prompts.jsonl", "--output-dir", ".local/rollout-memory/<run-id>/reviews"]
     purpose: Review extractor prompts with a trusted local model and validate per-batch coverage.
+  - name: reduce-rollout-memory-reviews
+    source: skill
+    resource_path: scripts/reduce_rollout_memory_reviews.py
+    example_argv: ["uv", "run", "rollout-friction/scripts/reduce_rollout_memory_reviews.py", ".local/rollout-memory/<run-id>/reviews", "--output", ".local/rollout-memory/<run-id>/apply-plan.json"]
+    purpose: Build a local draft apply plan from strict-valid review batches.
 ---
 
 # Rollout Friction
@@ -133,11 +141,14 @@ apply memory updates by itself.
    likely to truncate or omit candidate IDs. Validate with
    `validate_rollout_memory_llm_results.py` before scaling.
 4. Use `review_rollout_memory_batches.py` only against trusted local/private
-   endpoints. Treat validated LLM output as suggestions, then reduce and inspect
-   suggested updates before editing `.local/profile.md`, `.local/people.yaml`,
-   `.local/local-llm.yaml`, skills, or repo files.
+   endpoints. Use `--split-on-failure` when malformed or incomplete batches
+   need deterministic child-batch retries.
 5. Apply nothing from a batch that fails strict JSON or candidate coverage until
    it is rerun, split, or manually reviewed.
+6. Run `reduce_rollout_memory_reviews.py` only after strict validation. Treat the
+   reducer output as an apply-plan draft; inspect suggested updates before
+   editing `.local/profile.md`, `.local/people.yaml`, `.local/local-llm.yaml`,
+   skills, or repo files.
 
 ## Friction Signals
 

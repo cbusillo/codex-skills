@@ -108,10 +108,47 @@ def test_reviewed_id_without_disposition_is_incomplete() -> None:
         raise AssertionError(f"expected memcand_b missing disposition: {summary}")
 
 
+def test_rejects_duplicate_reviewed_ids() -> None:
+    module = load_module()
+    content = complete_content()
+    content["reviewed_candidate_ids"] = ["memcand_a", "memcand_a", "memcand_b"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected duplicate reviewed id to fail: {summary}")
+    if summary["duplicate_reviewed_candidate_ids"] != ["memcand_a"]:
+        raise AssertionError(f"expected memcand_a duplicate reviewed id: {summary}")
+
+
+def test_rejects_overlapping_note_and_discard() -> None:
+    module = load_module()
+    content = complete_content()
+    content["discard_reasons"] = [
+        {"candidate_id": "memcand_a", "reason": "also discarded"},
+        {"candidate_id": "memcand_b", "reason": "transient"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary = module.validate(
+            write_json(root / "prompt.json", prompt_payload()),
+            write_json(root / "result.json", result_payload(content)),
+        )
+    if summary["ok"]:
+        raise AssertionError(f"expected overlapping disposition to fail: {summary}")
+    if summary["overlapping_disposition_candidate_ids"] != ["memcand_a"]:
+        raise AssertionError(f"expected memcand_a overlapping disposition: {summary}")
+
+
 def main() -> int:
     test_accepts_complete_result()
     test_rejects_missing_candidate_coverage()
     test_reviewed_id_without_disposition_is_incomplete()
+    test_rejects_duplicate_reviewed_ids()
+    test_rejects_overlapping_note_and_discard()
     print("ok validate-validate-rollout-memory-llm-results")
     return 0
 

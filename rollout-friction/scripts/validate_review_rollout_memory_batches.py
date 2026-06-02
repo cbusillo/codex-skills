@@ -57,9 +57,38 @@ def test_write_summary_counts_results() -> None:
         raise AssertionError(f"unexpected candidate coverage counts: {payload}")
 
 
+def test_split_batch_halves_candidates() -> None:
+    module = load_module()
+    batch = {
+        "batch": 6,
+        "candidates": [
+            {"candidate_id": "memcand_a"},
+            {"candidate_id": "memcand_b"},
+            {"candidate_id": "memcand_c"},
+        ],
+    }
+    children = module.split_batch(batch)
+    if [suffix for suffix, _child in children] != ["a", "b"]:
+        raise AssertionError(f"unexpected split suffixes: {children}")
+    if [len(child["candidates"]) for _suffix, child in children] != [1, 2]:
+        raise AssertionError(f"unexpected split sizes: {children}")
+    if children[0][1]["batch"] != "6-a" or children[1][1]["batch"] != "6-b":
+        raise AssertionError(f"unexpected child batch ids: {children}")
+
+
+def test_batch_label_for_path() -> None:
+    module = load_module()
+    if module.batch_label_for_path(12) != "012":
+        raise AssertionError("integer batch labels should be zero padded")
+    if module.batch_label_for_path("012-a") != "012-a":
+        raise AssertionError("string child labels should be preserved")
+
+
 def main() -> int:
     test_selects_batch_range_and_limit()
     test_write_summary_counts_results()
+    test_split_batch_halves_candidates()
+    test_batch_label_for_path()
     print("ok validate-review-rollout-memory-batches")
     return 0
 

@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-batch", type=int)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--retry-incomplete", type=int, default=1)
+    parser.add_argument(
+        "--split-on-failure",
+        action="store_true",
+        help="When a full batch fails, retry deterministic child batches split from the original prompt.",
+    )
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--system", default=DEFAULT_SYSTEM)
     args = parser.parse_args()
@@ -69,6 +74,8 @@ def main() -> int:
     for batch in batches:
         batch_no = int(batch.get("batch") or len(summaries) + 1)
         summary = review_batch(batch, batch_no, args)
+        if args.split_on_failure and not summary.get("ok"):
+            summary = review_split_batch(batch, batch_no, args, summary)
         summaries.append(summary)
         print(json.dumps(summary, sort_keys=True), flush=True)
     write_summary(args.output_dir / "summary.json", args, summaries)
@@ -105,10 +112,11 @@ def selected_batches(batches: list[dict[str, Any]], args: argparse.Namespace) ->
     return selected
 
 
-def review_batch(batch: dict[str, Any], batch_no: int, args: argparse.Namespace) -> dict[str, Any]:
-    prompt_path = args.output_dir / f"batch-{batch_no:03d}.prompt.json"
-    result_path = args.output_dir / f"batch-{batch_no:03d}.result.json"
-    validation_path = args.output_dir / f"batch-{batch_no:03d}.validation.json"
+def review_batch(batch: dict[str, Any], batch_no: int | str, args: argparse.Namespace) -> dict[str, Any]:
+    batch_label = batch_label_for_path(batch_no)
+    prompt_path = args.output_dir / f"batch-{batch_label}.prompt.json"
+    result_path = args.output_dir / f"batch-{batch_label}.result.json"
+    validation_path = args.output_dir / f"batch-{batch_label}.validation.json"
     write_json(prompt_path, batch)
     if args.skip_existing and result_path.exists():
         existing = validate_existing_result(prompt_path, validation_path, batch_no, result_path)
@@ -151,6 +159,53 @@ def review_batch(batch: dict[str, Any], batch_no: int, args: argparse.Namespace)
         if validation["ok"]:
             break
     return last_summary
+
+
+def review_split_batch(
+    batch: dict[str, Any], batch_no: int, args: argparse.Namespace, parent_summary: dict[str, Any]
+) -> dict[str, Any]:
+    candidates = batch.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) <= 1:
+        return parent_summary
+    split_summaries: list[dict[str, Any]] = []
+    for suffix, child in split_batch(batch):
+        child_batch_no = f"{batch_label_for_path(batch_no)}-{suffix}"
+        split_summaries.append(review_batch(child, child_batch_no, args))
+    ok = all(summary.get("ok") for summary in split_summaries)
+    return {
+        "ok": ok,
+        "batch": batch_no,
+        "split": True,
+        "parent": parent_summary,
+        "child_count": len(split_summaries),
+        "candidate_count": sum(int(summary.get("candidate_count") or 0) for summary in split_summaries),
+        "covered_count": sum(int(summary.get("covered_count") or 0) for summary in split_summaries),
+        "note_count": sum(int(summary.get("note_count") or 0) for summary in split_summaries),
+        "discard_count": sum(int(summary.get("discard_count") or 0) for summary in split_summaries),
+        "children": split_summaries,
+    }
+
+
+def split_batch(batch: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    candidates = batch.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) <= 1:
+        return []
+    midpoint = max(1, len(candidates) // 2)
+    parts = [("a", candidates[:midpoint]), ("b", candidates[midpoint:])]
+    children: list[tuple[str, dict[str, Any]]] = []
+    for suffix, child_candidates in parts:
+        child = dict(batch)
+        child["parent_batch"] = batch.get("batch")
+        child["batch"] = f"{batch.get('batch')}-{suffix}"
+        child["candidates"] = child_candidates
+        children.append((suffix, child))
+    return children
+
+
+def batch_label_for_path(batch_no: int | str) -> str:
+    if isinstance(batch_no, int):
+        return f"{batch_no:03d}"
+    return str(batch_no)
 
 
 def chat(batch: dict[str, Any], args: argparse.Namespace, retry_attempt: int) -> dict[str, Any]:
@@ -233,7 +288,7 @@ def write_json(path: Path, payload: object) -> None:
 
 
 def validate_existing_result(
-    prompt_path: Path, validation_path: Path, batch_no: int, result_path: Path
+    prompt_path: Path, validation_path: Path, batch_no: int | str, result_path: Path
 ) -> dict[str, Any]:
     try:
         validation = validate(prompt_path, result_path)

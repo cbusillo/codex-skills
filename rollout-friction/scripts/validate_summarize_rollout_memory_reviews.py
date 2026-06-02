@@ -71,9 +71,65 @@ def test_marks_missing_result_failed() -> None:
         raise AssertionError(f"missing result should fail: {summary}")
 
 
+def test_accepts_split_child_batch_labels() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-006-a.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        write_json(
+            root / "batch-006-a.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "people_updates": [],
+                        "profile_notes": [],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_a"],
+                    }
+                )
+            },
+        )
+        summary = module.summarize(root)
+    if summary["summaries"][0]["batch"] != "006-a":
+        raise AssertionError(f"split child batch label should be preserved: {summary}")
+
+
+def test_split_children_supersede_failed_parent() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root / "batch-006.prompt.json", {"candidates": [{"candidate_id": "memcand_parent"}]})
+        write_json(root / "batch-006.result.json", {"content": "not json"})
+        write_json(root / "batch-006-a.prompt.json", {"candidates": [{"candidate_id": "memcand_a"}]})
+        write_json(
+            root / "batch-006-a.result.json",
+            {
+                "content": json.dumps(
+                    {
+                        "people_updates": [],
+                        "profile_notes": [],
+                        "rollout_friction_notes": [],
+                        "local_llm_notes": [{"candidate_id": "memcand_a", "note": "test"}],
+                        "repo_specific_notes": [],
+                        "discard_reasons": [],
+                        "reviewed_candidate_ids": ["memcand_a"],
+                    }
+                )
+            },
+        )
+        summary = module.summarize(root)
+    if summary["failed_count"] != 0 or summary["superseded_parent_count"] != 1:
+        raise AssertionError(f"split child should supersede failed parent: {summary}")
+
+
 def main() -> int:
     test_summarizes_complete_review_dir()
     test_marks_missing_result_failed()
+    test_accepts_split_child_batch_labels()
+    test_split_children_supersede_failed_parent()
     print("ok validate-summarize-rollout-memory-reviews")
     return 0
 

@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from collections import Counter
 from typing import Any
 
 
@@ -77,15 +78,32 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
 
     expected_ids = candidate_ids(prompt)
     reviewed_ids = string_set(payload["reviewed_candidate_ids"])
-    discard_ids = ids_from_discards(payload["discard_reasons"])
-    note_ids = ids_from_notes(payload)
+    reviewed_counts = string_counts(payload["reviewed_candidate_ids"])
+    discard_counts = ids_from_discards(payload["discard_reasons"])
+    note_counts = ids_from_notes(payload)
+    discard_ids = set(discard_counts)
+    note_ids = set(note_counts)
     disposition_ids = discard_ids | note_ids
     covered_ids = reviewed_ids & disposition_ids
     missing_reviewed_ids = expected_ids - reviewed_ids
     missing_disposition_ids = expected_ids - disposition_ids
     missing_ids = sorted(expected_ids - covered_ids)
     unknown_ids = sorted((reviewed_ids | disposition_ids) - expected_ids)
-    ok = not missing_reviewed_ids and not missing_disposition_ids and not unknown_ids
+    duplicate_reviewed_ids = sorted(id_ for id_, count in reviewed_counts.items() if count > 1)
+    duplicate_disposition_ids = sorted(
+        id_
+        for id_, count in (note_counts + discard_counts).items()
+        if count > 1 and id_ in expected_ids
+    )
+    overlapping_disposition_ids = sorted((note_ids & discard_ids) & expected_ids)
+    ok = (
+        not missing_reviewed_ids
+        and not missing_disposition_ids
+        and not unknown_ids
+        and not duplicate_reviewed_ids
+        and not duplicate_disposition_ids
+        and not overlapping_disposition_ids
+    )
     return {
         "ok": ok,
         "candidate_count": len(expected_ids),
@@ -95,10 +113,16 @@ def validate(prompt_path: Path, result_path: Path) -> dict[str, Any]:
         "missing_reviewed_count": len(missing_reviewed_ids),
         "missing_disposition_count": len(missing_disposition_ids),
         "unknown_count": len(unknown_ids),
+        "duplicate_reviewed_count": len(duplicate_reviewed_ids),
+        "duplicate_disposition_count": len(duplicate_disposition_ids),
+        "overlapping_disposition_count": len(overlapping_disposition_ids),
         "missing_candidate_ids": missing_ids[:20],
         "missing_reviewed_candidate_ids": sorted(missing_reviewed_ids)[:20],
         "missing_disposition_candidate_ids": sorted(missing_disposition_ids)[:20],
         "unknown_candidate_ids": unknown_ids[:20],
+        "duplicate_reviewed_candidate_ids": duplicate_reviewed_ids[:20],
+        "duplicate_disposition_candidate_ids": duplicate_disposition_ids[:20],
+        "overlapping_disposition_candidate_ids": overlapping_disposition_ids[:20],
         "note_count": sum(len(payload[key]) for key in NOTE_KEYS),
         "discard_count": len(payload["discard_reasons"]),
         "notes_by_key": {key: len(payload[key]) for key in NOTE_KEYS},
@@ -131,22 +155,26 @@ def string_set(values: list[Any]) -> set[str]:
     return {value for value in values if isinstance(value, str) and value.strip()}
 
 
-def ids_from_discards(discards: list[Any]) -> set[str]:
-    ids: set[str] = set()
+def string_counts(values: list[Any]) -> Counter[str]:
+    return Counter(value for value in values if isinstance(value, str) and value.strip())
+
+
+def ids_from_discards(discards: list[Any]) -> Counter[str]:
+    ids: Counter[str] = Counter()
     for item in discards:
         if isinstance(item, dict) and isinstance(item.get("candidate_id"), str):
-            ids.add(item["candidate_id"])
+            ids[item["candidate_id"]] += 1
     return ids
 
 
-def ids_from_notes(payload: dict[str, Any]) -> set[str]:
-    ids: set[str] = set()
+def ids_from_notes(payload: dict[str, Any]) -> Counter[str]:
+    ids: Counter[str] = Counter()
     for key in NOTE_KEYS:
         for item in payload[key]:
             if isinstance(item, dict):
                 value = item.get("candidate_id") or item.get("source_candidate_id")
                 if isinstance(value, str):
-                    ids.add(value)
+                    ids[value] += 1
                 elif isinstance(value, list):
                     ids.update(item for item in value if isinstance(item, str))
     return ids
