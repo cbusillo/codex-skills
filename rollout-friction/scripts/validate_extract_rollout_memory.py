@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from argparse import Namespace
@@ -239,13 +240,21 @@ def test_output_dir_writes_local_artifacts() -> None:
             raise AssertionError(f"diagnostics should mark local_only: {diagnostics}")
         if diagnostics["candidate_count"] != 1:
             raise AssertionError(f"expected one artifact candidate: {diagnostics}")
-        public = module.public_diagnostics(diagnostics)
-        if "input_fingerprint" in public:
-            raise AssertionError(f"stdout diagnostics should omit input fingerprint: {public}")
-        if "artifacts" in public or str(out_dir) in json.dumps(public):
-            raise AssertionError(f"stdout diagnostics should omit local artifact paths: {public}")
-        if public.get("artifacts_written") != ["candidates", "diagnostics", "llm_prompts"]:
-            raise AssertionError(f"stdout diagnostics should report artifact kinds only: {public}")
+
+
+def test_output_dir_cli_is_quiet() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        trace = write_trace(root, [response_item("user", "Remember local LLM preference qwen3-coder-64b.")])
+        out_dir = root / "artifacts"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(trace), "--trusted-originals", "--output-dir", str(out_dir)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    if result.stdout:
+        raise AssertionError(f"output-dir mode should not print local artifact diagnostics: {result.stdout}")
 
 
 def test_destination_filter_matches_cli_behavior() -> None:
@@ -276,6 +285,7 @@ def main() -> int:
     test_dedupe_keeps_distinct_long_common_prefixes()
     test_classifies_repo_specific_details()
     test_output_dir_writes_local_artifacts()
+    test_output_dir_cli_is_quiet()
     test_destination_filter_matches_cli_behavior()
     print("ok validate-extract-rollout-memory")
     return 0

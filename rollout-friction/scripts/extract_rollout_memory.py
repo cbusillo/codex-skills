@@ -147,8 +147,7 @@ def main() -> int:
         wanted = set(args.destination)
         candidates = [candidate for candidate in candidates if candidate.destination in wanted]
     if args.output_dir:
-        diagnostics = write_artifacts(args.output_dir, files, candidates, args)
-        print(json.dumps(public_diagnostics(diagnostics), indent=2, ensure_ascii=False))
+        write_artifacts(args.output_dir, files, candidates, args)
     elif args.prompt_jsonl:
         for batch in prompt_batches(candidates, args.batch_chars):
             print(json.dumps(batch, ensure_ascii=False))
@@ -551,22 +550,8 @@ def write_artifacts(
         "candidate_count": len(candidates),
         "destination_counts": destination_counts(candidates),
         "input_fingerprint": fingerprint_paths(files),
-        "bounds": {
-            "max_files": args.max_files,
-            "max_bytes": args.max_bytes,
-            "context_events": args.context_events,
-            "batch_chars": args.batch_chars,
-            "max_record_chars": args.max_record_chars,
-            "since": args.since,
-            "until": args.until,
-            "destination": args.destination or [],
-        },
-        "privacy": {
-            "trusted_originals": args.trusted_originals,
-            "redact_paths": args.redact,
-            "obvious_secrets_stripped": True,
-            "local_only": True,
-        },
+        "bounds": safe_bounds(args),
+        "privacy": privacy_summary(args),
         "artifacts": {
             "candidates": str(candidates_path),
             "llm_prompts": str(prompts_path),
@@ -577,15 +562,25 @@ def write_artifacts(
     return diagnostics
 
 
-def public_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
+def safe_bounds(args: argparse.Namespace) -> dict[str, Any]:
     return {
-        "schema_version": diagnostics["schema_version"],
-        "source_file_count": diagnostics["source_file_count"],
-        "candidate_count": diagnostics["candidate_count"],
-        "destination_counts": diagnostics["destination_counts"],
-        "bounds": diagnostics["bounds"],
-        "privacy": diagnostics["privacy"],
-        "artifacts_written": sorted(diagnostics["artifacts"]),
+        "max_files": args.max_files,
+        "max_bytes": args.max_bytes,
+        "context_events": args.context_events,
+        "batch_chars": args.batch_chars,
+        "max_record_chars": args.max_record_chars,
+        "since": args.since,
+        "until": args.until,
+        "destination": args.destination or [],
+    }
+
+
+def privacy_summary(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "trusted_originals": args.trusted_originals,
+        "redact_paths": args.redact,
+        "obvious_secrets_stripped": True,
+        "local_only": True,
     }
 
 
