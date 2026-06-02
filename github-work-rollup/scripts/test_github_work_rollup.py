@@ -45,6 +45,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "since": None,
         "until": "2026-06-02T16:00:00Z",
         "timezone": None,
+        "mode": None,
         "summary_level": None,
         "format": "markdown",
         "output": None,
@@ -67,6 +68,7 @@ def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None
             "subjects": ["config-user"],
             "repo_owners": ["private-owner"],
             "repositories": ["example-org/example-repo"],
+            "mode": "backlog",
             "summary_level": "standard",
             "noise_filters": {"labels": ["dependencies"]},
         },
@@ -77,8 +79,15 @@ def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None
     assert settings["repositories"] == ["example-org/override"]
     assert settings["repo_owners"] == []
     assert settings["subjects"] == []
+    assert settings["mode"] == "backlog"
     assert settings["summary_level"] == "concise"
     assert settings["window"].since == datetime(2026, 6, 2, 4, tzinfo=timezone.utc)
+
+
+def test_resolve_settings_cli_mode_overrides_config() -> None:
+    settings = github_work_rollup.resolve_settings(args(mode="standup"), {"mode": "activity"})
+
+    assert settings["mode"] == "standup"
 
 
 def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,7 +152,7 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
 
     assert payload["ok"] is True
     assert not any(command[1:5] == ["api", "--method", "GET", "search/issues"] for command in calls)
-    assert "Subject search outside configured repositories was skipped" in payload["limitations"][0]
+    assert any("Subject search outside configured repositories was skipped" in note for note in payload["limitations"])
 
 
 def test_bucket_items_orders_attention_before_noise() -> None:
@@ -280,6 +289,7 @@ def test_render_markdown_uses_display_timezone_and_action_links() -> None:
         "timezone": "America/New_York",
         "window": {"since": "2026-06-02T14:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "2h"},
         "display_window": {"since": "2026-06-02T10:00:00-04:00", "until": "2026-06-02T12:00:00-04:00", "label": "2h"},
+        "mode": "standup",
         "repositories": ["example-org/example-repo"],
         "buckets": {
             "ready_for_merge_decision": [
@@ -288,6 +298,7 @@ def test_render_markdown_uses_display_timezone_and_action_links() -> None:
                     "number": 7,
                     "title": "Ready PR",
                     "url": "https://github.com/example-org/example-repo/pull/7",
+                    "collection_lane": "open_backlog",
                     "handoff": "repo-readiness or github for a fresh merge decision",
                 }
             ]
@@ -299,7 +310,9 @@ def test_render_markdown_uses_display_timezone_and_action_links() -> None:
     rendered = github_work_rollup.render_markdown(payload)
 
     assert "2026-06-02T10:00:00-04:00 to 2026-06-02T12:00:00-04:00" in rendered
+    assert "Mode: standup" in rendered
     assert "[example-org/example-repo#7](https://github.com/example-org/example-repo/pull/7)" in rendered
+    assert "Source: open backlog." in rendered
     assert "Handoff: repo-readiness or github" in rendered
 
 
@@ -335,6 +348,211 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert list_commands
     assert all("--search" in command for command in list_commands)
     assert all("updated:>=2026-06-01" in command for command in list_commands)
+
+
+def test_activity_mode_filters_old_open_repo_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return completed(
+            command,
+            [
+                {
+                    "number": 214,
+                    "title": "Older open work",
+                    "url": "https://github.com/example-org/example-repo/issues/214",
+                    "author": {"login": "example-user"},
+                    "labels": [],
+                    "assignees": [],
+                    "createdAt": "2026-05-20T12:00:00Z",
+                    "updatedAt": "2026-05-21T12:00:00Z",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="activity"), {})
+
+    rows = github_work_rollup.collect_issues("example-org/example-repo", "open", settings)
+
+    assert rows == []
+    assert "--search" in calls[0]
+
+
+def test_standup_mode_includes_old_open_repo_items_without_search_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return completed(
+            command,
+            [
+                {
+                    "number": 214,
+                    "title": "Older open work",
+                    "url": "https://github.com/example-org/example-repo/issues/214",
+                    "author": {"login": "example-user"},
+                    "labels": [],
+                    "assignees": [],
+                    "createdAt": "2026-05-20T12:00:00Z",
+                    "updatedAt": "2026-05-21T12:00:00Z",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
+
+    rows = github_work_rollup.collect_issues("example-org/example-repo", "open", settings)
+
+    assert len(rows) == 1
+    assert rows[0]["number"] == 214
+    assert rows[0]["collection_lane"] == "open_backlog"
+    assert "--search" not in calls[0]
+
+
+def test_standup_repo_collection_uses_backlog_and_recent_open_scans(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["pr", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["issue", "list"] and command[command.index("--state") + 1] == "open":
+            if "--search" in command:
+                return completed(
+                    command,
+                    [
+                        {
+                            "number": 50,
+                            "title": "Older item updated recently",
+                            "url": "https://github.com/example-org/example-repo/issues/50",
+                            "author": {"login": "example-user"},
+                            "labels": [],
+                            "assignees": [],
+                            "createdAt": "2026-05-01T12:00:00Z",
+                            "updatedAt": "2026-06-02T15:00:00Z",
+                        }
+                    ],
+                )
+            return completed(
+                command,
+                [
+                    {
+                        "number": 214,
+                        "title": "Open backlog item",
+                        "url": "https://github.com/example-org/example-repo/issues/214",
+                        "author": {"login": "example-user"},
+                        "labels": [],
+                        "assignees": [],
+                        "createdAt": "2026-05-20T12:00:00Z",
+                        "updatedAt": "2026-05-21T12:00:00Z",
+                    }
+                ],
+            )
+        if command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
+
+    rows = github_work_rollup.collect_repo_items("example-org/example-repo", settings)
+
+    issue_commands = [command for command in calls if command[1:3] == ["issue", "list"] and command[command.index("--state") + 1] == "open"]
+    assert ["--search" in command for command in issue_commands] == [False, True]
+    assert {row["number"] for row in rows} == {50, 214}
+    assert {row["number"]: row["collection_lane"] for row in rows} == {50: "recent_activity", 214: "open_backlog"}
+
+
+def test_standup_mode_marks_recent_open_items_as_recent_activity(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return completed(
+            command,
+            [
+                {
+                    "number": 215,
+                    "title": "Recently updated open work",
+                    "url": "https://github.com/example-org/example-repo/issues/215",
+                    "author": {"login": "example-user"},
+                    "labels": [],
+                    "assignees": [],
+                    "createdAt": "2026-05-20T12:00:00Z",
+                    "updatedAt": "2026-06-02T15:00:00Z",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
+
+    rows = github_work_rollup.collect_issues("example-org/example-repo", "open", settings)
+
+    assert len(rows) == 1
+    assert rows[0]["collection_lane"] == "recent_activity"
+
+
+def test_standup_mode_keeps_closed_items_window_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return completed(
+            command,
+            [
+                {
+                    "number": 100,
+                    "title": "Old closed issue",
+                    "url": "https://github.com/example-org/example-repo/issues/100",
+                    "author": {"login": "example-user"},
+                    "labels": [],
+                    "assignees": [],
+                    "createdAt": "2026-05-10T12:00:00Z",
+                    "updatedAt": "2026-05-12T12:00:00Z",
+                    "closedAt": "2026-05-12T12:00:00Z",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
+
+    rows = github_work_rollup.collect_issues("example-org/example-repo", "closed", settings)
+
+    assert rows == []
+    assert "--search" in calls[0]
+
+
+def test_deduplicate_items_prefers_recent_completion_lane() -> None:
+    items = [
+        {
+            "kind": "pr",
+            "repo": "owner/repo",
+            "number": 10,
+            "url": "https://github.com/owner/repo/pull/10",
+            "title": "Merged while collecting",
+            "state": "open",
+            "bucket": "ready_for_review",
+            "collection_lane": "open_backlog",
+        },
+        {
+            "kind": "pr",
+            "repo": "owner/repo",
+            "number": 10,
+            "url": "https://github.com/owner/repo/pull/10",
+            "title": "Merged while collecting",
+            "state": "merged",
+            "bucket": "recently_completed",
+            "collection_lane": "recent_completion",
+        },
+    ]
+
+    deduped = github_work_rollup.deduplicate_items(items)
+
+    assert len(deduped) == 1
+    assert deduped[0]["state"] == "merged"
+    assert deduped[0]["collection_lane"] == "recent_completion"
 
 
 def test_deduplicate_items_merges_subject_matches() -> None:
@@ -429,7 +647,10 @@ def test_render_markdown_collapsible_sources() -> None:
 
 def test_summary_counts_and_rendering_exclude_collection_warnings_from_attention() -> None:
     summary = github_work_rollup.summary_counts(
-        {"waiting": [{"title": "wait"}], "recently_completed": [{"title": "done"}]},
+        {
+            "waiting": [{"title": "wait", "collection_lane": "open_backlog"}],
+            "recently_completed": [{"title": "done", "collection_lane": "recent_completion"}],
+        },
         ["Issues are disabled for owner/repo."],
     )
 
@@ -438,6 +659,7 @@ def test_summary_counts_and_rendering_exclude_collection_warnings_from_attention
     assert lines[0] == "No actual attention items detected."
     assert "waiting: 1" in lines[1]
     assert "completed: 1" in lines[1]
+    assert "open backlog: 1" in lines[1]
     assert "collection warnings: 1" in lines[1]
 
 

@@ -5,6 +5,7 @@
 
 timezone: America/New_York
 default_window: 24h
+mode: standup
 report_recipient: example team
 subjects:
   - example-user
