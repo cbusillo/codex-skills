@@ -71,10 +71,28 @@ def test_extracts_first_json_object_from_duplicated_capture() -> None:
         raise AssertionError(f"unexpected extracted object: {first}")
 
 
+def test_extracts_first_json_object_after_leading_text() -> None:
+    module = load_module()
+    capture = 'Here is the JSON:\n{"ok":true}'
+    first = module.extract_first_json_object(capture)
+    if first != '{"ok":true}':
+        raise AssertionError(f"unexpected extracted object after prose: {first}")
+
+
+def test_select_batches_enforces_first_batch_budget() -> None:
+    module = load_module()
+    batches = [{"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 100}]}]
+    selected, input_chars = module.select_batches(batches, 10)
+    if selected or input_chars:
+        raise AssertionError(f"oversized first batch should not be selected: {selected}, {input_chars}")
+
+
 def main() -> int:
     test_prepare_payload_adds_manifest_and_source_batch()
     test_selected_note_prompt_instructs_manifest_copy()
     test_extracts_first_json_object_from_duplicated_capture()
+    test_extracts_first_json_object_after_leading_text()
+    test_select_batches_enforces_first_batch_budget()
     print("ok validate-prepare-rollout-memory-long-context-review")
     return 0
 

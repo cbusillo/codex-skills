@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schema-file", type=Path, help="Strict JSON schema file for provider structured output.")
     parser.add_argument("--output-jsonl", type=Path, help="Append matrix rows to this JSONL file.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip rows already present in --output-jsonl.")
+    parser.add_argument(
+        "--skip-status",
+        action="append",
+        default=[],
+        help="When --skip-existing is set, skip existing rows with this status. Defaults to passed.",
+    )
     parser.add_argument("--max-seconds", type=float, default=1800.0)
     parser.add_argument("--anthropic-max-budget-usd", type=float, default=3.0)
     parser.add_argument("--dry-run", action="store_true")
@@ -54,19 +60,22 @@ def main() -> int:
     budgets = [parse_budget(value) for value in (args.budget or ["quarter"])]
     variants = [parse_variant(value) for value in (args.variant or DEFAULT_VARIANTS)]
     existing = read_existing_rows(args.output_jsonl) if args.skip_existing and args.output_jsonl else {}
+    skip_statuses = set(args.skip_status or ["passed"])
     rows: list[dict[str, Any]] = []
     for budget in budgets:
         payload, prompt_summary = prepare_payload(args.prompts, budget)
         prompt = selected_note_text(payload)
         for variant in variants:
             key = row_key(prompt_summary["budget_name"], variant)
-            row = existing.get(key) or run_or_plan(payload, prompt, prompt_summary, variant, args)
-            if key in existing:
-                row = {**row, "status": "skipped_existing", "original_status": row.get("status")}
+            existing_row = existing.get(key)
+            if should_skip_existing(existing_row, skip_statuses):
+                row = {**existing_row, "status": "skipped_existing", "original_status": existing_row.get("status")}
+            else:
+                row = run_or_plan(payload, prompt, prompt_summary, variant, args)
+            if row.get("status") != "skipped_existing" and args.output_jsonl:
+                append_jsonl(args.output_jsonl, row)
             rows.append(row)
             print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
-            if args.output_jsonl and key not in existing:
-                append_jsonl(args.output_jsonl, row)
     summary = summarize_rows(rows)
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
     return 0 if all(row["status"] in {"passed", "planned", "skipped_existing"} for row in rows) else 1
@@ -93,6 +102,11 @@ def run_or_plan(
     }
     if args.dry_run:
         row["status"] = "planned"
+        return row
+    if not payload.get("candidates"):
+        row["status"] = "prompt_too_large"
+        row["error"] = "no prompt batch fits within the requested budget"
+        row["elapsed_seconds"] = 0.0
         return row
     started = time.time()
     try:
@@ -189,6 +203,8 @@ def classify_error(message: str) -> str:
         return "budget_exceeded"
     if "argv" in folded or "arg_max" in folded:
         return "blocked_transport"
+    if "prompt_too_large" in folded or "no prompt batch fits" in folded:
+        return "prompt_too_large"
     if "not strict json" in folded or "does not start with a json object" in folded:
         return "failed_json"
     return "error"
@@ -214,6 +230,10 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str]:
     return (budget_name, variant["name"])
+
+
+def should_skip_existing(row: dict[str, Any] | None, skip_statuses: set[str]) -> bool:
+    return bool(row and row.get("status") in skip_statuses)
 
 
 def read_existing_rows(path: Path) -> dict[tuple[str, str], dict[str, Any]]:

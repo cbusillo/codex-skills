@@ -108,7 +108,7 @@ def select_batches(batches: list[dict[str, Any]], char_budget: int) -> tuple[lis
     input_chars = 0
     for batch in batches:
         batch_chars = len(json.dumps(batch, ensure_ascii=False))
-        if selected and input_chars + batch_chars > char_budget:
+        if input_chars + batch_chars > char_budget:
             break
         selected.append(batch)
         input_chars += batch_chars
@@ -157,19 +157,22 @@ def selected_note_text(payload: dict[str, Any]) -> str:
 
 
 def extract_first_json_object(text: str) -> str:
-    depth = 0
+    for offset, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            return extract_json_object_at(text, offset)
+        except ValueError:
+            continue
+    raise ValueError("capture does not contain a complete JSON object")
+
+
+def extract_json_object_at(text: str, start: int) -> str:
+    depth = 1
     in_string = False
     escaped = False
-    start: int | None = None
-    for idx, char in enumerate(text):
-        if start is None:
-            if char.isspace():
-                continue
-            if char != "{":
-                raise ValueError("capture does not start with a JSON object")
-            start = idx
-            depth = 1
-            continue
+    for idx in range(start + 1, len(text)):
+        char = text[idx]
         if in_string:
             if escaped:
                 escaped = False

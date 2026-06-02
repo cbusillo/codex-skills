@@ -61,6 +61,20 @@ def test_dry_run_plans_matrix_row() -> None:
         raise AssertionError(f"unexpected dry-run row: {row}")
 
 
+def test_oversized_budget_reports_prompt_too_large() -> None:
+    module = load_module()
+    payload = {"candidates": []}
+    row = module.run_or_plan(
+        payload,
+        "prompt",
+        {"budget_name": "tiny", "candidate_count": 0, "input_chars": 0},
+        {"name": "gpt", "provider": "code-llm", "model": "gpt-5.4"},
+        Namespace(dry_run=False),
+    )
+    if row["status"] != "prompt_too_large":
+        raise AssertionError(f"expected prompt_too_large: {row}")
+
+
 def test_classifies_access_and_budget_errors() -> None:
     module = load_module()
     if module.classify_error("Usage credits required for 1M context") != "blocked_access":
@@ -106,13 +120,23 @@ def test_existing_rows_are_keyed_by_budget_and_variant() -> None:
         raise AssertionError(f"unexpected existing rows: {rows}")
 
 
+def test_skip_existing_defaults_to_requested_statuses() -> None:
+    module = load_module()
+    if not module.should_skip_existing({"status": "passed"}, {"passed"}):
+        raise AssertionError("passed rows should skip by default")
+    if module.should_skip_existing({"status": "failed_json"}, {"passed"}):
+        raise AssertionError("failed rows should not skip by default")
+
+
 def main() -> int:
     test_parse_variant()
     test_dry_run_plans_matrix_row()
+    test_oversized_budget_reports_prompt_too_large()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
     test_default_schema_is_strict_object()
     test_existing_rows_are_keyed_by_budget_and_variant()
+    test_skip_existing_defaults_to_requested_statuses()
     print("ok validate-run-rollout-memory-long-context-matrix")
     return 0
 
