@@ -54,6 +54,9 @@ def args(**overrides: object) -> argparse.Namespace:
         "output": None,
         "limit_repos": 25,
         "limit_items": 50,
+        "collection_limit_items": None,
+        "release_collection_limit": None,
+        "workflow_collection_limit": None,
         "include_bots": False,
         "include_external_activity": False,
     }
@@ -160,6 +163,22 @@ def test_resolve_settings_cli_overrides_config_labels() -> None:
 
     assert settings["mode"] == "standup"
     assert settings["report_recipient"] == "Justin"
+
+
+def test_collection_limits_accept_integer_like_yaml_floats() -> None:
+    settings = github_work_rollup.resolve_settings(
+        args(),
+        {"collection_limit_items": 25.0, "release_collection_limit": 3.0, "workflow_collection_limit": 4.0},
+    )
+
+    assert settings["collection_limit_items"] == 25
+    assert settings["release_collection_limit"] == 3
+    assert settings["workflow_collection_limit"] == 4
+
+
+def test_collection_limits_reject_yaml_booleans() -> None:
+    with pytest.raises(SystemExit, match="collection_limit_items must be a positive integer"):
+        github_work_rollup.resolve_settings(args(), {"collection_limit_items": True})
 
 
 def test_resolve_recipient_profile_matches_people_index(tmp_path: Path) -> None:
@@ -355,6 +374,78 @@ def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPat
     payload = github_work_rollup.collect_rollup(settings)
 
     assert payload["buckets"] == {}
+
+
+def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["api", "--method"]:
+            query = command[command.index("-f") + 1]
+            if not query.startswith("q=author:"):
+                return completed(command, {"total_count": 0, "items": []})
+            page_field = next(item for item in command if item.startswith("page="))
+            page = int(page_field.split("=", 1)[1])
+            start = (page - 1) * 100
+            count = 100 if page == 1 else 50
+            return completed(
+                command,
+                {
+                    "total_count": 150,
+                    "items": [
+                        {
+                            "number": start + i,
+                            "title": f"Subject item {start + i}",
+                            "html_url": f"https://github.com/example-org/example-repo/issues/{start + i}",
+                            "repository_url": "https://api.github.com/repos/example-org/example-repo",
+                            "state": "open",
+                            "updated_at": "2026-06-02T15:00:00Z",
+                            "user": {"login": "cli-user"},
+                            "labels": [],
+                        }
+                        for i in range(count)
+                    ],
+                },
+            )
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(subject=["cli-user"], limit_items=10, collection_limit_items=150), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    search_commands = [command for command in calls if command[1:3] == ["api", "--method"] and "q=author:cli-user updated:>=2026-06-01" in command]
+    assert [field for command in search_commands for field in command if field.startswith("page=")] == ["page=1", "page=2"]
+    assert [field for command in search_commands for field in command if field.startswith("per_page=")] == ["per_page=100", "per_page=50"]
+    assert payload["summary"]["recent_activity"] == 150
+    assert not any("Subject search" in note for note in payload["limitations"])
+
+
+def test_subject_search_surfaces_incomplete_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["api", "--method"]:
+            return completed(command, {"total_count": 12, "incomplete_results": True, "items": []})
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(subject=["cli-user"]), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert any("Subject search for cli-user author returned incomplete results" in note for note in payload["limitations"])
 
 
 def test_repo_collection_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -868,6 +959,31 @@ def test_render_priority_section_keeps_completed_summary_without_handoffs() -> N
     assert "Handoff" not in rendered
 
 
+def test_render_priority_section_reports_hidden_open_items() -> None:
+    rendered = "\n".join(
+        github_work_rollup.render_priority_section(
+            {
+                "name": "Focus",
+                "item_count": 12,
+                "items": [
+                    {
+                        "repo": "owner/repo",
+                        "number": i,
+                        "title": f"Open item {i}",
+                        "url": f"https://github.com/owner/repo/issues/{i}",
+                        "bucket": "in_progress",
+                    }
+                    for i in range(10)
+                ],
+                "recently_completed": [],
+            }
+        )
+    )
+
+    assert "Open item 0" in rendered
+    assert "2 more actionable open item(s)" in rendered
+
+
 def test_resolve_settings_layout() -> None:
     settings = github_work_rollup.resolve_settings(args(layout="executive"), {"layout": "manager"})
     assert settings["layout"] == "executive"
@@ -965,7 +1081,59 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
     assert "--exclude-pre-releases" in release_commands[0]
 
 
-def test_collection_limit_warnings_are_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_collection_uses_deep_limits_before_render_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["issue", "list"]:
+            if command[command.index("--state") + 1] != "open":
+                return completed(command, [])
+            return completed(
+                command,
+                [
+                    {
+                        "number": i,
+                        "title": f"Open issue {i}",
+                        "url": f"https://github.com/example-org/example-repo/issues/{i}",
+                        "author": {"login": "example-user"},
+                        "labels": [],
+                        "assignees": [],
+                        "createdAt": "2026-06-02T09:00:00Z",
+                        "updatedAt": "2026-06-02T10:00:00Z",
+                    }
+                    for i in range(3)
+                ],
+            )
+        if command[1:3] == ["release", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["run", "list"]:
+            return completed(command, [])
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="manager", mode="backlog", limit_items=2), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    issue_commands = [command for command in calls if command[1:3] == ["issue", "list"]]
+    release_commands = [command for command in calls if command[1:3] == ["release", "list"]]
+    workflow_commands = [command for command in calls if command[1:3] == ["run", "list"]]
+    assert issue_commands and all(command[command.index("--limit") + 1] == "1000" for command in issue_commands)
+    assert release_commands and release_commands[0][release_commands[0].index("--limit") + 1] == "1000"
+    assert workflow_commands and workflow_commands[0][workflow_commands[0].index("--limit") + 1] == "1000"
+    assert payload["summary"]["open_backlog"] == 3
+    assert sum(len(rows) for rows in payload["buckets"].values()) == 3
+    assert not any("collection" in note.casefold() and "reached" in note.casefold() for note in payload["limitations"])
+
+
+def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         if command[1:3] == ["auth", "status"]:
             return completed(command, "")
@@ -985,7 +1153,7 @@ def test_collection_limit_warnings_are_surfaced(monkeypatch: pytest.MonkeyPatch)
                         "isDraft": False,
                         "isPrerelease": False,
                     }
-                    for i in range(github_work_rollup.RELEASE_LIST_LIMIT)
+                    for i in range(3)
                 ],
             )
         if command[1:3] == ["run", "list"]:
@@ -999,18 +1167,21 @@ def test_collection_limit_warnings_are_surfaced(monkeypatch: pytest.MonkeyPatch)
                         "createdAt": "2026-06-02T09:00:00Z",
                         "updatedAt": "2026-06-02T10:00:00Z",
                     }
-                    for i in range(github_work_rollup.WORKFLOW_LIST_LIMIT)
+                    for i in range(4)
                 ],
             )
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
-    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="manager"), {})
+    settings = github_work_rollup.resolve_settings(
+        args(repo=["example-org/example-repo"], release_collection_limit=3, workflow_collection_limit=4),
+        {},
+    )
 
     payload = github_work_rollup.collect_rollup(settings)
 
-    assert any("Release collection" in note for note in payload["limitations"])
-    assert any("Workflow collection" in note for note in payload["limitations"])
+    assert any("Release collection for example-org/example-repo reached 3" in note for note in payload["limitations"])
+    assert any("Workflow collection for example-org/example-repo reached 4" in note for note in payload["limitations"])
 
 
 def test_operator_layout_collects_same_enrichment_data(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1140,7 +1311,12 @@ def test_render_manager_brief_markdown() -> None:
             ],
         },
         "priority_sections": [
-            {"name": "Every Code", "items": [{"repo": "example-org/code", "title": "Choose auth direction"}], "recently_completed": []}
+            {
+                "name": "Every Code",
+                "items": [{"repo": "example-org/code", "title": "Choose auth direction"}],
+                "recently_completed": [{"repo": "example-org/code", "title": "Ship session routing"}],
+                "recently_completed_count": 4,
+            }
         ],
         "limitations": ["Read-only mode"],
         "releases": [],
@@ -1158,6 +1334,7 @@ def test_render_manager_brief_markdown() -> None:
     assert "## Today's Priorities" in rendered
     assert "## Active Work" in rendered
     assert "## Focus Areas" in rendered
+    assert "Every Code**: 1 open priority item(s), 4 recent completion(s)" in rendered
     assert "## Decisions and Risks" in rendered
     assert "## Velocity" in rendered
     assert "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction" in rendered

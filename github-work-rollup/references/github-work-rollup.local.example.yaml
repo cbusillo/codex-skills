@@ -16,6 +16,9 @@ repo_owners:
 repositories:
   - example-org/example-repo
 summary_level: standard
+collection_limit_items: 1000
+release_collection_limit: 1000
+workflow_collection_limit: 1000
 output_path: .local/github-work-rollup/latest.md
 include_external_activity: false
 include_bots: false

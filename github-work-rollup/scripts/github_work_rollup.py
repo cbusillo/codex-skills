@@ -34,8 +34,11 @@ SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
 REPORT_MODES = {"activity", "backlog", "standup"}
 REPORT_LAYOUTS = {"operator", "manager", "executive"}
-RELEASE_LIST_LIMIT = 10
-WORKFLOW_LIST_LIMIT = 20
+DEFAULT_REPO_ITEM_COLLECTION_LIMIT = 1000
+DEFAULT_RELEASE_COLLECTION_LIMIT = 1000
+DEFAULT_WORKFLOW_COLLECTION_LIMIT = 1000
+GITHUB_SEARCH_PAGE_SIZE = 100
+GITHUB_SEARCH_RESULT_LIMIT = 1000
 BUCKET_ORDER = [
     "needs_attention",
     "blocked",
@@ -79,6 +82,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, help="Write rendered output to this path.")
     parser.add_argument("--limit-repos", type=int, default=25)
     parser.add_argument("--limit-items", type=int, default=50)
+    parser.add_argument("--collection-limit-items", type=int, help="Maximum PRs/issues to collect per repo/state before rendering limits are applied.")
+    parser.add_argument("--release-collection-limit", type=int, help="Maximum releases to collect per repo before window filtering.")
+    parser.add_argument("--workflow-collection-limit", type=int, help="Maximum workflow runs to collect per repo before window filtering.")
     parser.add_argument("--include-bots", action="store_true")
     parser.add_argument("--include-external-activity", action="store_true")
     return parser.parse_args()
@@ -155,7 +161,50 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
         "priority_sections": config.get("priority_sections") if isinstance(config.get("priority_sections"), list) else [],
         "limit_repos": args.limit_repos,
         "limit_items": args.limit_items,
+        "collection_limit_items": positive_int(
+            args.collection_limit_items if args.collection_limit_items is not None else config.get("collection_limit_items"),
+            DEFAULT_REPO_ITEM_COLLECTION_LIMIT,
+            "collection_limit_items",
+        ),
+        "release_collection_limit": positive_int(
+            args.release_collection_limit if args.release_collection_limit is not None else config.get("release_collection_limit"),
+            DEFAULT_RELEASE_COLLECTION_LIMIT,
+            "release_collection_limit",
+        ),
+        "workflow_collection_limit": positive_int(
+            args.workflow_collection_limit if args.workflow_collection_limit is not None else config.get("workflow_collection_limit"),
+            DEFAULT_WORKFLOW_COLLECTION_LIMIT,
+            "workflow_collection_limit",
+        ),
     }
+
+
+def positive_int(value: object, default: int, name: str) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        raise SystemExit(f"error: {name} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise SystemExit(f"error: {name} must be a positive integer")
+        parsed = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise SystemExit(f"error: {name} must be a positive integer") from exc
+    else:
+        raise SystemExit(f"error: {name} must be a positive integer")
+    if parsed < 1:
+        raise SystemExit(f"error: {name} must be a positive integer")
+    return parsed
+
+
+def setting_positive_int(settings: dict[str, Any], name: str, default: int) -> int:
+    value = settings.get(name)
+    return value if isinstance(value, int) and value > 0 else default
 
 
 def resolve_window(args: argparse.Namespace, config: dict[str, Any]) -> Window:
@@ -458,6 +507,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "summary_level": settings["summary_level"],
         "mode": settings["mode"],
         "layout": settings["layout"],
+        "display_limit": display_item_limit(settings),
         "collection_lanes": collection_lanes(settings),
         "preflight": preflight,
         "buckets": buckets,
@@ -511,6 +561,7 @@ def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, An
 
 
 def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collection_limit = setting_positive_int(settings, "release_collection_limit", DEFAULT_RELEASE_COLLECTION_LIMIT)
     command = [
         GH,
         "release",
@@ -518,7 +569,7 @@ def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str,
         "--repo",
         repo,
         "--limit",
-        str(RELEASE_LIST_LIMIT),
+        str(collection_limit),
         "--exclude-drafts",
         "--exclude-pre-releases",
         "--json",
@@ -535,8 +586,8 @@ def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str,
         entries = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         return []
-    if isinstance(entries, list) and len(entries) >= RELEASE_LIST_LIMIT:
-        add_collection_warning(settings, f"Release collection for {repo} reached {RELEASE_LIST_LIMIT}; release counts may be incomplete.")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"Release collection for {repo} reached {collection_limit}; release counts may be incomplete.")
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -560,6 +611,7 @@ def release_url(repo: str, tag_name: object) -> str | None:
 
 
 def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collection_limit = setting_positive_int(settings, "workflow_collection_limit", DEFAULT_WORKFLOW_COLLECTION_LIMIT)
     command = [
         GH,
         "run",
@@ -567,7 +619,7 @@ def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str
         "--repo",
         repo,
         "--limit",
-        str(WORKFLOW_LIST_LIMIT),
+        str(collection_limit),
         "--json",
         "name,status,conclusion,createdAt,updatedAt,url",
     ]
@@ -582,8 +634,8 @@ def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str
         entries = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         return []
-    if isinstance(entries, list) and len(entries) >= WORKFLOW_LIST_LIMIT:
-        add_collection_warning(settings, f"Workflow collection for {repo} reached {WORKFLOW_LIST_LIMIT}; automation counts may be incomplete.")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"Workflow collection for {repo} reached {collection_limit}; automation counts may be incomplete.")
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -619,36 +671,71 @@ def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     since_day = settings["window"].since.date().isoformat()
+    collection_limit = min(
+        setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT),
+        GITHUB_SEARCH_RESULT_LIMIT,
+    )
     for subject in settings["subjects"]:
         for qualifier in ("author", "commenter", "mentions"):
             query = f"{qualifier}:{subject} updated:>={since_day}"
-            result = run(
-                [
-                    GH,
-                    "api",
-                    "--method",
-                    "GET",
-                    "search/issues",
-                    "-f",
-                    f"q={query}",
-                    "-f",
-                    f"per_page={settings['limit_items']}",
-                ]
-            )
-            if result.returncode != 0:
-                rows.append(collection_error(f"subject:{subject}", "search", qualifier, result))
-                continue
-            for entry in json.loads(result.stdout or "{}").get("items") or []:
-                if not isinstance(entry, dict) or not subject_item_in_window(entry, settings["window"]):
-                    continue
-                key = str(entry.get("html_url") or entry.get("url") or "")
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                if should_skip_bot(login_from(entry.get("user")), entry.get("user"), settings):
-                    continue
-                rows.append(normalize_search_item(entry, subject, qualifier, settings))
+            fetched_for_query = 0
+            page = 1
+            while fetched_for_query < collection_limit:
+                per_page = min(GITHUB_SEARCH_PAGE_SIZE, collection_limit - fetched_for_query)
+                result = run(
+                    [
+                        GH,
+                        "api",
+                        "--method",
+                        "GET",
+                        "search/issues",
+                        "-f",
+                        f"q={query}",
+                        "-f",
+                        f"per_page={per_page}",
+                        "-f",
+                        f"page={page}",
+                    ]
+                )
+                if result.returncode != 0:
+                    rows.append(collection_error(f"subject:{subject}", "search", qualifier, result))
+                    break
+                payload = json.loads(result.stdout or "{}")
+                entries = payload.get("items") or [] if isinstance(payload, dict) else []
+                if not isinstance(entries, list):
+                    add_collection_warning(
+                        settings,
+                        f"Subject search for {subject} {qualifier} returned an unexpected response; subject counts may be incomplete.",
+                    )
+                    break
+                total_count = payload.get("total_count") if isinstance(payload, dict) else None
+                incomplete = bool(payload.get("incomplete_results")) if isinstance(payload, dict) else False
+                fetched_for_query += len(entries)
+                for entry in entries:
+                    if not isinstance(entry, dict) or not subject_item_in_window(entry, settings["window"]):
+                        continue
+                    key = str(entry.get("html_url") or entry.get("url") or "")
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    if should_skip_bot(login_from(entry.get("user")), entry.get("user"), settings):
+                        continue
+                    rows.append(normalize_search_item(entry, subject, qualifier, settings))
+                if incomplete or (isinstance(total_count, int) and total_count > fetched_for_query and (fetched_for_query >= collection_limit or len(entries) < per_page)):
+                    add_collection_warning(
+                        settings,
+                        subject_search_warning(subject, qualifier, fetched_for_query, collection_limit),
+                    )
+                if len(entries) < per_page or fetched_for_query >= collection_limit:
+                    break
+                page += 1
     return rows
+
+
+def subject_search_warning(subject: str, qualifier: str, fetched: int, limit: int) -> str:
+    if fetched >= limit:
+        return f"Subject search for {subject} {qualifier} reached {limit}; subject counts may be incomplete."
+    return f"Subject search for {subject} {qualifier} returned incomplete results after {fetched} item(s); subject counts may be incomplete."
 
 
 def collect_prs(
@@ -659,6 +746,7 @@ def collect_prs(
 ) -> list[dict[str, Any]]:
     fields = "number,title,url,author,labels,reviewDecision,isDraft,createdAt,updatedAt,closedAt,mergedAt,baseRefName"
     window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    collection_limit = setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT)
     command = [
         GH,
         "pr",
@@ -668,7 +756,7 @@ def collect_prs(
         "--state",
         state,
         "--limit",
-        str(settings["limit_items"]),
+        str(collection_limit),
     ]
     if window_filter:
         command.extend(["--search", search_window(settings["window"])])
@@ -678,8 +766,8 @@ def collect_prs(
         return [collection_error(repo, "pr", state, result)]
     rows = []
     entries = json.loads(result.stdout or "[]")
-    if isinstance(entries, list) and len(entries) >= settings["limit_items"]:
-        add_collection_warning(settings, f"{repo} {state} PR collection reached {settings['limit_items']}; PR counts may be incomplete.")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"{repo} {state} PR collection reached {collection_limit}; PR counts may be incomplete.")
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -699,6 +787,7 @@ def collect_issues(
 ) -> list[dict[str, Any]]:
     fields = "number,title,url,author,labels,assignees,createdAt,updatedAt,closedAt,stateReason"
     window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    collection_limit = setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT)
     command = [
         GH,
         "issue",
@@ -708,7 +797,7 @@ def collect_issues(
         "--state",
         state,
         "--limit",
-        str(settings["limit_items"]),
+        str(collection_limit),
     ]
     if window_filter:
         command.extend(["--search", search_window(settings["window"])])
@@ -722,8 +811,8 @@ def collect_issues(
         return [collection_error(repo, "issue", state, result)]
     rows = []
     entries = json.loads(result.stdout or "[]")
-    if isinstance(entries, list) and len(entries) >= settings["limit_items"]:
-        add_collection_warning(settings, f"{repo} {state} issue collection reached {settings['limit_items']}; issue counts may be incomplete.")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"{repo} {state} issue collection reached {collection_limit}; issue counts may be incomplete.")
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -958,9 +1047,16 @@ def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[
     sorted_items = sorted(items, key=item_sort_key)
     for item in sorted_items:
         buckets.setdefault(str(item.get("bucket") or "in_progress"), []).append(item)
-    level = settings["summary_level"]
-    limit = 5 if level == "concise" else 12 if level == "standard" else settings["limit_items"]
-    return {bucket: rows[:limit] for bucket, rows in buckets.items() if rows}
+    return {bucket: rows for bucket, rows in buckets.items() if rows}
+
+
+def display_item_limit(settings: dict[str, Any]) -> int:
+    level = str(settings.get("summary_level") or "standard")
+    if level == "concise":
+        return 5
+    if level == "standard":
+        return 12
+    return setting_positive_int(settings, "limit_items", 50)
 
 
 def summary_counts(buckets: dict[str, list[dict[str, Any]]], collection_warnings: list[str]) -> dict[str, int]:
@@ -1007,6 +1103,7 @@ def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> 
                 {
                     "name": str(raw.get("name") or "Priority Section"),
                     "items": matched[:10],
+                    "item_count": len(matched),
                     "recently_completed": completed[:max_completed],
                     "recently_completed_count": len(completed),
                 }
@@ -1416,9 +1513,11 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
             name = str(section.get("name") or "Priority area")
             items = section.get("items") or []
             completed_items = section.get("recently_completed") or []
+            item_count = int(section.get("item_count") or len(items))
+            completed_count = int(section.get("recently_completed_count") or len(completed_items))
             lines.append(
-                f"- **{name}**: {len(items)} open priority item(s), "
-                f"{len(completed_items)} recent completion(s)."
+                f"- **{name}**: {item_count} open priority item(s), "
+                f"{completed_count} recent completion(s)."
             )
 
     if risk_lines:
@@ -1493,11 +1592,13 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
             name = str(section.get("name") or "Priority area")
             items = section.get("items") or []
             completed_items = section.get("recently_completed") or []
+            item_count = int(section.get("item_count") or len(items))
+            completed_count = int(section.get("recently_completed_count") or len(completed_items))
             parts = []
-            if completed_items:
-                parts.append(f"{len(completed_items)} recent completion(s)")
-            if items:
-                parts.append(f"{len(items)} open item(s)")
+            if completed_count:
+                parts.append(f"{completed_count} recent completion(s)")
+            if item_count:
+                parts.append(f"{item_count} open item(s)")
             summary = ", ".join(parts) if parts else "no active signal in the collected window"
             example = compact_titles((completed_items or items), 2) if completed_items or items else ""
             suffix = f" Themes: {example}." if example else ""
@@ -1549,13 +1650,17 @@ def render_operator_markdown(payload: dict[str, Any]) -> str:
     ]
     buckets = payload.get("buckets") or {}
     lines.extend(render_operator_summary(payload.get("summary") or summary_counts(buckets, [])))
+    display_limit = int(payload.get("display_limit") or 12)
     for bucket in BUCKET_ORDER:
         rows = buckets.get(bucket) or []
         if not rows:
             continue
         lines.extend(["", f"## {bucket.replace('_', ' ').title()}"])
-        for item in rows:
+        for item in rows[:display_limit]:
             lines.append(render_item(item))
+        remaining = len(rows) - display_limit
+        if remaining > 0:
+            lines.append(f"- Plus {remaining} more item(s) in this section.")
     for section in payload.get("priority_sections") or []:
         lines.extend(["", f"## {section['name']}"])
         lines.extend(render_priority_section(section))
@@ -1607,6 +1712,10 @@ def render_operator_summary(summary: dict[str, int]) -> list[str]:
 
 def render_priority_section(section: dict[str, Any]) -> list[str]:
     lines = render_priority_section_items(section.get("items") or [])
+    item_count = int(section.get("item_count") or len(section.get("items") or []))
+    remaining_items = item_count - len(section.get("items") or [])
+    if remaining_items > 0:
+        lines.append(f"- {remaining_items} more actionable open item(s).")
     completed = section.get("recently_completed") or []
     completed_count = int(section.get("recently_completed_count") or 0)
     if completed:
