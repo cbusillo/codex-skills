@@ -8,6 +8,7 @@ default_window: 24h
 mode: standup
 layout: operator  # Choices: operator, manager, executive
 report_recipient: example team
+people_index: .local/people.yaml
 subjects:
   - example-user
 repo_owners:

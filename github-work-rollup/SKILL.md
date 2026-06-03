@@ -76,6 +76,7 @@ Supported config fields:
 - `timezone`
 - `default_window`
 - `report_recipient`
+- `people_index`: optional private people index path for recipient tailoring
 - `subjects`
 - `repo_owners`
 - `repositories`
@@ -123,6 +124,29 @@ Layouts:
 audience selector. `mode` controls what data is collected; `layout` controls who
 the report is for.
 
+When `.local/people.yaml` exists, or a config/CLI `people_index` points to a
+private people index, the helper attempts to resolve `report_recipient` against
+that index. A matched profile can tailor manager and executive wording toward
+the recipient's role, organization, technical depth, framing preference, and
+report guidance. Missing or unmatched people data is non-fatal. Do not publish
+private people notes; use them only to shape the report.
+
+If the user wants a tailored manager or executive brief and no usable local
+people/config context exists, help them provide the missing context before
+generating the final report. Ask only for the smallest useful set:
+
+- recipient name and relationship to the work
+- organization/product/customer context the recipient cares about
+- technical depth preference, such as non-technical, mixed, or technical
+- decision/risk lens, such as cost, schedule, prod data, staff time, customer
+  impact, reliability, or revenue
+- repository scope or owner scope, plus any must-include products or skills
+
+When the user provides that context, use it for the current report and suggest a
+private `.local/people.yaml` / `.local/github-work-rollup.yaml` update only if
+the same report will be repeated. Do not require private local files for one-off
+reports.
+
 ## Workflow
 
 1. Resolve scope from the request and optional local config: repositories,
@@ -146,17 +170,19 @@ the report is for.
       --repo example-org/example-repo \
       --mode standup \
       --report-recipient "Example leader" \
+      --people-index .local/people.yaml \
       --window 24h \
       --layout executive \
      --format markdown
    ```
 
    Use `operator` for the concrete queue, `manager` for daily planning, and
-   `executive` for a daily conversation overview. Executive output should target
-   one page on normal days and two pages on heavy days. It should explain what
-   changed, why it matters, how Every Code and skills are affected, risks or
-   decisions, and compact velocity counts. It should not enumerate PRs and
-   issues except when a link is useful for action or verification.
+   `executive` for a daily conversation overview with a polished, press-release
+   style lead. Executive output should target one page on normal days and two
+   pages on heavy days. It should explain what changed, why it matters, how
+   Every Code and skills are affected, risks or decisions, and compact velocity
+   counts. It should not enumerate PRs and issues except when a link is useful
+   for action or verification.
 
 3. If routine local defaults are needed, pass the private config explicitly or
    let the helper read `.local/github-work-rollup.yaml` when it exists:
