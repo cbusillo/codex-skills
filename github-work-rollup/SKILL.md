@@ -81,6 +81,7 @@ Supported config fields:
 - `repositories`
 - `summary_level`: `concise`, `standard`, or `detailed`
 - `mode`: `activity`, `backlog`, or `standup`
+- `layout`: `standard` or `executive`
 - `output_path`
 - `include_external_activity`
 - `include_bots`
@@ -122,6 +123,24 @@ recent activity signal rather than an unbounded people search.
      --window 24h \
      --format markdown
    ```
+
+   For an executive daily brief, use the `executive` layout:
+
+   ```bash
+   uv run scripts/github_work_rollup.py \
+      --repo example-org/example-repo \
+      --mode standup \
+      --report-recipient "Example leader" \
+      --window 24h \
+      --layout executive \
+     --format markdown
+   ```
+
+   Executive layout is for a daily conversation overview, not an operator
+   queue. It should explain what changed, why it matters, how Every Code and
+   skills are affected, risks or decisions, and compact velocity counts. It
+   should not enumerate PRs and issues except when a link is useful for action
+   or verification.
 
 3. If routine local defaults are needed, pass the private config explicitly or
    let the helper read `.local/github-work-rollup.yaml` when it exists:

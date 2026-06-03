@@ -45,6 +45,8 @@ def args(**overrides: object) -> argparse.Namespace:
         "since": None,
         "until": "2026-06-02T16:00:00Z",
         "timezone": None,
+        "report_recipient": None,
+        "layout": None,
         "mode": None,
         "summary_level": None,
         "format": "markdown",
@@ -84,10 +86,14 @@ def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None
     assert settings["window"].since == datetime(2026, 6, 2, 4, tzinfo=timezone.utc)
 
 
-def test_resolve_settings_cli_mode_overrides_config() -> None:
-    settings = github_work_rollup.resolve_settings(args(mode="standup"), {"mode": "activity"})
+def test_resolve_settings_cli_overrides_config_labels() -> None:
+    settings = github_work_rollup.resolve_settings(
+        args(mode="standup", report_recipient="Justin"),
+        {"mode": "activity", "report_recipient": "example team"},
+    )
 
     assert settings["mode"] == "standup"
+    assert settings["report_recipient"] == "Justin"
 
 
 def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -718,6 +724,251 @@ def test_render_priority_section_keeps_completed_summary_without_handoffs() -> N
     assert "Done PR" in rendered
     assert "3 more recently completed" in rendered
     assert "Handoff" not in rendered
+
+
+def test_resolve_settings_layout() -> None:
+    settings = github_work_rollup.resolve_settings(args(layout="executive"), {"layout": "standard"})
+    assert settings["layout"] == "executive"
+
+    settings = github_work_rollup.resolve_settings(args(), {"layout": "executive"})
+    assert settings["layout"] == "executive"
+
+    settings = github_work_rollup.resolve_settings(args(), {"layout": "brief"})
+    assert settings["layout"] == "executive"
+
+    settings = github_work_rollup.resolve_settings(args(), {})
+    assert settings["layout"] == "standard"
+
+
+def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["release", "list"]:
+            return completed(command, [
+                {
+                    "tagName": "v1.0.0",
+                    "name": "First Release",
+                    "createdAt": "2026-06-02T10:00:00Z",
+                    "publishedAt": "2026-06-02T10:00:00Z",
+                    "url": "https://github.com/example-org/example-repo/releases/tag/v1.0.0"
+                },
+                # Old release, should be filtered out
+                {
+                    "tagName": "v0.1.0",
+                    "name": "Alpha Release",
+                    "createdAt": "2026-05-01T10:00:00Z",
+                    "publishedAt": "2026-05-01T10:00:00Z",
+                    "url": "https://github.com/example-org/example-repo/releases/tag/v0.1.0"
+                }
+            ])
+        if command[1:3] == ["run", "list"]:
+            return completed(command, [
+                {
+                    "name": "Deploy production",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "createdAt": "2026-06-02T11:00:00Z",
+                    "url": "https://github.com/example-org/example-repo/actions/runs/1"
+                }
+            ])
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="executive", window="24h"), {})
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert payload["layout"] == "executive"
+    assert len(payload["releases"]) == 1
+    assert payload["releases"][0]["tag_name"] == "v1.0.0"
+    assert payload["releases"][0]["url"] == "https://github.com/example-org/example-repo/releases/tag/v1.0.0"
+    assert len(payload["workflows"]) == 1
+    assert payload["workflows"][0]["name"] == "Deploy production"
+    release_commands = [command for command in calls if command[1:3] == ["release", "list"]]
+    assert release_commands
+    assert "url" not in release_commands[0][release_commands[0].index("--json") + 1].split(",")
+
+
+def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if command[1:3] in (["release", "list"], ["run", "list"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="API unavailable")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="executive"), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert any("Could not collect releases" in note for note in payload["limitations"])
+    assert any("Could not collect workflow runs" in note for note in payload["limitations"])
+
+
+def test_render_executive_brief_markdown() -> None:
+    payload = {
+        "ok": True,
+        "schema_version": 1,
+        "script_version": 1,
+        "generated_at": "2026-06-02T16:00:00Z",
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/code", "example-org/example-skills"],
+        "subjects": [],
+        "summary_level": "standard",
+        "mode": "activity",
+        "layout": "executive",
+        "buckets": {
+            "needs_attention": [
+                {
+                    "repo": "example-org/code",
+                    "number": 101,
+                    "title": "Critical Bug",
+                    "url": "https://github.com/example-org/code/issues/101",
+                    "kind": "issue",
+                    "state": "open",
+                    "handoff": "Please review soon",
+                }
+            ],
+            "recently_completed": [
+                {
+                    "repo": "example-org/code",
+                    "number": 202,
+                    "title": "Document auth flow",
+                    "url": "https://github.com/example-org/code/pull/202",
+                    "kind": "pr",
+                    "state": "merged",
+                    "labels": ["documentation"],
+                },
+                {
+                    "repo": "example-org/example-skills",
+                    "number": 203,
+                    "title": "Add helper validation",
+                    "url": "https://github.com/example-org/example-skills/pull/203",
+                    "kind": "pr",
+                    "state": "merged",
+                    "labels": ["documentation"],
+                },
+                {
+                    "repo": "example-org/code",
+                    "number": 204,
+                    "title": "Close abandoned auth attempt",
+                    "url": "https://github.com/example-org/code/pull/204",
+                    "kind": "pr",
+                    "state": "closed",
+                    "labels": ["cleanup"],
+                }
+            ]
+        },
+        "releases": [
+            {
+                "repo": "example-org/code",
+                "tag_name": "v1.0.0",
+                "name": "First Release",
+                "published_at": "2026-06-02T10:00:00Z",
+                "url": "https://github.com/example-org/code/releases/tag/v1.0.0"
+            }
+        ],
+        "workflows": [
+            {
+                "repo": "example-org/code",
+                "name": "Deploy production",
+                "status": "completed",
+                "conclusion": "failure",
+                "created_at": "2026-06-02T11:00:00Z",
+                "url": "https://github.com/example-org/example-repo/actions/runs/1"
+            }
+        ],
+        "priority_sections": [
+            {
+                "name": "Every Code / Skills",
+                "items": [],
+                "recently_completed": [
+                    {
+                        "repo": "example-org/example-skills",
+                        "number": 203,
+                        "title": "Add helper validation",
+                        "url": "https://github.com/example-org/example-skills/pull/203",
+                        "kind": "pr",
+                        "state": "merged",
+                    }
+                ],
+                "recently_completed_count": 1,
+            }
+        ],
+        "limitations": ["Read-only mode"]
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "# Daily GitHub Brief for Justin" in rendered
+    assert "## Executive Summary" in rendered
+    assert "## Needs Justin's Attention" in rendered
+    assert "## What Changed" in rendered
+    assert "## Every Code and Skills" in rendered
+    assert "## Decisions or Risks" in rendered
+    assert "## Velocity Snapshot" in rendered
+    assert "## Conversation Starters" in rendered
+    assert "## Source Notes" in rendered
+
+    assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
+    assert "3 completed item(s)" in rendered
+    assert "1 release(s)" in rendered
+    assert "Automation needs a look" in rendered
+    assert "closed 1 unmerged change(s)" in rendered
+    assert "Every Code / Skills" in rendered
+    assert "Are the Every Code and skill changes aligned" in rendered
+
+    assert "## Summary Table" not in rendered
+    assert "## Repo Notes" not in rendered
+    assert "https://github.com/example-org/code/pull/202" not in rendered
+    assert "https://github.com/example-org/example-skills/pull/203" not in rendered
+
+
+def test_render_executive_brief_uses_dynamic_recipient() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Example leader",
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {
+            "needs_attention": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 1,
+                    "title": "Decision needed",
+                    "url": "https://github.com/example-org/example-repo/issues/1",
+                    "kind": "issue",
+                    "state": "open",
+                }
+            ]
+        },
+        "priority_sections": [{"name": "Every Code", "items": [], "recently_completed": []}],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "# Daily GitHub Brief for Example leader" in rendered
+    assert "## Needs Example leader's Attention" in rendered
+    assert "how Example leader expects" in rendered
+    assert "Justin" not in rendered
 
 
 if __name__ == "__main__":
