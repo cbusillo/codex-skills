@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -21,10 +22,11 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_INDEX = ROOT / ".local" / "people.yaml"
 DETAIL_PREFIX = "people/"
 SEPARATORS_RE = re.compile(r"[\s._-]+")
 DETAIL_FILE_RE = re.compile(r"people/[a-z0-9][a-z0-9_-]*\.md")
+SOURCE_SCOPE_KEY = "_people_source_scope"
+DETAIL_BASE_LABEL_KEY = "_people_detail_base_label"
 CONTACT_VALUE_KEYS = {
     "username",
     "handle",
@@ -50,6 +52,25 @@ class PeopleConfigError(Exception):
     pass
 
 
+def default_code_home() -> tuple[Path, str]:
+    code_home = os.environ.get("CODE_HOME", "").strip()
+    if code_home:
+        return Path(code_home).expanduser(), "$CODE_HOME"
+    codex_home = os.environ.get("CODEX_HOME", "").strip()
+    if codex_home:
+        return Path(codex_home).expanduser(), "$CODEX_HOME"
+    return Path.home() / ".code", "~/.code"
+
+
+def default_global_index() -> tuple[Path, str]:
+    home, label = default_code_home()
+    return home / "skills" / ".local" / "people.yaml", label
+
+
+def default_repo_index(repo_root: Path | None = None) -> Path:
+    return (repo_root or Path.cwd()).expanduser() / ".local" / "people.yaml"
+
+
 def normalize(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or "").strip())
     if text.startswith("@"):
@@ -62,14 +83,112 @@ def compact(value: object) -> str:
     return SEPARATORS_RE.sub("", normalize(value))
 
 
-def load_people(path: Path) -> tuple[str, list[dict[str, Any]]]:
+def load_people(
+    path: Path,
+    *,
+    source_scope: str = "explicit",
+    detail_base_label: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     if not path.exists():
         return "no_index", []
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
-        raise PeopleConfigError(f"invalid YAML in {path}: {exc}") from exc
-    return "ok", validate_people_data(data)
+        raise PeopleConfigError(
+            f"invalid YAML in {source_scope} people index: {exc}"
+        ) from exc
+    return "ok", annotate_people(
+        validate_people_data(data),
+        source_scope=source_scope,
+        detail_base_label=detail_base_label,
+    )
+
+
+def load_scoped_people(
+    *,
+    scope: str = "auto",
+    global_index: Path | None = None,
+    repo_index: Path | None = None,
+    repo_root: Path | None = None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    resolved_global_index, home_label = default_global_index()
+    explicit_global_index = global_index is not None
+    global_index = (global_index or resolved_global_index).expanduser()
+    repo_index = (repo_index or default_repo_index(repo_root)).expanduser()
+    requested_scope = "global" if scope == "user" else scope
+    sources: dict[str, Any] = {
+        "scope": scope,
+        "global": {"status": "skipped", "count": 0},
+        "repo": {"status": "skipped", "count": 0},
+    }
+
+    global_people: list[dict[str, Any]] = []
+    repo_people: list[dict[str, Any]] = []
+
+    if requested_scope in {"auto", "global"}:
+        status, global_people = load_people(
+            global_index,
+            source_scope="global",
+            detail_base_label=(
+                "global/.local"
+                if explicit_global_index
+                else f"{home_label}/skills/.local"
+            ),
+        )
+        sources["global"] = {"status": status, "count": len(global_people)}
+    if requested_scope in {"auto", "repo"}:
+        status, repo_people = load_people(
+            repo_index,
+            source_scope="repo",
+            detail_base_label=".local",
+        )
+        sources["repo"] = {"status": status, "count": len(repo_people)}
+
+    if requested_scope == "global":
+        people = global_people
+    elif requested_scope == "repo":
+        people = repo_people
+    else:
+        people = merge_people(global_people, repo_people)
+
+    if not people:
+        return "no_index", [], sources
+    return "ok", people, sources
+
+
+def annotate_people(
+    people: list[dict[str, Any]],
+    *,
+    source_scope: str,
+    detail_base_label: str | None = None,
+) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for person in people:
+        copy = dict(person)
+        copy[SOURCE_SCOPE_KEY] = source_scope
+        if detail_base_label:
+            copy[DETAIL_BASE_LABEL_KEY] = detail_base_label
+        annotated.append(copy)
+    return annotated
+
+
+def merge_people(
+    global_people: list[dict[str, Any]], repo_people: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    positions: dict[str, int] = {}
+    for person in global_people:
+        person_id = str(person.get("id"))
+        positions[person_id] = len(merged)
+        merged.append(person)
+    for person in repo_people:
+        person_id = str(person.get("id"))
+        if person_id in positions:
+            merged[positions[person_id]] = person
+        else:
+            positions[person_id] = len(merged)
+            merged.append(person)
+    return merged
 
 
 def validate_people_data(data: Any) -> list[dict[str, Any]]:
@@ -212,7 +331,10 @@ def public_person(
         "trust": compact_trust(person.get("trust")),
     }
     if include_detail:
-        result["details_file"] = detail_path(person.get("details_file"))
+        result["details_file"] = detail_path(
+            person.get("details_file"),
+            detail_base_label=first_string(person.get(DETAIL_BASE_LABEL_KEY)),
+        )
     if matched_on:
         result["matched_on"] = matched_on
     if matched_value:
@@ -255,9 +377,9 @@ def compact_trust(value: object) -> dict[str, Any] | None:
     return result or None
 
 
-def detail_path(value: object) -> str | None:
+def detail_path(value: object, *, detail_base_label: str | None = None) -> str | None:
     if isinstance(value, str) and value.strip():
-        return f".local/{value.strip()}"
+        return f"{detail_base_label or '.local'}/{value.strip()}"
     return None
 
 
@@ -405,7 +527,35 @@ def main() -> None:
         "query", nargs="?", help="Name, alias, handle, or person:<id> to resolve"
     )
     parser.add_argument(
-        "--index", type=Path, default=DEFAULT_INDEX, help="Path to .local/people.yaml"
+        "--index",
+        type=Path,
+        help="Read exactly one people index file; disables default scoped lookup",
+    )
+    parser.add_argument(
+        "--scope",
+        choices=["auto", "global", "user", "repo"],
+        default="auto",
+        help="People index scope to read; default auto loads global plus repo overlay",
+    )
+    parser.add_argument(
+        "--global-index",
+        type=Path,
+        help="Override the global/user people index path for this lookup",
+    )
+    parser.add_argument(
+        "--repo-index",
+        type=Path,
+        help="Override the repo-local people index path for this lookup",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        help="Repository root used to find .local/people.yaml; default is cwd",
+    )
+    parser.add_argument(
+        "--explain-sources",
+        action="store_true",
+        help="Include sanitized index-source statuses and counts in the JSON output",
     )
     parser.add_argument(
         "--fuzzy", action="store_true", help="Allow conservative non-write fuzzy matching"
@@ -428,7 +578,16 @@ def main() -> None:
         parser.error("query is required unless --self-test is used")
 
     try:
-        status, people = load_people(args.index.expanduser())
+        sources = None
+        if args.index:
+            status, people = load_people(args.index.expanduser())
+        else:
+            status, people, sources = load_scoped_people(
+                scope=args.scope,
+                global_index=args.global_index,
+                repo_index=args.repo_index,
+                repo_root=args.repo_root,
+            )
         if status == "no_index":
             payload = {
                 "ok": True,
@@ -438,6 +597,8 @@ def main() -> None:
             }
         else:
             payload = resolve(args.query, people, fuzzy=args.fuzzy)
+        if args.explain_sources and sources is not None:
+            payload["sources"] = sources
     except PeopleConfigError as exc:
         payload = {"ok": False, "status": "error", "error": str(exc), "query": args.query}
         print(json.dumps(payload, sort_keys=True), file=sys.stdout)

@@ -1,12 +1,15 @@
 ---
 name: people
-description: Resolve named humans, collaborators, users, reviewers, assignees, managers, clients, contacts, GitHub handles, nicknames, aliases, or likely misspellings into private local identity and contact context when identity may affect communication, routing, memory cleanup, rollout friction, GitHub planning, reviews, summaries, or follow-up. Use the optional `.local/people.yaml` identity index and resolver when available, and continue normally when no local people context is configured.
+description: Resolve named humans, collaborators, users, reviewers, assignees, managers, clients, contacts, GitHub handles, nicknames, aliases, or likely misspellings into private local identity and contact context when identity may affect communication, routing, memory cleanup, rollout friction, GitHub planning, reviews, summaries, or follow-up. Use the optional global people index under Code home plus repo-local `.local/people.yaml` overlays when available, and continue normally when no local people context is configured.
 metadata:
   short-description: Resolve private local people context
 resources:
   - path: scripts/resolve_person.py
     kind: script
-    description: Resolves a person mention against the private `.local/people.yaml` index.
+    description: Resolves a person mention against global and repo-local private people indexes.
+  - path: scripts/people_index.py
+    kind: script
+    description: Writes scoped private people index entries, defaulting to global/user storage.
   - path: scripts/test_resolve_person.py
     kind: script
     description: Regression tests for the people resolver.
@@ -22,13 +25,31 @@ commands:
     resource_path: scripts/resolve_person.py
     example_argv: ["uv", "run", "people/scripts/resolve_person.py", "Example"]
     purpose: Resolve a named person, alias, or handle against local private identity context.
+  - name: upsert-person
+    source: skill
+    resource_path: scripts/people_index.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "people/scripts/people_index.py",
+        "upsert",
+        "--id",
+        "example-person",
+        "--display-name",
+        "Example Person",
+      ]
+    purpose: Create or update a scoped private person entry, defaulting to global/user storage.
 workflow_defaults:
   - name: people_index
+    value: $CODE_HOME/skills/.local/people.yaml
+    description: Optional global/user private YAML identity and contact index.
+  - name: repo_people_index
     value: .local/people.yaml
-    description: Optional private YAML identity and contact index.
+    description: Optional repo-local private identity overlay for project-specific people or overrides.
   - name: details_file_prefix
     value: people/
-    description: Optional details_file prefix resolved under `.local/`.
+    description: Optional details_file prefix resolved under the matched index scope's private `.local/` root.
 ---
 
 # People
@@ -49,19 +70,45 @@ or handle refers to; it does not decide workflow ownership by itself.
 
 ## Local Data
 
-The private index is optional and gitignored:
+The private index is optional and gitignored. Durable identity context should be
+global/user-scoped by default:
+
+```text
+$CODE_HOME/skills/.local/people.yaml
+$CODE_HOME/skills/.local/people/<person-id>.md
+```
+
+When `CODE_HOME` is unset, helpers fall back to `$CODEX_HOME` and then
+`~/.code`. Repo-local people data is an overlay for project-specific contacts,
+client-only context, or intentional overrides:
 
 ```text
 .local/people.yaml
 .local/people/<person-id>.md
 ```
 
-If `.local/people.yaml` is absent, continue normally without local identity
-context. Do not treat missing people data as a failure.
+The resolver loads global/user people first and repo-local people second. A
+repo-local entry with the same `id` replaces the global entry for that repo;
+repo-local entries with new ids supplement the global index. If all people
+indexes are absent, continue normally without local identity context. Do not
+treat missing people data as a failure.
 
 Use `references/people.local.example.yaml` as the public-safe template. Real
 names, handles, emails, phone numbers, company notes, and relationship details
 belong only in ignored local files.
+
+Use the writer helper for updates so agents do not accidentally save durable
+identity context in the active repository:
+
+```sh
+uv run people/scripts/people_index.py upsert \
+  --id example-person \
+  --display-name "Example Person" \
+  --github example-user
+```
+
+The writer defaults to global/user storage. Use `--scope repo` only for
+repo-specific people, overrides, or supplements.
 
 People entries may include lightweight `trust` hints for GitHub actors and other
 collaborators. Treat trust as private operational posture: how much to verify,
@@ -101,9 +148,9 @@ to review those artifacts for person facts before closeout if any artifact has
 `people_updates`, `people_resolver_smoke_checks`, or visible person names,
 handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
 
-1. Load the small `.local/people.yaml` index when available, and build search
-   terms from each known person's id, display name, preferred reference,
-   aliases, handles, bot aliases, and compact forms.
+1. Load the small global/user and repo-local people indexes when available, and
+   build search terms from each known person's id, display name, preferred
+   reference, aliases, handles, bot aliases, and compact forms.
 2. Search the new local artifacts for every known form, not just the name that
    appeared in the final reducer plan. For example, searching only `Rob Burnett`
    can miss evidence that says `Burnett`, and searching only a handle can miss a
@@ -114,10 +161,10 @@ handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
 4. Discount matches that appear only inside encoded blobs, screenshots, binary
    payloads, tool command echoes, or the current review conversation. Those are
    search artifacts, not person evidence.
-5. Promote only verified durable identity/contact/role/routing facts into
-   `.local/people.yaml` or `.local/people/<person-id>.md`. Keep transient issue
-   status, CI results, one-off reviews, and stale operational state out of the
-   people index.
+5. Promote only verified durable identity/contact/role/routing facts with
+   `people/scripts/people_index.py upsert`, which defaults to global/user
+   storage. Keep transient issue status, CI results, one-off reviews, and stale
+   operational state out of the people index.
 6. If an artifact mentions a person but evidence is incomplete, add only a
    minimal known-person entry after user approval, or leave a private TODO in
    the artifact review notes. Do not invent handles, roles, or relationships.
@@ -174,7 +221,7 @@ aliases when they still appear in history.
 
 Other skills may reference this local data contract, but must remain portable:
 
-- Use people context only when `.local/people.yaml` or the resolver is available.
+- Use people context only when a people index or the resolver is available.
 - Continue normally when it is absent.
 - Do not add hard dependencies on this skill until the skill system has an
   explicit dependency mechanism.

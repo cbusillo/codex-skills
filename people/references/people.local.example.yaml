@@ -1,6 +1,8 @@
 ---
-# Public-safe example only. Copy this shape to `.local/people.yaml` and replace
-# every value with private local data. Do not commit real people mappings.
+# Public-safe example only. Copy this shape to a private ignored people index
+# and replace every value with local data. Durable identities should usually live
+# in `$CODE_HOME/skills/.local/people.yaml`; repo-specific overlays may live in
+# `.local/people.yaml`. Do not commit real people mappings.
 version: 1
 people:
   - id: example-person
