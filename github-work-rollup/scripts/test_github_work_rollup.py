@@ -60,6 +60,12 @@ def args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
+def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    if command[1:3] in (["release", "list"], ["run", "list"]):
+        return completed(command, [])
+    return None
+
+
 def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None:
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/override"], window="12h", summary_level="concise"),
@@ -123,6 +129,8 @@ def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatc
                     ]
                 },
             )
+        if response := empty_enrichment_response(command):
+            return response
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
@@ -149,6 +157,8 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
             return completed(command, {"login": "example-user"})
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
+        if response := empty_enrichment_response(command):
+            return response
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
@@ -212,6 +222,8 @@ def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPat
                     ]
                 },
             )
+        if response := empty_enrichment_response(command):
+            return response
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
@@ -249,6 +261,8 @@ def test_repo_collection_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPa
             )
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
+        if response := empty_enrichment_response(command):
+            return response
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
@@ -288,7 +302,7 @@ def test_subject_pr_search_uses_pr_classification() -> None:
     assert item["bucket"] == "blocked"
 
 
-def test_render_markdown_uses_display_timezone_and_action_links() -> None:
+def test_render_operator_markdown_uses_display_timezone_and_action_links() -> None:
     payload = {
         "ok": True,
         "report_recipient": "example team",
@@ -313,8 +327,9 @@ def test_render_markdown_uses_display_timezone_and_action_links() -> None:
         "limitations": [],
     }
 
-    rendered = github_work_rollup.render_markdown(payload)
+    rendered = github_work_rollup.render_operator_markdown(payload)
 
+    assert "## Operator Summary" in rendered
     assert "2026-06-02T10:00:00-04:00 to 2026-06-02T12:00:00-04:00" in rendered
     assert "Mode: standup" in rendered
     assert "[example-org/example-repo#7](https://github.com/example-org/example-repo/pull/7)" in rendered
@@ -335,6 +350,8 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
             return completed(command, [{"nameWithOwner": "example-org/example-repo", "isArchived": False}])
         if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
             return completed(command, [])
+        if response := empty_enrichment_response(command):
+            return response
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
@@ -348,6 +365,8 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
         ("repo", "list"),
         ("pr", "list"),
         ("issue", "list"),
+        ("release", "list"),
+        ("run", "list"),
     }
     assert {(command[1], command[2]) for command in calls} <= allowed
     list_commands = [command for command in calls if command[1:3] in (["pr", "list"], ["issue", "list"])]
@@ -631,7 +650,7 @@ def test_handoff_for_pr_closed_or_merged_is_none() -> None:
     assert github_work_rollup.handoff_for_pr("open", {}, []) == "babysit-pr if this PR needs active monitoring"
 
 
-def test_render_markdown_collapsible_sources() -> None:
+def test_render_operator_markdown_collapsible_sources() -> None:
     payload = {
         "ok": True,
         "report_recipient": "Chris",
@@ -644,7 +663,7 @@ def test_render_markdown_collapsible_sources() -> None:
         "priority_sections": [],
         "limitations": [],
     }
-    rendered = github_work_rollup.render_markdown(payload)
+    rendered = github_work_rollup.render_operator_markdown(payload)
     assert "Sources: 10 repositories" in rendered
     assert "subjects: example-user" in rendered
     assert "<details>" in rendered
@@ -660,7 +679,7 @@ def test_summary_counts_and_rendering_exclude_collection_warnings_from_attention
         ["Issues are disabled for owner/repo."],
     )
 
-    lines = github_work_rollup.render_executive_summary(summary)
+    lines = github_work_rollup.render_operator_summary(summary)
 
     assert lines[0] == "No actual attention items detected."
     assert "waiting: 1" in lines[1]
@@ -727,17 +746,21 @@ def test_render_priority_section_keeps_completed_summary_without_handoffs() -> N
 
 
 def test_resolve_settings_layout() -> None:
-    settings = github_work_rollup.resolve_settings(args(layout="executive"), {"layout": "standard"})
+    settings = github_work_rollup.resolve_settings(args(layout="executive"), {"layout": "manager"})
     assert settings["layout"] == "executive"
 
-    settings = github_work_rollup.resolve_settings(args(), {"layout": "executive"})
-    assert settings["layout"] == "executive"
-
-    settings = github_work_rollup.resolve_settings(args(), {"layout": "brief"})
-    assert settings["layout"] == "executive"
+    settings = github_work_rollup.resolve_settings(args(), {"layout": "manager"})
+    assert settings["layout"] == "manager"
 
     settings = github_work_rollup.resolve_settings(args(), {})
-    assert settings["layout"] == "standard"
+    assert settings["layout"] == "operator"
+
+
+def test_resolve_settings_rejects_removed_layout_aliases() -> None:
+    with pytest.raises(SystemExit):
+        github_work_rollup.resolve_settings(args(), {"layout": "standard"})
+    with pytest.raises(SystemExit):
+        github_work_rollup.resolve_settings(args(), {"layout": "brief"})
 
 
 def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -819,6 +842,79 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
     assert "--exclude-pre-releases" in release_commands[0]
 
 
+def test_collection_limit_warnings_are_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["release", "list"]:
+            return completed(
+                command,
+                [
+                    {
+                        "tagName": f"v{i}",
+                        "name": f"Release {i}",
+                        "createdAt": "2026-06-02T10:00:00Z",
+                        "publishedAt": "2026-06-02T10:00:00Z",
+                        "isDraft": False,
+                        "isPrerelease": False,
+                    }
+                    for i in range(github_work_rollup.RELEASE_LIST_LIMIT)
+                ],
+            )
+        if command[1:3] == ["run", "list"]:
+            return completed(
+                command,
+                [
+                    {
+                        "name": f"CI {i}",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "createdAt": "2026-06-02T09:00:00Z",
+                        "updatedAt": "2026-06-02T10:00:00Z",
+                    }
+                    for i in range(github_work_rollup.WORKFLOW_LIST_LIMIT)
+                ],
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="manager"), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert any("Release collection" in note for note in payload["limitations"])
+    assert any("Workflow collection" in note for note in payload["limitations"])
+
+
+def test_operator_layout_collects_same_enrichment_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="operator"), {})
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert payload["layout"] == "operator"
+    assert any(command[1:3] == ["release", "list"] for command in calls)
+    assert any(command[1:3] == ["run", "list"] for command in calls)
+
+
 def test_collect_workflows_filters_by_completion_time(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         return completed(
@@ -870,6 +966,76 @@ def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch
 
     assert any("Could not collect releases" in note for note in payload["limitations"])
     assert any("Could not collect workflow runs" in note for note in payload["limitations"])
+
+
+def test_render_manager_brief_markdown() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Chris",
+        "repositories": ["example-org/code"],
+        "layout": "manager",
+        "buckets": {
+            "needs_attention": [
+                {
+                    "repo": "example-org/code",
+                    "number": 101,
+                    "title": "Choose auth direction",
+                    "url": "https://github.com/example-org/code/issues/101",
+                    "kind": "issue",
+                    "state": "open",
+                    "handoff": "github-plan for planning reconciliation",
+                }
+            ],
+            "ready_for_review": [
+                {
+                    "repo": "example-org/code",
+                    "number": 102,
+                    "title": "Review CLI fallback",
+                    "url": "https://github.com/example-org/code/pull/102",
+                    "kind": "pr",
+                    "state": "open",
+                }
+            ],
+            "recently_completed": [
+                {
+                    "repo": "example-org/code",
+                    "number": 202,
+                    "title": "Ship session routing",
+                    "url": "https://github.com/example-org/code/pull/202",
+                    "kind": "pr",
+                    "state": "merged",
+                }
+            ],
+        },
+        "priority_sections": [
+            {"name": "Every Code", "items": [{"repo": "example-org/code", "title": "Choose auth direction"}], "recently_completed": []}
+        ],
+        "limitations": ["Read-only mode"],
+        "releases": [],
+        "workflows": [
+            {"repo": "example-org/code", "name": "CI", "status": "completed", "conclusion": "success"}
+        ],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "# GitHub Planning Brief for Chris" in rendered
+    assert "## Planning Summary" in rendered
+    assert "## Today's Priorities" in rendered
+    assert "## Active Work" in rendered
+    assert "## Focus Areas" in rendered
+    assert "## Decisions and Risks" in rendered
+    assert "## Velocity" in rendered
+    assert "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction" in rendered
+    assert "Ship session routing" in rendered
+    assert "Automation was green" in rendered
+
+
+def test_render_payload_rejects_unknown_markdown_layout() -> None:
+    with pytest.raises(ValueError):
+        github_work_rollup.render_payload({"ok": True, "layout": "standard"}, "markdown")
 
 
 def test_render_executive_brief_markdown() -> None:
@@ -980,9 +1146,10 @@ def test_render_executive_brief_markdown() -> None:
     assert "## Source Notes" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "3 completed item(s)" in rendered
+    assert "while 3 item(s) were completed" in rendered
     assert "1 release(s)" in rendered
-    assert "Automation needs a look" in rendered
+    assert "The main visible outcomes were" in rendered
+    assert "Automation needs attention" in rendered
     assert "closed 1 unmerged change(s)" in rendered
     assert "Every Code / Skills" in rendered
     assert "Are the Every Code and skill changes aligned" in rendered

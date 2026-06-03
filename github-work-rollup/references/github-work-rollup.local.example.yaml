@@ -6,7 +6,7 @@
 timezone: America/New_York
 default_window: 24h
 mode: standup
-layout: standard # Choices: standard, executive
+layout: operator  # Choices: operator, manager, executive
 report_recipient: example team
 subjects:
   - example-user
