@@ -757,7 +757,17 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
                     "name": "First Release",
                     "createdAt": "2026-06-02T10:00:00Z",
                     "publishedAt": "2026-06-02T10:00:00Z",
+                    "isDraft": False,
+                    "isPrerelease": False,
                     "url": "https://github.com/example-org/example-repo/releases/tag/v1.0.0"
+                },
+                {
+                    "tagName": "v1.1.0-beta",
+                    "name": "Beta Release",
+                    "createdAt": "2026-06-02T10:00:00Z",
+                    "publishedAt": "2026-06-02T10:00:00Z",
+                    "isDraft": False,
+                    "isPrerelease": True,
                 },
                 # Old release, should be filtered out
                 {
@@ -765,6 +775,8 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
                     "name": "Alpha Release",
                     "createdAt": "2026-05-01T10:00:00Z",
                     "publishedAt": "2026-05-01T10:00:00Z",
+                    "isDraft": False,
+                    "isPrerelease": False,
                     "url": "https://github.com/example-org/example-repo/releases/tag/v0.1.0"
                 }
             ])
@@ -774,8 +786,17 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
                     "name": "Deploy production",
                     "status": "completed",
                     "conclusion": "success",
-                    "createdAt": "2026-06-02T11:00:00Z",
+                    "createdAt": "2026-06-01T15:00:00Z",
+                    "updatedAt": "2026-06-02T11:00:00Z",
                     "url": "https://github.com/example-org/example-repo/actions/runs/1"
+                },
+                {
+                    "name": "Queued deploy",
+                    "status": "in_progress",
+                    "conclusion": "",
+                    "createdAt": "2026-06-02T11:00:00Z",
+                    "updatedAt": "2026-06-02T11:30:00Z",
+                    "url": "https://github.com/example-org/example-repo/actions/runs/2"
                 }
             ])
         raise AssertionError(f"unexpected command: {command}")
@@ -790,9 +811,44 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
     assert payload["releases"][0]["url"] == "https://github.com/example-org/example-repo/releases/tag/v1.0.0"
     assert len(payload["workflows"]) == 1
     assert payload["workflows"][0]["name"] == "Deploy production"
+    assert payload["workflows"][0]["completed_at"] == "2026-06-02T11:00:00Z"
     release_commands = [command for command in calls if command[1:3] == ["release", "list"]]
     assert release_commands
     assert "url" not in release_commands[0][release_commands[0].index("--json") + 1].split(",")
+    assert "--exclude-drafts" in release_commands[0]
+    assert "--exclude-pre-releases" in release_commands[0]
+
+
+def test_collect_workflows_filters_by_completion_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return completed(
+            command,
+            [
+                {
+                    "name": "Long running deploy",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "createdAt": "2026-06-01T10:00:00Z",
+                    "updatedAt": "2026-06-02T15:00:00Z",
+                    "url": "https://github.com/example-org/example-repo/actions/runs/1",
+                },
+                {
+                    "name": "Old completed deploy",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "createdAt": "2026-06-01T10:00:00Z",
+                    "updatedAt": "2026-06-01T12:00:00Z",
+                    "url": "https://github.com/example-org/example-repo/actions/runs/2",
+                },
+            ],
+        )
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="executive"), {})
+
+    rows = github_work_rollup.collect_repo_workflows("example-org/example-repo", settings)
+
+    assert [row["name"] for row in rows] == ["Long running deploy"]
 
 
 def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -969,6 +1025,35 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
     assert "## Needs Example leader's Attention" in rendered
     assert "how Example leader expects" in rendered
     assert "Justin" not in rendered
+
+
+def test_render_executive_brief_does_not_call_neutral_automation_green() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {"recently_completed": []},
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [
+            {
+                "repo": "example-org/example-repo",
+                "name": "CodeQL",
+                "status": "completed",
+                "conclusion": "skipped",
+                "completed_at": "2026-06-02T10:00:00Z",
+            }
+        ],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "Automation had 1 completed workflow run(s), but none reported success." in rendered
+    assert "Automation was green" not in rendered
 
 
 if __name__ == "__main__":

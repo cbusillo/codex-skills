@@ -412,8 +412,10 @@ def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str,
         repo,
         "--limit",
         "10",
+        "--exclude-drafts",
+        "--exclude-pre-releases",
         "--json",
-        "tagName,name,createdAt,publishedAt",
+        "tagName,name,createdAt,publishedAt,isDraft,isPrerelease",
     ]
     result = run(command)
     if result.returncode != 0:
@@ -428,6 +430,8 @@ def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str,
         return []
     for entry in entries:
         if not isinstance(entry, dict):
+            continue
+        if entry.get("isDraft") or entry.get("isPrerelease"):
             continue
         pub_str = entry.get("publishedAt") or entry.get("createdAt")
         pub_dt = parse_timestamp(pub_str)
@@ -456,7 +460,7 @@ def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str
         "--limit",
         "20",
         "--json",
-        "name,status,conclusion,createdAt,url",
+        "name,status,conclusion,createdAt,updatedAt,url",
     ]
     result = run(command)
     if result.returncode != 0:
@@ -472,15 +476,19 @@ def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        created_str = entry.get("createdAt")
-        created_dt = parse_timestamp(created_str)
-        if created_dt and window.since <= created_dt <= window.until:
+        status = str(entry.get("status") or "").casefold()
+        if status != "completed":
+            continue
+        completed_str = entry.get("updatedAt") or entry.get("createdAt")
+        completed_dt = parse_timestamp(completed_str)
+        if completed_dt and window.since <= completed_dt <= window.until:
             rows.append({
                 "repo": repo,
                 "name": entry.get("name"),
-                "status": entry.get("status"),
+                "status": status,
                 "conclusion": entry.get("conclusion"),
-                "created_at": created_str,
+                "created_at": entry.get("createdAt"),
+                "completed_at": completed_str,
                 "url": entry.get("url"),
             })
     return rows
@@ -1113,8 +1121,10 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
                 lines.append(
                     f"Automation needs a look: {workflow_success} successful and {workflow_failed} failed workflow run(s) were collected."
                 )
-            else:
+            elif workflow_success:
                 lines.append(f"Automation was green in the collected sample: {workflow_success} successful run(s).")
+            else:
+                lines.append(f"Automation had {workflow_total} completed workflow run(s), but none reported success.")
     else:
         lines.append("No active work or material changes were collected for the configured scope in this window.")
 
