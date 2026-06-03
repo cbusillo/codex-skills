@@ -1,11 +1,14 @@
 # People Migration
 
-Use this guide to consolidate private person facts into `.local/people.yaml`
-without leaking local identity data into tracked files.
+Use this guide to consolidate private person facts into a scoped people index
+without leaking local identity data into tracked files. Durable identity context
+should usually live in `$CODE_HOME/skills/.local/people.yaml`, with repo-local
+`.local/people.yaml` reserved for project-specific contacts, supplements, or
+overrides.
 
 ## Move Into People
 
-Move durable facts about humans into `.local/people.yaml`:
+Move durable facts about humans into the global/user people index by default:
 
 - names, nicknames, aliases, and common misspellings
 - GitHub, Discord, Slack, email, phone, website, and similar contact surfaces
@@ -19,8 +22,8 @@ Move durable facts about humans into `.local/people.yaml`:
   is unknown
 - short notes that help agents resolve identity or choose the right contact path
 
-Move longer private context into `.local/people/<id>.md` only when YAML would
-become hard to read.
+Move longer private context into a scoped `people/<id>.md` details file only
+when YAML would become hard to read.
 
 ## Keep Elsewhere
 
@@ -40,18 +43,28 @@ Keep workflow and repo policy in their owning systems:
 
 ## Suggested Cleanup
 
-1. Create `.local/people.yaml` from `people/references/people.local.example.yaml`.
-2. Add one person at a time with a stable `id` and minimal aliases/contacts.
+1. Add one person at a time with a stable `id` and minimal aliases/contacts:
+
+   ```sh
+   uv run people/scripts/people_index.py upsert \
+     --id example-person \
+     --display-name "Example Person"
+   ```
+
+2. Use `--scope repo` only when the entry is truly project-specific or should
+   override global/user context for the active repository.
 3. Move private handle-to-name facts out of local planning prose.
 4. Shrink local planning prose to workflow policy and point identity lookups to
-   `.local/people.yaml`.
+   the `people` resolver.
 5. Keep existing GitHub planning routing working while adding `person:<id>` refs
    where helpers support them.
 6. Audit memories and rollout-friction findings for stale person facts; promote
-   durable facts to `.local/people.yaml` only after verification.
+   durable facts to the global/user people index only after verification.
 7. Scan local repos for fields like `owner`, `manager`, `reviewer`, `assignee`,
    `contact`, and `handoff`. Migrate only values that identify a real private
    person; leave conceptual or path-like fields in place.
+8. Move broadly useful entries out of repo-local people files into the
+   global/user index so they follow the agent across repositories.
 
 ## Public-Safety Check
 
