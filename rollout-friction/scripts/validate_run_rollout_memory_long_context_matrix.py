@@ -156,13 +156,95 @@ def test_command_error_message_uses_stdout() -> None:
         raise AssertionError(f"expected stdout in command error message: {message}")
 
 
+def test_request_code_llm_writes_prompt_to_message_file() -> None:
+    import unittest.mock
+
+    module = load_module()
+    prompt = "candidate review data\n" * 500
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        message_file_index = command.index("--message-file")
+        prompt_path = Path(command[message_file_index + 1])
+        captured["command"] = command
+        captured["prompt_content"] = prompt_path.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout='{"reviewed_candidate_ids": []}', stderr="")
+
+    args = Namespace(schema_file=None, max_seconds=30.0)
+    with unittest.mock.patch.object(module.subprocess, "run", fake_run):
+        content = module.request_code_llm("gpt-5.4", prompt, args)
+
+    if content != '{"reviewed_candidate_ids": []}':
+        raise AssertionError(f"unexpected extracted content: {content}")
+    if captured.get("prompt_content") != prompt:
+        raise AssertionError("code llm request should write the full prompt to --message-file")
+    command = captured.get("command")
+    if not isinstance(command, list) or "--message-file" not in command:
+        raise AssertionError(f"code llm request should use --message-file: {captured}")
+
+
+def test_request_code_llm_avoids_agent_context_file_transport() -> None:
+    import unittest.mock
+
+    module = load_module()
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        for forbidden in ("agent.create", "context_files", "context-files", "--context-file", "--context-files"):
+            if forbidden in command:
+                raise AssertionError(f"code llm matrix runs must not use {forbidden}: {command}")
+        if "--message-file" not in command:
+            raise AssertionError(f"code llm matrix runs must pass prompt via --message-file: {command}")
+        return subprocess.CompletedProcess(command, 0, stdout='{"reviewed_candidate_ids": []}', stderr="")
+
+    args = Namespace(schema_file=None, max_seconds=30.0)
+    with unittest.mock.patch.object(module.subprocess, "run", fake_run):
+        content = module.request_code_llm("gpt-5.4", "some prompt content", args)
+
+    if content != '{"reviewed_candidate_ids": []}':
+        raise AssertionError(f"unexpected extracted content: {content}")
+
+
+def test_request_claude_uses_stdin_without_agent_context_files() -> None:
+    import unittest.mock
+
+    module = load_module()
+    prompt = "candidate review data\n" * 50
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["input"] = kwargs.get("input")
+        for forbidden in ("agent.create", "context_files", "context-files", "--context-file", "--context-files"):
+            if forbidden in command:
+                raise AssertionError(f"claude matrix runs must not use {forbidden}: {command}")
+        if "--message-file" in command or "--message" in command:
+            raise AssertionError(f"claude matrix runs should pass prompt via stdin, not message flags: {command}")
+        stdout = json.dumps({"result": '{"reviewed_candidate_ids": []}', "is_error": False})
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    args = Namespace(schema_file=None, max_seconds=30.0, anthropic_max_budget_usd=3.0)
+    with unittest.mock.patch.object(module.subprocess, "run", fake_run):
+        content = module.request_claude("claude-sonnet-4-6[1m]", prompt, args)
+
+    if content != '{"reviewed_candidate_ids": []}':
+        raise AssertionError(f"unexpected extracted content: {content}")
+    if captured.get("input") != prompt:
+        raise AssertionError(f"claude matrix runs should send the prompt via stdin: {captured}")
+
+
 def test_code_llm_command_uses_message_file() -> None:
     module = load_module()
     command = module.code_llm_command("gpt-5.4", Path("prompt.txt"), ["--schema-file", "schema.json"])
+    if command[:3] != ["code", "llm", "request"]:
+        raise AssertionError(f"code llm command should use the direct request CLI: {command}")
     if "--message-file" not in command or "--message" in command:
         raise AssertionError(f"code llm command should use file-backed prompt input: {command}")
-    if "prompt.txt" not in command:
-        raise AssertionError(f"prompt path should be passed to code llm command: {command}")
+    message_file_index = command.index("--message-file")
+    if command[message_file_index + 1] != "prompt.txt":
+        raise AssertionError(f"prompt path should immediately follow --message-file: {command}")
+    for forbidden in ("agent.create", "context_files", "context-files", "--context-file", "--context-files"):
+        if forbidden in command:
+            raise AssertionError(f"code llm matrix runs must not use {forbidden}: {command}")
 
 
 def test_persists_matrix_output_artifacts() -> None:
@@ -294,6 +376,9 @@ def main() -> int:
     test_prompt_too_large_row()
     test_classifies_access_and_budget_errors()
     test_command_error_message_uses_stdout()
+    test_request_code_llm_writes_prompt_to_message_file()
+    test_request_code_llm_avoids_agent_context_file_transport()
+    test_request_claude_uses_stdin_without_agent_context_files()
     test_code_llm_command_uses_message_file()
     test_persists_matrix_output_artifacts()
     test_default_schema_is_strict_object()
