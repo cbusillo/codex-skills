@@ -32,6 +32,9 @@ DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
 REPORT_MODES = {"activity", "backlog", "standup"}
+REPORT_LAYOUTS = {"standard", "executive"}
+REPORT_LAYOUT_ALIASES = {"brief": "executive"}
+REPORT_LAYOUT_CHOICES = REPORT_LAYOUTS | set(REPORT_LAYOUT_ALIASES)
 BUCKET_ORDER = [
     "needs_attention",
     "blocked",
@@ -66,9 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--since", help="UTC ISO timestamp for window start.")
     parser.add_argument("--until", help="UTC ISO timestamp for window end.")
     parser.add_argument("--timezone", help="IANA timezone label for report display metadata.")
+    parser.add_argument("--report-recipient", help="Human-facing report recipient label.")
     parser.add_argument("--mode", choices=sorted(REPORT_MODES), help="activity, backlog, or standup.")
     parser.add_argument("--summary-level", choices=sorted(SUMMARY_LEVELS), help="concise, standard, or detailed.")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    parser.add_argument("--layout", choices=sorted(REPORT_LAYOUT_CHOICES), help="standard or executive layout style.")
     parser.add_argument("--output", type=Path, help="Write rendered output to this path.")
     parser.add_argument("--limit-repos", type=int, default=25)
     parser.add_argument("--limit-items", type=int, default=50)
@@ -126,16 +131,21 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
     mode = args.mode or str(config.get("mode") or "activity")
     if mode not in REPORT_MODES:
         raise SystemExit(f"error: mode must be one of {', '.join(sorted(REPORT_MODES))}")
+    layout = getattr(args, "layout", None) or str(config.get("layout") or "standard")
+    layout = REPORT_LAYOUT_ALIASES.get(layout, layout)
+    if layout not in REPORT_LAYOUTS:
+        raise SystemExit(f"error: layout must be one of {', '.join(sorted(REPORT_LAYOUTS))}")
     return {
         "config_path": str(args.config) if args.config else None,
         "timezone": args.timezone or str(config.get("timezone") or "UTC"),
-        "report_recipient": str(config.get("report_recipient") or "GitHub work"),
+        "report_recipient": args.report_recipient or str(config.get("report_recipient") or "GitHub work"),
         "window": window,
         "repositories": repos,
         "repo_owners": owners,
         "subjects": subjects,
         "mode": mode,
         "summary_level": summary_level,
+        "layout": layout,
         "output_path": str(args.output or config.get("output_path") or ""),
         "include_external_activity": bool(args.include_external_activity or config.get("include_external_activity")),
         "include_bots": bool(args.include_bots or config.get("include_bots")),
@@ -318,7 +328,16 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         items.extend(collect_subject_items(settings))
     items = deduplicate_items(items)
     buckets = bucket_items(items, settings)
+
+    releases = []
+    workflows = []
+    if settings.get("layout") == "executive":
+        for repo in repos:
+            releases.extend(collect_repo_releases(repo, settings))
+            workflows.extend(collect_repo_workflows(repo, settings))
+
     collection_warnings = collection_warnings_from(settings)
+
     return {
         "ok": True,
         "schema_version": 1,
@@ -331,6 +350,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "subjects": settings["subjects"],
         "summary_level": settings["summary_level"],
         "mode": settings["mode"],
+        "layout": settings["layout"],
         "collection_lanes": collection_lanes(settings),
         "preflight": preflight,
         "buckets": buckets,
@@ -338,6 +358,8 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "display_window": display_window_json(settings["window"], settings["timezone"]),
         "priority_sections": priority_sections(items, settings),
         "limitations": [*limitations(settings, repos), *collection_warnings],
+        "releases": releases,
+        "workflows": workflows,
     }
 
 
@@ -379,6 +401,89 @@ def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, An
         *collect_open_items(repo, "issue", settings),
         *collect_issues(repo, "closed", settings),
     ]
+
+
+def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    command = [
+        GH,
+        "release",
+        "list",
+        "--repo",
+        repo,
+        "--limit",
+        "10",
+        "--json",
+        "tagName,name,createdAt,publishedAt",
+    ]
+    result = run(command)
+    if result.returncode != 0:
+        add_collection_warning(settings, f"Could not collect releases for {repo}: {trim(result.stderr or result.stdout)}")
+        return []
+
+    rows = []
+    window = settings["window"]
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pub_str = entry.get("publishedAt") or entry.get("createdAt")
+        pub_dt = parse_timestamp(pub_str)
+        if pub_dt and window.since <= pub_dt <= window.until:
+            rows.append({
+                "repo": repo,
+                "tag_name": entry.get("tagName"),
+                "name": entry.get("name"),
+                "published_at": pub_str,
+                "url": release_url(repo, entry.get("tagName")),
+            })
+    return rows
+
+
+def release_url(repo: str, tag_name: object) -> str | None:
+    return f"https://github.com/{repo}/releases/tag/{tag_name}" if isinstance(tag_name, str) and tag_name else None
+
+
+def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    command = [
+        GH,
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--limit",
+        "20",
+        "--json",
+        "name,status,conclusion,createdAt,url",
+    ]
+    result = run(command)
+    if result.returncode != 0:
+        add_collection_warning(settings, f"Could not collect workflow runs for {repo}: {trim(result.stderr or result.stdout)}")
+        return []
+
+    rows = []
+    window = settings["window"]
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        created_str = entry.get("createdAt")
+        created_dt = parse_timestamp(created_str)
+        if created_dt and window.since <= created_dt <= window.until:
+            rows.append({
+                "repo": repo,
+                "name": entry.get("name"),
+                "status": entry.get("status"),
+                "conclusion": entry.get("conclusion"),
+                "created_at": created_str,
+                "url": entry.get("url"),
+            })
+    return rows
 
 
 def collect_open_items(repo: str, kind: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -822,7 +927,266 @@ def render_payload(payload: dict[str, Any], fmt: str) -> str:
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if not payload.get("ok"):
         return render_failure(payload)
+    if payload.get("layout") == "executive":
+        return render_executive_brief_markdown(payload)
     return render_markdown(payload)
+
+
+def format_brief_datetime(dt: datetime, tz_name: str) -> str:
+    display_tz: tzinfo
+    try:
+        display_tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        display_tz = timezone.utc
+    localized = dt.astimezone(display_tz)
+    formatted = localized.strftime("%b %d, %Y, %I:%M %p %Z")
+    formatted = re.sub(r"\b([A-Z][a-z]{2}) 0(\d)\b", r"\1 \2", formatted)
+    formatted = formatted.replace(", 0", ", ")
+    return formatted
+
+
+def empty_repo_data() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "pr_merged": [],
+        "pr_open": [],
+        "pr_closed": [],
+        "issue_open": [],
+        "issue_closed": [],
+        "releases": [],
+        "workflows": [],
+        "attention": [],
+    }
+
+
+def get_repo_data(payload: dict[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    repos: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for repo in payload.get("repositories") or []:
+        repos[repo] = empty_repo_data()
+
+    buckets = payload.get("buckets") or {}
+    for bucket, items in buckets.items():
+        for item in items:
+            repo = item.get("repo")
+            if not repo:
+                continue
+            if repo not in repos:
+                repos[repo] = empty_repo_data()
+
+            kind = item.get("kind")
+            state = item.get("state")
+            if bucket == "needs_attention":
+                repos[repo]["attention"].append(item)
+
+            if kind == "pr":
+                if state == "merged":
+                    repos[repo]["pr_merged"].append(item)
+                elif state == "closed":
+                    repos[repo]["pr_closed"].append(item)
+                else:
+                    repos[repo]["pr_open"].append(item)
+            elif kind == "issue":
+                if state == "closed":
+                    repos[repo]["issue_closed"].append(item)
+                else:
+                    repos[repo]["issue_open"].append(item)
+
+    for release in payload.get("releases") or []:
+        repo = release.get("repo")
+        if repo in repos:
+            repos[repo]["releases"].append(release)
+
+    for workflow in payload.get("workflows") or []:
+        repo = workflow.get("repo")
+        if repo in repos:
+            repos[repo]["workflows"].append(workflow)
+
+    return repos
+
+
+def repo_short_name(repo: str) -> str:
+    return repo.split("/", 1)[1] if "/" in repo else repo
+
+
+def repo_display_list(repos: list[str], limit: int = 4) -> str:
+    names = [f"`{repo_short_name(repo)}`" for repo in repos]
+    if len(names) <= limit:
+        return ", ".join(names)
+    return ", ".join(names[:limit]) + f", and {len(names) - limit} more"
+
+
+def total_repo_count(repo_data: dict[str, dict[str, list[dict[str, Any]]]], key: str) -> int:
+    return sum(len(data[key]) for data in repo_data.values())
+
+
+def active_repo_names(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> list[str]:
+    return [
+        repo
+        for repo, data in repo_data.items()
+        if any(
+            data[key]
+            for key in ("pr_merged", "pr_closed", "pr_open", "issue_open", "issue_closed", "releases", "workflows")
+        )
+    ]
+
+
+def linked_item_ref(item: dict[str, Any]) -> str:
+    repo = str(item.get("repo") or "")
+    number = item.get("number")
+    title = str(item.get("title") or "untitled")
+    url = item.get("url")
+    ref = f"{repo_short_name(repo)}#{number}" if number else repo_short_name(repo)
+    return f"[{ref}]({url}) {title}" if url else f"{ref} {title}"
+
+
+def compact_titles(items: list[dict[str, Any]], limit: int = 3) -> str:
+    titles = [str(item.get("title") or "untitled") for item in items[:limit]]
+    if not titles:
+        return "general updates"
+    if len(items) > limit:
+        titles.append(f"{len(items) - limit} more")
+    return "; ".join(titles)
+
+
+def repo_outcome_sentence(repo: str, data: dict[str, list[dict[str, Any]]]) -> str | None:
+    pieces = []
+    if data["releases"]:
+        tags = ", ".join(str(release.get("tag_name") or release.get("name") or "release") for release in data["releases"][:3])
+        pieces.append(f"published {tags}")
+    if data["pr_merged"]:
+        pieces.append(f"merged {len(data['pr_merged'])} change(s) around {compact_titles(data['pr_merged'], 2)}")
+    if data["pr_closed"]:
+        pieces.append(f"closed {len(data['pr_closed'])} unmerged change(s)")
+    if data["issue_closed"]:
+        pieces.append(f"closed {len(data['issue_closed'])} issue(s)")
+    if data["pr_open"] or data["issue_open"]:
+        pieces.append(f"has {len(data['pr_open']) + len(data['issue_open'])} open work item(s) still visible")
+    if not pieces:
+        return None
+    return f"`{repo_short_name(repo)}` " + "; ".join(pieces) + "."
+
+
+def workflow_health_summary(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> tuple[int, int, int]:
+    total = failed = successful = 0
+    for data in repo_data.values():
+        for workflow in data["workflows"]:
+            total += 1
+            conclusion = str(workflow.get("conclusion") or "").casefold()
+            if conclusion == "failure":
+                failed += 1
+            elif conclusion == "success":
+                successful += 1
+    return total, successful, failed
+
+
+def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
+    tz_name = payload["timezone"]
+    window = payload["window"]
+    since_dt = parse_timestamp(window["since"]) or datetime.now(timezone.utc)
+    until_dt = parse_timestamp(window["until"]) or datetime.now(timezone.utc)
+    since_str = format_brief_datetime(since_dt, tz_name)
+    until_str = format_brief_datetime(until_dt, tz_name)
+    repo_data = get_repo_data(payload)
+    active_repos = active_repo_names(repo_data)
+    recipient = str(payload.get("report_recipient") or "the recipient")
+    completed = total_repo_count(repo_data, "pr_merged") + total_repo_count(repo_data, "pr_closed") + total_repo_count(repo_data, "issue_closed")
+    open_work = total_repo_count(repo_data, "pr_open") + total_repo_count(repo_data, "issue_open")
+    release_count = total_repo_count(repo_data, "releases")
+    workflow_total, workflow_success, workflow_failed = workflow_health_summary(repo_data)
+
+    lines = [
+        f"# Daily GitHub Brief for {payload['report_recipient']}",
+        "",
+        f"Window: {since_str} to {until_str}",
+        "",
+        "## Executive Summary",
+        "",
+    ]
+
+    if active_repos:
+        lines.append(
+            f"Work was active across {len(active_repos)} repo(s): {repo_display_list(active_repos)}. "
+            f"The visible velocity was {completed} completed item(s), {open_work} open item(s), "
+            f"and {release_count} release(s) in the collected window."
+        )
+        if workflow_total:
+            if workflow_failed:
+                lines.append(
+                    f"Automation needs a look: {workflow_success} successful and {workflow_failed} failed workflow run(s) were collected."
+                )
+            else:
+                lines.append(f"Automation was green in the collected sample: {workflow_success} successful run(s).")
+    else:
+        lines.append("No active work or material changes were collected for the configured scope in this window.")
+
+    attention_items: list[dict[str, Any]] = []
+    for repo, data in repo_data.items():
+        for item in data["attention"]:
+            attention_items.append({**item, "repo": repo})
+
+    if attention_items:
+        lines.extend(["", f"## Needs {recipient}'s Attention", ""])
+        for item in attention_items[:5]:
+            handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
+            lines.append(f"- {linked_item_ref(item)}.{handoff}")
+
+    lines.extend(["", "## What Changed", ""])
+    change_lines = [sentence for repo, data in sorted(repo_data.items()) if (sentence := repo_outcome_sentence(repo, data))]
+    if change_lines:
+        lines.extend(f"- {line}" for line in change_lines[:8])
+    else:
+        lines.append("- No meaningful repo changes were collected in this window.")
+
+    focus_sections = payload.get("priority_sections") or []
+    if focus_sections:
+        lines.extend(["", "## Every Code and Skills", ""])
+        for section in focus_sections:
+            name = str(section.get("name") or "Priority area")
+            items = section.get("items") or []
+            completed_items = section.get("recently_completed") or []
+            parts = []
+            if completed_items:
+                parts.append(f"{len(completed_items)} recent completion(s)")
+            if items:
+                parts.append(f"{len(items)} open item(s)")
+            summary = ", ".join(parts) if parts else "no active signal in the collected window"
+            example = compact_titles((completed_items or items), 2) if completed_items or items else ""
+            suffix = f" Themes: {example}." if example else ""
+            lines.append(f"- **{name}**: {summary}.{suffix}")
+
+    risk_lines: list[str] = []
+    for repo, data in repo_data.items():
+        failed = [workflow for workflow in data["workflows"] if str(workflow.get("conclusion") or "").casefold() == "failure"]
+        if failed:
+            risk_lines.append(f"`{repo_short_name(repo)}` had {len(failed)} failed workflow run(s).")
+        if data["attention"]:
+            risk_lines.append(f"`{repo_short_name(repo)}` has {len(data['attention'])} item(s) that need explicit attention.")
+    if risk_lines:
+        lines.extend(["", "## Decisions or Risks", ""])
+        lines.extend(f"- {line}" for line in risk_lines[:6])
+
+    lines.extend(["", "## Velocity Snapshot", ""])
+    lines.append(f"- Completed: {completed} item(s) collected in-window.")
+    lines.append(f"- Open work visible now: {open_work} item(s).")
+    lines.append(f"- Releases: {release_count} collected in-window.")
+    if workflow_total:
+        lines.append(f"- Automation: {workflow_success} successful and {workflow_failed} failed workflow run(s) collected.")
+
+    lines.extend(["", "## Conversation Starters", ""])
+    if risk_lines:
+        lines.append("- Do any of the flagged risks need a decision today?")
+    if focus_sections:
+        lines.append(f"- Are the Every Code and skill changes aligned with how {recipient} expects to use the product this week?")
+    if open_work:
+        lines.append("- Which visible open work should stay active versus move to backlog?")
+    if not risk_lines and not open_work:
+        lines.append("- Is there any follow-up outside GitHub that should be captured before tomorrow's brief?")
+
+    limitations_list = payload.get("limitations") or []
+    if limitations_list:
+        lines.extend(["", "## Source Notes"])
+        lines.extend(f"- {item}" for item in limitations_list)
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def render_markdown(payload: dict[str, Any]) -> str:
