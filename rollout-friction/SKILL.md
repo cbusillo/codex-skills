@@ -261,6 +261,27 @@ apply memory updates by itself.
    `timeout`, and `failed_validation` as first-class results to retry or fix, not
    as successful reviews.
 
+## Long-Context Prompt Path
+
+For rollout/model matrix evaluation, use the provided rollout-friction scripts
+and their script-owned one-shot transports. For `code-llm` variants, that means
+the strict `code llm request --message-file` path; other matrix providers must
+stay behind the matrix runner's bounded provider-specific transport. Do not use
+`agent.create` `context_files` to pass rollout prompt payloads to agents for
+matrix/model evaluation.
+
+`context_files` snapshots file contents directly into a spawned agent prompt.
+Use it only for deliberate agent-context snapshots, and require an explicit
+large `context_budget_tokens` when a large file is truly intended. For rollout
+evaluation, prefer `run_rollout_memory_long_context_matrix.py` so prompt content,
+budgets, validation, and output artifacts stay on the controlled one-shot path.
+
+The trusted-local batch review path is different: `review_rollout_memory_batches.py`
+may send approved prompt content directly in the local OpenAI-compatible request
+body to a trusted localhost or trusted-LAN model. Keep that local-review path
+bounded with `--max-input-chars` and do not substitute remote agents or
+`context_files` for it.
+
 ## Friction Signals
 
 Look for concrete patterns, not vibes:

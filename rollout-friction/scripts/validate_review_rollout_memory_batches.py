@@ -110,6 +110,28 @@ def test_chat_rejects_oversize_prompts() -> None:
     raise AssertionError("expected oversized prompt to be rejected")
 
 
+def test_local_review_payload_context_stuffs_trusted_local_prompt() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        args = oversize_args(Path(tmp))
+        args.max_input_chars = 1_000
+        prompt = json.dumps({"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "Remember x."}]})
+        payload = module.local_review_payload(prompt, args, retry_attempt=1)
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or len(messages) != 2:
+        raise AssertionError(f"local review should send system and user messages: {payload}")
+    system_message = messages[0]
+    if system_message.get("role") != "system":
+        raise AssertionError(f"local review should include a system message first: {payload}")
+    user_message = messages[1]
+    if user_message.get("role") != "user" or user_message.get("content") != prompt:
+        raise AssertionError(f"local trusted review should inline prompt content: {payload}")
+    serialized = json.dumps(payload)
+    for forbidden in ("message_file", "message-file", "context_files", "context-files"):
+        if forbidden in serialized:
+            raise AssertionError(f"local trusted review should not use {forbidden}: {payload}")
+
+
 def test_review_batch_records_oversize_prompt_failure() -> None:
     module = load_module()
     batch = {"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 50}]}
@@ -131,6 +153,7 @@ def main() -> int:
     test_split_batch_halves_candidates()
     test_batch_label_for_path()
     test_chat_rejects_oversize_prompts()
+    test_local_review_payload_context_stuffs_trusted_local_prompt()
     test_review_batch_records_oversize_prompt_failure()
     print("ok validate-review-rollout-memory-batches")
     return 0

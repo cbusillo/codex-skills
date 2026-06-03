@@ -227,19 +227,7 @@ def chat(batch: dict[str, Any], args: argparse.Namespace, retry_attempt: int) ->
         raise PromptTooLargeError(
             f"prompt is {len(prompt)} chars, exceeds --max-input-chars={args.max_input_chars}; split the batch"
         )
-    system = args.system
-    if retry_attempt > 1:
-        system += " Previous output was incomplete. Re-review the batch and cover every candidate_id."
-    payload = {
-        "model": args.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": args.temperature,
-        "max_tokens": args.max_tokens,
-        "stream": False,
-    }
+    payload = local_review_payload(prompt, args, retry_attempt)
     try:
         response = post_json(f"{args.base_url.rstrip('/')}/chat/completions", payload, args.timeout)
     except LocalReviewError as exc:
@@ -252,6 +240,22 @@ def chat(batch: dict[str, Any], args: argparse.Namespace, retry_attempt: int) ->
         "max_tokens": args.max_tokens,
         "content": content,
         "error": None if content else "endpoint returned no assistant content",
+    }
+
+
+def local_review_payload(prompt: str, args: argparse.Namespace, retry_attempt: int) -> dict[str, Any]:
+    system = args.system
+    if retry_attempt > 1:
+        system += " Previous output was incomplete. Re-review the batch and cover every candidate_id."
+    return {
+        "model": args.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+        "stream": False,
     }
 
 
