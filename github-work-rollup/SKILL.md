@@ -84,6 +84,12 @@ Supported config fields:
 - `mode`: `activity`, `backlog`, or `standup`
 - `layout`: `operator`, `manager`, or `executive`
 - `output_path`
+- `collection_limit_items`: safety ceiling for PR/issue rows collected per
+  repo/state before rendering trims examples
+- `release_collection_limit`: safety ceiling for release rows collected per repo
+  before window filtering
+- `workflow_collection_limit`: safety ceiling for workflow run rows collected per
+  repo before window filtering
 - `include_external_activity`
 - `include_bots`
 - `noise_filters`
@@ -108,6 +114,12 @@ Modes:
 Repository open-work collection follows the selected mode. Subject search stays
 window-bound in all modes so broad author/commenter/mention scans remain a
 recent activity signal rather than an unbounded people search.
+
+`limit_items` is a display control, not a collection control. Counts and
+executive/manager volume language come from the collected rows, then layouts
+trim examples for readability. The separate collection-limit fields are safety
+ceilings only; if one is reached, the report must include a source note saying
+the relevant counts may be incomplete.
 
 Layouts:
 
