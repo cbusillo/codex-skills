@@ -46,6 +46,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "until": "2026-06-02T16:00:00Z",
         "timezone": None,
         "report_recipient": None,
+        "people_index": None,
         "layout": None,
         "mode": None,
         "summary_level": None,
@@ -64,6 +65,65 @@ def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess
     if command[1:3] in (["release", "list"], ["run", "list"]):
         return completed(command, [])
     return None
+
+
+def write_people_index(tmp_path: Path) -> Path:
+    path = tmp_path / "people.yaml"
+    path.write_text(
+        """
+---
+version: 1
+people:
+  - id: example-owner
+    display_name: Example Owner
+    preferred_reference: Owner
+    aliases:
+      - Example Owner
+      - owner-handle
+    relationship:
+      kind: manager
+      roles:
+        - owner
+        - planning-manager
+    organization:
+      company: Example Company
+      scale: Processes many devices each year.
+    contacts:
+      github:
+        username: owner-handle
+    preferences:
+      communication_style:
+        technical_depth: low-to-medium
+        framing: big-picture-first
+        detail_preference: outcomes, cost, risk, sequencing, and customer impact
+        report_guidance: Aim for one page normally and two pages on heavy days.
+    trust:
+      handling: Verify production data safety before accepting good enough.
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_ambiguous_people_index(tmp_path: Path) -> Path:
+    path = tmp_path / "ambiguous-people.yaml"
+    path.write_text(
+        """
+---
+version: 1
+people:
+  - id: first-owner
+    display_name: First Owner
+    aliases:
+      - Owner
+  - id: second-owner
+    display_name: Second Owner
+    aliases:
+      - Owner
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None:
@@ -100,6 +160,41 @@ def test_resolve_settings_cli_overrides_config_labels() -> None:
 
     assert settings["mode"] == "standup"
     assert settings["report_recipient"] == "Justin"
+
+
+def test_resolve_recipient_profile_matches_people_index(tmp_path: Path) -> None:
+    people_index = write_people_index(tmp_path)
+    settings = github_work_rollup.resolve_settings(
+        args(report_recipient="owner-handle", people_index=people_index),
+        {},
+    )
+
+    profile = github_work_rollup.resolve_recipient_profile(settings)
+
+    assert profile["preferred_reference"] == "Owner"
+    assert profile["company"] == "Example Company"
+    assert profile["technical_depth"] == "low-to-medium"
+    assert profile["framing"] == "big-picture-first"
+
+
+def test_resolve_recipient_profile_missing_index_is_nonfatal(tmp_path: Path) -> None:
+    settings = github_work_rollup.resolve_settings(
+        args(report_recipient="Example Owner", people_index=tmp_path / "missing.yaml"),
+        {},
+    )
+
+    assert github_work_rollup.resolve_recipient_profile(settings) == {}
+
+
+def test_resolve_recipient_profile_skips_ambiguous_matches(tmp_path: Path) -> None:
+    settings = github_work_rollup.resolve_settings(
+        args(report_recipient="Owner", people_index=write_ambiguous_people_index(tmp_path)),
+        {},
+    )
+    settings["collection_warnings"] = []
+
+    assert github_work_rollup.resolve_recipient_profile(settings) == {}
+    assert any("matched multiple people" in warning for warning in settings["collection_warnings"])
 
 
 def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,6 +264,34 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
     assert payload["ok"] is True
     assert not any(command[1:5] == ["api", "--method", "GET", "search/issues"] for command in calls)
     assert any("Subject search outside configured repositories was skipped" in note for note in payload["limitations"])
+
+
+def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    people_index = write_people_index(tmp_path)
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(
+        args(repo=["example-org/example-repo"], report_recipient="Example Owner", people_index=people_index),
+        {},
+    )
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert payload["recipient_profile"]["company"] == "Example Company"
+    assert payload["recipient_profile"]["technical_depth"] == "low-to-medium"
+    assert "trust_handling" not in payload["recipient_profile"]
+    assert "report_guidance" not in payload["recipient_profile"]
+    assert "company_scale" not in payload["recipient_profile"]
 
 
 def test_bucket_items_orders_attention_before_noise() -> None:
@@ -974,6 +1097,13 @@ def test_render_manager_brief_markdown() -> None:
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
         "report_recipient": "Chris",
+        "recipient_profile": {
+            "company": "Example Company",
+            "roles": ["owner"],
+            "technical_depth": "low-to-medium",
+            "framing": "big-picture-first",
+            "detail_preference": "outcomes and risk",
+        },
         "repositories": ["example-org/code"],
         "layout": "manager",
         "buckets": {
@@ -1022,6 +1152,8 @@ def test_render_manager_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# GitHub Planning Brief for Chris" in rendered
+    assert "active planning scope for Example Company" in rendered
+    assert "technical depth: low-to-medium" in rendered
     assert "## Planning Summary" in rendered
     assert "## Today's Priorities" in rendered
     assert "## Active Work" in rendered
@@ -1033,9 +1165,57 @@ def test_render_manager_brief_markdown() -> None:
     assert "Automation was green" in rendered
 
 
+def test_render_manager_brief_uses_profile_framing_without_attention_items() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Owner",
+        "recipient_profile": {
+            "company": "Example Company",
+            "roles": ["owner"],
+            "detail_preference": "outcomes and risk",
+        },
+        "repositories": ["example-org/code"],
+        "layout": "manager",
+        "buckets": {
+            "in_progress": [
+                {"repo": "example-org/code", "number": 1, "title": "Open work", "kind": "issue", "state": "open"}
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "based on outcomes and risk" in rendered
+
+
 def test_render_payload_rejects_unknown_markdown_layout() -> None:
     with pytest.raises(ValueError):
         github_work_rollup.render_payload({"ok": True, "layout": "standard"}, "markdown")
+
+
+def test_json_payload_does_not_publish_private_profile_fields() -> None:
+    rendered = github_work_rollup.render_payload(
+        {
+            "ok": True,
+            "layout": "executive",
+            "recipient_profile": {
+                "company": "Example Company",
+                "technical_depth": "low-to-medium",
+                "trust_handling": "private trust note",
+                "report_guidance": "private report guidance",
+            },
+        },
+        "json",
+    )
+
+    assert "private trust note" not in rendered
+    assert "private report guidance" not in rendered
 
 
 def test_render_executive_brief_markdown() -> None:
@@ -1047,6 +1227,15 @@ def test_render_executive_brief_markdown() -> None:
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
+        "recipient_profile": {
+            "company": "Example Company",
+            "roles": ["owner"],
+            "technical_depth": "low-to-medium",
+            "framing": "big-picture-first",
+            "detail_preference": "outcomes, cost, risk, sequencing, and customer impact",
+            "report_guidance": "Aim for one page normally and two pages on heavy days.",
+            "trust_handling": "Private note that should not be rendered.",
+        },
         "repositories": ["example-org/code", "example-org/example-skills"],
         "subjects": [],
         "summary_level": "standard",
@@ -1136,23 +1325,27 @@ def test_render_executive_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Daily GitHub Brief for Justin" in rendered
+    assert "advanced Example Company's tooling and operating loop" in rendered
+    assert "the important read is outcomes, cost, risk, sequencing, and customer impact" in rendered
+    assert "technical depth: low-to-medium" in rendered
+    assert "Private note" not in rendered
     assert "## Executive Summary" in rendered
     assert "## Needs Justin's Attention" in rendered
-    assert "## What Changed" in rendered
-    assert "## Every Code and Skills" in rendered
+    assert "## What This Means" in rendered
+    assert "## Every Code / Skills Impact" in rendered
     assert "## Decisions or Risks" in rendered
     assert "## Velocity Snapshot" in rendered
     assert "## Conversation Starters" in rendered
     assert "## Source Notes" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "while 3 item(s) were completed" in rendered
+    assert "In practical terms, 3 item(s) were completed" in rendered
     assert "1 release(s)" in rendered
-    assert "The main visible outcomes were" in rendered
+    assert "A focused day of work" in rendered
     assert "Automation needs attention" in rendered
     assert "closed 1 unmerged change(s)" in rendered
     assert "Every Code / Skills" in rendered
-    assert "Are the Every Code and skill changes aligned" in rendered
+    assert "Are the Every Code / Skills changes aligned" in rendered
 
     assert "## Summary Table" not in rendered
     assert "## Repo Notes" not in rendered

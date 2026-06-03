@@ -29,6 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-with-env-token")
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
+DEFAULT_PEOPLE_INDEX = ROOT / ".local/people.yaml"
 SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
 REPORT_MODES = {"activity", "backlog", "standup"}
@@ -70,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--until", help="UTC ISO timestamp for window end.")
     parser.add_argument("--timezone", help="IANA timezone label for report display metadata.")
     parser.add_argument("--report-recipient", help="Human-facing report recipient label.")
+    parser.add_argument("--people-index", type=Path, help="Optional private people YAML for recipient tailoring.")
     parser.add_argument("--mode", choices=sorted(REPORT_MODES), help="activity, backlog, or standup.")
     parser.add_argument("--summary-level", choices=sorted(SUMMARY_LEVELS), help="concise, standard, or detailed.")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
@@ -136,6 +138,7 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
         raise SystemExit(f"error: layout must be one of {', '.join(sorted(REPORT_LAYOUTS))}")
     return {
         "config_path": str(args.config) if args.config else None,
+        "people_index": str(args.people_index or config.get("people_index") or DEFAULT_PEOPLE_INDEX),
         "timezone": args.timezone or str(config.get("timezone") or "UTC"),
         "report_recipient": args.report_recipient or str(config.get("report_recipient") or "GitHub work"),
         "window": window,
@@ -216,6 +219,110 @@ def unique(values: list[str]) -> list[str]:
             seen.add(key)
             result.append(stripped)
     return result
+
+
+def resolve_recipient_profile(settings: dict[str, Any]) -> dict[str, Any]:
+    query = str(settings.get("report_recipient") or "").strip()
+    index_path = Path(str(settings.get("people_index") or ""))
+    if not query or not index_path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(read_text_file(index_path)) or {}
+    except yaml.YAMLError:
+        return {}
+    people = data.get("people") if isinstance(data, dict) else None
+    if not isinstance(people, list):
+        return {}
+    matches = []
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        if person_matches_recipient(person, query):
+            matches.append(person)
+    if len(matches) == 1:
+        return compact_recipient_profile(matches[0])
+    if len(matches) > 1:
+        add_collection_warning(settings, f"Report recipient {query!r} matched multiple people; recipient tailoring was skipped.")
+    return {}
+
+
+def person_matches_recipient(person: dict[str, Any], query: str) -> bool:
+    candidates: list[str] = []
+    for key in ("id", "display_name", "preferred_reference"):
+        value = person.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+    candidates.extend(as_str_list(person.get("aliases")))
+    contacts = person.get("contacts")
+    if isinstance(contacts, dict):
+        for contact in contacts.values():
+            if isinstance(contact, str):
+                candidates.append(contact)
+            elif isinstance(contact, dict):
+                candidates.extend(as_str_list(contact.get("username")))
+                candidates.extend(as_str_list(contact.get("handle")))
+    normalized_query = normalize_person_token(query)
+    compact_query = compact_person_token(query)
+    return any(
+        normalize_person_token(candidate) == normalized_query
+        or compact_person_token(candidate) == compact_query
+        for candidate in candidates
+    )
+
+
+def normalize_person_token(value: object) -> str:
+    text = str(value or "").strip()
+    if text.startswith("@"):
+        text = text[1:]
+    return re.sub(r"[\s._-]+", " ", text.casefold()).strip()
+
+
+def compact_person_token(value: object) -> str:
+    return re.sub(r"[\s._-]+", "", normalize_person_token(value))
+
+
+def compact_recipient_profile(person: dict[str, Any]) -> dict[str, Any]:
+    relationship_raw = person.get("relationship")
+    organization_raw = person.get("organization")
+    preferences_raw = person.get("preferences")
+    relationship: dict[str, Any] = relationship_raw if isinstance(relationship_raw, dict) else {}
+    organization: dict[str, Any] = organization_raw if isinstance(organization_raw, dict) else {}
+    preferences: dict[str, Any] = preferences_raw if isinstance(preferences_raw, dict) else {}
+    communication_raw = preferences.get("communication_style")
+    communication: dict[str, Any] = communication_raw if isinstance(communication_raw, dict) else {}
+    return remove_empty(
+        {
+            "id": person.get("id"),
+            "display_name": person.get("display_name"),
+            "preferred_reference": person.get("preferred_reference"),
+            "relationship": relationship.get("kind"),
+            "roles": relationship.get("roles"),
+            "company": organization.get("company"),
+            "technical_depth": communication.get("technical_depth"),
+            "framing": communication.get("framing"),
+            "detail_preference": communication.get("detail_preference"),
+        }
+    )
+
+
+def public_recipient_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    return remove_empty(
+        {
+            "id": profile.get("id"),
+            "display_name": profile.get("display_name"),
+            "preferred_reference": profile.get("preferred_reference"),
+            "relationship": profile.get("relationship"),
+            "roles": profile.get("roles"),
+            "company": profile.get("company"),
+            "technical_depth": profile.get("technical_depth"),
+            "framing": profile.get("framing"),
+            "detail_preference": profile.get("detail_preference"),
+        }
+    )
+
+
+def remove_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def deduplicate_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -320,6 +427,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         raise RollupError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
     settings = {**settings, "resolved_repositories": repos}
     settings.setdefault("collection_warnings", [])
+    recipient_profile = resolve_recipient_profile(settings)
     items: list[dict[str, Any]] = []
     for repo in repos:
         items.extend(collect_repo_items(repo, settings))
@@ -344,6 +452,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "window": window_json(settings["window"]),
         "timezone": settings["timezone"],
         "report_recipient": settings["report_recipient"],
+        "recipient_profile": recipient_profile,
         "repositories": repos,
         "subjects": settings["subjects"],
         "summary_level": settings["summary_level"],
@@ -940,7 +1049,7 @@ def failure_payload(settings: dict[str, Any], error: str) -> dict[str, Any]:
 
 def render_payload(payload: dict[str, Any], fmt: str) -> str:
     if fmt == "json":
-        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        return json.dumps(sanitize_payload_for_json(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if not payload.get("ok"):
         return render_failure(payload)
     if payload.get("layout") == "manager":
@@ -950,6 +1059,14 @@ def render_payload(payload: dict[str, Any], fmt: str) -> str:
     if payload.get("layout") in {None, "operator"}:
         return render_operator_markdown(payload)
     raise ValueError(f"unknown layout: {payload.get('layout')}")
+
+
+def sanitize_payload_for_json(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload)
+    profile = sanitized.get("recipient_profile")
+    if isinstance(profile, dict):
+        sanitized["recipient_profile"] = public_recipient_profile(profile)
+    return sanitized
 
 
 def format_brief_datetime(dt: datetime, tz_name: str) -> str:
@@ -1135,6 +1252,102 @@ def automation_sentence(workflow_total: int, workflow_success: int, workflow_fai
     return f"Automation had {workflow_total} completed workflow run(s), but none reported success."
 
 
+def recipient_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = payload.get("recipient_profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def recipient_context_phrase(profile: dict[str, Any]) -> str | None:
+    company = profile.get("company")
+    relationship = profile.get("relationship")
+    raw_roles = profile.get("roles")
+    roles: list[Any] = raw_roles if isinstance(raw_roles, list) else []
+    if isinstance(company, str) and company.strip():
+        return f"for {company}"
+    if "owner" in roles:
+        return "for the owner view"
+    if isinstance(relationship, str) and relationship.strip():
+        return f"for the {relationship} view"
+    return None
+
+
+def profile_source_note(profile: dict[str, Any]) -> str | None:
+    if not profile:
+        return None
+    pieces = []
+    if profile.get("framing"):
+        pieces.append(f"framing: {profile['framing']}")
+    if profile.get("technical_depth"):
+        pieces.append(f"technical depth: {profile['technical_depth']}")
+    if not pieces:
+        return "Report was tailored from the local people profile for the recipient."
+    return "Report was tailored from the local people profile (" + "; ".join(str(piece) for piece in pieces) + ")."
+
+
+def focus_area_label(payload: dict[str, Any]) -> str:
+    sections = payload.get("priority_sections") or []
+    names = [str(section.get("name")) for section in sections[:2] if isinstance(section, dict) and section.get("name")]
+    if not names:
+        return "Priority Areas"
+    if len(names) == 1:
+        return names[0]
+    return " and ".join(names)
+
+
+def focus_area_heading(payload: dict[str, Any]) -> str:
+    label = focus_area_label(payload)
+    if label == "Codex Skill Updates and Every Code Product Issues":
+        return "Every Code and Skills Impact"
+    return f"{label} Impact"
+
+
+def decision_framing(profile: dict[str, Any]) -> str:
+    if profile.get("detail_preference"):
+        return str(profile["detail_preference"])
+    if profile.get("framing"):
+        return str(profile["framing"])
+    return "priority, risk, sequencing, and impact"
+
+
+def executive_headline(
+    repo_data: dict[str, dict[str, list[dict[str, Any]]]],
+    active_repos: list[str],
+    profile: dict[str, Any],
+    focus_sections: list[dict[str, Any]],
+) -> str:
+    company = profile.get("company")
+    if isinstance(company, str) and company.strip():
+        audience = company
+    else:
+        audience = "the configured work"
+    if not active_repos:
+        return f"No material GitHub movement was collected for {audience} in this window."
+
+    repo_focus = repo_display_list(active_repos, 3)
+    focus_names = [str(section.get("name")) for section in focus_sections[:2] if section.get("name")]
+    if focus_names:
+        focus_text = " and ".join(focus_names)
+        return f"A focused day of work advanced {audience}'s tooling and operating loop across {repo_focus}, with the clearest movement in {focus_text}."
+    return f"A focused day of work advanced {audience}'s tooling and operating loop across {repo_focus}."
+
+
+def executive_impact_sentence(
+    completed: int,
+    open_work: int,
+    release_count: int,
+    profile: dict[str, Any],
+) -> str:
+    framing = decision_framing(profile)
+    if release_count:
+        ship_clause = f"{release_count} release(s) shipped"
+    else:
+        ship_clause = "no public release was cut"
+    return (
+        f"In practical terms, {completed} item(s) were completed, {ship_clause}, and {open_work} item(s) remain visible for planning; "
+        f"the important read is {framing}."
+    )
+
+
 def report_window_text(payload: dict[str, Any]) -> str:
     tz_name = payload["timezone"]
     window = payload["window"]
@@ -1145,6 +1358,8 @@ def report_window_text(payload: dict[str, Any]) -> str:
 
 def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
     repo_data = get_repo_data(payload)
+    profile = recipient_profile(payload)
+    context = recipient_context_phrase(profile)
     active_repos = active_repo_names(repo_data)
     completed = completion_total(repo_data)
     open_work = open_work_total(repo_data)
@@ -1163,8 +1378,9 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
     ]
 
     if active_repos:
+        context_suffix = f" {context}" if context else ""
         lines.append(
-            f"The active planning scope is {repo_display_list(active_repos)}. "
+            f"The active planning scope{context_suffix} is {repo_display_list(active_repos)}. "
             f"The collected window shows {completed} completed item(s), {open_work} open item(s), "
             f"and {release_count} release(s)."
         )
@@ -1180,7 +1396,9 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
             handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
             lines.append(f"- {linked_item_ref(item)}.{handoff}")
     elif open_work:
-        lines.append("- No explicit attention items were collected; use the open work list to choose what stays active today.")
+        lines.append(
+            f"- No explicit attention items were collected; use the open work list to choose what stays active today based on {decision_framing(profile)}."
+        )
     else:
         lines.append("- No GitHub-visible priority needs a decision from this report.")
 
@@ -1215,6 +1433,9 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- Automation sample: {workflow_success} successful, {workflow_failed} failed, {workflow_total} total completed run(s).")
 
     limitations_list = payload.get("limitations") or []
+    profile_note = profile_source_note(profile)
+    if profile_note:
+        limitations_list = [*limitations_list, profile_note]
     if limitations_list:
         lines.extend(["", "## Source Notes"])
         lines.extend(f"- {item}" for item in limitations_list)
@@ -1224,6 +1445,7 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
 
 def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     repo_data = get_repo_data(payload)
+    profile = recipient_profile(payload)
     active_repos = active_repo_names(repo_data)
     recipient = str(payload.get("report_recipient") or "the recipient")
     completed = completion_total(repo_data)
@@ -1241,20 +1463,8 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     ]
 
     if active_repos:
-        outcome_examples = []
-        for repo, data in sorted(repo_data.items()):
-            examples = data["releases"] or data["pr_merged"] or data["issue_closed"] or data["pr_closed"]
-            if examples:
-                outcome_examples.append(f"`{repo_short_name(repo)}`: {compact_titles(examples, 2)}")
-        emphasis = "; ".join(outcome_examples[:3]) if outcome_examples else "the collected GitHub activity"
-        lines.append(
-            f"Work stayed concentrated in {repo_display_list(active_repos)}. "
-            f"The main visible outcomes were {emphasis}."
-        )
-        lines.append(
-            f"That leaves {open_work} open item(s) visible for planning, while {completed} item(s) were completed "
-            f"and {release_count} release(s) shipped in the collected window."
-        )
+        lines.append(executive_headline(repo_data, active_repos, profile, payload.get("priority_sections") or []))
+        lines.append(executive_impact_sentence(completed, open_work, release_count, profile))
         health = automation_sentence(workflow_total, workflow_success, workflow_failed)
         if health:
             lines.append(health)
@@ -1269,7 +1479,7 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
             handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
             lines.append(f"- {linked_item_ref(item)}.{handoff}")
 
-    lines.extend(["", "## What Changed", ""])
+    lines.extend(["", "## What This Means", ""])
     change_lines = [sentence for repo, data in sorted(repo_data.items()) if (sentence := repo_outcome_sentence(repo, data))]
     if change_lines:
         lines.extend(f"- {line}" for line in change_lines[:8])
@@ -1278,7 +1488,7 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
 
     focus_sections = payload.get("priority_sections") or []
     if focus_sections:
-        lines.extend(["", "## Every Code and Skills", ""])
+        lines.extend(["", f"## {focus_area_heading(payload)}", ""])
         for section in focus_sections:
             name = str(section.get("name") or "Priority area")
             items = section.get("items") or []
@@ -1309,13 +1519,16 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     if risk_lines:
         lines.append("- Do any of the flagged risks need a decision today?")
     if focus_sections:
-        lines.append(f"- Are the Every Code and skill changes aligned with how {recipient} expects to use the product this week?")
+        lines.append(f"- Are the {focus_area_label(payload)} changes aligned with how {recipient} expects to use the product this week?")
     if open_work:
         lines.append("- Which visible open work should stay active versus move to backlog?")
     if not risk_lines and not open_work:
         lines.append("- Is there any follow-up outside GitHub that should be captured before tomorrow's brief?")
 
     limitations_list = payload.get("limitations") or []
+    profile_note = profile_source_note(profile)
+    if profile_note:
+        limitations_list = [*limitations_list, profile_note]
     if limitations_list:
         lines.extend(["", "## Source Notes"])
         lines.extend(f"- {item}" for item in limitations_list)
