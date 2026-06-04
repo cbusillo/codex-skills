@@ -7,6 +7,8 @@ cd "$repo_root"
 uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
 uv run skill-creator/scripts/validate-skill-behavior.py
+uv run scripts/validate-public-safety.py --self-test
+uv run scripts/validate-public-safety.py
 uv run skill-creator/scripts/quick_validate.py --self-test
 uv run skill-creator/scripts/validate-skill-repo.py
 uv run skill-creator/scripts/quick_validate.py chronicle
