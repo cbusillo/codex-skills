@@ -17,6 +17,47 @@ suites:
   local_llm_advisory:
     required_for_pr: false
     artifact_policy: local only
+ci_promotion_decisions:
+  deterministic_exec_harness:
+    decision: conditional_local
+    ci_surface: scripts/validate-exec-harness-skills.sh <scenario.json> [...]
+    not_run_reason: harness_unavailable
+    rationale: >-
+      Fake gh and fake Responses API scenarios cover high-risk routing,
+      command-policy, and public-safety regressions without model tokens, but
+      they require the Every Code exec harness checkout and remain opt-in until
+      that dependency is hermetic in CI.
+  local_llm_advisory:
+    decision: advisory_local
+    ci_surface: >-
+      scripts/validate-exec-harness-skills.sh <local-llm-scenario.json>
+    not_run_reason: local_endpoint_unavailable
+    rationale: >-
+      Trusted local-provider scenarios cover routing and judgment with local
+      model time only. They require an available local endpoint and must not
+      silently fall back to a cloud provider.
+  performance_probe:
+    decision: advisory_local
+    ci_surface: >-
+      uv run skill-creator/scripts/collect_exec_harness_performance.py --latest 10
+    not_run_reason: harness_unavailable
+    rationale: >-
+      Performance summaries depend on local harness artifacts and are useful
+      for trend evidence, but budgets remain advisory and raw artifacts stay
+      local-only.
+  script_test:
+    decision: required_for_pr
+    ci_surface: scripts/validate-skills.sh
+    rationale: >-
+      Focused helper tests are deterministic, token-free, and protected by the
+      validate-skills discovery guard so new helper tests cannot silently miss
+      required CI.
+  static_validator:
+    decision: required_for_pr
+    ci_surface: scripts/validate-skills.sh
+    rationale: >-
+      Static skill metadata, command policy, public-safety, and scorecard
+      validators are deterministic, token-free, and required for every PR.
 skills:
   babysit-pr:
     status: active
