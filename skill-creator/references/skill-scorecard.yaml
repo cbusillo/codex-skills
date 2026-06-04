@@ -358,7 +358,10 @@ skills:
           last_validated_ref: main
           notes: NPMplus operations helper covered by focused tests.
     known_gaps:
-      - No exec-harness scenario yet for docs lookup to infra-ops routing.
+      - >-
+        Infra helper command behavior is covered by script tests, while sibling
+        docs lookup to infra-ops routing is covered by the local LLM advisory
+        scenario under the local-llm scorecard entry.
   jetbrains-inspection:
     status: active
     risk_classes:
@@ -412,23 +415,48 @@ skills:
       - private_context
       - script_helper
     checks:
-      - check_id: local-llm-advisory-placeholder
-        kind: local_llm_advisory
+      - check_id: readiness-before-closeout-local-scenario
+        kind: exec_harness
         mode: trusted_local_provider
         dimension: advisory_behavior
         gate: advisory
         model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-readiness-before-closeout.json
         baseline:
-          outcome: not_run
-          score: 0
-          not_run_reason: not_implemented
-          last_validated_ref: main
-          notes: Advisory local LLM scenario planned in child issue 303.
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: local-llm-advisory-303
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-06-04, with qwen3-coder-64b also passing as the scored signal
+            after the scenario output budget was raised. Raw harness artifacts
+            remain local-only.
+      - check_id: sibling-skill-routing-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: routing
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-sibling-skill-routing.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: local-llm-advisory-303
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-06-04, with qwen3-coder-64b also passing as the scored signal
+            after the scenario output budget was raised. Raw harness artifacts
+            remain local-only.
     known_gaps:
       - >-
-        No focused script tests yet because local LLM chat and benchmark helper
-        scripts require an active trusted local LM Studio API server instance;
-        advisory scenarios are planned but not implemented.
+        No focused script tests yet because local LLM chat, benchmark, and
+        advisory scenarios require an active trusted LM Studio API server
+        instance and are recorded as advisory local-only evidence when
+        unavailable in CI.
   memory-distillation:
     status: manual_only
     risk_classes:
@@ -594,8 +622,9 @@ skills:
           last_validated_ref: main
           notes: Readiness handoff contract covered by behavior validation.
     known_gaps:
-      - Local LLM advisory scenario for readiness judgment planned in child
-        issue 303.
+      - >-
+        Readiness helper behavior is validated statically; local-model judgment
+        coverage lives in the advisory local-llm scorecard checks.
   rollout-friction:
     status: manual_only
     risk_classes:
@@ -749,5 +778,6 @@ skills:
           last_validated_ref: main
           notes: Closeout handoff contract covered by behavior validation.
     known_gaps:
-      - Local LLM advisory scenario for safe-to-exit judgment planned in child
-        issue 303.
+      - >-
+        Closeout helper behavior is validated statically; local-model judgment
+        coverage lives in the advisory local-llm scorecard checks.

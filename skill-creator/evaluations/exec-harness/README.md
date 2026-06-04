@@ -3,6 +3,10 @@
 These public-safe fixtures exercise observable skill context shape with the
 Every Code exec harness and fake Responses API. They do not spend model tokens.
 
+Files prefixed with `local-llm-` are the exception: they use the local LM Studio
+provider embedded in each scenario's `config_toml`, spend only trusted local
+model time, and keep raw outputs under the harness artifact directory.
+
 Run them from the repository root:
 
 ```bash
