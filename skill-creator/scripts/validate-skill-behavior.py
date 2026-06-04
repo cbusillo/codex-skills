@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
 # ///
 """Small behavior-oriented checks for skill instructions.
 
@@ -22,6 +24,9 @@ import tempfile
 import urllib.error
 from email.message import Message
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +54,31 @@ def command_argv(skill_name: str, command_name: str) -> list[str]:
             require(isinstance(argv, list), f"{command_name} must define example_argv")
             return [str(token) for token in argv]
     raise AssertionError(f"{command_name} must define single-line example_argv")
+
+
+def skill_frontmatter(skill_name: str) -> dict[str, Any]:
+    text = (ROOT / skill_name / "SKILL.md").read_text()
+    end = text.find("\n---", 4)
+    require(text.startswith("---\n") and end >= 0, f"{skill_name} must have frontmatter")
+    data = yaml.safe_load(text[4:end])
+    require(isinstance(data, dict), f"{skill_name} frontmatter must be a mapping")
+    return data
+
+
+def command_policy_prefixes(skill_name: str) -> set[tuple[str, ...]]:
+    frontmatter = skill_frontmatter(skill_name)
+    policies = frontmatter.get("policy", {}).get("command_policies", [])
+    prefixes: set[tuple[str, ...]] = set()
+    for policy in policies:
+        if not isinstance(policy, dict):
+            continue
+        match = policy.get("match")
+        if not isinstance(match, dict):
+            continue
+        prefix = match.get("argv_prefix")
+        if isinstance(prefix, list):
+            prefixes.add(tuple(str(token) for token in prefix))
+    return prefixes
 
 
 def test_chronicle_stays_quiet_when_unavailable() -> None:
@@ -512,6 +542,33 @@ def test_github_plan_sweeps_stale_related_issues() -> None:
     )
 
 
+def test_github_and_github_plan_command_boundaries_are_partitioned() -> None:
+    github_prefixes = command_policy_prefixes("github")
+    plan_prefixes = command_policy_prefixes("github-plan")
+
+    require(
+        ("gh", "issue", "list") in plan_prefixes,
+        "github-plan must own gh issue list planning indexes",
+    )
+    require(
+        ("gh", "search", "issues") in plan_prefixes,
+        "github-plan must own gh search issues planning discovery",
+    )
+    require(("gh", "project") in plan_prefixes, "github-plan must own gh project operations")
+    require(
+        not github_prefixes & plan_prefixes,
+        f"github and github-plan command policy prefixes must not overlap: {github_prefixes & plan_prefixes}",
+    )
+    for execution_prefix in (
+        ("gh", "pr", "create"),
+        ("gh", "pr", "merge"),
+        ("gh", "issue", "create"),
+        ("gh", "issue", "edit"),
+        ("gh", "issue", "close"),
+    ):
+        require(execution_prefix in github_prefixes, f"github must own {execution_prefix}")
+
+
 def test_github_cross_repo_pr_create_is_explicit() -> None:
     github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
     normalized = " ".join(github_text.split())
@@ -736,6 +793,7 @@ def main() -> None:
         test_launchplane_write_action_helper_contract,
         test_stale_injected_override_paths_are_nonfatal,
         test_github_plan_sweeps_stale_related_issues,
+        test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_infra_ops_owns_live_infra_actions,
