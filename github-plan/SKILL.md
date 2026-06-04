@@ -110,7 +110,9 @@ plan or the work must not be written to GitHub.
 - Use Projects and other configured surfaces as view layers, not sources of
   truth.
 - Use milestones for release, phase, or date buckets only.
-- Avoid ad hoc label taxonomies; ask before creating new labels.
+- Avoid ad hoc label taxonomies; ask before creating new labels. Generic labels
+  such as `waiting`, `blocked`, or `ready` are discouraged unless the repo
+  explicitly documents a narrow local convention.
 - Prefer `Refs #123` from PRs unless the user explicitly wants auto-close or the
   issue is an internal task that can be conclusively closed. `Refs` is
   deliberately non-closing; after merge, sweep referenced issues and close only
@@ -212,8 +214,10 @@ Use planning status labels with narrow meanings:
 - `plan:active`: actionable now.
 - `plan:blocked`: blocked by a real, current dependency, preferably represented
   by a native GitHub `blocked-by` relationship to an open issue.
-- `plan:waiting`: intentionally parked on non-issue evidence, live validation,
-  a user/customer/maintainer decision, or a future real-world event.
+- `plan:waiting`: intentionally parked on non-issue evidence, a
+  user/customer/maintainer decision, or a future real-world event. Use this only
+  on durable planning issues labeled `plan`, not on ordinary bugs, PRs pending
+  QA, preview review, reporter validation, deploy, or merge readiness.
 - `plan:stale`: needs review before it should guide work.
 - `plan:done`: completed or superseded.
 
