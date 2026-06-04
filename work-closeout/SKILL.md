@@ -134,6 +134,9 @@ Safe to exit: yes
 - Work is complete or explicitly out of scope.
 - Gates, inspections, docs checks, metadata checks, and post-merge checks are
   done or explicitly not applicable.
+- Current background auto-review findings, when available, are resolved,
+  non-blocking, or explicitly tracked for follow-up; relevant auto-review runs
+  are not still in-flight.
 - PR, issue, GitHub plan, and any explicit local plan state is current.
 - No important untracked artifacts, transient processes, or hidden follow-up
   remain.
@@ -144,6 +147,8 @@ Safe to exit: conditional
 - Blockers and next steps are recorded in a PR, issue, GitHub plan, or explicit
   local/offline saved plan.
 - Failing and not-run checks are recorded with reasons.
+- Current auto-review blockers, if any, are recorded in the PR, issue, or plan
+  that owns the unfinished work.
 - Remaining docs, metadata, security, or quality follow-up is tracked durably.
 - No transient local state is required to resume.
 

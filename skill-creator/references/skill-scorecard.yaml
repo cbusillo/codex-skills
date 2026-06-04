@@ -190,10 +190,17 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: fake-gh-scenarios-302
+          duration_ms_p50: 206
+          duration_ms_p95: 206
+          duration_ms_budget: 30000
+          command_count: 2
+          tool_call_count: 2
+          token_estimate: 0
+          last_validated_ref: skill-eval-performance-304
           notes: >-
             Fake gh scenario verifies the issue helper preserves literal
-            multiline Markdown body content through stdin.
+            multiline Markdown body content through stdin. Latest local
+            performance sample was within advisory budget.
       - check_id: narrated-action-output-scenario
         kind: exec_harness
         mode: fake_gh
@@ -204,10 +211,17 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: fake-gh-scenarios-302
+          duration_ms_p50: 24
+          duration_ms_p95: 24
+          duration_ms_budget: 30000
+          command_count: 1
+          tool_call_count: 1
+          token_estimate: 0
+          last_validated_ref: skill-eval-performance-304
           notes: >-
             Fake gh scenario verifies the final response reports the URL that
-            the helper actually created.
+            the helper actually created. Latest local performance sample was
+            within advisory budget.
       - check_id: public-safety-redaction-scenario
         kind: exec_harness
         mode: fake_gh
@@ -218,10 +232,17 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: fake-gh-scenarios-302
+          duration_ms_p50: 294
+          duration_ms_p95: 294
+          duration_ms_budget: 30000
+          command_count: 2
+          tool_call_count: 2
+          token_estimate: 0
+          last_validated_ref: skill-eval-performance-304
           notes: >-
             Fake gh scenario verifies public issue bodies contain redaction
-            text instead of synthetic private markers.
+            text instead of synthetic private markers. Latest local
+            performance sample was within advisory budget.
     known_gaps: []
   github-plan:
     status: active
@@ -260,10 +281,17 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: fake-gh-scenarios-302
+          duration_ms_p50: 277
+          duration_ms_p95: 277
+          duration_ms_budget: 30000
+          command_count: 1
+          tool_call_count: 1
+          token_estimate: 0
+          last_validated_ref: skill-eval-performance-304
           notes: >-
             Fake gh scenario verifies the planning helper routes index through
-            the harness gh issue list boundary.
+            the harness gh issue list boundary. Latest local performance sample
+            was within advisory budget.
     known_gaps: []
   github-work-rollup:
     status: active
@@ -614,6 +642,22 @@ skills:
       - script_helper
       - skill_authoring
     checks:
+      - check_id: exec-harness-performance-collector
+        kind: performance_probe
+        mode: script
+        dimension: performance
+        gate: advisory
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 30000
+          command_count: 0
+          tool_call_count: 0
+          token_estimate: 0
+          last_validated_ref: skill-eval-performance-304
+          notes: >-
+            Collector emits public-safe advisory metrics from local
+            exec-harness artifacts; raw artifacts remain local-only.
       - check_id: private-context-omission-scenario
         kind: exec_harness
         mode: fake_responses_api

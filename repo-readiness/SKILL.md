@@ -71,6 +71,13 @@ worktrees under `~/.code/working/<repo>/branches/auto-review*` unless the user's
 task is specifically about that review. They are detached external review
 context and should not affect readiness for the active repo/branch.
 
+When current background auto-review results or ledgers are available in session
+context or repo tooling, treat them as review evidence for readiness. Do not
+declare a branch, PR, release, or handoff green while current blocking
+auto-review findings are unresolved or while a relevant auto-review is still
+in-flight. This does not mean detached auto-review worktrees are dirty local
+state; only the review findings/status matter.
+
 5. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest
    practical gate for the repo and change.

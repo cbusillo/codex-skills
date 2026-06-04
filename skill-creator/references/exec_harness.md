@@ -166,3 +166,21 @@ Record exec-harness evidence in PR bodies and closeout summaries with:
 Do not commit private prompts, private model outputs, raw traces, real endpoint
 hostnames, tokens, or local machine inventories. Keep committed scenarios
 public-safe and synthetic.
+
+## Performance Summaries
+
+After local harness runs, summarize advisory performance metrics from local
+artifacts with:
+
+```bash
+uv run skill-creator/scripts/collect_exec_harness_performance.py --latest 10
+```
+
+The collector reads local `artifacts/summary.json` and `stdout.jsonl` files and
+emits public-safe JSON containing run labels, scenario names, pass/fail counts,
+duration metrics when available, command/tool-call counts, and token usage when
+reported. Raw harness artifacts remain local and uncommitted.
+
+Treat performance budgets as advisory. Keep deterministic fake Responses/fake
+`gh` runs separate from local LLM runs, and record cold and warm local model
+runs separately when those scenarios exist.

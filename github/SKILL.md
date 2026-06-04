@@ -265,6 +265,13 @@ invocation rules.
   task context says Launchplane owns the merge train. In Launchplane-managed
   trains, do not hand-collapse stacks in GitHub; delegate stack handling to the
   `launchplane` workflow.
+- **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
+  releasable, or otherwise clean, check current background auto-review evidence
+  when it is available in the session context or repo tooling. Treat current
+  blocking findings as review feedback to address or explicitly defer; do not
+  merge or release solely on CI-green when auto-review findings are still
+  in-flight or unresolved. Detached auto-review worktrees remain external review
+  context and should not be treated as dirty active worktree state.
 - **Accidental Local Default-Branch Merge Recovery**: If implementation work is
   accidentally merged into a protected/default/shared branch locally, preserve
   the commit or branch if needed, restore the local protected branch to the
