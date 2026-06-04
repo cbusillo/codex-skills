@@ -1,18 +1,24 @@
 ---
 name: google-seo
-description: Use for Google Search Console, PageSpeed Insights, Lighthouse, Core Web Vitals, sitemap/indexing checks, SEO performance reports, and shared Google OAuth setup for SEO tooling across sites.
+description: Use for Google Search Console, Bing Webmaster Tools, IndexNow, PageSpeed Insights, Lighthouse, Core Web Vitals, sitemap/indexing checks, SEO performance reports, and shared search tooling setup across sites.
 metadata:
-  short-description: Google SEO, Search Console, and PageSpeed
+  short-description: Search Console, Bing, PageSpeed SEO
 resources:
   - path: scripts/google-search-console.py
     kind: script
     description: Manage Search Console OAuth and run read-only Search Console reports.
+  - path: scripts/bing-webmaster.py
+    kind: script
+    description: Run Bing Webmaster Tools API and IndexNow sitemap, URL inspection, and submission workflows.
   - path: scripts/google-cloud-inventory.sh
     kind: script
     description: Inventory Google Cloud projects, APIs, billing, keys, and service accounts with read-only gcloud commands.
   - path: references/google-docs.md
     kind: reference
     description: Google API and OAuth documentation notes for SEO workflows.
+  - path: references/bing-docs.md
+    kind: reference
+    description: Bing Webmaster Tools API and IndexNow documentation notes for SEO workflows.
 commands:
   - name: google-search-console-status
     source: skill
@@ -64,19 +70,65 @@ commands:
     resource_path: scripts/google-cloud-inventory.sh
     example_argv: ["scripts/google-cloud-inventory.sh", "--project", "<project-id>"]
     purpose: Collects read-only Google Cloud project inventory for SEO tooling triage.
+  - name: bing-webmaster-status
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "status"]
+    purpose: Shows Bing Webmaster and IndexNow credential configuration without secrets.
+  - name: bing-webmaster-sites
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "sites"]
+    purpose: Lists Bing Webmaster Tools sites for the configured API key.
+  - name: bing-webmaster-submit-feed
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-feed", "https://www.example.com/", "https://www.example.com/sitemap.xml"]
+    purpose: Submits a sitemap or feed through Bing Webmaster Tools.
+  - name: bing-webmaster-url-info
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "url-info", "https://www.example.com/", "https://www.example.com/"]
+    purpose: Reads Bing index details for one URL.
+  - name: bing-webmaster-submit-url
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-url", "https://www.example.com/", "https://www.example.com/"]
+    purpose: Submits one URL directly to Bing Webmaster Tools.
+  - name: bing-webmaster-url-quota
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "url-quota", "https://www.example.com/"]
+    purpose: Checks Bing URL submission quota for a verified site.
+  - name: bing-webmaster-submit-url-batch
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-url-batch", "https://www.example.com/", "--url-file", "urls.txt"]
+    purpose: Submits up to 500 URLs directly to Bing Webmaster Tools.
+  - name: bing-indexnow-verify
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "indexnow-verify", "https://www.example.com/"]
+    purpose: Shows IndexNow key hosting instructions, redacting the key unless explicitly revealed.
+  - name: bing-indexnow-submit
+    source: skill
+    resource_path: scripts/bing-webmaster.py
+    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "indexnow-submit", "--url", "https://www.example.com/"]
+    purpose: Submits URL changes through IndexNow using the configured IndexNow key.
 ---
 
-# Google SEO
+# Search SEO
 
-Use this skill for Google-side SEO evidence: Search Console API/reporting,
-PageSpeed Insights, Lighthouse/Core Web Vitals, sitemap/indexing checks, and
-repeatable SEO diagnostics across multiple websites.
+Use this skill for search-side SEO evidence: Google Search Console
+API/reporting, Bing Webmaster Tools and IndexNow workflows, PageSpeed Insights,
+Lighthouse/Core Web Vitals, sitemap/indexing checks, and repeatable SEO
+diagnostics across multiple websites.
 
 ## Boundaries
 
 - Keep reusable workflow and scripts in this skill.
-- Keep OAuth client JSON, refresh tokens, API keys, exports, and customer data in
-  private local config, not in the skill repo or product repos.
+- Keep OAuth client JSON, refresh tokens, API keys, IndexNow keys, exports, and
+  customer data in private local config, not in the skill repo or product repos.
 - Prefer read-only Google scopes first. Escalate to write scopes only when the
   user asks for a mutation such as sitemap submission.
 - Do not paste Google secrets, OAuth refresh tokens, or Search Console exports
@@ -101,6 +153,13 @@ Expected files:
 For PageSpeed API keys, first check the current environment and then
 `$CODE_HOME/local.env`, falling back to `$CODEX_HOME/local.env` and
 `~/.code/local.env`, for `PAGESPEED_INSIGHTS_API_KEY`. Never print the value.
+
+For Bing Webmaster Tools, first check the current environment and then the same
+`local.env` fallback chain for `BING_WEBMASTER_API_KEY`. For IndexNow, use
+`BING_INDEXNOW_KEY`. Never print either value except when the user explicitly
+runs `indexnow-verify --reveal-key` to copy the key into the required
+verification file. Bing Webmaster API keys are user-scoped in Bing Webmaster
+Tools, so treat them like account credentials.
 
 ## Search Console OAuth
 
@@ -161,6 +220,63 @@ uv run scripts/google-search-console.py submit-sitemap example.com https://www.e
 For domain properties, `example.com` is normalized to `sc-domain:example.com`.
 For URL-prefix properties, pass the full prefix URL.
 
+## Bing Webmaster Tools
+
+Use Bing Webmaster Tools when the user asks for Bing verification, Bing sitemap
+submission, Bing index status, direct Bing URL submission, or Bing-specific
+debugging.
+
+API key setup path in Bing Webmaster Tools: Settings gear -> API access -> API
+Key -> Generate API Key. Store the key as `BING_WEBMASTER_API_KEY` in the
+private `local.env` file with user-only permissions.
+
+Common commands:
+
+```sh
+uv run scripts/bing-webmaster.py status
+uv run scripts/bing-webmaster.py sites
+uv run scripts/bing-webmaster.py submit-feed https://www.example.com/ https://www.example.com/sitemap.xml
+uv run scripts/bing-webmaster.py url-info https://www.example.com/ https://www.example.com/
+uv run scripts/bing-webmaster.py url-quota https://www.example.com/
+uv run scripts/bing-webmaster.py submit-url https://www.example.com/ https://www.example.com/
+uv run scripts/bing-webmaster.py submit-url-batch https://www.example.com/ --url https://www.example.com/page-a --url https://www.example.com/page-b
+```
+
+Prefer `submit-feed` for sitemap follow-through after verification. Use
+`url-info` for inspection evidence before deciding whether direct URL
+submission is useful. Use direct URL submission sparingly and check quota for
+batch work.
+
+The API helper uses Bing's JSON endpoints under
+`https://ssl.bing.com/webmaster/api.svc/json/...` with the API key in the query
+string. It never prints the configured key.
+
+## IndexNow
+
+Use IndexNow when the site can host an IndexNow key file and the task is to
+notify participating search engines about added, updated, or deleted URLs. This
+is distinct from the Bing Webmaster API key.
+
+Store the IndexNow key as `BING_INDEXNOW_KEY` in private local config. To see
+placeholder key-file instructions without printing the key:
+
+```sh
+uv run scripts/bing-webmaster.py indexnow-verify https://www.example.com/
+```
+
+Use `--reveal-key` only when terminal output is an acceptable place to display
+the key so it can be copied into the verification file.
+
+After the key file is hosted, submit URL changes:
+
+```sh
+uv run scripts/bing-webmaster.py indexnow-submit --url https://www.example.com/page-a --url https://www.example.com/page-b
+```
+
+Use `--key-location` when the key file is not at the site root. IndexNow
+acceptance means the notification was received or queued for key validation; it
+does not guarantee crawl, indexing, ranking, or immediate search result changes.
+
 ## Google Cloud Project Triage
 
 When the user has multiple confusing Google Cloud projects:
@@ -201,4 +317,6 @@ local scratch files.
 ## References
 
 Read `references/google-docs.md` when setting up OAuth, confirming scopes, or
-explaining Google API behavior to the user.
+explaining Google API behavior to the user. Read `references/bing-docs.md` when
+setting up Bing API keys, confirming Bing endpoint shapes, or deciding whether
+to use Bing Webmaster direct submission versus IndexNow.
