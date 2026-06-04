@@ -151,6 +151,33 @@ def test_project_commands_are_recoverable() -> None:
     assert all(call["recoverable"] for call in project_calls), project_calls
 
 
+def test_repo_config_path_skips_missing_home_candidate() -> None:
+    plan = load_plan_module()
+    original_git_root = plan.git_root
+    original_repo_from_git = plan.repo_from_git
+    original_home = plan.pathlib.Path.home
+    checked: list[Path] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        plan.git_root = lambda: None
+        plan.pathlib.Path.home = lambda: home
+
+        def fake_repo_from_git(candidate: Path | None = None) -> str | None:
+            checked.append(candidate or Path.cwd())
+            return "owner/repo"
+
+        plan.repo_from_git = fake_repo_from_git
+        try:
+            assert plan.repo_config_path("owner/repo") is None
+        finally:
+            plan.git_root = original_git_root
+            plan.repo_from_git = original_repo_from_git
+            plan.pathlib.Path.home = original_home
+
+    assert checked == [], checked
+
+
 def test_manager_for_repo_passes_raw_values_without_people_resolver() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
@@ -1987,6 +2014,7 @@ def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
         test_project_commands_are_recoverable,
+        test_repo_config_path_skips_missing_home_candidate,
         test_manager_for_repo_passes_raw_values_without_people_resolver,
         test_manager_for_repo_skips_unresolved_person_ref,
         test_explicit_unresolved_person_manager_is_skipped,

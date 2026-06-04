@@ -1,0 +1,57 @@
+{
+  "name": "fake-gh-narrated-action-matches-output",
+  "model": "gpt-5.1-codex",
+  "prompt": "Create the planning issue and report the URL that was actually created.",
+  "files": {
+    "README.md": "# Fake gh narrated action fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "next_issue": 1200,
+    "issues": []
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-narrated-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_create_narrated_issue",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"printf '%s\\n' 'Narrated action body.' | env GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Narrated action check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-narrated-2",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Created https://github.com/cbusillo/codex-skills/issues/1200"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": ["issue create"],
+    "assistant_contains": [
+      "https://github.com/cbusillo/codex-skills/issues/1200"
+    ],
+    "responses_request_count": 2
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

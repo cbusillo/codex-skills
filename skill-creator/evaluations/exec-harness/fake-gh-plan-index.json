@@ -1,0 +1,46 @@
+{
+  "name": "fake-gh-plan-index",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use the GitHub planning helper to list open planning issues.",
+  "files": {
+    "README.md": "# Fake gh planning fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "issues": [
+      {
+        "number": 900,
+        "title": "Existing plan",
+        "state": "OPEN",
+        "url": "https://github.com/cbusillo/codex-skills/issues/900"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-plan-index-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_plan_index",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills index --state open --limit 5\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-plan-index-2"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": ["issue list"],
+    "responses_request_count": 2
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

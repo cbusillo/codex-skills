@@ -1,0 +1,53 @@
+{
+  "name": "fake-gh-issue-body-preserved",
+  "model": "gpt-5.1-codex",
+  "prompt": "Create a GitHub issue with literal Markdown body content, then verify fake gh state.",
+  "files": {
+    "README.md": "# Fake gh body fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "next_issue": 1001,
+    "issues": []
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-body-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_issue_create",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"printf '%s\\n' 'Line one' '' '```sh' 'echo $(do-not-run)' '```' 'Trailing line' | env GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Body preservation check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-body-2",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_verify_body",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, os, pathlib, sys\\nstate = json.loads(pathlib.Path(os.environ['CODE_EXEC_HARNESS_GH_STATE']).read_text())\\nissue = state['issues']['1001']\\nexpected = '''Line one\\n\\n```sh\\necho $(do-not-run)\\n```\\nTrailing line\\n'''\\nif issue.get('body') != expected:\\n    print(repr(issue.get('body')), file=sys.stderr)\\n    raise SystemExit(1)\\nif issue.get('title') != 'Body preservation check':\\n    raise SystemExit(2)\\nPY\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-body-3"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": ["issue create"],
+    "responses_request_count": 3
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}
