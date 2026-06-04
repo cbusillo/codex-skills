@@ -234,6 +234,13 @@ merge method, formatting, verification, and exceptions. Reach for raw `gh` only
 when no helper covers the operation, and route those calls through
 `scripts/gh-with-env-token`.
 
+Do not infer Python from a `scripts/` path. `scripts/gh-issue`,
+`scripts/gh-comment`, and `scripts/gh-with-env-token` are executable shell
+helpers without `.sh` suffixes; run them directly. Python `.py` helpers with PEP
+723 inline metadata should use `uv run path/to/helper.py` when dependency or
+interpreter selection matters. See `references/cli-reference.md` for the helper
+invocation rules.
+
 - **Branch Discipline**: Protect default, shared, release, and production
   branches. Create focused task branches before editing when currently on a
   protected branch.

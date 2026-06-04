@@ -211,7 +211,7 @@ policy:
       preferred:
         - kind: script
           path: scripts/helper.py
-          example_argv: ["scripts/helper.py", "subcommand", "<target>"]
+          example_argv: ["uv", "run", "scripts/helper.py", "subcommand", "<target>"]
           purpose: Runs the workflow through the maintained helper.
 ```
 
@@ -248,6 +248,13 @@ Executable code (Python/Bash/etc.) for tasks that require deterministic reliabil
   # ///
   ```
 - **Execution**: Prefer `uv run scripts/name.py` over direct `python` calls.
+- **Shell helpers**: Some executable shell helpers intentionally omit `.sh`
+  when they are command-style entrypoints. Document these as shell helpers,
+  give direct or `bash` invocation examples, and never show them being run with
+  `python`, `python3`, or `uv run`.
+- **Command examples**: Match `commands[].example_argv` and policy
+  `preferred[].example_argv` to the helper type. Use direct execution for shell
+  helpers and `uv run scripts/name.py` for Python helpers with PEP 723 metadata.
 - **When to include**: When the same code is being rewritten repeatedly or deterministic reliability is needed.
 - **Benefits**: Token efficient, deterministic, and environment-agnostic.
 

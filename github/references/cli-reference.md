@@ -8,6 +8,22 @@ returns compact JSON and avoids loading large issue bodies unless requested.
 Always use `scripts/gh-plan.py` instead of ad hoc `gh` calls for planning state.
 Prefer `uv run scripts/gh-plan.py` for hermetic execution.
 
+## Helper Invocation
+
+Choose the interpreter from the helper's extension and shebang before running
+`--help` or a workflow command.
+
+- `scripts/gh-issue`, `scripts/gh-comment`, and
+  `scripts/gh-with-env-token` are executable shell helpers even though they do
+  not use a `.sh` suffix. Run them directly from this skill directory, or from
+  the repo root as `github/scripts/<name>`. Do not run them with `python3` or
+  `uv run`.
+- `.sh` helpers are shell scripts. Run them directly or with `bash`.
+- `.py` helpers that include PEP 723 inline metadata (`# /// script`) should be
+  run with `uv run path/to/helper.py` when interpreter version or dependencies
+  matter. Plain `python3` is only appropriate when the skill docs explicitly
+  say the helper has no managed environment needs.
+
 ## Common Commands
 
 ### PRs And Rate Limits

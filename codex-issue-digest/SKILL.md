@@ -9,12 +9,12 @@ commands:
   - name: collect-label-digest
     source: skill
     resource_path: scripts/collect_issue_digest.py
-    example_argv: ["python3", "scripts/collect_issue_digest.py", "--labels", "tui", "exec", "--window-hours", "24"]
+    example_argv: ["uv", "run", "scripts/collect_issue_digest.py", "--labels", "tui", "exec", "--window-hours", "24"]
     purpose: Collect recent bug/enhancement issue activity for selected feature-area labels.
   - name: collect-all-areas-digest
     source: skill
     resource_path: scripts/collect_issue_digest.py
-    example_argv: ["python3", "scripts/collect_issue_digest.py", "--all-labels", "--window", "past week", "--limit-issues", "10"]
+    example_argv: ["uv", "run", "scripts/collect_issue_digest.py", "--all-labels", "--window", "past week", "--limit-issues", "10"]
     purpose: Collect recent bug/enhancement issue activity across all feature-area labels.
 workflow_defaults:
   - name: repo
@@ -48,7 +48,7 @@ Include only issues that currently have `bug` or `enhancement` plus at least one
 1. Run the collector from this skill directory:
 
 ```bash
-python3 scripts/collect_issue_digest.py --labels tui exec --window-hours 24
+uv run scripts/collect_issue_digest.py --labels tui exec --window-hours 24
 ```
 
 Use `--window "past week"` or `--window-hours 168` when the user asks for a non-default duration. Use `--all-labels` when the user says all areas or all labels.
@@ -138,11 +138,11 @@ Use $codex-issue-digest to run the Codex issue digest for all areas over the pas
 Dry run the collector against recent issues:
 
 ```bash
-python3 scripts/collect_issue_digest.py --labels tui exec --window-hours 24
+uv run scripts/collect_issue_digest.py --labels tui exec --window-hours 24
 ```
 
 ```bash
-python3 scripts/collect_issue_digest.py --all-labels --window "past week" --limit-issues 10
+uv run scripts/collect_issue_digest.py --all-labels --window "past week" --limit-issues 10
 ```
 
 Run the focused script tests:
