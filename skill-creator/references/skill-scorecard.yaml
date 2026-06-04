@@ -353,6 +353,20 @@ skills:
       - manual_only
       - private_context
     checks:
+      - check_id: explicit-manual-skill-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/manual-skill-explicit-invocation.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake Responses API scenario verifies explicit manual skill body
+            injection without live model tokens.
       - check_id: manual-only-metadata
         kind: static_validator
         mode: ci
@@ -423,6 +437,20 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: Manual-only metadata covered by repo validation.
+      - check_id: manual-skill-hidden-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/manual-skill-not-implicit.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake Responses API scenario verifies manual-only skills stay out of
+            implicit availability lists.
     known_gaps:
       - No scenario yet proving github-plan supersedes local plan files by
         default.
@@ -532,6 +560,34 @@ skills:
       - script_helper
       - skill_authoring
     checks:
+      - check_id: private-context-omission-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: public_safety
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/private-context-omitted-by-default.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake Responses API scenario verifies unrequested synthetic local
+            private context stays out of the model request.
+      - check_id: project-doc-dedup-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/project-doc-skill-dedup.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake Responses API scenario verifies project guidance and skill
+            summaries appear once in request context.
       - check_id: skill-repo-validator-tests
         kind: script_test
         mode: ci

@@ -1,0 +1,34 @@
+{
+  "name": "private-context-omitted-by-default",
+  "model": "gpt-5.1-codex",
+  "prompt": "Reply with exactly: ok",
+  "files": {
+    "AGENTS.md": "# Public Project Guidance\n\nDo not load unrequested local private context.\n",
+    ".local/private-notes.md": "PRIVATE_CONTEXT_MARKER_SHOULD_NOT_APPEAR\n",
+    "README.md": "# Private context omission fixture\n"
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-private-context-omitted"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "# AGENTS.md instructions for",
+          "Do not load unrequested local private context."
+        ],
+        "not_contains": "PRIVATE_CONTEXT_MARKER_SHOULD_NOT_APPEAR"
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}
