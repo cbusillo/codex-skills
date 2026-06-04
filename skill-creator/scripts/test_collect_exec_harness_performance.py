@@ -244,6 +244,7 @@ def test_top_level_item_completed_command_counts_as_tool() -> None:
     report = module.build_report([run_dir], duration_budget_ms=30_000)
 
     run = report["runs"][0]
+    assert run["command_count"] == 1
     assert run["tool_call_count"] == 1
 
 

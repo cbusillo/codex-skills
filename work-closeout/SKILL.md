@@ -134,9 +134,10 @@ Safe to exit: yes
 - Work is complete or explicitly out of scope.
 - Gates, inspections, docs checks, metadata checks, and post-merge checks are
   done or explicitly not applicable.
-- Current background auto-review findings, when available, are resolved,
-  non-blocking, or explicitly tracked for follow-up; relevant auto-review runs
-  are not still in-flight.
+- Background auto-review findings, when available, have been matched to the
+  current branch/PR/head SHA; current-target findings are resolved,
+  non-blocking, or explicitly tracked for follow-up; relevant current-target
+  auto-review runs are not still in-flight.
 - PR, issue, GitHub plan, and any explicit local plan state is current.
 - No important untracked artifacts, transient processes, or hidden follow-up
   remain.

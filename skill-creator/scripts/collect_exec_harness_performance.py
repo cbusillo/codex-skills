@@ -131,6 +131,14 @@ def usage_total_from_parts(usage: dict[str, Any]) -> int | None:
     return sum(parts)
 
 
+def event_completed_item_type(event: dict[str, Any]) -> str | None:
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_type = item.get("item_type") or item.get("type")
+    return item_type if isinstance(item_type, str) else None
+
+
 def count_tool_calls(events: list[dict[str, Any]]) -> int:
     count = 0
     for event in events:
@@ -138,13 +146,13 @@ def count_tool_calls(events: list[dict[str, Any]]) -> int:
         if isinstance(msg_type, str) and msg_type.endswith("_begin"):
             count += 1
             continue
-        item = event.get("item")
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("item_type") or item.get("type")
-        if item_type in {"command_execution", "tool_call"}:
+        if event_completed_item_type(event) in {"command_execution", "tool_call"}:
             count += 1
     return count
+
+
+def count_completed_commands(events: list[dict[str, Any]]) -> int:
+    return sum(1 for event in events if event_completed_item_type(event) == "command_execution")
 
 
 def token_usage_from_events(events: list[dict[str, Any]]) -> int | None:
@@ -250,8 +258,9 @@ def collect_run(run_dir: pathlib.Path, *, duration_budget_ms: int) -> RunMetrics
     command_count = len(commands) if isinstance(commands, list) else 0
     tool_call_count = count_tool_calls(events)
     if command_count == 0:
-        command_count = sum(
-            1 for event in events if event_message(event).get("type") == "exec_command_begin"
+        command_count = max(
+            sum(1 for event in events if event_message(event).get("type") == "exec_command_begin"),
+            count_completed_commands(events),
         )
     token_estimate, token_source = token_usage(summary, events)
     failures = failure_count(summary, returncode)

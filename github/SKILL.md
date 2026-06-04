@@ -266,10 +266,11 @@ invocation rules.
   trains, do not hand-collapse stacks in GitHub; delegate stack handling to the
   `launchplane` workflow.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
-  releasable, or otherwise clean, check current background auto-review evidence
-  when it is available in the session context or repo tooling. Treat current
-  blocking findings as review feedback to address or explicitly defer; do not
-  merge or release solely on CI-green when auto-review findings are still
+  releasable, or otherwise clean, check background auto-review evidence when it
+  is available in the session context or repo tooling. First match each review
+  target to the active branch/PR head SHA. Treat blocking findings against the
+  current target as review feedback to address or explicitly defer; do not merge
+  or release solely on CI-green when relevant current-target findings are still
   in-flight or unresolved. Detached auto-review worktrees remain external review
   context and should not be treated as dirty active worktree state.
 - **Accidental Local Default-Branch Merge Recovery**: If implementation work is
