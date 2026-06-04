@@ -24,6 +24,9 @@ Observed method shapes from the official examples:
 - `SubmitFeed`: `POST /json/SubmitFeed?apikey=...` with JSON
   `siteUrl` and `feedUrl`.
 - `GetUrlInfo`: `GET /json/GetUrlInfo?siteUrl=...&url=...&apikey=...`.
+  The verified `siteUrl` is an http(s) site identifier. The inspected `url`
+  parameter may use Bing's documented `domain:` syntax for domain-level URL
+  information.
 - `GetUrlSubmissionQuota`: `GET /json/GetUrlSubmissionQuota?siteUrl=...&apikey=...`.
 - `SubmitUrl`: `POST /json/SubmitUrl?apikey=...` with JSON `siteUrl` and
   `url`.

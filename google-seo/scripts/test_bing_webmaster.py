@@ -85,11 +85,22 @@ class BingWebmasterHelperTest(TestCase):
         self.assertEqual(
             calls[0]["data"],
             {
-                "siteUrl": "https://sellyouroutboard.com/",
+                "siteUrl": "https://sellyouroutboard.com",
                 "feedUrl": "https://www.sellyouroutboard.com/sitemap.xml",
             },
         )
         self.assertTrue(rendered[0]["submitted"])
+
+    def test_normalize_site_url_preserves_verified_site_identifier(self) -> None:
+        self.assertEqual(
+            bing_webmaster.normalize_site_url("https://example.com"), "https://example.com"
+        )
+        self.assertEqual(
+            bing_webmaster.normalize_site_url("https://example.com/"), "https://example.com/"
+        )
+        self.assertEqual(
+            bing_webmaster.normalize_site_url("https://example.com/path"), "https://example.com/path"
+        )
 
     def test_normalize_site_url_rejects_domain_properties(self) -> None:
         with self.assertRaises(SystemExit):
