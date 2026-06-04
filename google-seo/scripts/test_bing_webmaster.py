@@ -90,6 +90,26 @@ class BingWebmasterHelperTest(TestCase):
         )
         self.assertTrue(rendered[0]["submitted"])
 
+    def test_normalize_site_url_rejects_domain_properties(self) -> None:
+        with self.assertRaises(SystemExit):
+            bing_webmaster.normalize_site_url("domain:example.com")
+
+    def test_url_info_allows_domain_inspection_syntax(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_http_json(url: str, *, method: str = "GET", data: dict[str, Any] | None = None):
+            calls.append({"url": url, "method": method, "data": data})
+            return {"d": None}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(bing_webmaster, "bing_api_key", return_value="api-key"))
+            stack.enter_context(patch.object(bing_webmaster, "http_json", side_effect=fake_http_json))
+            stack.enter_context(patch.object(bing_webmaster, "print_json"))
+            bing_webmaster.cmd_url_info(argparse.Namespace(site="https://example.com", url="domain:bing.com"))
+
+        self.assertIn("GetUrlInfo?", calls[0]["url"])
+        self.assertIn("url=domain%3Abing.com", calls[0]["url"])
+
     def test_url_info_uses_get_query_shape(self) -> None:
         calls: list[dict[str, Any]] = []
 
@@ -211,6 +231,22 @@ class BingWebmasterHelperTest(TestCase):
         self.assertFalse(rendered[0]["key_revealed"])
         self.assertNotIn("abc123", str(rendered[0]))
 
+    def test_indexnow_verify_preserves_http_scheme(self) -> None:
+        rendered: list[dict[str, Any]] = []
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(bing_webmaster, "indexnow_key", return_value="abc123"))
+            stack.enter_context(patch.object(bing_webmaster, "print_json", side_effect=rendered.append))
+            bing_webmaster.cmd_indexnow_verify(
+                argparse.Namespace(
+                    url="http://www.example.com/page",
+                    host=None,
+                    key_location=None,
+                    reveal_key=False,
+                )
+            )
+
+        self.assertEqual(rendered[0]["key_file_url"], "http://www.example.com/<BING_INDEXNOW_KEY>.txt")
+
     def test_indexnow_verify_can_explicitly_reveal_key(self) -> None:
         rendered: list[dict[str, Any]] = []
         with ExitStack() as stack:
@@ -240,6 +276,50 @@ class BingWebmasterHelperTest(TestCase):
                         key_location=None,
                     )
                 )
+
+    def test_indexnow_submit_accepts_hostname_case_and_default_port_variants(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_http_json(url: str, *, method: str = "GET", data: dict[str, Any] | None = None):
+            calls.append({"url": url, "method": method, "data": data})
+            return {}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(bing_webmaster, "indexnow_key", return_value="abc123"))
+            stack.enter_context(patch.object(bing_webmaster, "http_json", side_effect=fake_http_json))
+            stack.enter_context(patch.object(bing_webmaster, "print_json"))
+            bing_webmaster.cmd_indexnow_submit(
+                argparse.Namespace(
+                    url=["https://WWW.example.com/page", "https://www.example.com/other"],
+                    url_file=None,
+                    host=None,
+                    key_location=None,
+                )
+            )
+
+        self.assertEqual(calls[0]["data"]["host"], "www.example.com")
+
+    def test_indexnow_submit_accepts_default_port_key_location_variants(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_http_json(url: str, *, method: str = "GET", data: dict[str, Any] | None = None):
+            calls.append({"url": url, "method": method, "data": data})
+            return {}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(bing_webmaster, "indexnow_key", return_value="abc123"))
+            stack.enter_context(patch.object(bing_webmaster, "http_json", side_effect=fake_http_json))
+            stack.enter_context(patch.object(bing_webmaster, "print_json"))
+            bing_webmaster.cmd_indexnow_submit(
+                argparse.Namespace(
+                    url=["https://www.example.com/catalog/page"],
+                    url_file=None,
+                    host=None,
+                    key_location="https://www.example.com:443/catalog/abc123.txt",
+                )
+            )
+
+        self.assertEqual(calls[0]["data"]["keyLocation"], "https://www.example.com:443/catalog/abc123.txt")
 
     def test_indexnow_submit_posts_payload(self) -> None:
         calls: list[dict[str, Any]] = []
@@ -272,6 +352,30 @@ class BingWebmasterHelperTest(TestCase):
                 "urlList": ["https://www.example.com/a", "https://www.example.com/b"],
             },
         )
+
+    def test_indexnow_submit_rejects_key_location_host_mismatch(self) -> None:
+        with self.assertRaises(SystemExit):
+            with patch.object(bing_webmaster, "indexnow_key", return_value="abc123"):
+                bing_webmaster.cmd_indexnow_submit(
+                    argparse.Namespace(
+                        url=["https://www.example.com/a"],
+                        url_file=None,
+                        host=None,
+                        key_location="https://cdn.example.com/abc123.txt",
+                    )
+                )
+
+    def test_indexnow_submit_rejects_urls_outside_key_path_prefix(self) -> None:
+        with self.assertRaises(SystemExit):
+            with patch.object(bing_webmaster, "indexnow_key", return_value="abc123"):
+                bing_webmaster.cmd_indexnow_submit(
+                    argparse.Namespace(
+                        url=["https://www.example.com/help/page"],
+                        url_file=None,
+                        host=None,
+                        key_location="https://www.example.com/catalog/abc123.txt",
+                    )
+                )
 
 
 if __name__ == "__main__":

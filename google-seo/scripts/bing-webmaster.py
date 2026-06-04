@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 BING_API_ROOT = "https://ssl.bing.com/webmaster/api.svc/json"
@@ -86,7 +87,7 @@ def print_json(data: Any) -> None:
     print(json.dumps(redacted(data), indent=2, sort_keys=True))
 
 
-def fail(message: str, code: int = 1, *, public: bool = True) -> None:
+def fail(message: str, code: int = 1, *, public: bool = True) -> NoReturn:
     if public:
         print(f"error: {message}", file=sys.stderr)
     else:
@@ -121,18 +122,23 @@ def config_value(name: str) -> str | None:
     return None
 
 
-def bing_api_key() -> str:
-    value = config_value("BING_WEBMASTER_API_KEY")
+def required_config_value(name: str, *, message: str) -> str:
+    value = config_value(name)
     if not value:
-        fail("missing BING_WEBMASTER_API_KEY in environment or local.env")
+        fail(message)
     return value
+
+
+def bing_api_key() -> str:
+    return required_config_value(
+        "BING_WEBMASTER_API_KEY", message="missing BING_WEBMASTER_API_KEY in environment or local.env"
+    )
 
 
 def indexnow_key() -> str:
-    value = config_value("BING_INDEXNOW_KEY")
-    if not value:
-        fail("missing BING_INDEXNOW_KEY in environment or local.env")
-    return value
+    return required_config_value(
+        "BING_INDEXNOW_KEY", message="missing BING_INDEXNOW_KEY in environment or local.env"
+    )
 
 
 def require_url(value: str, *, label: str = "URL") -> str:
@@ -144,13 +150,60 @@ def require_url(value: str, *, label: str = "URL") -> str:
 
 def normalize_site_url(value: str) -> str:
     if value.startswith("domain:"):
-        return value
+        fail("Bing site URLs must be real http(s) URLs, not domain properties")
     return require_url(value, label="site URL").rstrip("/") + "/"
 
 
 def host_from_url(value: str) -> str:
     parsed = urllib.parse.urlparse(require_url(value))
-    return parsed.netloc
+    if not parsed.hostname:
+        fail("URL must include a host")
+    host = parsed.hostname.lower()
+    port = parsed.port
+    if port is None:
+        return host
+    if (parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80):
+        return host
+    return f"{host}:{port}"
+
+
+def normalize_host_text(value: str) -> str:
+    parsed = urllib.parse.urlsplit(f"//{value}", scheme="https")
+    if not parsed.hostname:
+        fail("host must be a valid hostname, for example www.example.com")
+    host = parsed.hostname.lower()
+    port = parsed.port
+    if port is None or port in {80, 443}:
+        return host
+    return f"{host}:{port}"
+
+
+def normalize_host_argument(value: str) -> str:
+    return normalize_host_text(value)
+
+
+def normalize_inspection_url(value: str) -> str:
+    if value.startswith("domain:"):
+        return value
+    return require_url(value, label="URL")
+
+
+def indexnow_key_path_prefix(key_location: str) -> str:
+    parsed = urllib.parse.urlparse(require_url(key_location, label="key location"))
+    if not parsed.path or parsed.path.endswith("/"):
+        fail("key location must point to a key file, for example https://example.com/key.txt")
+    directory = posixpath.dirname(parsed.path)
+    return "/" if directory in {"", "/"} else f"{directory}/"
+
+
+def indexnow_key_location_host(key_location: str) -> str:
+    return host_from_url(require_url(key_location, label="key location"))
+
+
+def url_within_indexnow_scope(url: str, *, host: str, path_prefix: str) -> bool:
+    parsed_host = host_from_url(url)
+    parsed_path = urllib.parse.urlparse(require_url(url)).path
+    return parsed_host == host and parsed_path.startswith(path_prefix)
 
 
 def read_url_list(args: argparse.Namespace) -> list[str]:
@@ -197,6 +250,7 @@ def http_json(
         fail(f"HTTP {exc.code} from Bing endpoint; response detail omitted", public=False)
     except urllib.error.URLError:
         fail("Bing endpoint request failed; reason omitted", public=False)
+    raise AssertionError("unreachable")
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
@@ -228,7 +282,7 @@ def cmd_submit_feed(args: argparse.Namespace) -> None:
 
 def cmd_url_info(args: argparse.Namespace) -> None:
     site = normalize_site_url(args.site)
-    url = require_url(args.url)
+    url = normalize_inspection_url(args.url)
     print_json(
         http_json(
             bing_api_url("GetUrlInfo", query={"siteUrl": site, "url": url}),
@@ -267,9 +321,10 @@ def cmd_submit_url_batch(args: argparse.Namespace) -> None:
 
 def cmd_indexnow_verify(args: argparse.Namespace) -> None:
     key = indexnow_key()
-    host = args.host or host_from_url(args.url)
+    host = normalize_host_argument(args.host) if args.host else host_from_url(args.url)
+    scheme = urllib.parse.urlparse(require_url(args.url)).scheme
     display_key = key if args.reveal_key else "<BING_INDEXNOW_KEY>"
-    location = args.key_location or f"https://{host}/{display_key}.txt"
+    location = args.key_location or f"{scheme}://{host}/{display_key}.txt"
     expected_body = key if args.reveal_key else "<BING_INDEXNOW_KEY>"
     print_json(
         {
@@ -284,14 +339,20 @@ def cmd_indexnow_verify(args: argparse.Namespace) -> None:
 
 def cmd_indexnow_submit(args: argparse.Namespace) -> None:
     urls = read_url_list(args)
-    host = args.host or host_from_url(urls[0])
+    host = normalize_host_argument(args.host) if args.host else host_from_url(urls[0])
     bad_hosts = [url for url in urls if host_from_url(url) != host]
     if bad_hosts:
         fail("all IndexNow URLs must belong to the submitted host")
     key = indexnow_key()
     data: dict[str, Any] = {"host": host, "key": key, "urlList": urls}
     if args.key_location:
-        data["keyLocation"] = require_url(args.key_location, label="key location")
+        key_location = require_url(args.key_location, label="key location")
+        if indexnow_key_location_host(key_location) != host:
+            fail("--key-location must use the same host as the submitted URLs")
+        key_path_prefix = indexnow_key_path_prefix(key_location)
+        if any(not url_within_indexnow_scope(url, host=host, path_prefix=key_path_prefix) for url in urls):
+            fail("all IndexNow URLs must stay under the key file path prefix when --key-location is used")
+        data["keyLocation"] = key_location
     response = http_json(INDEXNOW_ENDPOINT, method="POST", data=data)
     print_json({"submitted": True, "host": host, "count": len(urls), "response": response})
 
