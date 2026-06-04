@@ -114,6 +114,48 @@ policy:
             raise AssertionError(f"missing expected error {fragment!r}: {errors}")
 
 
+def write_skill_with_sibling_reference(root: Path, referenced_path: str) -> Path:
+    skill_dir = root / "demo-skill"
+    sibling_scripts_dir = root / "sibling-skill" / "scripts"
+    skill_dir.mkdir(parents=True)
+    sibling_scripts_dir.mkdir(parents=True)
+    put_text(sibling_scripts_dir / "helper.py", "#!/usr/bin/env python3\nprint('ok')\n")
+    put_text(
+        skill_dir / "SKILL.md",
+        f"""
+---
+name: demo-skill
+description: Use for demo work.
+---
+
+Use `{referenced_path}` when sibling context is needed.
+""".lstrip(),
+    )
+    return skill_dir
+
+
+def test_referenced_paths_validate_sibling_skill_paths() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_sibling_reference(root, "../sibling-skill/scripts/helper.py")
+        errors = module.validate_referenced_paths(skill_dir)
+    if errors:
+        raise AssertionError(f"valid sibling path should pass: {errors}")
+
+
+def test_referenced_paths_reject_missing_sibling_skill_paths() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_sibling_reference(root, "../sibling-skill/scripts/missing.py")
+        errors = module.validate_referenced_paths(skill_dir)
+    if len(errors) != 1 or "references missing ../sibling-skill/scripts/missing.py" not in errors[0]:
+        raise AssertionError(f"missing sibling path should fail: {errors}")
+
+
 def write_skill_with_shell_helper(root: Path, example_argv: str) -> Path:
     skill_dir = root / "demo-skill"
     scripts_dir = skill_dir / "scripts"
@@ -270,10 +312,57 @@ def test_pep723_helper_examples_allow_uv_and_direct_invocation() -> None:
     if errors:
         raise AssertionError(f"direct PEP 723 examples should pass: {errors}")
 
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        sibling_scripts_dir = root / "sibling-skill" / "scripts"
+        skill_dir.mkdir(parents=True)
+        sibling_scripts_dir.mkdir(parents=True)
+        put_text(
+            skill_dir / "SKILL.md",
+            """
+---
+name: demo-skill
+description: Use for demo work.
+policy:
+  command_policies:
+    - id: prefer-sibling-helper
+      match:
+        argv_prefix: ["demo"]
+      action: require_preferred
+      message: Prefer the sibling helper.
+      preferred:
+        - kind: script
+          path: ../sibling-skill/scripts/helper.py
+          example_argv: ["uv", "run", "$CODE_HOME/skills/sibling-skill/scripts/helper.py"]
+          purpose: Runs the sibling helper.
+---
+""".lstrip(),
+        )
+        put_text(
+            sibling_scripts_dir / "helper.py",
+            """#!/usr/bin/env python3
+"""
+            "# /// "
+            """script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+print("ok")
+""",
+        )
+        errors = module.validate_command_example_invocations(skill_dir)
+    if errors:
+        raise AssertionError(f"uv run sibling PEP 723 examples should pass: {errors}")
+
 
 def main() -> int:
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()
+    test_referenced_paths_validate_sibling_skill_paths()
+    test_referenced_paths_reject_missing_sibling_skill_paths()
     test_shell_helper_examples_reject_python_and_uv()
     test_shell_helper_examples_allow_direct_invocation()
     test_pep723_helper_examples_reject_python()

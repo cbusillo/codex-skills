@@ -30,6 +30,7 @@ SYSTEM_OVERRIDE_NAMES = {
 }
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
+SIBLING_PATH_RE = re.compile(r"`(\.\./[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
 ALLOWED_OPENAI_INTERFACE_KEYS = {
     "display_name",
@@ -394,7 +395,11 @@ def validate_script_example_argv(
 ) -> list[str]:
     if not isinstance(example_argv, list) or not example_argv:
         return []
-    script = skill_dir / resource_path
+    script = (skill_dir / resource_path).resolve()
+    try:
+        script.relative_to(ROOT)
+    except ValueError:
+        return []
     if not script.is_file():
         return []
     command = [token for token in example_argv if isinstance(token, str)]
@@ -451,6 +456,21 @@ def validate_referenced_paths(skill_dir: Path) -> list[str]:
             if "<" in raw or ">" in raw:
                 continue
             candidate = skill_dir / raw
+            if not candidate.exists():
+                errors.append(f"{skill_md.relative_to(ROOT)}: references missing {raw}")
+
+        for match in SIBLING_PATH_RE.finditer(line):
+            raw = match.group(1).rstrip(".,);]")
+            if "<" in raw or ">" in raw:
+                continue
+            candidate = (skill_dir / raw).resolve()
+            try:
+                candidate.relative_to(ROOT)
+            except ValueError:
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: references path outside skill repo {raw}"
+                )
+                continue
             if not candidate.exists():
                 errors.append(f"{skill_md.relative_to(ROOT)}: references missing {raw}")
 
