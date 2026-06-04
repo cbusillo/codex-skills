@@ -25,6 +25,9 @@ resources:
   - path: references/forward-testing.md
     kind: reference
     description: Guidance for subagent forward-testing of complex skill revisions.
+  - path: references/exec_harness.md
+    kind: reference
+    description: How to run Every Code exec-harness scenarios for skill behavior validation.
 commands:
   - name: init-skill
     source: skill
@@ -106,6 +109,8 @@ skill that changes routing, command policy, safety boundaries, or GitHub/repo
 workflow semantics should have at least one harness-style prompt that exercises
 the intended behavior and a negative or ambiguity case when practical. Keep
 these tests focused on observable agent behavior rather than private reasoning.
+For this repo, read `references/exec_harness.md` before designing or running
+exec-harness scenarios.
 
 ### Anatomy of a Skill
 
