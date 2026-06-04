@@ -107,7 +107,28 @@ def scenario_name(path_value: str | None) -> str | None:
 
 def event_message(event: dict[str, Any]) -> dict[str, Any]:
     msg = event.get("msg")
-    return msg if isinstance(msg, dict) else {}
+    if isinstance(msg, dict):
+        return msg
+    return event
+
+
+def non_bool_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def usage_total_from_parts(usage: dict[str, Any]) -> int | None:
+    fields = ["input_tokens", "output_tokens"]
+    parts: list[int] = []
+    for field in fields:
+        value = non_bool_int(usage.get(field))
+        if value is None:
+            return None
+        parts.append(value)
+    cached = non_bool_int(usage.get("cached_input_tokens")) or 0
+    reasoning = non_bool_int(usage.get("reasoning_output_tokens")) or 0
+    parts.append(cached)
+    parts.append(reasoning)
+    return sum(parts)
 
 
 def count_tool_calls(events: list[dict[str, Any]]) -> int:
@@ -115,6 +136,13 @@ def count_tool_calls(events: list[dict[str, Any]]) -> int:
     for event in events:
         msg_type = event_message(event).get("type")
         if isinstance(msg_type, str) and msg_type.endswith("_begin"):
+            count += 1
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("item_type") or item.get("type")
+        if item_type in {"command_execution", "tool_call"}:
             count += 1
     return count
 
@@ -131,28 +159,25 @@ def token_usage_from_events(events: list[dict[str, Any]]) -> int | None:
         usage = info.get("total_token_usage")
         if not isinstance(usage, dict):
             continue
-        total = usage.get("total_tokens")
-        if isinstance(total, int) and not isinstance(total, bool):
-            best = max(best or 0, total)
+        total = non_bool_int(usage.get("total_tokens"))
+        parts_total = usage_total_from_parts(usage)
+        candidates = [value for value in (total, parts_total) if value is not None]
+        if candidates:
+            best = max(best or 0, max(candidates))
     return best
 
 
 def token_usage(summary: dict[str, Any], events: list[dict[str, Any]]) -> tuple[int | None, str]:
     usage = summary.get("usage")
     if isinstance(usage, dict):
-        total = usage.get("total_tokens")
-        if isinstance(total, int) and not isinstance(total, bool):
+        total = non_bool_int(usage.get("total_tokens"))
+        parts_total = usage_total_from_parts(usage)
+        if parts_total is not None and (total is None or parts_total > total):
+            return parts_total, "summary.usage.parts"
+        if total is not None:
             return total, "summary.usage.total_tokens"
-        fields = ["input_tokens", "output_tokens", "reasoning_output_tokens"]
-        parts: list[int] = []
-        for field in fields:
-            value = usage.get(field)
-            if not isinstance(value, int) or isinstance(value, bool):
-                parts = []
-                break
-            parts.append(value)
-        if parts:
-            return sum(parts), "summary.usage.parts"
+        if parts_total is not None:
+            return parts_total, "summary.usage.parts"
     event_total = token_usage_from_events(events)
     if event_total is not None:
         return event_total, "stdout.token_count"
