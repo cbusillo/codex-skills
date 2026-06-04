@@ -7,6 +7,7 @@ cd "$repo_root"
 uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
 uv run skill-creator/scripts/validate-skill-behavior.py
+uv run skill-creator/scripts/validate-command-policy-simulator.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
 uv run skill-creator/scripts/quick_validate.py --self-test
@@ -23,6 +24,7 @@ helper_tests=(
 	people/scripts/test_resolve_person.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_validate_skill_repo.py
+	skill-creator/scripts/validate-command-policy-simulator.py
 	rollout-friction/scripts/validate_analyze_rollouts.py
 	rollout-friction/scripts/validate_extract_rollout_memory.py
 	rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py
@@ -37,11 +39,15 @@ helper_tests=(
 # context, not standalone helper tests. Keep the skip list explicit so newly
 # added test_*.py or validate_*.py files do not silently miss validation.
 helper_test_skiplist=(
+	github/scripts/validate-gh-plan.py
 	rollout-friction/scripts/validate_rollout_memory_llm_results.py
+	scripts/validate-public-safety.py
+	skill-creator/scripts/validate-skill-behavior.py
+	skill-creator/scripts/validate-skill-repo.py
 )
 
 mapfile -t discovered_helper_tests < <(
-	git ls-files '*test_*.py' '*validate_*.py' | sort
+	git ls-files --cached --others --exclude-standard '*test_*.py' '*validate_*.py' '*validate-*.py' | sort
 )
 
 declared_helper_tests="$(printf '%s\n' "${helper_tests[@]}" "${helper_test_skiplist[@]}" | sort)"
