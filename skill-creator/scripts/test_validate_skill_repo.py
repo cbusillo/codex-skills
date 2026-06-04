@@ -179,7 +179,9 @@ commands:
     put_text(
         skill_dir / "scripts" / "helper.py",
         """#!/usr/bin/env python3
-# /// script
+"""
+        "# /// "
+        """script
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
