@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SIBLING_PATH_RE = re.compile(r"`(\.\./[^`\s]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)?\[[^\]\n]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 ALLOWED_OPENAI_INTERFACE_KEYS = {
     "display_name",
     "short_description",
@@ -485,6 +487,51 @@ def validate_referenced_paths(skill_dir: Path) -> list[str]:
     return errors
 
 
+def validate_markdown_links(skill_dir: Path) -> list[str]:
+    errors: list[str] = []
+    for markdown_path in sorted(skill_dir.rglob("*.md")):
+        if any(part in IGNORED_SKILL_DIRS for part in markdown_path.relative_to(skill_dir).parts):
+            continue
+        text = markdown_path.read_text()
+        in_fence = False
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if line.lstrip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            for match in MARKDOWN_LINK_RE.finditer(line):
+                raw = match.group(1).strip()
+                if should_skip_markdown_link(raw):
+                    continue
+                target = raw.split("#", 1)[0]
+                candidate = (markdown_path.parent / target).resolve()
+                try:
+                    candidate.relative_to(ROOT)
+                except ValueError:
+                    errors.append(
+                        f"{markdown_path.relative_to(ROOT)}:{line_number}: markdown link points outside skill repo: {raw}"
+                    )
+                    continue
+                if not candidate.exists():
+                    errors.append(
+                        f"{markdown_path.relative_to(ROOT)}:{line_number}: markdown link target missing: {raw}"
+                    )
+    return errors
+
+
+def should_skip_markdown_link(raw: str) -> bool:
+    lowered = raw.lower()
+    return (
+        not raw
+        or raw.startswith("#")
+        or raw.startswith("/")
+        or raw.startswith("<")
+        or re.match(r"^[a-z][a-z0-9+.-]*:", lowered) is not None
+        or raw.startswith("mailto:")
+    )
+
+
 def validate_python_script_metadata(skill_dir: Path) -> list[str]:
     errors: list[str] = []
     scripts_dir = skill_dir / "scripts"
@@ -495,7 +542,45 @@ def validate_python_script_metadata(skill_dir: Path) -> list[str]:
         text = script.read_text()
         if "# /// script" not in text:
             errors.append(f"{script.relative_to(ROOT)}: missing PEP 723 script metadata")
+            continue
+        errors.extend(validate_pep723_metadata(script, text))
     return errors
+
+
+def validate_pep723_metadata(script: Path, text: str) -> list[str]:
+    starts = [match.start() for match in re.finditer(r"(?m)^# /// script$", text)]
+    if len(starts) != 1:
+        return [f"{script.relative_to(ROOT)}: expected exactly one PEP 723 script metadata block"]
+
+    lines = text.splitlines()
+    in_block = False
+    toml_lines: list[str] = []
+    closed = False
+    for line in lines:
+        if line == "# /// script":
+            in_block = True
+            continue
+        if in_block and line == "# ///":
+            closed = True
+            break
+        if in_block:
+            if not line.startswith("#"):
+                return [f"{script.relative_to(ROOT)}: invalid PEP 723 metadata line {line!r}"]
+            toml_lines.append(line[1:].lstrip())
+    if not closed:
+        return [f"{script.relative_to(ROOT)}: unclosed PEP 723 script metadata block"]
+    try:
+        metadata = tomllib.loads("\n".join(toml_lines))
+    except tomllib.TOMLDecodeError as exc:
+        return [f"{script.relative_to(ROOT)}: invalid PEP 723 TOML: {exc}"]
+    if "requires-python" not in metadata:
+        return [f"{script.relative_to(ROOT)}: PEP 723 metadata missing requires-python"]
+    dependencies = metadata.get("dependencies")
+    if dependencies is not None and not isinstance(dependencies, list):
+        return [f"{script.relative_to(ROOT)}: PEP 723 dependencies must be a list"]
+    if isinstance(dependencies, list) and not all(isinstance(item, str) for item in dependencies):
+        return [f"{script.relative_to(ROOT)}: PEP 723 dependencies must be strings"]
+    return []
 
 
 def validate_skill_dir(skill_dir: Path) -> list[str]:
@@ -512,6 +597,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
         )
 
     errors.extend(validate_referenced_paths(skill_dir))
+    errors.extend(validate_markdown_links(skill_dir))
     errors.extend(validate_skill_command_policy_paths(skill_dir))
     errors.extend(validate_skill_command_policy_command_coverage(skill_dir))
     errors.extend(validate_command_example_invocations(skill_dir))
