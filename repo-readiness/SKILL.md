@@ -88,6 +88,31 @@ context and should not affect readiness for the active repo/branch.
    safe-to-exit, continue into `work-closeout` after the readiness answer is
    established.
 
+## Readiness To Closeout Handoff
+
+When `work-closeout` will run after this skill, make the readiness answer easy
+to consume instead of asking closeout to rediscover gate state. Include these
+fields in chat, a PR comment, or the owning issue when durable state is needed:
+
+- Status: ready, not ready, partially ready, or blocked.
+- Required gates: the checks inferred from `.github/github.json`, repo docs, CI,
+  and the changed surface.
+- Passed, failed, pending, and not-run evidence with concrete reasons.
+- Metadata/docs impact: whether `.github/github.json` or docs changed, were
+  checked, are stale, or were intentionally not updated.
+- Next action: the smallest step that would change readiness.
+
+This handoff is evidence for `work-closeout`; it is not cleanup. Do not delete
+artifacts, remove worktrees, close planning issues, or claim safe-to-exit from
+this skill alone.
+
+Both this skill and `work-closeout` read `.github/github.json` with the same
+schema expectations: `qualityGate`, `docs`, `metadataFreshness`, `cleanup`,
+`importantWorkflows`, repo relationships, health signals, and ownership or
+Launchplane routing when present. Readiness uses those fields to decide what
+must be verified; closeout uses the same fields to decide what final evidence,
+metadata updates, and cleanup remain.
+
 Use `../references/every-code-formatting.md` for readiness reports and durable
 readiness comments: lead with status, cite concrete evidence, and keep skipped
 or pending checks explicit without copying large logs.

@@ -92,6 +92,32 @@ Leave the user with a truthful closeout answer:
    or remote resources without explicit approval.
 9. Report final state concisely.
 
+## Consuming Readiness Evidence
+
+When `repo-readiness` has just run, consume its handoff instead of rerunning the
+same gate discovery by default. Verify the evidence is fresh for the current
+branch, PR, and commit, then use it to decide whether closeout can proceed:
+
+- Status: ready, not ready, partially ready, or blocked.
+- Required gates: checks inferred from `.github/github.json`, repo docs, CI, and
+  the changed surface.
+- Passed, failed, pending, and not-run evidence with concrete reasons.
+- Metadata/docs impact: whether `.github/github.json` or docs changed, were
+  checked, are stale, or were intentionally not updated.
+- Next action: the smallest step that would change readiness.
+
+If the readiness handoff is missing, stale, tied to a different commit/PR, or
+does not cover the current closeout question, run `repo-readiness` first or
+record the gap as a conditional/no safe-to-exit reason. Do not treat closeout
+cleanup as proof that gates passed.
+
+Both this skill and `repo-readiness` read `.github/github.json` with the same
+schema expectations: `qualityGate`, `docs`, `metadataFreshness`, `cleanup`,
+`importantWorkflows`, repo relationships, health signals, and ownership or
+Launchplane routing when present. Readiness uses those fields to decide what
+must be verified; closeout uses the same fields to decide what final evidence,
+metadata updates, and cleanup remain.
+
 When writing final summaries, closeout comments, or migrated handoff content,
 follow `../references/every-code-formatting.md`: cite point-in-time evidence,
 keep recovery-critical facts in GitHub for GitHub-backed work, and avoid
