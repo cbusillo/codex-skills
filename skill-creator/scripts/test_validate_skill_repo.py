@@ -114,9 +114,168 @@ policy:
             raise AssertionError(f"missing expected error {fragment!r}: {errors}")
 
 
+def write_skill_with_shell_helper(root: Path, example_argv: str) -> Path:
+    skill_dir = root / "demo-skill"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    put_text(
+        skill_dir / "SKILL.md",
+        f"""
+---
+name: demo-skill
+description: Use for demo work.
+resources:
+  - path: scripts/helper
+    kind: script
+    description: Runs the shell helper.
+commands:
+  - name: helper
+    source: skill
+    resource_path: scripts/helper
+    example_argv: {example_argv}
+    purpose: Runs the shell helper.
+policy:
+  command_policies:
+    - id: prefer-helper
+      match:
+        argv_prefix: ["demo"]
+      action: require_preferred
+      message: Prefer the helper.
+      preferred:
+        - kind: script
+          path: scripts/helper
+          example_argv: {example_argv}
+          purpose: Runs the shell helper.
+---
+""".lstrip(),
+    )
+    put_text(skill_dir / "scripts" / "helper", "#!/usr/bin/env bash\necho ok\n")
+    return skill_dir
+
+
+def write_skill_with_pep723_helper(root: Path, example_argv: str) -> Path:
+    skill_dir = root / "demo-skill"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    put_text(
+        skill_dir / "SKILL.md",
+        f"""
+---
+name: demo-skill
+description: Use for demo work.
+resources:
+  - path: scripts/helper.py
+    kind: script
+    description: Runs the Python helper.
+commands:
+  - name: helper
+    source: skill
+    resource_path: scripts/helper.py
+    example_argv: {example_argv}
+    purpose: Runs the Python helper.
+---
+""".lstrip(),
+    )
+    put_text(
+        skill_dir / "scripts" / "helper.py",
+        """#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+print("ok")
+""",
+    )
+    return skill_dir
+
+
+def test_shell_helper_examples_reject_python_and_uv() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_shell_helper(root, '["python3", "scripts/helper"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if len(errors) != 2 or not all("not Python" in error for error in errors):
+        raise AssertionError(f"shell helper Python examples should fail: {errors}")
+
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_shell_helper(root, '["uv", "run", "scripts/helper"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if len(errors) != 2 or not all("not with uv run" in error for error in errors):
+        raise AssertionError(f"shell helper uv examples should fail: {errors}")
+
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_shell_helper(root, '["python", "scripts/helper"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if len(errors) != 2 or not all("not Python" in error for error in errors):
+        raise AssertionError(f"shell helper bare Python examples should fail: {errors}")
+
+
+def test_shell_helper_examples_allow_direct_invocation() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_shell_helper(root, '["scripts/helper", "--help"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if errors:
+        raise AssertionError(f"direct shell helper examples should pass: {errors}")
+
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_shell_helper(root, '["bash", "scripts/helper", "--help"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if errors:
+        raise AssertionError(f"bash shell helper examples should pass: {errors}")
+
+
+def test_pep723_helper_examples_reject_python() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_pep723_helper(root, '["python3", "scripts/helper.py"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if len(errors) != 1 or "PEP 723 helper" not in errors[0]:
+        raise AssertionError(f"PEP 723 Python examples should fail: {errors}")
+
+
+def test_pep723_helper_examples_allow_uv_and_direct_invocation() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_pep723_helper(root, '["uv", "run", "scripts/helper.py"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if errors:
+        raise AssertionError(f"uv run PEP 723 examples should pass: {errors}")
+
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_pep723_helper(root, '["scripts/helper.py", "--help"]')
+        errors = module.validate_command_example_invocations(skill_dir)
+    if errors:
+        raise AssertionError(f"direct PEP 723 examples should pass: {errors}")
+
+
 def main() -> int:
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()
+    test_shell_helper_examples_reject_python_and_uv()
+    test_shell_helper_examples_allow_direct_invocation()
+    test_pep723_helper_examples_reject_python()
+    test_pep723_helper_examples_allow_uv_and_direct_invocation()
     print("ok test-validate-skill-repo")
     return 0
 

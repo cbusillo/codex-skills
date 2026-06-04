@@ -49,6 +49,8 @@ EXAMPLE_MARKERS = (
     "example:",
     "would be helpful",
 )
+PYTHON_INTERPRETER_NAMES = {"python", "python3"}
+SHELL_INTERPRETER_NAMES = {"bash", "dash", "ksh", "sh", "zsh"}
 
 
 def load_quick_validate() -> Any:
@@ -333,6 +335,107 @@ def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]
     return errors
 
 
+def validate_command_example_invocations(skill_dir: Path) -> list[str]:
+    frontmatter = read_frontmatter(skill_dir / "SKILL.md")
+    skill_md = skill_dir / "SKILL.md"
+    errors: list[str] = []
+
+    commands = frontmatter.get("commands")
+    if isinstance(commands, list):
+        for index, command in enumerate(commands):
+            if not isinstance(command, dict) or command.get("source") != "skill":
+                continue
+            raw = command.get("resource_path")
+            if not isinstance(raw, str):
+                continue
+            errors.extend(
+                validate_script_example_argv(
+                    skill_dir,
+                    raw,
+                    command.get("example_argv"),
+                    f"{skill_md.relative_to(ROOT)}: commands[{index}].example_argv",
+                )
+            )
+
+    policy = frontmatter.get("policy")
+    if not isinstance(policy, dict):
+        return errors
+    command_policies = policy.get("command_policies")
+    if not isinstance(command_policies, list):
+        return errors
+    for policy_index, command_policy in enumerate(command_policies):
+        if not isinstance(command_policy, dict):
+            continue
+        preferred = command_policy.get("preferred")
+        if not isinstance(preferred, list):
+            continue
+        for preferred_index, entry in enumerate(preferred):
+            if not isinstance(entry, dict) or entry.get("kind") != "script":
+                continue
+            raw = entry.get("path")
+            if not isinstance(raw, str):
+                continue
+            errors.extend(
+                validate_script_example_argv(
+                    skill_dir,
+                    raw,
+                    entry.get("example_argv"),
+                    f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].example_argv",
+                )
+            )
+    return errors
+
+
+def validate_script_example_argv(
+    skill_dir: Path,
+    resource_path: str,
+    example_argv: Any,
+    path: str,
+) -> list[str]:
+    if not isinstance(example_argv, list) or not example_argv:
+        return []
+    script = skill_dir / resource_path
+    if not script.is_file():
+        return []
+    command = [token for token in example_argv if isinstance(token, str)]
+    if not command:
+        return []
+    launcher = Path(command[0]).name
+    if has_pep723_script_metadata(script) and launcher in PYTHON_INTERPRETER_NAMES:
+        return [
+            f"{path} runs PEP 723 helper {resource_path} with {launcher}; use uv run or direct execution, not Python"
+        ]
+    if not has_shell_shebang(script):
+        return []
+    if launcher in PYTHON_INTERPRETER_NAMES:
+        return [
+            f"{path} runs shell helper {resource_path} with {launcher}; run it directly or with a shell, not Python"
+        ]
+    if launcher == "uv" and len(command) > 1 and command[1] == "run":
+        return [
+            f"{path} runs shell helper {resource_path} with uv run; run it directly or with a shell, not with uv run"
+        ]
+    return []
+
+
+def has_shell_shebang(path: Path) -> bool:
+    try:
+        first_line = path.read_text(errors="ignore").splitlines()[0]
+    except IndexError:
+        return False
+    if not first_line.startswith("#!"):
+        return False
+    tokens = {token for token in re.split(r"[/\s]+", first_line[2:]) if token}
+    return bool(tokens & SHELL_INTERPRETER_NAMES)
+
+
+def has_pep723_script_metadata(path: Path) -> bool:
+    try:
+        return "# /// script" in path.read_text(errors="ignore")
+    except OSError:
+        return False
+
+
 def validate_referenced_paths(skill_dir: Path) -> list[str]:
     skill_md = skill_dir / "SKILL.md"
     lines = skill_md.read_text().splitlines()
@@ -391,6 +494,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors.extend(validate_referenced_paths(skill_dir))
     errors.extend(validate_skill_command_policy_paths(skill_dir))
     errors.extend(validate_skill_command_policy_command_coverage(skill_dir))
+    errors.extend(validate_command_example_invocations(skill_dir))
     errors.extend(validate_openai_yaml(skill_dir))
     errors.extend(validate_python_script_metadata(skill_dir))
     return errors

@@ -16,20 +16,21 @@ commands:
     source: skill
     resource_path: scripts/gh_pr_watch.py
     example_argv:
-      ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--once"]
+      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--once"]
     purpose: Emit one JSON snapshot of PR review, CI, and mergeability state.
   - name: pr-watch
     source: skill
     resource_path: scripts/gh_pr_watch.py
     example_argv:
-      ["python3", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
+      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
     purpose: Continuously emit JSONL snapshots while babysitting a PR.
   - name: retry-failed-checks
     source: skill
     resource_path: scripts/gh_pr_watch.py
     example_argv:
       [
-        "python3",
+        "uv",
+        "run",
         "scripts/gh_pr_watch.py",
         "--pr",
         "auto",
@@ -100,25 +101,25 @@ Accept any of the following:
 ### One-shot snapshot
 
 ```bash
-python3 scripts/gh_pr_watch.py --pr auto --once
+uv run scripts/gh_pr_watch.py --pr auto --once
 ```
 
 ### Continuous watch (JSONL)
 
 ```bash
-python3 scripts/gh_pr_watch.py --pr auto --watch
+uv run scripts/gh_pr_watch.py --pr auto --watch
 ```
 
 ### Trigger flaky retry cycle (only when watcher indicates)
 
 ```bash
-python3 scripts/gh_pr_watch.py --pr auto --retry-failed-now
+uv run scripts/gh_pr_watch.py --pr auto --retry-failed-now
 ```
 
 ### Explicit PR target
 
 ```bash
-python3 scripts/gh_pr_watch.py --pr <number-or-url> --once
+uv run scripts/gh_pr_watch.py --pr <number-or-url> --once
 ```
 
 ## CI Failure Classification
