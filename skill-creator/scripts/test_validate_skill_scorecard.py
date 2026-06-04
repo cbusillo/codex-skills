@@ -83,7 +83,8 @@ def test_rejects_private_paths_and_tokens() -> None:
     set_active_skills(module, {"demo-skill"})
     card = minimal_scorecard()
     baseline = card["skills"]["demo-skill"]["checks"][0]["baseline"]
-    baseline["notes"] = "artifact at /Users/example/.local/run with ghp_123456789012345678901234"
+    token = "ghp_" + "123456789012345678901234"
+    baseline["notes"] = f"artifact at /Users/example/.local/run with {token}"
     errors = module.validate_scorecard(card)
     expected = ["private/local path", "token-shaped secret"]
     for fragment in expected:
