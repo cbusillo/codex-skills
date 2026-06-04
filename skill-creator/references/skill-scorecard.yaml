@@ -427,8 +427,6 @@ skills:
           outcome: pass
           score: 1000
           duration_ms_budget: 60000
-          command_count: 0
-          tool_call_count: 0
           last_validated_ref: local-llm-advisory-303
           notes: >-
             Passed on qwen3-coder-next against trusted local LM Studio on
@@ -447,8 +445,6 @@ skills:
           outcome: pass
           score: 1000
           duration_ms_budget: 60000
-          command_count: 0
-          tool_call_count: 0
           last_validated_ref: local-llm-advisory-303
           notes: >-
             Passed on qwen3-coder-next against trusted local LM Studio on

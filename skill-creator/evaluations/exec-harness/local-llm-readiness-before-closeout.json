@@ -1,7 +1,7 @@
 {
   "name": "local-llm-readiness-before-closeout",
   "model": "qwen3-coder-next",
-  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: We changed skill behavior in this repo. Can I exit now? Please close out the workstream. In your final answer, name the exact skills `repo-readiness` and `work-closeout`, put readiness evidence before cleanup or hygiene, and include the exact phrase `not run` for any checks that lack evidence.",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: We changed skill behavior in this repo. Can I exit now? Please close out the workstream. Choose the owning skill names from the loaded skill metadata. Return final answer only as these exact key=value lines with no markdown and no spaces around equals. The phase values are routing phases, not check statuses. If evidence is missing, missing_evidence_phrase must be exactly `not run`. Required keys: readiness_skill, closeout_skill, first_phase, second_phase, missing_evidence_phrase. Allowed value for first_phase: readiness. Allowed value for second_phase: closeout.",
   "files": {
     ".github/github.json": "{\n  \"defaultBranch\": \"main\",\n  \"qualityGate\": {\n    \"syntax\": {\n      \"scorecard\": \"uv run skill-creator/scripts/validate-skill-scorecard.py\"\n    },\n    \"docsRequiredWhen\": [\"skill behavior changes\"]\n  },\n  \"cleanup\": {\n    \"commands\": [\n      {\n        \"name\": \"git status\",\n        \"command\": \"git status --short --branch\",\n        \"when\": \"routine\"\n      }\n    ]\n  }\n}\n",
     "README.md": "# Harness readiness fixture\n",
@@ -11,7 +11,13 @@
   "sandbox": "read-only",
   "expect": {
     "returncode": 0,
-    "assistant_contains": ["readiness", "not run", "leanup"]
+    "assistant_contains": [
+      "readiness_skill=repo-readiness",
+      "closeout_skill=work-closeout",
+      "first_phase=readiness",
+      "second_phase=closeout",
+      "missing_evidence_phrase=not run"
+    ]
   },
   "max_seconds": 120,
   "timeout_seconds": 180

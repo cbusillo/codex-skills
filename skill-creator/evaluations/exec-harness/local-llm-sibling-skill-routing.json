@@ -1,7 +1,7 @@
 {
   "name": "local-llm-sibling-skill-routing",
   "model": "qwen3-coder-next",
-  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, do not edit files, and do not use network. A user says: I need to find where private DNS or Cloudflare authority is documented, then do a read-only health or inventory check only if appropriate. In your final answer, explain which sibling skill owns each phase and include the exact phrases `docs-lookup`, `infra-ops`, and `read-only`.",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, do not edit files, and do not use network. A user says: I need to find where private DNS or Cloudflare authority is documented, then do a read-only health or inventory check only if appropriate. Choose the owning skill names from the loaded skill metadata. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: docs_phase_skill, ops_phase_skill, ops_scope, sequence. Allowed value for sequence: docs-before-ops.",
   "files": {
     "README.md": "# Harness sibling routing fixture\n"
   },
@@ -9,7 +9,12 @@
   "sandbox": "read-only",
   "expect": {
     "returncode": 0,
-    "assistant_contains": ["docs-lookup", "infra-ops", "read-only"]
+    "assistant_contains": [
+      "docs_phase_skill=docs-lookup",
+      "ops_phase_skill=infra-ops",
+      "ops_scope=read-only",
+      "sequence=docs-before-ops"
+    ]
   },
   "max_seconds": 120,
   "timeout_seconds": 180
