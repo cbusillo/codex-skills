@@ -609,6 +609,42 @@ def test_github_merges_land_through_prs() -> None:
     )
 
 
+def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
+    readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
+    closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
+    normalized_readiness = " ".join(readiness_text.split())
+    normalized_closeout = " ".join(closeout_text.split())
+    shared_schema = (
+        "qualitygate", "docs", "metadatafreshness", "cleanup", "importantworkflows"
+    )
+
+    require(
+        "readiness to closeout handoff" in normalized_readiness,
+        "repo-readiness must define the closeout handoff surface",
+    )
+    require(
+        "consuming readiness evidence" in normalized_closeout,
+        "work-closeout must define how it consumes readiness evidence",
+    )
+    for key in shared_schema:
+        require(
+            key in normalized_readiness and key in normalized_closeout,
+            f"repo-readiness and work-closeout must both name github.json field {key}",
+        )
+    require(
+        "this handoff is evidence for `work-closeout`; it is not cleanup" in normalized_readiness,
+        "repo-readiness must not claim cleanup ownership",
+    )
+    require(
+        "do not treat closeout cleanup as proof that gates passed" in normalized_closeout,
+        "work-closeout must not treat cleanup as readiness proof",
+    )
+    require(
+        "if the readiness handoff is missing, stale, tied to a different commit/pr" in normalized_closeout,
+        "work-closeout must reject stale or missing readiness handoffs",
+    )
+
+
 def test_infra_ops_owns_live_infra_actions() -> None:
     infra_source = (ROOT / "infra-ops" / "SKILL.md").read_text()
     infra_text = infra_source.lower()
@@ -796,6 +832,7 @@ def main() -> None:
         test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
+        test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_infra_ops_owns_live_infra_actions,
         test_infra_ops_private_context_command_detects_docs_pointer,
         test_infra_ops_private_context_command_reports_missing,
