@@ -156,6 +156,59 @@ def test_referenced_paths_reject_missing_sibling_skill_paths() -> None:
         raise AssertionError(f"missing sibling path should fail: {errors}")
 
 
+def test_markdown_links_validate_relative_targets() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        references_dir = skill_dir / "references"
+        references_dir.mkdir(parents=True)
+        put_text(skill_dir / "SKILL.md", "---\nname: demo-skill\ndescription: Use for demo work.\n---\nSee [guide](references/guide.md).\n")
+        put_text(references_dir / "guide.md", "# Guide\n")
+        errors = module.validate_markdown_links(skill_dir)
+    if errors:
+        raise AssertionError(f"valid markdown link should pass: {errors}")
+
+
+def test_markdown_links_reject_missing_relative_targets() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        put_text(skill_dir / "SKILL.md", "---\nname: demo-skill\ndescription: Use for demo work.\n---\nSee [missing](references/missing.md).\n")
+        errors = module.validate_markdown_links(skill_dir)
+    if len(errors) != 1 or "markdown link target missing: references/missing.md" not in errors[0]:
+        raise AssertionError(f"missing markdown link should fail: {errors}")
+
+
+def test_markdown_links_ignore_fenced_examples_and_root_relative_docs() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        put_text(
+            skill_dir / "SKILL.md",
+            """---
+name: demo-skill
+description: Use for demo work.
+---
+See [external docs](/api/docs/guides/latest-model).
+
+```markdown
+See [example-only](EXAMPLE.md).
+```
+""",
+        )
+        errors = module.validate_markdown_links(skill_dir)
+    if errors:
+        raise AssertionError(f"fenced/root-relative markdown links should pass: {errors}")
+
+
 def write_skill_with_shell_helper(root: Path, example_argv: str) -> Path:
     skill_dir = root / "demo-skill"
     scripts_dir = skill_dir / "scripts"
@@ -293,6 +346,56 @@ def test_pep723_helper_examples_reject_python() -> None:
         raise AssertionError(f"PEP 723 Python examples should fail: {errors}")
 
 
+def test_pep723_metadata_rejects_invalid_toml() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        script = root / "helper.py"
+        put_text(
+            script,
+            """#!/usr/bin/env python3
+"""
+            "# /// "
+            """script
+# requires-python = ">=3.12"
+# dependencies = [
+# ///
+print("ok")
+""",
+        )
+        errors = module.validate_pep723_metadata(script, script.read_text())
+    if len(errors) != 1 or "invalid PEP 723 TOML" not in errors[0]:
+        raise AssertionError(f"invalid PEP 723 TOML should fail: {errors}")
+
+
+def test_pep723_metadata_rejects_multiple_blocks() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        script = root / "helper.py"
+        put_text(
+            script,
+            """#!/usr/bin/env python3
+"""
+            "# /// "
+            """script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""
+            "# /// "
+            """script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+print("ok")
+""",
+        )
+        errors = module.validate_pep723_metadata(script, script.read_text())
+    if len(errors) != 1 or "expected exactly one" not in errors[0]:
+        raise AssertionError(f"multiple PEP 723 blocks should fail: {errors}")
+
+
 def test_pep723_helper_examples_allow_uv_and_direct_invocation() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -363,9 +466,14 @@ def main() -> int:
     test_openai_yaml_rejects_schema_drift()
     test_referenced_paths_validate_sibling_skill_paths()
     test_referenced_paths_reject_missing_sibling_skill_paths()
+    test_markdown_links_validate_relative_targets()
+    test_markdown_links_reject_missing_relative_targets()
+    test_markdown_links_ignore_fenced_examples_and_root_relative_docs()
     test_shell_helper_examples_reject_python_and_uv()
     test_shell_helper_examples_allow_direct_invocation()
     test_pep723_helper_examples_reject_python()
+    test_pep723_metadata_rejects_invalid_toml()
+    test_pep723_metadata_rejects_multiple_blocks()
     test_pep723_helper_examples_allow_uv_and_direct_invocation()
     print("ok test-validate-skill-repo")
     return 0
