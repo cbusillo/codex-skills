@@ -6,6 +6,7 @@
 
 import argparse
 import importlib.util
+import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -376,6 +377,76 @@ class BingWebmasterHelperTest(TestCase):
                         key_location="https://www.example.com/catalog/abc123.txt",
                     )
                 )
+
+    def test_url_within_indexnow_scope(self) -> None:
+        # Positive matching (subdir prefix)
+        self.assertTrue(
+            bing_webmaster.url_within_indexnow_scope(
+                "https://example.com/blog/posts/1", host="example.com", path_prefix="/blog/"
+            )
+        )
+        # Boundary reject (shares substring but not trailing slash)
+        self.assertFalse(
+            bing_webmaster.url_within_indexnow_scope(
+                "https://example.com/blog-posts/1", host="example.com", path_prefix="/blog/"
+            )
+        )
+        # Root prefix positive match
+        self.assertTrue(
+            bing_webmaster.url_within_indexnow_scope(
+                "https://example.com/about", host="example.com", path_prefix="/"
+            )
+        )
+
+    def test_indexnow_key_path_prefix(self) -> None:
+        # Key location at root
+        self.assertEqual(
+            bing_webmaster.indexnow_key_path_prefix("https://example.com/key.txt"), "/"
+        )
+        # Key location nested in directory
+        self.assertEqual(
+            bing_webmaster.indexnow_key_path_prefix("https://example.com/deep/path/to/key.txt"),
+            "/deep/path/to/",
+        )
+        # Invalid key location
+        with self.assertRaises(SystemExit):
+            bing_webmaster.indexnow_key_path_prefix("https://example.com/")
+
+    def test_read_url_list_formatting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "urls.txt"
+            with file_path.open("w", encoding="utf-8") as handle:
+                handle.write(
+                    "\n  https://example.com/from-file  \n# comment line\nhttps://example.com/other-file\n"
+                )
+            urls = bing_webmaster.read_url_list(
+                argparse.Namespace(
+                    url=["https://example.com/from-arg"],
+                    url_file=str(file_path),
+                )
+            )
+        self.assertEqual(
+            urls,
+            [
+                "https://example.com/from-arg",
+                "https://example.com/from-file",
+                "https://example.com/other-file",
+            ],
+        )
+
+    def test_read_url_list_invalid_url_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "urls.txt"
+            with file_path.open("w", encoding="utf-8") as handle:
+                handle.write("invalid_url\n")
+            with self.assertRaises(SystemExit):
+                bing_webmaster.read_url_list(
+                    argparse.Namespace(url=None, url_file=str(file_path))
+                )
+
+    def test_read_url_list_empty_fails(self) -> None:
+        with self.assertRaises(SystemExit):
+            bing_webmaster.read_url_list(argparse.Namespace(url=None, url_file=None))
 
 
 if __name__ == "__main__":

@@ -318,8 +318,11 @@ skills:
             Launchplane routing and private-context boundaries covered by
             behavior validation.
     known_gaps:
-      - No focused script tests yet for Launchplane helper edge cases in this
-        scorecard.
+      - >-
+        No focused script tests yet for Launchplane helper edge cases in this
+        scorecard. Integration tests require private Launchplane endpoint
+        responses; behavior is verified via static schema validation and mock
+        routing.
   local-llm:
     status: active
     risk_classes:
@@ -340,7 +343,10 @@ skills:
           last_validated_ref: main
           notes: Advisory local LLM scenario planned in child issue 303.
     known_gaps:
-      - Local LLM advisory scenarios are planned but not implemented.
+      - >-
+        No focused script tests yet because local LLM chat and benchmark helper
+        scripts require an active trusted local LM Studio API server instance;
+        advisory scenarios are planned but not implemented.
   memory-distillation:
     status: manual_only
     risk_classes:
@@ -378,7 +384,11 @@ skills:
           notes: >-
             Metadata and system override presence covered by repo validation.
     known_gaps:
-      - No scenario yet for official-docs-only browsing behavior.
+      - >-
+        No focused script tests yet for the JavaScript docs resolver; add
+        offline markdown fixture coverage before treating this as more than
+        metadata validation. No scenario yet for official-docs-only browsing
+        behavior.
   people:
     status: active
     risk_classes:
@@ -435,7 +445,10 @@ skills:
           notes: >-
             Metadata and system override presence covered by repo validation.
     known_gaps:
-      - No focused plugin scaffold tests yet in this scorecard.
+      - >-
+        No focused script tests yet for plugin scaffolding; add deterministic
+        temp-output coverage before treating this as more than metadata
+        validation.
   python-uv-workflow:
     status: active
     risk_classes:
@@ -560,7 +573,10 @@ skills:
           last_validated_ref: main
           notes: Metadata and references covered by repo validation.
     known_gaps:
-      - No focused installer script tests yet in this scorecard.
+      - >-
+        No focused installer script tests yet in this scorecard. Installer
+        utility modifies path locations and performs network requests against
+        the GitHub API; structural safety is validated statically.
   work-closeout:
     status: active
     risk_classes:

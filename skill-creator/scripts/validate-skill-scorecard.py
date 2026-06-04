@@ -81,6 +81,7 @@ KNOWN_NOT_RUN_REASONS = {
     "not_implemented",
 }
 KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+SCRIPT_TEST_RATIONALE_RE = re.compile(r"\bno focused\b.*\bscript tests?\b", re.IGNORECASE)
 PRIVATE_PATH_RE = re.compile(r"(^|/)(\.local|\.code)(/|$)|^/Users/|^~")
 PRIVATE_HOST_RE = re.compile(
     r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"
@@ -109,6 +110,23 @@ def load_scorecard(path: Path = SCORECARD) -> Any:
         return None
     except yaml.YAMLError as exc:
         return {"__yaml_error__": str(exc)}
+
+
+def skill_has_script_resources(name: str, root: Path = ROOT) -> bool:
+    skill_md = root / name / "SKILL.md"
+    try:
+        text = skill_md.read_text()
+    except FileNotFoundError:
+        return False
+    match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    if not match:
+        return False
+    parsed = yaml.safe_load(match.group(1))
+    frontmatter = parsed if isinstance(parsed, dict) else {}
+    resources = frontmatter.get("resources", [])
+    if not isinstance(resources, list):
+        return False
+    return any(isinstance(resource, dict) and resource.get("kind") == "script" for resource in resources)
 
 
 def public_safe_string_errors(path: str, value: str) -> list[str]:
@@ -278,6 +296,16 @@ def validate_skill_entry(name: str, value: Any, path: str) -> list[str]:
     for index, gap in enumerate(gaps):
         if not isinstance(gap, str) or not gap.strip():
             errors.append(f"{path}.known_gaps[{index}]: must be a non-empty string")
+
+    has_script_test = any(
+        isinstance(check, dict) and check.get("kind") == "script_test" for check in checks
+    )
+    if skill_has_script_resources(name) and not has_script_test:
+        gap_text = "\n".join(gap for gap in gaps if isinstance(gap, str))
+        if SCRIPT_TEST_RATIONALE_RE.search(gap_text) is None:
+            errors.append(
+                f"{path}.known_gaps: script-bearing skills without script_test checks must include a no focused script tests rationale"
+            )
 
     return errors
 

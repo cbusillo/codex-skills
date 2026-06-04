@@ -53,6 +53,10 @@ ALLOWLIST_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"PRIVATE KEY-----\.\*"),
 )
 
+def iter_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    return SECRET_PATTERNS
+
+
 def tracked_files() -> list[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -67,6 +71,24 @@ def is_allowed(path: Path, line: str) -> bool:
     return any(pattern.search(line) for pattern in ALLOWLIST_PATTERNS)
 
 
+def scan_line(path: Path, line_number: int, line: str) -> list[Finding]:
+    if is_allowed(path, line):
+        return []
+    findings: list[Finding] = []
+    for rule, pattern in iter_patterns():
+        if pattern.search(line):
+            findings.append(
+                Finding(
+                    path=path.relative_to(ROOT),
+                    line_number=line_number,
+                    rule=rule,
+                    excerpt=line.strip()[:160],
+                )
+            )
+            break
+    return findings
+
+
 def scan_file(path: Path) -> list[Finding]:
     try:
         content = path.read_text(encoding="utf-8")
@@ -74,19 +96,7 @@ def scan_file(path: Path) -> list[Finding]:
         content = path.read_text(errors="ignore")
     findings: list[Finding] = []
     for line_number, line in enumerate(content.splitlines(), start=1):
-        if is_allowed(path, line):
-            continue
-        for rule, pattern in SECRET_PATTERNS:
-            if pattern.search(line):
-                findings.append(
-                    Finding(
-                        path=path.relative_to(ROOT),
-                        line_number=line_number,
-                        rule=rule,
-                        excerpt=line.strip()[:160],
-                    )
-                )
-                break
+        findings.extend(scan_line(path, line_number, line))
     return findings
 
 
@@ -99,11 +109,60 @@ def validate(files: list[Path]) -> list[Finding]:
 
 
 def self_test() -> None:
-    safe = "GH_TOKEN=github_pat_xxx"
-    unsafe = "GH_TOKEN=github_pat_" + "A" * 80
-    assert is_allowed(ROOT / ".env.example", safe)
-    assert not is_allowed(ROOT / "README.md", unsafe)
-    assert SECRET_PATTERNS[1][1].search(unsafe)
+    # Test github-classic-token
+    unsafe_classic = "ghp_" + "a" * 20
+    safe_classic = "ghp_example"
+    assert SECRET_PATTERNS[0][1].search(unsafe_classic)
+    assert not is_allowed(ROOT / "README.md", unsafe_classic)
+    assert is_allowed(ROOT / "README.md", safe_classic)
+
+    # Test github-fine-grained-token
+    unsafe_fg = "github_pat_" + "a" * 20
+    safe_fg_xxx = "github_pat_xxx"
+    safe_fg_example = "github_pat_example"
+    assert SECRET_PATTERNS[1][1].search(unsafe_fg)
+    assert not is_allowed(ROOT / "README.md", unsafe_fg)
+    assert is_allowed(ROOT / "README.md", safe_fg_xxx)
+    assert is_allowed(ROOT / "README.md", safe_fg_example)
+
+    # Test openai-api-key
+    unsafe_openai = "sk-" + "a" * 20
+    unsafe_anthropic = "sk-ant-" + "a" * 20
+    safe_openai = "sk-[A-Za-z0-9"
+    safe_anthropic = "sk-ant-[A-Za-z0-9"
+    assert SECRET_PATTERNS[2][1].search(unsafe_openai)
+    assert not is_allowed(ROOT / "README.md", unsafe_openai)
+    assert SECRET_PATTERNS[2][1].search(unsafe_anthropic)
+    assert not is_allowed(ROOT / "README.md", unsafe_anthropic)
+    assert is_allowed(ROOT / "README.md", safe_openai)
+    assert is_allowed(ROOT / "README.md", safe_anthropic)
+
+    # Test google-api-key
+    unsafe_google = "AIza" + "A" * 35
+    assert SECRET_PATTERNS[3][1].search(unsafe_google)
+    assert not is_allowed(ROOT / "README.md", unsafe_google)
+
+    # Test aws-access-key
+    unsafe_aws = "AKIA" + "1" * 16
+    assert SECRET_PATTERNS[4][1].search(unsafe_aws)
+    assert not is_allowed(ROOT / "README.md", unsafe_aws)
+
+    # Test slack-token
+    unsafe_slack = "xoxb-" + "1" * 10
+    assert SECRET_PATTERNS[5][1].search(unsafe_slack)
+    assert not is_allowed(ROOT / "README.md", unsafe_slack)
+
+    # Test private-key-block
+    unsafe_key = "-----BEGIN " + "RSA " + "PRIVATE KEY-----"
+    safe_key = "PRIVATE KEY-----.*"
+    assert SECRET_PATTERNS[6][1].search(unsafe_key)
+    assert not is_allowed(ROOT / "README.md", unsafe_key)
+    assert is_allowed(ROOT / "README.md", safe_key)
+
+    # Test credentialed-url
+    unsafe_url = "http://" + "user:password" + "@example.com/path"
+    assert SECRET_PATTERNS[7][1].search(unsafe_url)
+    assert not is_allowed(ROOT / "README.md", unsafe_url)
 
 
 def main() -> int:

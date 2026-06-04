@@ -62,9 +62,14 @@ def set_active_skills(module: Any, names: set[str]) -> None:
     module.active_skill_names = lambda root=module.ROOT: names
 
 
+def set_script_resources(module: Any, names: set[str]) -> None:
+    module.skill_has_script_resources = lambda name, root=module.ROOT: name in names
+
+
 def test_accepts_minimal_scorecard() -> None:
     module = load_module()
     set_active_skills(module, {"demo-skill"})
+    set_script_resources(module, set())
     errors = module.validate_scorecard(minimal_scorecard())
     if errors:
         raise AssertionError(f"minimal scorecard should pass: {errors}")
@@ -73,6 +78,7 @@ def test_accepts_minimal_scorecard() -> None:
 def test_requires_all_active_skills() -> None:
     module = load_module()
     set_active_skills(module, {"demo-skill", "missing-skill"})
+    set_script_resources(module, set())
     errors = module.validate_scorecard(minimal_scorecard())
     if not any("missing active skills ['missing-skill']" in error for error in errors):
         raise AssertionError(f"missing skill should fail: {errors}")
@@ -81,6 +87,7 @@ def test_requires_all_active_skills() -> None:
 def test_rejects_private_paths_and_tokens() -> None:
     module = load_module()
     set_active_skills(module, {"demo-skill"})
+    set_script_resources(module, set())
     card = minimal_scorecard()
     baseline = card["skills"]["demo-skill"]["checks"][0]["baseline"]
     token = "ghp_" + "123456789012345678901234"
@@ -95,6 +102,7 @@ def test_rejects_private_paths_and_tokens() -> None:
 def test_required_checks_cannot_be_not_run() -> None:
     module = load_module()
     set_active_skills(module, {"demo-skill"})
+    set_script_resources(module, set())
     card = minimal_scorecard()
     baseline = card["skills"]["demo-skill"]["checks"][0]["baseline"]
     baseline["outcome"] = "not_run"
@@ -107,6 +115,7 @@ def test_required_checks_cannot_be_not_run() -> None:
 def test_exec_harness_scenarios_must_exist() -> None:
     module = load_module()
     set_active_skills(module, {"demo-skill"})
+    set_script_resources(module, set())
     card = minimal_scorecard()
     check = card["skills"]["demo-skill"]["checks"][0]
     check["kind"] = "exec_harness"
@@ -117,12 +126,31 @@ def test_exec_harness_scenarios_must_exist() -> None:
         raise AssertionError(f"missing scenario should fail: {errors}")
 
 
+def test_script_bearing_skills_require_test_or_rationale() -> None:
+    module = load_module()
+    set_active_skills(module, {"demo-skill"})
+    set_script_resources(module, {"demo-skill"})
+    card = minimal_scorecard()
+    card["skills"]["demo-skill"]["checks"][0]["kind"] = "static_validator"
+    errors = module.validate_scorecard(card)
+    if not any("no focused script tests rationale" in error for error in errors):
+        raise AssertionError(f"missing script-test rationale should fail: {errors}")
+
+    card["skills"]["demo-skill"]["known_gaps"] = [
+        "No focused script tests yet because this helper requires a live local provider."
+    ]
+    errors = module.validate_scorecard(card)
+    if errors:
+        raise AssertionError(f"explicit script-test rationale should pass: {errors}")
+
+
 def main() -> int:
     test_accepts_minimal_scorecard()
     test_requires_all_active_skills()
     test_rejects_private_paths_and_tokens()
     test_required_checks_cannot_be_not_run()
     test_exec_harness_scenarios_must_exist()
+    test_script_bearing_skills_require_test_or_rationale()
     print("ok test-validate-skill-scorecard")
     return 0
 
