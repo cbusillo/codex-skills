@@ -8,6 +8,7 @@ uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
 uv run skill-creator/scripts/validate-skill-behavior.py
 uv run skill-creator/scripts/validate-command-policy-simulator.py
+uv run skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
 uv run skill-creator/scripts/quick_validate.py --self-test
@@ -24,6 +25,7 @@ helper_tests=(
 	people/scripts/test_resolve_person.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_validate_skill_repo.py
+	skill-creator/scripts/test_validate_skill_scorecard.py
 	skill-creator/scripts/validate-command-policy-simulator.py
 	rollout-friction/scripts/validate_analyze_rollouts.py
 	rollout-friction/scripts/validate_extract_rollout_memory.py
@@ -44,6 +46,7 @@ helper_test_skiplist=(
 	scripts/validate-public-safety.py
 	skill-creator/scripts/validate-skill-behavior.py
 	skill-creator/scripts/validate-skill-repo.py
+	skill-creator/scripts/validate-skill-scorecard.py
 )
 
 mapfile -t discovered_helper_tests < <(
