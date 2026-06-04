@@ -1,0 +1,36 @@
+{
+  "name": "project-doc-skill-dedup",
+  "model": "gpt-5.1-codex",
+  "prompt": "Reply with exactly: ok",
+  "files": {
+    "AGENTS.md": "# Harness Project Guidance\n\nKeep project guidance in context exactly once.\n",
+    ".code/skills/demo/SKILL.md": "---\nname: demo\ndescription: Demo skill\n---\nUse the demo skill.\n",
+    "README.md": "# Project doc and skill dedup fixture\n"
+  },
+  "config_toml": "instructions = \"base guidance\"\n",
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-project-doc-dedup"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "count": {
+          "# AGENTS.md instructions for": 1,
+          "Keep project guidance in context exactly once.": 1,
+          "### Available skills": 1,
+          "- demo: Demo skill": 1
+        }
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

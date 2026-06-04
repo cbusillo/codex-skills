@@ -1,0 +1,36 @@
+{
+  "name": "manual-skill-explicit-invocation",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $manual-skill and reply with exactly: ok",
+  "files": {
+    ".code/skills/implicit/SKILL.md": "---\nname: implicit-skill\ndescription: Implicit skill\n---\nUse the implicit skill.\n",
+    ".code/skills/manual/SKILL.md": "---\nname: manual-skill\ndescription: Manual skill\npolicy:\n  allow_implicit_invocation: false\n---\nMANUAL_SKILL_BODY_MARKER\n",
+    "README.md": "# Manual skill invocation fixture\n"
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-manual-skill-explicit"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "count": {
+          "### Available skills": 1,
+          "- implicit-skill: Implicit skill": 1,
+          "- manual-skill: Manual skill": 0,
+          "<name>manual-skill</name>": 1,
+          "MANUAL_SKILL_BODY_MARKER": 1
+        }
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}
