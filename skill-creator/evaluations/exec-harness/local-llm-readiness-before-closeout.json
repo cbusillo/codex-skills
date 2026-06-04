@@ -1,0 +1,18 @@
+{
+  "name": "local-llm-readiness-before-closeout",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: We changed skill behavior in this repo. Can I exit now? Please close out the workstream. In your final answer, name the exact skills `repo-readiness` and `work-closeout`, put readiness evidence before cleanup or hygiene, and include the exact phrase `not run` for any checks that lack evidence.",
+  "files": {
+    ".github/github.json": "{\n  \"defaultBranch\": \"main\",\n  \"qualityGate\": {\n    \"syntax\": {\n      \"scorecard\": \"uv run skill-creator/scripts/validate-skill-scorecard.py\"\n    },\n    \"docsRequiredWhen\": [\"skill behavior changes\"]\n  },\n  \"cleanup\": {\n    \"commands\": [\n      {\n        \"name\": \"git status\",\n        \"command\": \"git status --short --branch\",\n        \"when\": \"routine\"\n      }\n    ]\n  }\n}\n",
+    "README.md": "# Harness readiness fixture\n",
+    "skill-creator/SKILL.md": "---\nname: skill-creator\ndescription: Create or update skills.\n---\nSkill behavior changed.\n"
+  },
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": ["readiness", "not run", "leanup"]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}
