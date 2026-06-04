@@ -61,7 +61,8 @@ Leave the user with a truthful closeout answer:
    once as optional closeout context for the repo/workstream:
 
    ```bash
-   ../launchplane/scripts/launchplane-context.py --repo OWNER/REPO
+   skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
+   uv run "$skills_home/launchplane/scripts/launchplane-context.py" --repo OWNER/REPO
    ```
 
    Use `available` context to notice pending Every Code work, preview readiness,

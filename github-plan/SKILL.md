@@ -6,23 +6,23 @@ metadata:
 commands:
   - name: github-plan-index
     source: repo
-    example_argv: ["../github/scripts/gh-plan.py", "index"]
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
     purpose: Lists durable planning issues with compact status and relationship fields.
   - name: github-plan-search
     source: repo
-    example_argv: ["../github/scripts/gh-plan.py", "search", "<query>"]
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "search", "<query>"]
     purpose: Searches planning issues with normalized compact output.
   - name: github-plan-create
     source: repo
-    example_argv: ["../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
     purpose: Creates a durable plan issue with helper-owned labels and Project fields.
   - name: github-plan-update-section
     source: repo
-    example_argv: ["../github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
     purpose: Updates one markdown section of a planning issue safely.
   - name: github-plan-project-set
     source: repo
-    example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
     purpose: Updates configured Project fields through the planning helper.
 policy:
   command_policies:
@@ -34,7 +34,7 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "index"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
           purpose: Lists durable planning issues with compact status, labels, dependency, and sub-issue fields.
     - id: prefer-gh-plan-search-for-issue-search
       match:
@@ -44,7 +44,7 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "search", "<query>"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "search", "<query>"]
           purpose: Searches planning issues with compact normalized output and state handling.
     - id: prefer-gh-plan-helper-for-project-commands
       match:
@@ -54,15 +54,15 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "project-list", "--owner", "<owner>"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-list", "--owner", "<owner>"]
           purpose: Lists configured Projects with compact JSON.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "project-add", "<issue>"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-add", "<issue>"]
           purpose: Adds a planning issue to the configured Project.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
           purpose: Updates planning Project fields through configured names and values.
     - id: prefer-gh-plan-helper-for-planning-graphql
       match:
@@ -72,11 +72,11 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
           purpose: Updates Project fields with helper-owned config and rate-limit handling.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["../github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
           purpose: Creates native planning relationships through the helper.
 ---
 
@@ -150,6 +150,14 @@ Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 - `../github/references/issue-templates.md` and
   `../github/references/github-projects.md` for issue shape and Project fields.
 
+When running these helpers from a client repository, resolve the installed
+skills directory first and invoke Python helpers with `uv run`:
+
+```bash
+skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
+uv run "$skills_home/github/scripts/gh-plan.py" index
+```
+
 If the helpers are unavailable, use `gh` directly with body files and compact
 JSON reads. Do not fall back to repo docs or local plan files for durable
 GitHub-backed planning.
@@ -159,11 +167,11 @@ planning lookup, Project, and GraphQL-to-helper mappings. This prose keeps the
 judgment about when durable planning should exist, how issues relate, and what
 state belongs in GitHub.
 
-For close comments, use `../github/scripts/gh-issue close` so stdin is passed
-through a formatting-safe close path. For other multiline writes, prefer body
-files or stdin. Do not pass escaped `\n` through shell-quoted flags. Follow
-`../references/every-code-formatting.md` when writing durable issue bodies,
-planning comments, handoffs, or closeout evidence.
+For close comments, use `gh-issue close` from the installed `github` skill so
+stdin is passed through a formatting-safe close path. For other multiline
+writes, prefer body files or stdin. Do not pass escaped `\n` through
+shell-quoted flags. Follow `../references/every-code-formatting.md` when
+writing durable issue bodies, planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
 
@@ -237,8 +245,8 @@ public safety.
 
 ## Token Discipline
 
-Prefer `../github/scripts/gh-plan.py` for planning state. It returns compact JSON
-and avoids loading issue bodies unless needed.
+Prefer the installed `github/scripts/gh-plan.py` helper for planning state. It
+returns compact JSON and avoids loading issue bodies unless needed.
 
 Project v2, native sub-issues, and native dependency operations may require
 GraphQL. Before batching those operations, check rate limits when failures look
@@ -251,8 +259,8 @@ workflow stalls.
 - Use `show` for selected sections; use `show --full` only when broad prose is
   required.
 - Use `update-section` instead of rewriting the whole body.
-- Use `../github/scripts/gh-issue` and `../github/scripts/gh-comment` for multiline
-  Markdown bodies.
+- Use installed `github/scripts/gh-issue` and `github/scripts/gh-comment` for
+  multiline Markdown bodies.
 
 ## Issue Shape
 
@@ -305,7 +313,7 @@ state.
 
 After a canonical PR merges, inspect the issues it references with `Refs`,
 `Closes`, `Fixes`, or `Resolves`. `Refs` should remain non-closing by default.
-For each referenced issue, either close it with `../github/scripts/gh-issue
+For each referenced issue, either close it with installed `github/scripts/gh-issue
 close` and a multiline evidence comment when the merge conclusively satisfies
 the finish line, or update/comment the remaining state and leave it open.
 
