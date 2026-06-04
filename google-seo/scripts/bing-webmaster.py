@@ -151,7 +151,7 @@ def require_url(value: str, *, label: str = "URL") -> str:
 def normalize_site_url(value: str) -> str:
     if value.startswith("domain:"):
         fail("Bing site URLs must be real http(s) URLs, not domain properties")
-    return require_url(value, label="site URL").rstrip("/") + "/"
+    return require_url(value, label="site URL")
 
 
 def host_from_url(value: str) -> str:
