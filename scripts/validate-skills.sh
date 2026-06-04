@@ -7,6 +7,7 @@ cd "$repo_root"
 uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
 uv run skill-creator/scripts/validate-skill-behavior.py
+uv run skill-creator/scripts/validate-command-policy-simulator.py --self-test
 uv run skill-creator/scripts/validate-command-policy-simulator.py
 uv run skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
@@ -23,6 +24,7 @@ helper_tests=(
 	github-work-rollup/scripts/test_github_work_rollup.py
 	infra-ops/scripts/test_npmplus_ops.py
 	people/scripts/test_resolve_person.py
+	scripts/test_validate_public_safety.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_validate_skill_repo.py
 	skill-creator/scripts/test_validate_skill_scorecard.py

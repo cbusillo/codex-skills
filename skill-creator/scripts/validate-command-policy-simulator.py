@@ -120,8 +120,12 @@ def launchplane_apply_shell() -> str:
 
 EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["gh", "pr", "create", "--title", "demo"], None, "github", "prefer-gh-pr-create-helper"),
+    (["gh", "pr", "edit", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-edit-helper"),
+    (["gh", "pr", "comment", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-comment-helper"),
     (["gh", "pr", "merge", "123"], None, "github", "prefer-gh-pr-merge-helper"),
     (["gh", "issue", "create"], None, "github", "prefer-gh-issue-create-helper"),
+    (["gh", "issue", "edit", "123"], None, "github", "prefer-gh-issue-edit-helper"),
+    (["gh", "issue", "close", "123"], None, "github", "prefer-gh-issue-close-helper"),
     (["gh", "issue", "list", "--label", "plan"], None, "github-plan", "prefer-gh-plan-index-for-issue-list"),
     (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan", "prefer-gh-plan-search-for-issue-search"),
     (["gh", "project", "item-list", "1"], None, "github-plan", "prefer-gh-plan-helper-for-project-commands"),
@@ -130,6 +134,64 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["curl", "launchplane-apply"], launchplane_apply_shell(), "launchplane", "prefer-launchplane-write-helper-for-product-config-api"),
     (["launchplane", "merge-train", "run-once"], None, "launchplane", "prefer-launchplane-helpers-over-global-cli"),
 )
+
+NEGATIVE_EXPECTATIONS: tuple[tuple[list[str], str | None], ...] = (
+    (["gh", "issue", "view", "123"], None),
+    (["gh", "api", "graphql"], "gh api graphql -f query='{ viewer { login } }'"),
+    (["curl", "https://example.invalid/health"], None),
+)
+
+
+def precedence_self_test() -> list[str]:
+    policies = [
+        (
+            0,
+            "alpha",
+            0,
+            {
+                "id": "shell-match",
+                "match": {"shell_regex": r"\bdemo\b"},
+            },
+        ),
+        (
+            0,
+            "alpha",
+            1,
+            {
+                "id": "prefix-short",
+                "match": {"argv_prefix": ["demo"]},
+            },
+        ),
+        (
+            1,
+            "beta",
+            0,
+            {
+                "id": "prefix-long",
+                "match": {"argv_prefix": ["demo", "run"]},
+            },
+        ),
+        (
+            2,
+            "gamma",
+            0,
+            {
+                "id": "exact",
+                "match": {"argv_exact": ["demo", "run", "now"]},
+            },
+        ),
+    ]
+
+    matches = [
+        match
+        for skill_order, skill, index, policy in policies
+        if (match := match_policy(skill_order, skill, index, policy, ["demo", "run", "now"], "demo run now"))
+        is not None
+    ]
+    ordered = [match.policy_id for match in sorted(matches, key=lambda match: match.score, reverse=True)]
+    if ordered != ["exact", "prefix-long", "prefix-short", "shell-match"]:
+        return [f"policy precedence order drifted: {ordered}"]
+    return []
 
 
 def validate_expectations() -> list[str]:
@@ -143,7 +205,65 @@ def validate_expectations() -> list[str]:
             errors.append(
                 f"{shlex.join(argv)}: expected {expected_skill}/{expected_policy}, got {match.skill}/{match.policy_id}"
             )
+    for argv, shell in NEGATIVE_EXPECTATIONS:
+        match = primary_match(argv, shell)
+        if match is not None:
+            errors.append(f"{shlex.join(argv)}: expected no match, got {match.skill}/{match.policy_id}")
+    errors.extend(precedence_self_test())
     return errors
+
+
+def self_test() -> None:
+    global iter_policies
+    original_iter = iter_policies
+
+    # Test case 1: Matcher precedence (argv_exact beats argv_prefix beats shell_regex)
+    mock_policies = [
+        (0, "skill-a", 0, {"id": "exact-policy", "match": {"argv_exact": ["demo"]}}),
+        (1, "skill-b", 0, {"id": "prefix-policy", "match": {"argv_prefix": ["demo"]}}),
+        (2, "skill-c", 0, {"id": "regex-policy", "match": {"shell_regex": "demo"}}),
+    ]
+    iter_policies = lambda: mock_policies
+    matches = simulate(["demo"])
+    assert len(matches) == 3
+    assert matches[0].skill == "skill-a"
+    assert matches[0].policy_id == "exact-policy"
+    assert matches[1].skill == "skill-b"
+    assert matches[2].skill == "skill-c"
+
+    # Test case 2: Prefix length precedence (longer prefix beats shorter prefix)
+    mock_policies = [
+        (0, "skill-a", 0, {"id": "short-prefix", "match": {"argv_prefix": ["demo"]}}),
+        (1, "skill-b", 0, {"id": "long-prefix", "match": {"argv_prefix": ["demo", "sub"]}}),
+    ]
+    iter_policies = lambda: mock_policies
+    matches = simulate(["demo", "sub"])
+    assert len(matches) == 2
+    assert matches[0].skill == "skill-b"
+    assert matches[0].policy_id == "long-prefix"
+
+    # Test case 3: Skill order tie-breaking (alphabetical/list order)
+    mock_policies = [
+        (1, "skill-b", 0, {"id": "policy-b", "match": {"argv_prefix": ["demo"]}}),
+        (0, "skill-a", 0, {"id": "policy-a", "match": {"argv_prefix": ["demo"]}}),
+    ]
+    iter_policies = lambda: mock_policies
+    matches = simulate(["demo"])
+    assert len(matches) == 2
+    assert matches[0].skill == "skill-a"
+
+    # Test case 4: Policy index tie-breaking (index order)
+    mock_policies = [
+        (0, "skill-a", 1, {"id": "policy-second", "match": {"argv_prefix": ["demo"]}}),
+        (0, "skill-a", 0, {"id": "policy-first", "match": {"argv_prefix": ["demo"]}}),
+    ]
+    iter_policies = lambda: mock_policies
+    matches = simulate(["demo"])
+    assert len(matches) == 2
+    assert matches[0].policy_id == "policy-first"
+
+    iter_policies = original_iter
+    print("ok validate-command-policy-simulator self-test")
 
 
 def main() -> int:
@@ -151,7 +271,12 @@ def main() -> int:
     parser.add_argument("command", nargs="*", help="Command tokens to simulate")
     parser.add_argument("--shell", help="Shell string to use for shell_regex matching")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--self-test", action="store_true", help="Run precedence self tests")
     args = parser.parse_args()
+
+    if args.self_test:
+        self_test()
+        return 0
 
     if args.command:
         payload = [match.__dict__ for match in simulate(args.command, args.shell)]
