@@ -20,6 +20,7 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_HARNESS_ROOT = ROOT.parent / "code" / ".tmp" / "code-exec-harness"
 DEFAULT_DURATION_BUDGET_MS = 30_000
+BEGIN_TOOL_EVENT_TYPES = {"browser_open_begin", "exec_command_begin"}
 
 
 @dataclass
@@ -139,16 +140,25 @@ def event_completed_item_type(event: dict[str, Any]) -> str | None:
     return item_type if isinstance(item_type, str) else None
 
 
-def count_tool_calls(events: list[dict[str, Any]]) -> int:
+def count_begin_tools(events: list[dict[str, Any]]) -> int:
     count = 0
     for event in events:
         msg_type = event_message(event).get("type")
-        if isinstance(msg_type, str) and msg_type.endswith("_begin"):
-            count += 1
-            continue
-        if event_completed_item_type(event) in {"command_execution", "tool_call"}:
+        if msg_type in BEGIN_TOOL_EVENT_TYPES:
             count += 1
     return count
+
+
+def count_completed_tools(events: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for event in events
+        if event_completed_item_type(event) in {"command_execution", "tool_call"}
+    )
+
+
+def count_tool_calls(events: list[dict[str, Any]]) -> int:
+    return max(count_begin_tools(events), count_completed_tools(events))
 
 
 def count_completed_commands(events: list[dict[str, Any]]) -> int:

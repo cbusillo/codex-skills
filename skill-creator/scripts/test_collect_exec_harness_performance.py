@@ -248,6 +248,52 @@ def test_top_level_item_completed_command_counts_as_tool() -> None:
     assert run["tool_call_count"] == 1
 
 
+def test_command_lifecycle_events_do_not_double_count() -> None:
+    module = load_module()
+    run_dir = Path("/local/harness/20260604-120550-command-lifecycle")
+    install_fake_artifacts(
+        module,
+        {
+            run_dir.name: {
+                "summary": {"returncode": 0, "duration_ms": 10, "commands": [], "gh_calls": [], "usage": {}},
+                "manifest": {"fake_responses": False},
+                "events": [
+                    {"type": "exec_command_begin"},
+                    {"type": "item.completed", "item": {"type": "command_execution", "command": "date"}},
+                ],
+            }
+        },
+    )
+    report = module.build_report([run_dir], duration_budget_ms=30_000)
+
+    run = report["runs"][0]
+    assert run["command_count"] == 1
+    assert run["tool_call_count"] == 1
+
+
+def test_non_tool_begin_events_do_not_count_as_tools() -> None:
+    module = load_module()
+    run_dir = Path("/local/harness/20260604-120575-non-tool-begin")
+    install_fake_artifacts(
+        module,
+        {
+            run_dir.name: {
+                "summary": {"returncode": 0, "duration_ms": 10, "commands": [], "gh_calls": [], "usage": {}},
+                "manifest": {"fake_responses": False},
+                "events": [
+                    {"type": "session_begin"},
+                    {"type": "item.completed", "item": {"type": "command_execution", "command": "date"}},
+                ],
+            }
+        },
+    )
+    report = module.build_report([run_dir], duration_budget_ms=30_000)
+
+    run = report["runs"][0]
+    assert run["command_count"] == 1
+    assert run["tool_call_count"] == 1
+
+
 def test_cached_tokens_count_when_reasoning_tokens_absent() -> None:
     module = load_module()
     run_dir = Path("/local/harness/20260604-120600-cached-without-reasoning")
@@ -303,6 +349,8 @@ def main() -> None:
         test_empty_gh_calls_still_indicates_fake_gh_mode,
         test_top_level_jsonl_events_count_tools_and_tokens,
         test_top_level_item_completed_command_counts_as_tool,
+        test_command_lifecycle_events_do_not_double_count,
+        test_non_tool_begin_events_do_not_count_as_tools,
         test_cached_tokens_count_when_reasoning_tokens_absent,
         test_aggregates_groups,
     ]
