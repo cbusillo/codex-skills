@@ -19,6 +19,9 @@ resources:
   - path: scripts/validate-skill-repo.py
     kind: script
     description: Validate all active skills in this repository.
+  - path: scripts/collect_exec_harness_performance.py
+    kind: script
+    description: Summarize public-safe performance metrics from local Every Code exec-harness artifacts.
   - path: references/openai_yaml.md
     kind: reference
     description: Field definitions and examples for agents/openai.yaml.
@@ -54,6 +57,12 @@ commands:
     resource_path: scripts/validate-skill-repo.py
     example_argv: ["uv", "run", "scripts/validate-skill-repo.py"]
     purpose: Runs repository-wide validation across active skills.
+  - name: collect-exec-harness-performance
+    source: skill
+    resource_path: scripts/collect_exec_harness_performance.py
+    example_argv:
+      ["uv", "run", "scripts/collect_exec_harness_performance.py", "--latest", "10"]
+    purpose: Emits public-safe advisory performance metrics from local exec-harness artifacts.
 ---
 
 # Skill Creator
