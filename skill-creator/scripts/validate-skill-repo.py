@@ -288,6 +288,51 @@ def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
     return errors
 
 
+def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]:
+    frontmatter = read_frontmatter(skill_dir / "SKILL.md")
+    commands = frontmatter.get("commands")
+    if not isinstance(commands, list):
+        commands = []
+    command_resource_paths = {
+        command.get("resource_path")
+        for command in commands
+        if isinstance(command, dict)
+        and command.get("source") == "skill"
+        and isinstance(command.get("resource_path"), str)
+    }
+
+    policy = frontmatter.get("policy")
+    if not isinstance(policy, dict):
+        return []
+    command_policies = policy.get("command_policies")
+    if not isinstance(command_policies, list):
+        return []
+
+    errors: list[str] = []
+    skill_md = skill_dir / "SKILL.md"
+    for policy_index, command_policy in enumerate(command_policies):
+        if not isinstance(command_policy, dict) or command_policy.get("action") != "require_preferred":
+            continue
+        preferred = command_policy.get("preferred")
+        if not isinstance(preferred, list):
+            continue
+        preferred_skill_paths = [
+            entry.get("path")
+            for entry in preferred
+            if isinstance(entry, dict)
+            and entry.get("kind") == "script"
+            and isinstance(entry.get("path"), str)
+            and not Path(entry["path"]).is_absolute()
+            and ".." not in Path(entry["path"]).parts
+        ]
+        if preferred_skill_paths and not any(path in command_resource_paths for path in preferred_skill_paths):
+            errors.append(
+                f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}] preferred script path(s) "
+                f"{', '.join(preferred_skill_paths)} should be represented in commands[].resource_path"
+            )
+    return errors
+
+
 def validate_referenced_paths(skill_dir: Path) -> list[str]:
     skill_md = skill_dir / "SKILL.md"
     lines = skill_md.read_text().splitlines()
@@ -345,6 +390,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
 
     errors.extend(validate_referenced_paths(skill_dir))
     errors.extend(validate_skill_command_policy_paths(skill_dir))
+    errors.extend(validate_skill_command_policy_command_coverage(skill_dir))
     errors.extend(validate_openai_yaml(skill_dir))
     errors.extend(validate_python_script_metadata(skill_dir))
     return errors

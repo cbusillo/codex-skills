@@ -80,8 +80,18 @@ commands:
   - name: github-issue-create
     source: skill
     resource_path: scripts/gh-issue
-    example_argv: ["scripts/gh-issue", "create", "<title>"]
-    purpose: Creates GitHub issues with safe body-file handling.
+    example_argv: ["github/scripts/gh-issue", "create", "<title>", "--repo", "OWNER/REPO"]
+    purpose: Creates GitHub issues by reading Markdown from stdin; pass the body with shell redirection or a quoted heredoc.
+  - name: github-issue-edit
+    source: skill
+    resource_path: scripts/gh-issue
+    example_argv: ["github/scripts/gh-issue", "edit", "<issue>", "--repo", "OWNER/REPO"]
+    purpose: Edits GitHub issues by reading replacement Markdown from stdin; pass the body with shell redirection or a quoted heredoc.
+  - name: github-issue-close
+    source: skill
+    resource_path: scripts/gh-issue
+    example_argv: ["github/scripts/gh-issue", "close", "<issue>", "--repo", "OWNER/REPO", "--reason", "completed"]
+    purpose: Closes GitHub issues by reading an optional close comment from stdin; pass the comment with shell redirection or a quoted heredoc.
   - name: github-ci-diagnose
     source: skill
     resource_path: scripts/github-ci-diagnose.py
@@ -160,32 +170,32 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "create"]
       action: require_preferred
-      message: Raw `gh issue create` is fragile for multiline Markdown. Use the GitHub issue helper so the body is read safely from stdin.
+      message: Raw `gh issue create` is fragile for multiline Markdown. From the repo root, run `github/scripts/gh-issue create "Issue title" --repo OWNER/REPO < body.md` or use a quoted heredoc so the body is read safely from stdin.
       preferred:
         - kind: script
           path: scripts/gh-issue
-          example_argv: ["scripts/gh-issue", "create", "<title>"]
-          purpose: Creates issues with safe body-file handling.
+          example_argv: ["github/scripts/gh-issue", "create", "<title>", "--repo", "OWNER/REPO"]
+          purpose: Creates issues by reading Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
     - id: prefer-gh-issue-edit-helper
       match:
         argv_prefix: ["gh", "issue", "edit"]
       action: require_preferred
-      message: Raw `gh issue edit` can mangle multiline issue bodies. Use the GitHub issue helper for body updates.
+      message: Raw `gh issue edit` can mangle multiline issue bodies. From the repo root, run `github/scripts/gh-issue edit 123 --repo OWNER/REPO < body.md` or use a quoted heredoc so the body is read safely from stdin.
       preferred:
         - kind: script
           path: scripts/gh-issue
-          example_argv: ["scripts/gh-issue", "edit", "<issue>"]
-          purpose: Edits issues with safe body-file handling.
+          example_argv: ["github/scripts/gh-issue", "edit", "<issue>", "--repo", "OWNER/REPO"]
+          purpose: Edits issues by reading replacement Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
     - id: prefer-gh-issue-close-helper
       match:
         argv_prefix: ["gh", "issue", "close"]
       action: require_preferred
-      message: Raw `gh issue close` can mangle close comments. Use the GitHub issue helper so close comments preserve Markdown.
+      message: Raw `gh issue close` can mangle close comments. From the repo root, run `github/scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin.
       preferred:
         - kind: script
           path: scripts/gh-issue
-          example_argv: ["scripts/gh-issue", "close", "<issue>"]
-          purpose: Closes issues with safe close-comment handling.
+          example_argv: ["github/scripts/gh-issue", "close", "<issue>", "--repo", "OWNER/REPO", "--reason", "completed"]
+          purpose: Closes issues by reading an optional close comment from stdin; use `< comment.md` or a quoted heredoc for the comment.
 ---
 
 # GitHub Expert
@@ -263,13 +273,15 @@ when no helper covers the operation, and route those calls through
 - **Handoffs**: For GitHub-backed work, put recovery-critical handoff content in
   the owning issue or PR comment. Local handoff files are scratch unless they
   are intentionally committed docs.
-- **Formatting**: Use `scripts/gh-issue` for issue create/edit bodies and
-  issue close comments,
-  `scripts/gh-pr.py create --body-file` and `scripts/gh-pr.py edit --body-file`
-  for PR bodies, `scripts/gh-pr.py comment --body-file` or
-  `scripts/gh-comment pr` for PR timeline comments, and
-  `scripts/gh-with-env-token pr review --body-file` for PR review feedback when
-  no review helper exists. Avoid unquoted heredocs for Markdown bodies because
+- **Formatting**: From this repository root, use `github/scripts/gh-issue` for
+  issue create/edit bodies and issue close comments, for example
+  `github/scripts/gh-issue create "Issue title" --repo OWNER/REPO < body.md`.
+  From inside this skill directory, use `scripts/gh-pr.py create --body-file`
+  and `scripts/gh-pr.py edit --body-file` for PR bodies,
+  `scripts/gh-pr.py comment --body-file` or `scripts/gh-comment pr` for PR
+  timeline comments, and `scripts/gh-with-env-token pr review --body-file` for
+  PR review feedback when no review helper exists. Avoid unquoted heredocs for
+  Markdown bodies because
   shell command substitution runs inside backticks. Follow
   `../references/every-code-formatting.md` when writing durable PR, issue,
   review, or closeout text.

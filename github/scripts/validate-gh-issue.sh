@@ -211,6 +211,27 @@ grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
 grep -q 'retrying with active gh auth' "$stderr_log"
 grep -q 'active-success' "$stdout_log"
 
+cat >"$tmpdir/record-edit-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2 $3" != "issue edit 42" || "$4" != "--body-file" || "$6 $7" != "--repo owner/repo" ]]; then
+	printf 'unexpected gh args: %s\n' "$*" >&2
+	exit 1
+fi
+cat "$5" >"$GH_ISSUE_TEST_LOG"
+printf 'edited\n'
+EOF
+chmod +x "$tmpdir/record-edit-gh"
+
+: >"$log"
+printf 'Updated body with `literal markdown`.\n' | GH_ISSUE_GH="$tmpdir/record-edit-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log"
+
+printf 'Updated body with `literal markdown`.\n' >"$tmpdir/expected-edit-body"
+cmp "$tmpdir/expected-edit-body" "$log"
+grep -qx 'edited' "$stdout_log"
+
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
