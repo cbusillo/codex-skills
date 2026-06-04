@@ -247,6 +247,37 @@ def test_top_level_item_completed_command_counts_as_tool() -> None:
     assert run["tool_call_count"] == 1
 
 
+def test_cached_tokens_count_when_reasoning_tokens_absent() -> None:
+    module = load_module()
+    run_dir = Path("/local/harness/20260604-120600-cached-without-reasoning")
+    install_fake_artifacts(
+        module,
+        {
+            run_dir.name: {
+                "summary": {
+                    "returncode": 0,
+                    "duration_ms": 10,
+                    "commands": [],
+                    "gh_calls": [],
+                    "usage": {
+                        "total_tokens": 15,
+                        "input_tokens": 10,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 5,
+                    },
+                },
+                "manifest": {"fake_responses": False},
+                "events": [],
+            }
+        },
+    )
+    report = module.build_report([run_dir], duration_budget_ms=30_000)
+
+    run = report["runs"][0]
+    assert run["token_estimate"] == 19
+    assert run["token_source"] == "summary.usage.parts"
+
+
 def test_aggregates_groups() -> None:
     module = load_module()
     runs = [
@@ -271,6 +302,7 @@ def main() -> None:
         test_empty_gh_calls_still_indicates_fake_gh_mode,
         test_top_level_jsonl_events_count_tools_and_tokens,
         test_top_level_item_completed_command_counts_as_tool,
+        test_cached_tokens_count_when_reasoning_tokens_absent,
         test_aggregates_groups,
     ]
     for test in tests:

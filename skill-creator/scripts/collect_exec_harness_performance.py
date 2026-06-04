@@ -117,7 +117,7 @@ def non_bool_int(value: Any) -> int | None:
 
 
 def usage_total_from_parts(usage: dict[str, Any]) -> int | None:
-    fields = ["input_tokens", "output_tokens", "reasoning_output_tokens"]
+    fields = ["input_tokens", "output_tokens"]
     parts: list[int] = []
     for field in fields:
         value = non_bool_int(usage.get(field))
@@ -125,7 +125,9 @@ def usage_total_from_parts(usage: dict[str, Any]) -> int | None:
             return None
         parts.append(value)
     cached = non_bool_int(usage.get("cached_input_tokens")) or 0
+    reasoning = non_bool_int(usage.get("reasoning_output_tokens")) or 0
     parts.append(cached)
+    parts.append(reasoning)
     return sum(parts)
 
 
