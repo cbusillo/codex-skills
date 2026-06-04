@@ -35,7 +35,10 @@
       "public safety guidance changes"
     ]
   },
-  "importantWorkflows": [],
+  "importantWorkflows": [
+    "Validate Skills",
+    "Launchplane Train Validation"
+  ],
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],

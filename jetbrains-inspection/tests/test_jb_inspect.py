@@ -514,7 +514,10 @@ class LifecycleTest(unittest.TestCase):
             original_config = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
             os.environ["JETBRAINS_INSPECTION_IDE_CONFIG_DIR"] = str(config_dir)
             try:
-                with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(worktree.parent)]):
+                with (
+                    patch.object(jb_inspect.sys, "platform", "darwin"),
+                    patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(worktree.parent)]),
+                ):
                     result = jb_inspect.ensure_jetbrains_trusted_locations({"ide": "PyCharm", "worktree_root": str(worktree)})
                 updated = trusted_file.read_text(encoding="utf-8")
             finally:
