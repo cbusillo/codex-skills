@@ -136,12 +136,14 @@ Before publishing or pushing a new skill, scan for:
 - generated local runtime files
 - files under `.system/`, `.local/`, or `.disabled/`
 
-One useful local scan:
+The standard validation gate includes a tracked-file secret scan:
 
 ```sh
-rg -n --hidden --glob '!**/.git/**' \
-  '(TOKEN|SECRET|PRIVATE|/Users/|github_pat_|ghp_|sk-[A-Za-z0-9])'
+uv run scripts/validate-public-safety.py
 ```
+
+It checks tracked files only, so ignored local overlays stay private while
+committed examples and docs are still scanned before PRs merge.
 
 For Launchplane context-specific review, also see
 `launchplane/references/public-safety.md`.
