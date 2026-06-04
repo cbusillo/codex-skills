@@ -109,7 +109,13 @@ def test_marks_failures_and_budget_overages_as_advisory() -> None:
                     "gh_calls": [],
                     "expectation_failures": ["missing text"],
                     "errors": [],
-                    "usage": {"input_tokens": 10, "output_tokens": 5, "reasoning_output_tokens": 2},
+                    "usage": {
+                        "total_tokens": 17,
+                        "input_tokens": 10,
+                        "cached_input_tokens": 3,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
                 },
                 "manifest": {"fake_responses": False, "scenario": "/tmp/local-model-scenario.json"},
                 "events": [{"msg": {"type": "browser_open_begin"}}],
@@ -123,7 +129,7 @@ def test_marks_failures_and_budget_overages_as_advisory() -> None:
     assert run["passed"] is False
     assert run["failure_count"] == 2
     assert run["mode"] == "local_llm"
-    assert run["token_estimate"] == 17
+    assert run["token_estimate"] == 20
     assert run["token_source"] == "summary.usage.parts"
     assert run["budget_status"] == "over_budget_advisory"
     assert report["groups"][0]["budget_status"] == "over_budget_advisory"
@@ -177,6 +183,70 @@ def test_empty_gh_calls_still_indicates_fake_gh_mode() -> None:
     assert run["model_family"] == "fake_gh"
 
 
+def test_top_level_jsonl_events_count_tools_and_tokens() -> None:
+    module = load_module()
+    run_dir = Path("/local/harness/20260604-120400-top-level-events")
+    install_fake_artifacts(
+        module,
+        {
+            run_dir.name: {
+                "summary": {
+                    "returncode": 0,
+                    "duration_ms": 10,
+                    "commands": [],
+                    "gh_calls": [],
+                    "usage": {},
+                },
+                "manifest": {"fake_responses": False},
+                "events": [
+                    {"type": "exec_command_begin"},
+                    {"type": "browser_open_begin"},
+                    {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {
+                                "total_tokens": 15,
+                                "input_tokens": 10,
+                                "cached_input_tokens": 4,
+                                "output_tokens": 3,
+                                "reasoning_output_tokens": 2,
+                            }
+                        },
+                    },
+                ],
+            }
+        },
+    )
+    report = module.build_report([run_dir], duration_budget_ms=30_000)
+
+    run = report["runs"][0]
+    assert run["command_count"] == 1
+    assert run["tool_call_count"] == 2
+    assert run["token_estimate"] == 19
+    assert run["token_source"] == "stdout.token_count"
+
+
+def test_top_level_item_completed_command_counts_as_tool() -> None:
+    module = load_module()
+    run_dir = Path("/local/harness/20260604-120500-item-completed-command")
+    install_fake_artifacts(
+        module,
+        {
+            run_dir.name: {
+                "summary": {"returncode": 0, "duration_ms": 10, "commands": [], "gh_calls": [], "usage": {}},
+                "manifest": {"fake_responses": False},
+                "events": [
+                    {"type": "item.completed", "item": {"type": "command_execution", "command": "date"}}
+                ],
+            }
+        },
+    )
+    report = module.build_report([run_dir], duration_budget_ms=30_000)
+
+    run = report["runs"][0]
+    assert run["tool_call_count"] == 1
+
+
 def test_aggregates_groups() -> None:
     module = load_module()
     runs = [
@@ -199,6 +269,8 @@ def main() -> None:
         test_marks_failures_and_budget_overages_as_advisory,
         test_missing_returncode_counts_as_failure,
         test_empty_gh_calls_still_indicates_fake_gh_mode,
+        test_top_level_jsonl_events_count_tools_and_tokens,
+        test_top_level_item_completed_command_counts_as_tool,
         test_aggregates_groups,
     ]
     for test in tests:
