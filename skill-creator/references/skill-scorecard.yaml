@@ -180,8 +180,49 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: PR helper behavior covered by behavior validation tests.
-    known_gaps:
-      - No fake gh exec-harness boundary scenario yet.
+      - check_id: issue-body-preservation-scenario
+        kind: exec_harness
+        mode: fake_gh
+        dimension: github_workflow
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-gh-issue-body-preserved.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fake-gh-scenarios-302
+          notes: >-
+            Fake gh scenario verifies the issue helper preserves literal
+            multiline Markdown body content through stdin.
+      - check_id: narrated-action-output-scenario
+        kind: exec_harness
+        mode: fake_gh
+        dimension: github_workflow
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-gh-narrated-action-matches-output.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fake-gh-scenarios-302
+          notes: >-
+            Fake gh scenario verifies the final response reports the URL that
+            the helper actually created.
+      - check_id: public-safety-redaction-scenario
+        kind: exec_harness
+        mode: fake_gh
+        dimension: public_safety
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-gh-public-safety-redaction.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fake-gh-scenarios-302
+          notes: >-
+            Fake gh scenario verifies public issue bodies contain redaction
+            text instead of synthetic private markers.
+    known_gaps: []
   github-plan:
     status: active
     risk_classes:
@@ -209,8 +250,21 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: Planning helper behavior covered by validate-gh-plan.
-    known_gaps:
-      - No fake gh exec-harness scenario yet for actual helper invocation.
+      - check_id: plan-index-helper-scenario
+        kind: exec_harness
+        mode: fake_gh
+        dimension: github_workflow
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-gh-plan-index.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fake-gh-scenarios-302
+          notes: >-
+            Fake gh scenario verifies the planning helper routes index through
+            the harness gh issue list boundary.
+    known_gaps: []
   github-work-rollup:
     status: active
     risk_classes:

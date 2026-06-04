@@ -366,6 +366,8 @@ def repo_config_path(repo: str | None) -> pathlib.Path | None:
         repo_name = repo.split("/", 1)[1]
         candidates.append(pathlib.Path.home() / "Developer" / repo_name)
     for candidate in candidates:
+        if not candidate.exists():
+            continue
         if repo and repo_from_git(candidate) != repo:
             continue
         path = candidate / ".github/github.json"
