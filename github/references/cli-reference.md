@@ -1,12 +1,18 @@
-# gh-plan.py CLI Reference
+# GitHub Helper CLI Reference
 
-The `gh-plan.py` script is a compact helper for managing GitHub issues. It
-returns compact JSON and avoids loading large issue bodies unless requested.
+The `github` and `github-plan` skills share helper scripts, but they own
+different command surfaces. Use `github` helpers for repository execution and
+safe GitHub writes. Use `github-plan` helpers for durable planning lookups,
+Projects, issue relationships, and roadmap/focus state.
 
 ## Usage Standard
 
 Always use `scripts/gh-plan.py` instead of ad hoc `gh` calls for planning state.
 Prefer `uv run scripts/gh-plan.py` for hermetic execution.
+
+Use `scripts/gh-pr.py`, `scripts/gh-issue`, and `scripts/gh-comment` for PR and
+transactional issue workflows. Do not route broad planning, Project field, or
+relationship work through the execution helper surface.
 
 ## Helper Invocation
 
@@ -26,26 +32,26 @@ Choose the interpreter from the helper's extension and shebang before running
 
 ## Common Commands
 
-### PRs And Rate Limits
+### Execution: PRs And Rate Limits
 
-- `../github/scripts/gh-pr.py view <pr>`: Show PR metadata.
-- `../github/scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
-- `../github/scripts/gh-pr.py create --title TITLE --body-file BODY.md`:
+- `scripts/gh-pr.py view <pr>`: Show PR metadata.
+- `scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
+- `scripts/gh-pr.py create --title TITLE --body-file BODY.md`:
   Create a PR through the automation-token wrapper.
-- `../github/scripts/gh-pr.py edit <pr> --body-file BODY.md`: Replace a PR
+- `scripts/gh-pr.py edit <pr> --body-file BODY.md`: Replace a PR
   body through the automation-token wrapper.
-- `../github/scripts/gh-pr.py comment <pr> --body-file COMMENT.md`: Add a PR
+- `scripts/gh-pr.py comment <pr> --body-file COMMENT.md`: Add a PR
   timeline comment through the automation-token wrapper.
-- `../github/scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
+- `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
-- `../github/scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
-- `../github/scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
+- `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
   superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
   `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo
   remote task branch after the PR is closed and the helper verifies it is not
   the base branch. Use `--dry-run` to preview the body rewrite, comment,
   closure, and branch cleanup before mutating GitHub state.
-- `../github/scripts/gh-pr.py rate-limit`: Show REST/core and GraphQL rate
+- `scripts/gh-pr.py rate-limit`: Show REST/core and GraphQL rate
   buckets.
 
 Use this helper for high-frequency PR polling, check polling,
@@ -64,14 +70,18 @@ stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
 
-### Orientation
+### Planning: Orientation
+
+Use these through the `github-plan` skill when the user is asking for durable
+work tracking, roadmap state, parent/sub-issues, blockers, stale plan cleanup,
+or Project focus state.
 
 - `index`: List compact plan issues (no bodies).
 - `search <query>`: Search for issues.
 - `show <issue>`: Show selected sections. Use `--full` for the entire body.
 - `deps <issue>`: Show dependencies and sub-issues.
 
-### Management
+### Planning: Management
 
 - `create <title>`: Create a new plan issue. Supports `--title` (flag), `--body`,
   `--plan-status`, `--focus`, and `--finish-line`.
@@ -80,7 +90,7 @@ requested.
   `subissue` relationships.
 - `close <issue>`: Mark plan as done, update labels, and clear Project focus.
 
-### Projects
+### Planning: Projects
 
 - `project-list --owner <owner>`: List Projects.
 - `project-add <issue> --project <name>`: Add issue to a Project and return the

@@ -216,6 +216,12 @@ Use `github-plan` for planning surfaces: durable Issues, parent/sub-issue
 graphs, blockers, milestones, Projects, roadmap/focus state, stale or duplicate
 plan cleanup, and replacing local plan files with GitHub issues.
 
+Raw planning lookups and Project mutations are intentionally not owned by this
+skill's command policies. `github-plan` owns `gh issue list`, `gh search issues`,
+`gh project`, and planning GraphQL relationship/Project operations. This skill
+owns transactional execution such as PR create/edit/comment/merge, issue
+create/edit/close bodies, CI diagnosis, and repository cleanup.
+
 This skill may comment on, link to, or close issues as part of implementation
 workflow, but it should not flatten broad planning work into a single issue.
 
