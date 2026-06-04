@@ -100,6 +100,21 @@ Do not silently fall back from a local/trusted provider to a cloud provider for
 private scenarios. If the local endpoint is unavailable, report that the local
 eval could not run.
 
+## CI Promotion Posture
+
+`scripts/validate-skills.sh` is required CI for static validators and focused
+helper script tests. Deterministic fake `gh` and fake Responses API scenarios
+remain opt-in until the external harness checkout is hermetic in CI; when that
+checkout is unavailable, record `not_run_reason: harness_unavailable`.
+
+Local LLM scenarios are advisory-only, require a trusted local endpoint, and
+must not silently fall back to a cloud provider. When the endpoint is
+unavailable, record `not_run_reason: local_endpoint_unavailable`.
+
+Performance summaries are advisory and read local-only harness artifacts. The
+source of truth for each check class's promotion decision is
+`skill-creator/references/skill-scorecard.yaml`.
+
 ## Scenario Design
 
 Keep each scenario narrow. A good scenario has one behavioral claim and one or

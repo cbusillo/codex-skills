@@ -16,6 +16,10 @@ scripts/validate-exec-harness-skills.sh skill-creator/evaluations/exec-harness/*
 If the sibling Every Code checkout is not at `../code`, set `CODE_EXEC_HARNESS`
 to the harness script path.
 
+CI-promotion decisions and public-safe not-run reasons for harness, local LLM,
+and performance checks are recorded in
+`skill-creator/references/skill-scorecard.yaml`.
+
 The scenario assertions inspect captured provider requests under
 `expect.responses`. Keep fixtures synthetic, avoid private paths or secrets, and
 record not-run evidence when the harness is unavailable.

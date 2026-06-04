@@ -80,6 +80,20 @@ KNOWN_NOT_RUN_REASONS = {
     "not_applicable",
     "not_implemented",
 }
+KNOWN_CI_DECISIONS = {"required_for_pr", "conditional_local", "advisory_local"}
+EXPECTED_CI_PROMOTION = {
+    "deterministic_exec_harness": ("conditional_local", "harness_unavailable"),
+    "local_llm_advisory": ("advisory_local", "local_endpoint_unavailable"),
+    "performance_probe": ("advisory_local", "harness_unavailable"),
+    "script_test": ("required_for_pr", None),
+    "static_validator": ("required_for_pr", None),
+}
+KNOWN_CI_PROMOTION_CLASSES = set(EXPECTED_CI_PROMOTION)
+EXEC_HARNESS_PROMOTION_MODES = {
+    "fake_gh": "deterministic_exec_harness",
+    "fake_responses_api": "deterministic_exec_harness",
+    "trusted_local_provider": "local_llm_advisory",
+}
 KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SCRIPT_TEST_RATIONALE_RE = re.compile(r"\bno focused\b.*\bscript tests?\b", re.IGNORECASE)
 PRIVATE_PATH_RE = re.compile(r"(^|/)(\.local|\.code)(/|$)|^/Users/|^~")
@@ -243,6 +257,10 @@ def validate_check(value: Any, path: str) -> tuple[str | None, list[str]]:
     scenario = check.get("scenario")
     kind = check.get("kind")
     if kind == "exec_harness":
+        if check.get("mode") not in EXEC_HARNESS_PROMOTION_MODES:
+            errors.append(
+                f"{path}.mode: exec_harness checks must use {sorted(EXEC_HARNESS_PROMOTION_MODES)}"
+            )
         if not isinstance(scenario, str) or not scenario:
             errors.append(f"{path}.scenario: exec_harness checks must name a scenario path")
         elif PRIVATE_PATH_RE.search(scenario):
@@ -257,6 +275,92 @@ def validate_check(value: Any, path: str) -> tuple[str | None, list[str]]:
 
     errors.extend(validate_baseline(check.get("baseline"), f"{path}.baseline", gate))
     return check_id, errors
+
+
+def ci_promotion_class(check: dict[str, Any]) -> str | None:
+    kind = check.get("kind")
+    mode = check.get("mode")
+    if kind == "exec_harness":
+        if not isinstance(mode, str):
+            return None
+        return EXEC_HARNESS_PROMOTION_MODES.get(mode)
+    if kind in {"static_validator", "script_test", "local_llm_advisory", "performance_probe"}:
+        return kind
+    return None
+
+
+def observed_ci_promotion_classes(skills: dict[str, Any]) -> set[str]:
+    classes: set[str] = set()
+    for skill in skills.values():
+        if not isinstance(skill, dict):
+            continue
+        checks = skill.get("checks")
+        if not isinstance(checks, list):
+            continue
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            promotion_class = ci_promotion_class(check)
+            if promotion_class:
+                classes.add(promotion_class)
+    return classes
+
+
+def validate_ci_promotion_decisions(value: Any, skills: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    decisions = require_mapping(value, "scorecard.ci_promotion_decisions", errors)
+    decision_keys = set(decisions)
+    observed = observed_ci_promotion_classes(skills)
+
+    missing = sorted(observed - decision_keys)
+    extra = sorted(decision_keys - KNOWN_CI_PROMOTION_CLASSES)
+    unobserved = sorted((decision_keys & KNOWN_CI_PROMOTION_CLASSES) - observed)
+    if missing:
+        errors.append(f"scorecard.ci_promotion_decisions: missing observed classes {missing}")
+    if extra:
+        errors.append(f"scorecard.ci_promotion_decisions: unknown classes {extra}")
+    if unobserved:
+        errors.append(f"scorecard.ci_promotion_decisions: unobserved classes {unobserved}")
+
+    if list(decisions) != sorted(decisions):
+        errors.append("scorecard.ci_promotion_decisions: keys must be sorted")
+
+    for name, raw_decision in decisions.items():
+        path = f"scorecard.ci_promotion_decisions.{name}"
+        if name not in KNOWN_CI_PROMOTION_CLASSES:
+            continue
+
+        decision_entry = require_mapping(raw_decision, path, errors)
+        decision = validate_enum(
+            decision_entry.get("decision"),
+            path=f"{path}.decision",
+            known=KNOWN_CI_DECISIONS,
+            errors=errors,
+        )
+        expected_decision, expected_not_run_reason = EXPECTED_CI_PROMOTION[name]
+        if decision is not None and decision != expected_decision:
+            errors.append(f"{path}.decision: {name} must use {expected_decision}")
+
+        for key in ("ci_surface", "rationale"):
+            field_value = decision_entry.get(key)
+            if not isinstance(field_value, str) or not field_value.strip():
+                errors.append(f"{path}.{key}: must be a non-empty string")
+
+        not_run_reason = decision_entry.get("not_run_reason")
+        if expected_not_run_reason is None:
+            if not_run_reason is not None:
+                errors.append(f"{path}.not_run_reason: required_for_pr decisions must not set not_run_reason")
+        else:
+            actual_not_run_reason = validate_enum(
+                not_run_reason,
+                path=f"{path}.not_run_reason",
+                known=KNOWN_NOT_RUN_REASONS,
+                errors=errors,
+            )
+            if actual_not_run_reason is not None and actual_not_run_reason != expected_not_run_reason:
+                errors.append(f"{path}.not_run_reason: {name} must use {expected_not_run_reason}")
+
+    return errors
 
 
 def validate_skill_entry(name: str, value: Any, path: str) -> list[str]:
@@ -328,7 +432,10 @@ def validate_scorecard(data: Any, *, root: Path = ROOT) -> list[str]:
     for key in ("normalization", "suites"):
         require_mapping(card.get(key), f"scorecard.{key}", errors)
 
-    skills = require_mapping(card.get("skills"), "scorecard.skills", errors)
+    raw_skills = card.get("skills")
+    skills = require_mapping(raw_skills, "scorecard.skills", errors)
+    if isinstance(raw_skills, dict):
+        errors.extend(validate_ci_promotion_decisions(card.get("ci_promotion_decisions"), skills))
     skill_names = set(skills)
     active_names = active_skill_names(root)
     missing = sorted(active_names - skill_names)
