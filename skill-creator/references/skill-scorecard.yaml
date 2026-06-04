@@ -1,0 +1,583 @@
+---
+schema_version: 1
+owner_issue: 298
+normalization:
+  score_scale: 0-1000 integer, higher is better
+  duration_unit: milliseconds
+  artifact_policy: raw artifacts stay local and uncommitted
+  comparison_key: skill + check_id + kind + mode + model_family
+suites:
+  static_repo_validation:
+    command: scripts/validate-skills.sh
+    required_for_pr: true
+  exec_harness:
+    command: scripts/validate-exec-harness-skills.sh <scenario.json> [...]
+    required_for_pr: false
+    artifact_policy: local only
+  local_llm_advisory:
+    required_for_pr: false
+    artifact_policy: local only
+skills:
+  babysit-pr:
+    status: active
+    risk_classes:
+      - github_workflow
+      - script_helper
+    checks:
+      - check_id: gh-pr-watch-tests
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: PR watcher behavior covered by focused helper tests.
+    known_gaps:
+      - No exec-harness scenario yet for live PR babysitting judgment.
+  browser-ui-review:
+    status: active
+    risk_classes:
+      - browser_ui
+      - command_execution
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata and references covered by repo validation.
+    known_gaps:
+      - No browser harness performance scenario yet.
+  chronicle:
+    status: active
+    risk_classes:
+      - local_context
+      - private_context
+    checks:
+      - check_id: behavior-validation
+        kind: static_validator
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Chronicle availability and privacy posture covered by behavior
+            validation.
+    known_gaps:
+      - No exec-harness scenario yet for unavailable private context.
+  codex-bug:
+    status: active
+    risk_classes:
+      - github_read
+      - github_workflow
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata and references covered by repo validation.
+    known_gaps:
+      - No advisory scenario yet for bug triage judgment.
+  codex-issue-digest:
+    status: active
+    risk_classes:
+      - github_read
+      - script_helper
+    checks:
+      - check_id: issue-digest-tests
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Digest collector covered by focused helper tests.
+    known_gaps: []
+  design-collaboration:
+    status: active
+    risk_classes:
+      - planning
+      - github_mutation
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata and references covered by repo validation.
+    known_gaps:
+      - No advisory scenario yet for design handoff routing.
+  docs-lookup:
+    status: active
+    risk_classes:
+      - docs_lookup
+      - private_context
+      - public_safety
+    checks:
+      - check_id: behavior-validation
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Private DNS and docs routing behavior covered by behavior
+            validation.
+    known_gaps:
+      - No exec-harness scenario yet for docs lookup versus infra mutation
+        boundary.
+  github:
+    status: active
+    risk_classes:
+      - command_execution
+      - command_policy
+      - github_mutation
+      - github_workflow
+      - public_safety
+    checks:
+      - check_id: gh-issue-validation
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Issue helper stdin and body-file behavior covered by validation
+            script.
+      - check_id: gh-pr-tests
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: PR helper behavior covered by behavior validation tests.
+    known_gaps:
+      - No fake gh exec-harness boundary scenario yet.
+  github-plan:
+    status: active
+    risk_classes:
+      - command_policy
+      - github_mutation
+      - planning
+    checks:
+      - check_id: command-policy-simulator
+        kind: static_validator
+        mode: ci
+        dimension: command_policy
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Planning command ownership covered by command policy simulator.
+      - check_id: gh-plan-validation
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Planning helper behavior covered by validate-gh-plan.
+    known_gaps:
+      - No fake gh exec-harness scenario yet for actual helper invocation.
+  github-work-rollup:
+    status: active
+    risk_classes:
+      - github_read
+      - script_helper
+    checks:
+      - check_id: github-work-rollup-tests
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Work rollup collection and rendering covered by pytest suite.
+    known_gaps: []
+  google-seo:
+    status: active
+    risk_classes:
+      - external_api
+      - public_safety
+      - script_helper
+    checks:
+      - check_id: bing-webmaster-tests
+        kind: script_test
+        mode: ci
+        dimension: external_api
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Bing and IndexNow edge cases covered by focused helper tests.
+      - check_id: search-console-tests
+        kind: script_test
+        mode: ci
+        dimension: external_api
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Search Console helper covered by focused helper tests.
+    known_gaps:
+      - No exec-harness scenario yet for Bing `domain:` ambiguity.
+  infra-ops:
+    status: active
+    risk_classes:
+      - command_execution
+      - private_context
+      - public_safety
+      - script_helper
+    checks:
+      - check_id: npmplus-ops-tests
+        kind: script_test
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: NPMplus operations helper covered by focused tests.
+    known_gaps:
+      - No exec-harness scenario yet for docs lookup to infra-ops routing.
+  jetbrains-inspection:
+    status: active
+    risk_classes:
+      - command_execution
+      - readiness_closeout
+      - script_helper
+    checks:
+      - check_id: jb-inspect-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Inspection helper routing and lifecycle covered by tests.
+    known_gaps:
+      - No performance budget yet for inspection closeout flows.
+  launchplane:
+    status: active
+    risk_classes:
+      - command_execution
+      - command_policy
+      - private_context
+      - public_safety
+      - script_helper
+    checks:
+      - check_id: behavior-validation
+        kind: static_validator
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Launchplane routing and private-context boundaries covered by
+            behavior validation.
+    known_gaps:
+      - No focused script tests yet for Launchplane helper edge cases in this
+        scorecard.
+  local-llm:
+    status: active
+    risk_classes:
+      - local_llm
+      - private_context
+      - script_helper
+    checks:
+      - check_id: local-llm-advisory-placeholder
+        kind: local_llm_advisory
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        baseline:
+          outcome: not_run
+          score: 0
+          not_run_reason: not_implemented
+          last_validated_ref: main
+          notes: Advisory local LLM scenario planned in child issue 303.
+    known_gaps:
+      - Local LLM advisory scenarios are planned but not implemented.
+  memory-distillation:
+    status: manual_only
+    risk_classes:
+      - manual_only
+      - private_context
+    checks:
+      - check_id: manual-only-metadata
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Manual-only metadata covered by repo validation.
+    known_gaps:
+      - No advisory scenario yet for explicit memory distillation request.
+  openai-docs:
+    status: active
+    risk_classes:
+      - docs_lookup
+      - external_api
+      - system_override
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Metadata and system override presence covered by repo validation.
+    known_gaps:
+      - No scenario yet for official-docs-only browsing behavior.
+  people:
+    status: active
+    risk_classes:
+      - private_context
+      - public_safety
+      - script_helper
+    checks:
+      - check_id: resolve-person-tests
+        kind: script_test
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Person resolver and private path behavior covered by tests.
+    known_gaps: []
+  plan:
+    status: manual_only
+    risk_classes:
+      - manual_only
+      - planning
+    checks:
+      - check_id: manual-only-metadata
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Manual-only metadata covered by repo validation.
+    known_gaps:
+      - No scenario yet proving github-plan supersedes local plan files by
+        default.
+  plugin-creator:
+    status: active
+    risk_classes:
+      - command_execution
+      - skill_authoring
+      - system_override
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Metadata and system override presence covered by repo validation.
+    known_gaps:
+      - No focused plugin scaffold tests yet in this scorecard.
+  python-uv-workflow:
+    status: active
+    risk_classes:
+      - python_workflow
+      - command_execution
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata and references covered by repo validation.
+    known_gaps:
+      - No exec-harness scenario yet for uv-over-pip routing.
+  repo-readiness:
+    status: active
+    risk_classes:
+      - readiness_closeout
+      - github_workflow
+    checks:
+      - check_id: readiness-closeout-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Readiness handoff contract covered by behavior validation.
+    known_gaps:
+      - Local LLM advisory scenario for readiness judgment planned in child
+        issue 303.
+  rollout-friction:
+    status: manual_only
+    risk_classes:
+      - local_llm
+      - manual_only
+      - private_context
+      - script_helper
+    checks:
+      - check_id: rollout-validator-suite
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Rollout analyzer and reducer scripts covered by validation suite.
+    known_gaps:
+      - Local LLM performance profiling remains advisory and planned.
+  security-review:
+    status: active
+    risk_classes:
+      - security
+      - public_safety
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata covered by repo validation.
+    known_gaps:
+      - No advisory scenario yet for explicit security-review trigger boundary.
+  skill-creator:
+    status: active
+    risk_classes:
+      - command_policy
+      - script_helper
+      - skill_authoring
+    checks:
+      - check_id: skill-repo-validator-tests
+        kind: script_test
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Skill metadata, command, and reference validators covered by tests.
+      - check_id: skill-scorecard-validation
+        kind: static_validator
+        mode: ci
+        dimension: coverage
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Scorecard schema and active skill coverage validated in CI.
+    known_gaps:
+      - No exec-harness scenario yet for skill-authoring behavior changes.
+  skill-installer:
+    status: active
+    risk_classes:
+      - command_execution
+      - external_api
+      - script_helper
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Metadata and references covered by repo validation.
+    known_gaps:
+      - No focused installer script tests yet in this scorecard.
+  work-closeout:
+    status: active
+    risk_classes:
+      - github_workflow
+      - readiness_closeout
+      - planning
+    checks:
+      - check_id: readiness-closeout-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: Closeout handoff contract covered by behavior validation.
+    known_gaps:
+      - Local LLM advisory scenario for safe-to-exit judgment planned in child
+        issue 303.
