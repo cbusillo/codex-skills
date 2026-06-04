@@ -124,6 +124,52 @@ Repo-local values override workspace defaults.
 }
 ```
 
+## Label Taxonomy
+
+Planning labels are the only labels created by `gh-plan.py ensure-labels` by
+default. They describe durable issue-backed plans, not transient PR execution
+state.
+
+| Label | Purpose |
+| --- | --- |
+| `plan` | Durable planning issue. |
+| `plan:active` | Plan is actionable now. |
+| `plan:blocked` | Plan is blocked by a real open native dependency issue. |
+| `plan:waiting` | Durable plan is parked on a decision, external event, or other non-issue condition. Do not use for ordinary PR QA, preview review, deploy, or merge readiness. |
+| `plan:stale` | Plan needs review before it should guide work. |
+| `plan:done` | Plan is completed or superseded. |
+
+Workflow labels are repo-local opt-ins. Agents may recognize these names, but
+helpers should not create them unless repo metadata documents them.
+
+| Label | Declare In | Meaning |
+| --- | --- | --- |
+| `awaiting-qa` | `qaLabels` | Optional repo-local manual QA handoff for concrete implementation or bug work. |
+| `preview-ready` | `deployLabels` or repo workflow docs | A preview environment is available for review; this is not QA approval. |
+| `ready-to-merge` | `launchplane.mergeTrain.readyLabel` or repo workflow docs | Repo-configured merge readiness signal; still requires fresh checks and explicit merge approval. |
+
+Avoid generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless the
+repo documents a narrow convention for them. Prefer the namespaced `plan:*`
+labels for durable planning state and repo-local `qaLabels` / `deployLabels` for
+execution workflow state.
+
+Label audit checklist:
+
+- Run `gh label list -R OWNER/REPO --limit 500` and inspect labels that overlap
+  with `plan:waiting`, `plan:blocked`, QA, preview, or merge readiness.
+- Run `gh issue list -R OWNER/REPO --state open --label LABEL` before retiring
+  or renaming a suspicious label; treat zero-open-use labels as candidates for
+  review, not automatic deletion.
+- Run `gh pr list -R OWNER/REPO --state open --json number,title,labels` to see
+  whether planning labels are being used on PRs or whether PR workflow labels
+  are undocumented in `.github/github.json`.
+- If a repo uses `awaiting-qa`, list it in `qaLabels`. If it uses
+  `preview-ready`, list it in `deployLabels` or repo workflow docs. If it uses
+  `ready-to-merge`, configure it as the merge-train ready label or document the
+  equivalent local merge convention.
+- Run `../github/scripts/gh-plan.py ensure-labels --repo OWNER/REPO` only for
+  durable planning labels. Do not use it to invent PR workflow labels.
+
 ## Workflow Metadata
 
 Repo workflow metadata is stored in top-level keys in `.github/github.json`.
@@ -136,7 +182,12 @@ Common top-level keys:
 - `docs`: important repo documentation and routing references.
 - `qualityGate`: local and CI commands that establish readiness for this repo.
 - `importantWorkflows`: GitHub Actions workflows agents should watch closely.
-- `qaLabels` and `deployLabels`: labels that change QA or deploy behavior.
+- `qaLabels`: repo-local QA handoff labels such as `awaiting-qa`. These are for
+  concrete implementation or bug work waiting on manual verification, not for
+  durable plan parking.
+- `deployLabels`: repo-local preview, deploy, or environment-readiness labels
+  such as `preview-ready`. These are evidence for workflow state, not approval
+  to merge.
 - `healthUrls`: product, lane, or deploy health endpoints relevant to readiness.
   Concrete app-facing URLs may be committed in private implementation repos when
   they are intentionally repo-facing operational metadata.

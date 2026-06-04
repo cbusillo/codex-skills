@@ -818,6 +818,137 @@ def test_create_supports_waiting_plan_status() -> None:
     assert captured["created_labels"] == ["plan", "plan:waiting"], captured
 
 
+def test_label_defs_cover_planning_labels_without_generic_fallback() -> None:
+    plan = load_plan_module()
+    config = plan.DEFAULT_CONFIG
+    label_names = set(config["labels"].values())
+    defs = config.get("label_defs", {})
+
+    missing = sorted(label_names - set(defs))
+    assert not missing, f"label_defs missing entries for: {missing}"
+
+    generic_descriptions = sorted(
+        name
+        for name in label_names
+        if not defs[name].get("description") or defs[name].get("description") == "Planning label"
+    )
+    assert not generic_descriptions, (
+        f"labels using generic fallback description: {generic_descriptions}"
+    )
+
+
+def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
+    plan = load_plan_module()
+    calls: list[list[str]] = []
+
+    def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return "automation-gh", []
+        if args[:2] == ["label", "list"]:
+            return "automation-gh", []
+        raise AssertionError(args)
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "active": "plan:active"},
+        "label_defs": {
+            "plan": {"color": "5319e7", "description": "Durable planning issue"},
+            "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
+        },
+        "projects": {"enabled": False},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": None, "repo_managers": {}},
+    }
+    plan.gh_json = fake_gh_json
+    plan.run_raw = lambda args, **kwargs: (calls.append(args), ("automation-gh", "", ""))[1]
+
+    try:
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Undocumented label",
+            title_flag=None,
+            body="## Current Status\n\nActionable.\n",
+            body_file=None,
+            label=["waiting"],
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="active",
+            focus=None,
+            manager=None,
+            finish_line=None,
+        ))
+    except plan.PlanError as exc:
+        assert "Refusing to create undocumented label(s): waiting" in str(exc), str(exc)
+    else:
+        raise AssertionError("missing undocumented extra label should fail")
+
+    created_names = [args[2] for args in calls if args[:2] == ["label", "create"]]
+    assert created_names == ["plan", "plan:active"], created_names
+
+
+def test_create_allows_existing_extra_labels_without_creating_them() -> None:
+    plan = load_plan_module()
+    captured: dict[str, Any] = {}
+    calls: list[list[str]] = []
+    issue = {
+        "repo": "owner/repo",
+        "number": 12,
+        "id": 1012,
+        "title": "Existing label",
+        "body": "## Current Status\n\nActionable.\n",
+        "html_url": "https://github.com/owner/repo/issues/12",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}, {"name": "customer"}],
+        "state": "open",
+    }
+
+    def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return "automation-gh", []
+        if args[:2] == ["label", "list"]:
+            return "automation-gh", [{"name": "customer"}]
+        raise AssertionError(args)
+
+    plan.load_config = lambda repo: {
+        "labels": {"plan": "plan", "active": "plan:active"},
+        "label_defs": {
+            "plan": {"color": "5319e7", "description": "Durable planning issue"},
+            "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
+        },
+        "projects": {"enabled": False},
+        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
+        "workflow": {"default_manager": None, "repo_managers": {}},
+    }
+    plan.gh_json = fake_gh_json
+    plan.run_raw = lambda args, **kwargs: (calls.append(args), ("automation-gh", "", ""))[1]
+    plan.rest_create_issue = lambda repo, title, body, labels, milestone: (captured.setdefault("labels", labels), ("automation-gh", issue))[1]
+
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_create(types.SimpleNamespace(
+            repo="owner/repo",
+            title="Existing label",
+            title_flag=None,
+            body="## Current Status\n\nActionable.\n",
+            body_file=None,
+            label=["customer"],
+            milestone=None,
+            project=None,
+            force=False,
+            plan_status="active",
+            focus=None,
+            manager=None,
+            finish_line=None,
+        ))
+
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is True, payload
+    assert captured["labels"] == ["plan", "plan:active", "customer"], captured
+    created_names = [args[2] for args in calls if args[:2] == ["label", "create"]]
+    assert created_names == ["plan", "plan:active"], created_names
+
+
 def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
@@ -1871,6 +2002,9 @@ def main() -> None:
         test_find_project_item_uses_issue_query_and_higher_limit,
         test_find_project_item_falls_back_when_query_misses_exact_issue,
         test_create_supports_waiting_plan_status,
+        test_label_defs_cover_planning_labels_without_generic_fallback,
+        test_create_refuses_to_mint_undocumented_extra_labels,
+        test_create_allows_existing_extra_labels_without_creating_them,
         test_run_raw_falls_back_only_for_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,

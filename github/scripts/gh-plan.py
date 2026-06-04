@@ -36,10 +36,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "label_defs": {
         "plan": {"color": "5319e7", "description": "Durable planning issue"},
-        "plan:active": {"color": "0e8a16", "description": "Current active plan"},
-        "plan:blocked": {"color": "d93f0b", "description": "Plan is blocked"},
-        "plan:waiting": {"color": "fbca04", "description": "Plan is waiting on non-issue evidence or decision"},
-        "plan:stale": {"color": "bfbfbf", "description": "Plan needs review"},
+        "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
+        "plan:blocked": {"color": "d93f0b", "description": "Plan blocked by an open native dependency issue"},
+        "plan:waiting": {"color": "fbca04", "description": "Durable plan parked pending a decision, event, or non-issue condition; not for PR QA"},
+        "plan:stale": {"color": "bfbfbf", "description": "Plan needs review before guiding work"},
         "plan:done": {"color": "006b75", "description": "Plan completed or superseded"},
     },
     "default_sections": [
@@ -702,15 +702,27 @@ def remove_relationship_note(body: str, rel: str, target: dict[str, Any]) -> str
     return replace_section(body, "Relationships", new_text)
 
 
-def ensure_labels(repo: str, wanted: list[str], config: dict[str, Any]) -> tuple[str, list[str]]:
+def ensure_labels(
+    repo: str,
+    wanted: list[str],
+    config: dict[str, Any],
+    *,
+    create_unknown: bool = True,
+) -> tuple[str, list[str]]:
     actor, existing = gh_json(["label", "list", "-R", repo, "--json", "name", "--limit", "500"])
     existing_names = {item["name"] for item in existing or []}
     created: list[str] = []
     defs = config.get("label_defs", {})
+    missing_without_defs: list[str] = []
     for name in wanted:
         if name in existing_names:
             continue
-        info = defs.get(name, {"color": "ededed", "description": "Planning label"})
+        info = defs.get(name)
+        if info is None and not create_unknown:
+            missing_without_defs.append(name)
+            continue
+        if info is None:
+            info = {"color": "ededed", "description": "Planning label"}
         run_raw([
             "label",
             "create",
@@ -723,6 +735,12 @@ def ensure_labels(repo: str, wanted: list[str], config: dict[str, Any]) -> tuple
             info.get("description", "Planning label"),
         ])
         created.append(name)
+    if missing_without_defs:
+        missing = ", ".join(sorted(missing_without_defs))
+        raise PlanError(
+            f"Refusing to create undocumented label(s): {missing}. "
+            "Create them intentionally first, or add planning.label_defs metadata."
+        )
     return actor, created
 
 
@@ -826,7 +844,11 @@ def cmd_create(args: argparse.Namespace) -> None:
         base_labels.extend(labels(config, args.plan_status))
     extra_labels = args.label or []
     wanted_labels = base_labels + extra_labels
-    _, created_labels = ensure_labels(repo, wanted_labels, config)
+    _, created_base_labels = ensure_labels(repo, base_labels, config)
+    created_extra_labels: list[str] = []
+    if extra_labels:
+        _, created_extra_labels = ensure_labels(repo, extra_labels, config, create_unknown=False)
+    created_labels = created_base_labels + created_extra_labels
 
     body = read_body(args, template_body(title))
     if args.finish_line:

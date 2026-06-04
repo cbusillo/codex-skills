@@ -273,6 +273,12 @@ invocation rules.
   available. If unavailable, record the not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
+- **Labels**: Use `github-plan` labels only for durable planning issues. For PR
+  execution state, follow the repo workflow taxonomy in
+  `references/repo-workflow.md`: `preview-ready` means a preview is available
+  for review, `awaiting-qa` is an optional repo-local QA handoff label, and
+  `ready-to-merge` is a configured merge readiness signal that still requires a
+  fresh readiness check and explicit merge approval.
 - **Refs Closeout**: Treat `Refs #...` as intentionally non-closing. After the
   canonical PR merges, sweep referenced issues and close only those whose finish
   line is conclusively satisfied; otherwise comment/update durable state and

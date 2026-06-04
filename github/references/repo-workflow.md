@@ -176,6 +176,28 @@ closeout.
 Use repo-specific instructions for exceptions, deploy labels, preview behavior,
 required checks, or release policy.
 
+## Label Taxonomy
+
+Keep planning state separate from PR execution state:
+
+- `plan:*` labels belong on durable planning issues. `plan:waiting` means a plan
+  is parked on a decision, external event, or other non-issue condition. It is
+  not the right label for an ordinary bug waiting on QA, a PR waiting on preview
+  review, or a branch waiting on merge approval.
+- `preview-ready` means a preview environment is available for review. It is
+  repo-local workflow evidence, not approval and not a QA result.
+- `awaiting-qa` is an optional repo-local manual QA handoff label. Use it only
+  when the repo documents a manual tester workflow, usually in `qaLabels`.
+- `ready-to-merge` is a repo-configured merge readiness signal, often used by
+  merge trains. It does not replace a fresh PR read, passing required checks,
+  review accounting, and explicit user approval for the merge action.
+
+Discourage generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless
+the repo documents a narrow local convention. When auditing a repo, compare
+`gh label list -R OWNER/REPO --limit 500`, open issue labels, and open PR labels
+against `.github/github.json` `qaLabels`, `deployLabels`, and merge-train ready
+label metadata before recommending label cleanup.
+
 ## Merge Readiness
 
 Before merging any PR, do a fresh PR read and account for feedback:
