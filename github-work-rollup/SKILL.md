@@ -125,12 +125,13 @@ Layouts:
 
 - `operator` is the detailed work queue for the person doing the work. It keeps
   concrete issues, PRs, buckets, source lanes, links, and handoff guidance.
-- `manager` is the daily planning brief. It emphasizes priorities, active work,
-  focus areas, decisions, risks, velocity, and source notes.
+- `manager` is the cadence-aware planning brief. It emphasizes priorities,
+  active work, focus areas, decisions, risks, velocity, and source notes.
 - `executive` is the leadership brief. It should be readable in under five
-  minutes, target one page on normal days and no more than two pages on heavy
-  days, start with outcomes and meaning, mention Every Code and skills impact
-  where relevant, and keep GitHub counts as supporting evidence.
+  minutes, target one page on normal windows and no more than two pages on heavy
+  windows, adapt daily/weekly/custom wording to the requested window, start with
+  outcomes and meaning, mention Every Code and skills impact where relevant, and
+  keep GitHub counts as supporting evidence.
 
 `summary_level` controls verbosity inside the selected layout. It is not an
 audience selector. `mode` controls what data is collected; `layout` controls who
@@ -175,7 +176,7 @@ reports.
      --format markdown
    ```
 
-   For a planning or executive daily brief, choose the audience layout explicitly:
+   For a planning or executive brief, choose the audience layout explicitly:
 
    ```bash
    uv run scripts/github_work_rollup.py \
@@ -188,13 +189,13 @@ reports.
      --format markdown
    ```
 
-   Use `operator` for the concrete queue, `manager` for daily planning, and
-   `executive` for a daily conversation overview with a polished, press-release
-   style lead. Executive output should target one page on normal days and two
-   pages on heavy days. It should explain what changed, why it matters, how
-   Every Code and skills are affected, risks or decisions, and compact velocity
-   counts. It should not enumerate PRs and issues except when a link is useful
-   for action or verification.
+   Use `operator` for the concrete queue, `manager` for planning, and
+   `executive` for an owner/leadership conversation overview with a polished,
+   outcome-first lead. Executive output should target one page on normal windows
+   and two pages on heavy windows. It should explain what changed, why it
+   matters, how Every Code and skills are affected, risks or decisions, and
+   compact supporting signal. It should not enumerate PRs and issues except when
+   a link is useful for action or verification.
 
 3. If routine local defaults are needed, pass the private config explicitly or
    let the helper read `.local/github-work-rollup.yaml` when it exists:
