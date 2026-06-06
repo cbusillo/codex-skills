@@ -1501,9 +1501,9 @@ def test_render_executive_brief_markdown() -> None:
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "# Daily GitHub Brief for Justin" in rendered
-    assert "advanced Example Company's tooling and operating loop" in rendered
-    assert "the important read is outcomes, cost, risk, sequencing, and customer impact" in rendered
+    assert "# Daily Work Brief for Justin" in rendered
+    assert "advanced Example Company's product and operations" in rendered
+    assert "The important read is outcomes, cost, risk, sequencing, and customer impact" in rendered
     assert "technical depth: low-to-medium" in rendered
     assert "Private note" not in rendered
     assert "## Executive Summary" in rendered
@@ -1511,16 +1511,17 @@ def test_render_executive_brief_markdown() -> None:
     assert "## What This Means" in rendered
     assert "## Every Code / Skills Impact" in rendered
     assert "## Decisions or Risks" in rendered
-    assert "## Velocity Snapshot" in rendered
+    assert "## Supporting Signal" in rendered
     assert "## Conversation Starters" in rendered
     assert "## Source Notes" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "In practical terms, 3 item(s) were completed" in rendered
-    assert "1 release(s)" in rendered
+    assert "meaningful work moved forward while follow-up remains visible for sequencing" in rendered
+    assert "Releases during the day: 1." in rendered
     assert "A focused day of work" in rendered
-    assert "Automation needs attention" in rendered
-    assert "closed 1 unmerged change(s)" in rendered
+    assert "Automation needs attention because failed workflow runs were collected" in rendered
+    assert "cleared abandoned or superseded change paths" in rendered
+    assert "That matters because finished work has moved from internal activity" in rendered
     assert "Every Code / Skills" in rendered
     assert "Are the Every Code / Skills changes aligned" in rendered
 
@@ -1558,10 +1559,155 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "# Daily GitHub Brief for Example leader" in rendered
+    assert "# Daily Work Brief for Example leader" in rendered
     assert "## Needs Example leader's Attention" in rendered
     assert "how Example leader expects" in rendered
     assert "Justin" not in rendered
+
+
+def test_render_executive_brief_uses_weekly_window_language() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-05-26T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "recipient_profile": {"roles": ["owner"], "detail_preference": "outcomes and customer impact"},
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {
+            "recently_completed": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 2,
+                    "title": "Improve owner summaries",
+                    "kind": "pr",
+                    "state": "merged",
+                }
+            ],
+            "in_progress": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 3,
+                    "title": "Tune weekly report",
+                    "kind": "issue",
+                    "state": "open",
+                }
+            ],
+        },
+        "priority_sections": [{"name": "Every Code", "items": [], "recently_completed": []}],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "# Weekly Work Brief for Justin" in rendered
+    assert "A focused week of work advanced the team's product and operations" in rendered
+    assert "product this week" in rendered
+    assert "Completed during the week: 1 item(s)." in rendered
+    assert "Daily" not in rendered
+    assert "focused day of work" not in rendered
+    assert "tomorrow's brief" not in rendered
+    assert "owner view" not in rendered
+
+
+def test_render_executive_brief_uses_custom_window_language() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-05-31T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "48h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {
+            "recently_completed": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 4,
+                    "title": "Clarify report cadence",
+                    "kind": "issue",
+                    "state": "closed",
+                }
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "# Current Work Brief for Justin" in rendered
+    assert "A focused stretch of work" in rendered
+    assert "before the next brief" in rendered
+    assert "during the reporting window: 1 item(s)." in rendered
+    assert "Daily" not in rendered
+    assert "Weekly" not in rendered
+    assert "this week" not in rendered
+    assert "today" not in rendered.casefold()
+    assert "tomorrow" not in rendered.casefold()
+
+
+def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [
+            {"repo": "example-org/example-repo", "name": "CI", "status": "completed", "conclusion": "success"}
+        ],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "No product or planning movement was collected" in rendered
+    assert "Automation looked healthy" in rendered
+    assert "advanced" not in rendered
+    assert "## What This Means\n\n- No meaningful repo changes were collected" in rendered
+
+
+def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/example-repo"],
+        "layout": "executive",
+        "buckets": {
+            "recently_completed": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 10,
+                    "title": "Close abandoned auth attempt",
+                    "kind": "pr",
+                    "state": "closed",
+                }
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "No product or planning movement was collected" in rendered
+    assert "abandoned or superseded change paths were cleared in this window" in rendered
+    assert "cleared abandoned or superseded change paths" in rendered
+    assert "advanced" not in rendered
+    assert "meaningful work moved forward" not in rendered
+    assert "Completed during the day: 1 item(s)." in rendered
 
 
 def test_render_executive_brief_does_not_call_neutral_automation_green() -> None:
@@ -1589,7 +1735,7 @@ def test_render_executive_brief_does_not_call_neutral_automation_green() -> None
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "Automation had 1 completed workflow run(s), but none reported success." in rendered
+    assert "Automation ran, but the collected sample did not include a successful run." in rendered
     assert "Automation was green" not in rendered
 
 

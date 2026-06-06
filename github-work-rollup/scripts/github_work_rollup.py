@@ -63,6 +63,16 @@ class Window:
     label: str
 
 
+@dataclass(frozen=True)
+class BriefPeriod:
+    title_prefix: str
+    summary_subject: str
+    priorities_heading: str
+    alignment_window: str
+    followup_phrase: str
+    source_window: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect a read-only GitHub work rollup.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional local YAML config.")
@@ -1263,6 +1273,14 @@ def active_repo_names(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> 
     ]
 
 
+def product_signal_repo_names(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> list[str]:
+    return [
+        repo
+        for repo, data in repo_data.items()
+        if any(data[key] for key in ("pr_merged", "pr_open", "issue_open", "issue_closed", "releases"))
+    ]
+
+
 def linked_item_ref(item: dict[str, Any]) -> str:
     repo = str(item.get("repo") or "")
     number = item.get("number")
@@ -1279,6 +1297,109 @@ def compact_titles(items: list[dict[str, Any]], limit: int = 3) -> str:
     if len(items) > limit:
         titles.append(f"{len(items) - limit} more")
     return "; ".join(titles)
+
+
+def executive_theme_titles(items: list[dict[str, Any]], limit: int = 2) -> str:
+    titles = [str(item.get("title") or "untitled") for item in items[:limit]]
+    if not titles:
+        return "general product and operations work"
+    if len(items) > limit:
+        titles.append("other related work")
+    return "; ".join(titles)
+
+
+def prose_join(items: list[str]) -> str:
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def executive_action_join(items: list[str]) -> str:
+    if len(items) <= 2:
+        return " and ".join(items)
+    return "; ".join(items[:-1]) + f"; and {items[-1]}"
+
+
+def brief_period(payload: dict[str, Any]) -> BriefPeriod:
+    window = payload.get("window") or {}
+    label = str(window.get("label") or "").strip().casefold().replace("_", " ")
+    label = re.sub(r"^(past|last)\s+", "", label)
+    since_dt = parse_timestamp(window.get("since")) if isinstance(window, dict) else None
+    until_dt = parse_timestamp(window.get("until")) if isinstance(window, dict) else None
+    hours = ((until_dt - since_dt).total_seconds() / 3600.0) if since_dt and until_dt else None
+
+    daily_labels = {"24h", "1d", "1 day", "day"}
+    weekly_labels = {"7d", "1w", "1 week", "week"}
+    if label in weekly_labels or (hours is not None and 144 <= hours <= 216):
+        return BriefPeriod(
+            title_prefix="Weekly",
+            summary_subject="focused week of work",
+            priorities_heading="This Week's Priorities",
+            alignment_window="this week",
+            followup_phrase="next week's brief",
+            source_window="week",
+        )
+    if label in daily_labels or (hours is not None and 18 <= hours <= 36):
+        return BriefPeriod(
+            title_prefix="Daily",
+            summary_subject="focused day of work",
+            priorities_heading="Today's Priorities",
+            alignment_window="today",
+            followup_phrase="tomorrow's brief",
+            source_window="day",
+        )
+    return BriefPeriod(
+        title_prefix="Current",
+        summary_subject="focused stretch of work",
+        priorities_heading="Current Priorities",
+        alignment_window="during this reporting window",
+        followup_phrase="the next brief",
+        source_window="reporting window",
+    )
+
+
+def audience_phrase(profile: dict[str, Any]) -> str:
+    company = profile.get("company")
+    if isinstance(company, str) and company.strip():
+        return company
+    return "the team"
+
+
+def impact_for_repo(data: dict[str, list[dict[str, Any]]], profile: dict[str, Any]) -> str:
+    if data["releases"]:
+        if data["attention"]:
+            return (
+                "That matters because finished work has moved from internal activity into something people can actually use or verify, "
+                "while there is still a visible decision or follow-up to clear."
+            )
+        return "That matters because finished work has moved from internal activity into something people can actually use or verify."
+    if data["attention"]:
+        return "That matters because there is a visible decision or follow-up to clear."
+    if data["pr_merged"] or data["issue_closed"]:
+        return "That matters because completed work reduces ambiguity and moves the product closer to routine, dependable use."
+    if data["pr_open"] or data["issue_open"]:
+        return "That matters because the remaining work is visible enough to decide whether it should stay active, wait, or become a later follow-up."
+    if data["pr_closed"]:
+        return "That matters because abandoned or superseded paths are being cleared instead of left as distracting noise."
+    return "That matters because it gives the next planning conversation a clearer starting point."
+
+
+def repo_owner_outcome_sentence(repo: str, data: dict[str, list[dict[str, Any]]], profile: dict[str, Any]) -> str | None:
+    actions = []
+    if data["releases"]:
+        actions.append("made finished changes available as a release")
+    if data["pr_merged"]:
+        actions.append(f"finished work around {executive_theme_titles(data['pr_merged'])}")
+    if data["issue_closed"]:
+        actions.append(f"resolved work around {executive_theme_titles(data['issue_closed'])}")
+    if data["pr_closed"]:
+        actions.append("cleared abandoned or superseded change paths")
+    if data["pr_open"] or data["issue_open"]:
+        open_items = [*data["pr_open"], *data["issue_open"]]
+        actions.append(f"kept {executive_theme_titles(open_items)} visible for follow-up")
+    if not actions:
+        return None
+    return f"`{repo_short_name(repo)}` {executive_action_join(actions)}. {impact_for_repo(data, profile)}"
 
 
 def repo_outcome_sentence(repo: str, data: dict[str, list[dict[str, Any]]]) -> str | None:
@@ -1335,6 +1456,14 @@ def completion_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> i
     return total_repo_count(repo_data, "pr_merged") + total_repo_count(repo_data, "pr_closed") + total_repo_count(repo_data, "issue_closed")
 
 
+def executive_finished_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
+    return total_repo_count(repo_data, "pr_merged") + total_repo_count(repo_data, "issue_closed") + total_repo_count(repo_data, "releases")
+
+
+def abandoned_change_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
+    return total_repo_count(repo_data, "pr_closed")
+
+
 def open_work_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
     return total_repo_count(repo_data, "pr_open") + total_repo_count(repo_data, "issue_open")
 
@@ -1347,6 +1476,16 @@ def automation_sentence(workflow_total: int, workflow_success: int, workflow_fai
     if workflow_success:
         return f"Automation was green in the collected sample: {workflow_success} successful run(s)."
     return f"Automation had {workflow_total} completed workflow run(s), but none reported success."
+
+
+def executive_automation_sentence(workflow_total: int, workflow_success: int, workflow_failed: int) -> str | None:
+    if not workflow_total:
+        return None
+    if workflow_failed:
+        return "Automation needs attention because failed workflow runs were collected; check the supporting signal before treating the work as ready."
+    if workflow_success:
+        return "Automation looked healthy in the collected sample."
+    return "Automation ran, but the collected sample did not include a successful run."
 
 
 def recipient_profile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1411,12 +1550,9 @@ def executive_headline(
     active_repos: list[str],
     profile: dict[str, Any],
     focus_sections: list[dict[str, Any]],
+    period: BriefPeriod,
 ) -> str:
-    company = profile.get("company")
-    if isinstance(company, str) and company.strip():
-        audience = company
-    else:
-        audience = "the configured work"
+    audience = audience_phrase(profile)
     if not active_repos:
         return f"No material GitHub movement was collected for {audience} in this window."
 
@@ -1424,25 +1560,37 @@ def executive_headline(
     focus_names = [str(section.get("name")) for section in focus_sections[:2] if section.get("name")]
     if focus_names:
         focus_text = " and ".join(focus_names)
-        return f"A focused day of work advanced {audience}'s tooling and operating loop across {repo_focus}, with the clearest movement in {focus_text}."
-    return f"A focused day of work advanced {audience}'s tooling and operating loop across {repo_focus}."
+        return (
+            f"A {period.summary_subject} advanced {audience}'s product and operations across {repo_focus}, "
+            f"with the clearest movement in {focus_text}."
+        )
+    return f"A {period.summary_subject} advanced {audience}'s product and operations across {repo_focus}."
 
 
 def executive_impact_sentence(
-    completed: int,
+    finished: int,
     open_work: int,
     release_count: int,
+    cleared_paths: int,
     profile: dict[str, Any],
 ) -> str:
     framing = decision_framing(profile)
-    if release_count:
-        ship_clause = f"{release_count} release(s) shipped"
+    if finished and open_work:
+        progress_clause = "meaningful work moved forward while follow-up remains visible for sequencing"
+    elif finished:
+        progress_clause = "meaningful work moved forward"
+    elif open_work:
+        progress_clause = "the visible value is clarity about what still needs sequencing"
     else:
-        ship_clause = "no public release was cut"
-    return (
-        f"In practical terms, {completed} item(s) were completed, {ship_clause}, and {open_work} item(s) remain visible for planning; "
-        f"the important read is {framing}."
-    )
+        progress_clause = "the visible value is situational awareness rather than a finished-work signal"
+
+    details = []
+    if release_count:
+        details.append("some finished work reached a releasable checkpoint")
+    if cleared_paths:
+        details.append("some abandoned or superseded change paths were cleared")
+    suffix = f", and {prose_join(details)}" if details else ""
+    return f"The important read is {framing}: {progress_clause}{suffix}."
 
 
 def report_window_text(payload: dict[str, Any]) -> str:
@@ -1456,6 +1604,7 @@ def report_window_text(payload: dict[str, Any]) -> str:
 def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
     repo_data = get_repo_data(payload)
     profile = recipient_profile(payload)
+    period = brief_period(payload)
     context = recipient_context_phrase(profile)
     active_repos = active_repo_names(repo_data)
     completed = completion_total(repo_data)
@@ -1487,14 +1636,14 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
     if health:
         lines.append(health)
 
-    lines.extend(["", "## Today's Priorities", ""])
+    lines.extend(["", f"## {period.priorities_heading}", ""])
     if attention_items:
         for item in attention_items[:5]:
             handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
             lines.append(f"- {linked_item_ref(item)}.{handoff}")
     elif open_work:
         lines.append(
-            f"- No explicit attention items were collected; use the open work list to choose what stays active today based on {decision_framing(profile)}."
+            f"- No explicit attention items were collected; use the open work list to choose what stays active {period.alignment_window} based on {decision_framing(profile)}."
         )
     else:
         lines.append("- No GitHub-visible priority needs a decision from this report.")
@@ -1545,15 +1694,19 @@ def render_manager_brief_markdown(payload: dict[str, Any]) -> str:
 def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     repo_data = get_repo_data(payload)
     profile = recipient_profile(payload)
+    period = brief_period(payload)
     active_repos = active_repo_names(repo_data)
+    product_repos = product_signal_repo_names(repo_data)
     recipient = str(payload.get("report_recipient") or "the recipient")
     completed = completion_total(repo_data)
+    finished = executive_finished_total(repo_data)
+    cleared_paths = abandoned_change_total(repo_data)
     open_work = open_work_total(repo_data)
     release_count = total_repo_count(repo_data, "releases")
     workflow_total, workflow_success, workflow_failed = workflow_health_summary(repo_data)
 
     lines = [
-        f"# Daily GitHub Brief for {payload['report_recipient']}",
+        f"# {period.title_prefix} Work Brief for {payload['report_recipient']}",
         "",
         f"Window: {report_window_text(payload)}",
         "",
@@ -1561,10 +1714,18 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
         "",
     ]
 
-    if active_repos:
-        lines.append(executive_headline(repo_data, active_repos, profile, payload.get("priority_sections") or []))
-        lines.append(executive_impact_sentence(completed, open_work, release_count, profile))
-        health = automation_sentence(workflow_total, workflow_success, workflow_failed)
+    if product_repos:
+        lines.append(executive_headline(repo_data, product_repos, profile, payload.get("priority_sections") or [], period))
+        lines.append(executive_impact_sentence(finished, open_work, release_count, cleared_paths, profile))
+        health = executive_automation_sentence(workflow_total, workflow_success, workflow_failed)
+        if health:
+            lines.append(health)
+    elif active_repos:
+        if cleared_paths:
+            lines.append("No product or planning movement was collected, but abandoned or superseded change paths were cleared in this window.")
+        else:
+            lines.append("No product or planning movement was collected, but automation activity was visible in this window.")
+        health = executive_automation_sentence(workflow_total, workflow_success, workflow_failed)
         if health:
             lines.append(health)
     else:
@@ -1579,7 +1740,7 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"- {linked_item_ref(item)}.{handoff}")
 
     lines.extend(["", "## What This Means", ""])
-    change_lines = [sentence for repo, data in sorted(repo_data.items()) if (sentence := repo_outcome_sentence(repo, data))]
+    change_lines = [sentence for repo, data in sorted(repo_data.items()) if (sentence := repo_owner_outcome_sentence(repo, data, profile))]
     if change_lines:
         lines.extend(f"- {line}" for line in change_lines[:8])
     else:
@@ -1594,37 +1755,38 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
             completed_items = section.get("recently_completed") or []
             item_count = int(section.get("item_count") or len(items))
             completed_count = int(section.get("recently_completed_count") or len(completed_items))
-            parts = []
-            if completed_count:
-                parts.append(f"{completed_count} recent completion(s)")
-            if item_count:
-                parts.append(f"{item_count} open item(s)")
-            summary = ", ".join(parts) if parts else "no active signal in the collected window"
-            example = compact_titles((completed_items or items), 2) if completed_items or items else ""
-            suffix = f" Themes: {example}." if example else ""
-            lines.append(f"- **{name}**: {summary}.{suffix}")
+            themes = executive_theme_titles((completed_items or items), 2) if completed_items or items else "general priority work"
+            if completed_count and item_count:
+                summary = f"finished work moved forward while related follow-up remains visible. Themes: {themes}."
+            elif completed_count:
+                summary = f"finished work moved forward. Themes: {themes}."
+            elif item_count:
+                summary = f"open work remains visible for sequencing. Themes: {themes}."
+            else:
+                summary = "no active signal was collected in this window."
+            lines.append(f"- **{name}**: {summary}")
 
     risk_lines = repo_risk_lines(repo_data)
     if risk_lines:
         lines.extend(["", "## Decisions or Risks", ""])
         lines.extend(f"- {line}" for line in risk_lines[:6])
 
-    lines.extend(["", "## Velocity Snapshot", ""])
-    lines.append(f"- Completed: {completed} item(s) collected in-window.")
+    lines.extend(["", "## Supporting Signal", ""])
+    lines.append(f"- Completed during the {period.source_window}: {completed} item(s).")
     lines.append(f"- Open work visible now: {open_work} item(s).")
-    lines.append(f"- Releases: {release_count} collected in-window.")
+    lines.append(f"- Releases during the {period.source_window}: {release_count}.")
     if workflow_total:
         lines.append(f"- Automation: {workflow_success} successful and {workflow_failed} failed workflow run(s) collected.")
 
     lines.extend(["", "## Conversation Starters", ""])
     if risk_lines:
-        lines.append("- Do any of the flagged risks need a decision today?")
+        lines.append(f"- Do any of the flagged risks need a decision {period.alignment_window}?")
     if focus_sections:
-        lines.append(f"- Are the {focus_area_label(payload)} changes aligned with how {recipient} expects to use the product this week?")
+        lines.append(f"- Are the {focus_area_label(payload)} changes aligned with how {recipient} expects to use the product {period.alignment_window}?")
     if open_work:
         lines.append("- Which visible open work should stay active versus move to backlog?")
     if not risk_lines and not open_work:
-        lines.append("- Is there any follow-up outside GitHub that should be captured before tomorrow's brief?")
+        lines.append(f"- Is there any follow-up outside GitHub that should be captured before {period.followup_phrase}?")
 
     limitations_list = payload.get("limitations") or []
     profile_note = profile_source_note(profile)
