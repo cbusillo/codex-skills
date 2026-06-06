@@ -166,6 +166,14 @@ Mutate runtime environments, managed secrets, and product config.
   keep concrete service URLs and credentials in private operator config,
   environment variables, GitHub Actions OIDC, or signed-in Launchplane UI
   sessions.
+- **No Checked-In Product Authority**: Do not add or copy product-specific
+  authz grants, provider target route batches, product target IDs, tenant
+  domains, or live product topology into Launchplane deploy scripts, workflow
+  defaults, or repo-local config files. For shared/prod, use the deployed
+  Launchplane service, operator UI, or the bounded write-action helper/API with
+  the correct service URL and scoped credentials. Checked-in import material may
+  describe explicit seed input, but normal deploy files and workflow defaults
+  are not the product catalog.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
