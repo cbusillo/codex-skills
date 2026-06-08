@@ -422,37 +422,6 @@ skills:
           notes: Inspection helper routing and lifecycle covered by tests.
     known_gaps:
       - No performance budget yet for inspection closeout flows.
-  just-every-plugins:
-    status: active
-    risk_classes:
-      - command_execution
-      - external_api
-      - script_helper
-    checks:
-      - check_id: install-helper-tests
-        kind: script_test
-        mode: ci
-        dimension: helper_behavior
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Dry-run installer command generation is covered without mutating Codex plugin state.
-      - check_id: skill-repo-validation
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Metadata, structured command resources, and local references covered by repo validation.
-    known_gaps:
-      - >-
-        No live Codex plugin install test yet; validation intentionally keeps
-        plugin state untouched and verifies command generation only.
   launchplane:
     status: active
     risk_classes:
