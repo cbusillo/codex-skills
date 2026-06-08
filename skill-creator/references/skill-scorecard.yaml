@@ -115,41 +115,6 @@ skills:
             validation.
     known_gaps:
       - No exec-harness scenario yet for unavailable private context.
-  codex-bug:
-    status: active
-    risk_classes:
-      - github_read
-      - github_workflow
-    checks:
-      - check_id: skill-repo-validation
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Metadata and references covered by repo validation.
-    known_gaps:
-      - No advisory scenario yet for bug triage judgment.
-  codex-issue-digest:
-    status: active
-    risk_classes:
-      - github_read
-      - script_helper
-    checks:
-      - check_id: issue-digest-tests
-        kind: script_test
-        mode: ci
-        dimension: github_workflow
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Digest collector covered by focused helper tests.
-    known_gaps: []
   design-collaboration:
     status: active
     risk_classes:
