@@ -1,0 +1,4 @@
+interface:
+  display_name: "Just Every Plugins"
+  short_description: "Install Ultracode and Auto Review"
+  default_prompt: "Use $just-every-plugins to install or inspect Just Every Codex plugins from the codex-skills marketplace."

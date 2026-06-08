@@ -23,6 +23,7 @@ helper_tests=(
 	google-seo/scripts/test_google_search_console.py
 	github-work-rollup/scripts/test_github_work_rollup.py
 	infra-ops/scripts/test_npmplus_ops.py
+	just-every-plugins/scripts/test_install_just_every_plugins.py
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_public_safety.py
 	jetbrains-inspection/tests/test_jb_inspect.py
