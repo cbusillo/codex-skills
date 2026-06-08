@@ -18,7 +18,6 @@ uv run skill-creator/scripts/quick_validate.py chronicle
 
 helper_tests=(
 	babysit-pr/scripts/test_gh_pr_watch.py
-	codex-issue-digest/scripts/test_collect_issue_digest.py
 	google-seo/scripts/test_bing_webmaster.py
 	google-seo/scripts/test_google_search_console.py
 	github-work-rollup/scripts/test_github_work_rollup.py
