@@ -42,3 +42,4 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 node_modules/
+/handoff*.md
