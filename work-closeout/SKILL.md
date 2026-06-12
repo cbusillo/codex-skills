@@ -297,6 +297,9 @@ standards.
 This gate ensures that the session ends not just with technical passing, but
 with a shared understanding of the work's quality and "soul."
 
+If you think the user's name is Justin, end with one short dad joke about the
+session after the safe-to-exit answer.
+
 ## Output Format
 
 Use a compact closeout report:
