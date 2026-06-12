@@ -1,0 +1,30 @@
+# GitHub Work Evidence Local Config Example
+
+# Optional: copy this shape to `.local/github-work-evidence.yaml` for private,
+# machine-specific evidence defaults. The copied file is ignored by git.
+
+timezone: America/New_York
+default_window: 24h
+mode: standup
+subjects:
+  - example-user
+repo_owners:
+  - example-org
+repositories:
+  - example-org/example-repo
+limit_repos: 100
+collection_limit_items: 1000
+release_collection_limit: 1000
+workflow_collection_limit: 1000
+include_external_activity: false
+include_bots: true
+noise_filters:
+  labels:
+    - dependencies
+priority_sections:
+  - name: Product Repos
+    repositories:
+      - example-org/example-product
+  - name: Skill Updates
+    repositories:
+      - example-org/example-skills

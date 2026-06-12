@@ -41,14 +41,29 @@ do not need to perform arithmetic or infer collection limits.
 - `work-brief` uses the evidence as source material for LLM-led briefs, with
   citations, source limitations, and explicit uncertainty.
 
-## Compatibility
+## Config
 
-The helper currently accepts the existing ignored local config shape used by the
-legacy work-rollup helper. Audience/report-rendering keys such as `layout`,
-`summary_level`, `report_recipient`, `people_index`, and `output_path` are
-ignored for evidence output and surfaced in `source_notes` when present.
+Private routine defaults live in `.local/github-work-evidence.yaml`. The config
+may combine owner/user scans with explicit repositories:
 
-This is a transitional wrapper around the legacy work-rollup collector so the
-GitHub skill family can expose the evidence contract before the reporting layer
-is rebuilt. Keep downstream consumers pointed at the JSON contract here, not at
-the legacy renderer internals.
+- `repo_owners`: GitHub users or organizations whose non-archived repositories
+  should be scanned, bounded by `limit_repos`.
+- `repositories`: individual `OWNER/REPO` entries to always include or to add
+  alongside owner scans.
+- `subjects`: GitHub logins to highlight in recent activity searches.
+- `priority_sections`: named high-signal repo groups that downstream briefs
+  should consider first when deciding what matters.
+
+Supported evidence config keys are `timezone`, `default_window`, `subjects`,
+`repo_owners`, `repositories`, `mode`, `collection_limit_items`,
+`release_collection_limit`, `workflow_collection_limit`,
+`include_external_activity`, `include_bots`, `noise_filters`, and
+`priority_sections`. Use explicit CLI flags for one-off runs.
+
+Audience, recipient, and report-writing configuration belongs in downstream
+briefing skills, not in this evidence helper.
+
+The collector lives at `github/scripts/github_work_evidence_collector.py` and is
+loaded by `github-work-evidence.py` as a JSON-only evidence module. Keep
+downstream consumers pointed at this contract rather than presentation-specific
+reporting code.

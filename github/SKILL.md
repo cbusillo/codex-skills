@@ -46,6 +46,9 @@ resources:
   - path: references/work-evidence.md
     kind: reference
     description: Contract for the read-only GitHub work evidence helper and downstream consumers.
+  - path: references/github-work-evidence.local.example.yaml
+    kind: reference
+    description: Public-safe example local config for GitHub work evidence collection.
 commands:
   - name: github-pr-view
     source: skill

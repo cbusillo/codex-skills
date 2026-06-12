@@ -19,14 +19,13 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
-COLLECTOR_PATH = ROOT / "github-work-rollup/scripts/github_work_rollup.py"
-DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
-NO_PEOPLE_INDEX = ROOT / ".local/github-work-evidence.no-people.yaml"
+COLLECTOR_PATH = SCRIPT_DIR / "github_work_evidence_collector.py"
+DEFAULT_CONFIG = ROOT / ".local/github-work-evidence.yaml"
 SCHEMA_VERSION = 1
 
 
-def load_rollup_module() -> Any:
-    spec = importlib.util.spec_from_file_location("github_work_rollup", COLLECTOR_PATH)
+def load_collector_module() -> Any:
+    spec = importlib.util.spec_from_file_location("github_work_evidence_collector", COLLECTOR_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load collector module from {COLLECTOR_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -35,7 +34,7 @@ def load_rollup_module() -> Any:
     return module
 
 
-rollup = load_rollup_module()
+collector = load_collector_module()
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--since", help="UTC ISO timestamp for window start.")
     parser.add_argument("--until", help="UTC ISO timestamp for window end.")
     parser.add_argument("--timezone", help="IANA timezone label for display metadata.")
-    parser.add_argument("--mode", choices=sorted(rollup.REPORT_MODES), help="activity, backlog, or standup.")
+    parser.add_argument("--mode", choices=sorted(collector.REPORT_MODES), help="activity, backlog, or standup.")
     parser.add_argument("--output", type=Path, help="Write JSON evidence to this path.")
-    parser.add_argument("--limit-repos", type=int, default=25)
-    parser.add_argument("--limit-items", type=int, default=50)
+    parser.add_argument("--limit-repos", type=int)
     parser.add_argument("--collection-limit-items", type=int, help="Maximum PRs/issues to collect per repo/state.")
     parser.add_argument("--release-collection-limit", type=int, help="Maximum releases to collect per repo before window filtering.")
     parser.add_argument("--workflow-collection-limit", type=int, help="Maximum workflow runs to collect per repo before window filtering.")
@@ -62,12 +60,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    config = rollup.load_config(args.config)
+    config = collector.load_config(args.config)
     settings = resolve_evidence_settings(args, config)
     try:
-        payload = rollup.collect_rollup(settings)
-    except rollup.RollupError as exc:
-        payload = rollup.failure_payload(settings, str(exc))
+        payload = collector.collect_work_evidence(settings)
+    except collector.WorkEvidenceError as exc:
+        payload = collector.failure_payload(settings, str(exc))
         evidence = evidence_failure(payload)
         write_or_print_json(evidence, args.output)
         return 1
@@ -77,19 +75,7 @@ def main() -> int:
 
 
 def resolve_evidence_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
-    compatibility_config = dict(config)
-    ignored_audience_keys = {
-        "layout",
-        "summary_level",
-        "report_recipient",
-        "people_index",
-        "output_path",
-    }
-    for key in ignored_audience_keys:
-        compatibility_config.pop(key, None)
-    settings = rollup.resolve_settings(evidence_args(args), compatibility_config)
-    settings["evidence_ignored_config_keys"] = sorted(key for key in ignored_audience_keys if key in config)
-    return settings
+    return collector.resolve_settings(evidence_args(args), config)
 
 
 def evidence_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -102,14 +88,9 @@ def evidence_args(args: argparse.Namespace) -> argparse.Namespace:
         since=args.since,
         until=args.until,
         timezone=args.timezone,
-        report_recipient="GitHub evidence",
-        people_index=NO_PEOPLE_INDEX,
         mode=args.mode,
-        summary_level="standard",
-        layout="operator",
         output=args.output,
         limit_repos=args.limit_repos,
-        limit_items=args.limit_items,
         collection_limit_items=args.collection_limit_items,
         release_collection_limit=args.release_collection_limit,
         workflow_collection_limit=args.workflow_collection_limit,
@@ -119,12 +100,7 @@ def evidence_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def evidence_payload(payload: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
-    ignored_keys = settings.get("evidence_ignored_config_keys") or []
-    source_notes = list(payload.get("limitations") or [])
-    if ignored_keys:
-        source_notes.append(
-            "Ignored audience/report-rendering config keys for evidence-only output: " + ", ".join(ignored_keys) + "."
-        )
+    source_notes = [normalize_source_note(note) for note in payload.get("limitations") or []]
     evidence = {
         "ok": bool(payload.get("ok")),
         "schema_version": SCHEMA_VERSION,
@@ -147,7 +123,7 @@ def evidence_payload(payload: dict[str, Any], settings: dict[str, Any]) -> dict[
         "workflows": payload.get("workflows") or [],
         "source_notes": source_notes,
     }
-    return strip_non_evidence_fields(rollup.sanitize_payload_for_json(evidence))
+    return strip_non_evidence_fields(collector.sanitize_payload_for_json(evidence))
 
 
 def strip_non_evidence_fields(value: Any) -> Any:
@@ -156,6 +132,10 @@ def strip_non_evidence_fields(value: Any) -> Any:
     if isinstance(value, list):
         return [strip_non_evidence_fields(item) for item in value]
     return value
+
+
+def normalize_source_note(note: Any) -> str:
+    return str(note)
 
 
 def evidence_failure(payload: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +155,7 @@ def evidence_failure(payload: dict[str, Any]) -> dict[str, Any]:
 
 def write_or_print_json(payload: dict[str, Any], output: Path | None) -> None:
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    rollup.write_or_print(rendered, output)
+    collector.write_or_print(rendered, output)
 
 
 if __name__ == "__main__":

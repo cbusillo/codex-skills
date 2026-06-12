@@ -37,13 +37,12 @@ def evidence() -> dict[str, object]:
     }
 
 
-def test_accepts_grounded_links_refs_and_source_note() -> None:
+def test_accepts_grounded_links_refs_and_source_caveat() -> None:
     brief = """
 The review queue now centers on example-org/example-repo#42
 (https://github.com/example-org/example-repo/pull/42).
 
-Source limitation: workflow collection reached the configured cap, so workflow
-counts may be incomplete.
+Confidence caveat: automation data is partial, so workflow counts may be incomplete.
 """
 
     assert verify_work_brief.verify_brief(evidence(), brief) == []
@@ -70,6 +69,35 @@ def test_rejects_unsupported_issue_reference() -> None:
     assert "unsupported issue/PR reference not present in evidence: #99" not in errors
 
 
+def test_rejects_unsupported_natural_language_issue_reference() -> None:
+    errors = verify_work_brief.verify_brief(
+        evidence(),
+        "PR 99 is ready. Confidence caveat: automation data is partial.",
+    )
+
+    assert "unsupported issue/PR reference not present in evidence: 99" in errors
+
+
+def test_accepts_plan_context_refs() -> None:
+    plan_context = [
+        {
+            "issue": {
+                "repo": "example-org/example-repo",
+                "number": 99,
+                "url": "https://github.com/example-org/example-repo/issues/99",
+            }
+        }
+    ]
+
+    errors = verify_work_brief.verify_brief(
+        evidence(),
+        "Issue 99 frames the plan. See https://github.com/example-org/example-repo/issues/99. Confidence caveat: workflow counts may be incomplete.",
+        plan_context=plan_context,
+    )
+
+    assert errors == []
+
+
 def test_requires_source_note_reflection() -> None:
     errors = verify_work_brief.verify_brief(
         evidence(),
@@ -79,15 +107,24 @@ def test_requires_source_note_reflection() -> None:
     assert errors == ["brief must include a source limitation or confidence caveat"]
 
 
-def test_rejects_source_note_marker_without_matching_content() -> None:
+def test_rejects_generic_caveat_without_source_note_content() -> None:
     errors = verify_work_brief.verify_brief(
         evidence(),
-        "example-org/example-repo#42 is next. Source limitation: release data was unavailable.",
+        "example-org/example-repo#42 is the next review item. Confidence is high.",
     )
 
     assert errors == [
-        "source note not reflected in brief: Workflow collection reached the configured cap; workflow counts may be incomplete."
+        "brief must reflect source note: Workflow collection reached the configured cap; workflow counts may be incomplete."
     ]
+
+
+def test_rejects_contradicted_source_note() -> None:
+    errors = verify_work_brief.verify_brief(
+        evidence(),
+        "example-org/example-repo#42 is next. There are no source limitations.",
+    )
+
+    assert errors == ["brief contradicts evidence source limitations"]
 
 
 if __name__ == "__main__":

@@ -234,5 +234,5 @@ Useful soft consumers include:
   memory and into private local people config.
 - `rollout-friction`: classify repeated wrong-person, stale-handle,
   wrong-manager, or unclear-contact failures as identity friction.
-- GitHub work rollups: resolve report subjects and handles before collecting
-  live activity.
+- GitHub work evidence and briefs: resolve report subjects and handles before
+  collecting live activity or tailoring brief context.

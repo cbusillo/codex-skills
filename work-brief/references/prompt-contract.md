@@ -35,8 +35,8 @@ when they help the reader inspect, approve, unblock, or verify the work.
 - Reflect every evidence source note or limitation as a confidence caveat.
 - Distinguish observed facts from inference and recommendation when the reader
   might act on the difference.
-- Do not use fixed report templates, legacy rollup section names, layout modes,
-  or generic bucket dumps.
+- Do not use fixed report templates, renderer modes, canned report examples, or
+  generic bucket dumps.
 
 ## Audience Dial
 

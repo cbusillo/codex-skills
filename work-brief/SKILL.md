@@ -9,14 +9,14 @@ resources:
     description: Prompt contract for evidence-grounded work brief synthesis.
   - path: scripts/verify_work_brief.py
     kind: script
-    description: Deterministic checker for unsupported links, issue refs, and source notes.
+    description: Deterministic checker for unsupported links, issue refs, plan refs, and source notes.
 commands:
   - name: verify-work-brief
     source: skill
     resource_path: scripts/verify_work_brief.py
     example_argv:
       ["uv", "run", "scripts/verify_work_brief.py", "--evidence", "evidence.json", "--brief", "brief.md"]
-    purpose: Verify that a generated brief stays grounded in collected evidence.
+    purpose: Verify that a generated brief stays grounded in collected evidence and optional plan context.
 workflow_defaults:
   - name: window
     value: 24h
@@ -66,8 +66,9 @@ unless the user separately asks for them and the owning skill is invoked.
    decision shape the altitude and structure. Do not use a rigid template, and
    do not list every event unless the user asks for a queue.
 5. Verify the draft with `scripts/verify_work_brief.py` against the evidence
-   JSON. Revise until unsupported links, unsupported issue references, and
-   missing source notes are resolved.
+   JSON. If the brief cites durable plan issues, pass the plan JSON with
+   `--plan-context`. Revise until unsupported links, unsupported issue
+   references, and missing source notes are resolved.
 6. Present the brief with clear assumptions and limitations. If the evidence is
    thin or degraded, say what can be concluded and what cannot.
 
@@ -82,7 +83,7 @@ unless the user separately asks for them and the owning skill is invoked.
 - Use links only when they support inspection, approval, or follow-up.
 - Reflect every source note or collection limitation from the evidence.
 - Keep counts and volume language tied to evidence counts, not intuition.
-- Do not preserve legacy rollup section names, layout modes, or report examples.
+- Do not use fixed report templates, renderer modes, or canned report examples.
 
 ## Audience Handling
 

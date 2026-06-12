@@ -1,0 +1,1006 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
+# ///
+"""Read-only GitHub work evidence collector."""
+# pyright: reportMissingModuleSource=false
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone, tzinfo
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import yaml  # type: ignore[import-untyped]
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parents[1]
+GH = os.environ.get("GITHUB_WORK_EVIDENCE_GH") or str(ROOT / "github/scripts/gh-with-env-token")
+DEFAULT_CONFIG = ROOT / ".local/github-work-evidence.yaml"
+SCRIPT_VERSION = 1
+REPORT_MODES = {"activity", "backlog", "standup"}
+DEFAULT_REPO_ITEM_COLLECTION_LIMIT = 1000
+DEFAULT_RELEASE_COLLECTION_LIMIT = 1000
+DEFAULT_WORKFLOW_COLLECTION_LIMIT = 1000
+GITHUB_SEARCH_PAGE_SIZE = 100
+GITHUB_SEARCH_RESULT_LIMIT = 1000
+BUCKET_ORDER = [
+    "needs_attention",
+    "blocked",
+    "waiting",
+    "ready_for_review",
+    "ready_for_merge_decision",
+    "in_progress",
+    "stale_or_needs_reconciliation",
+    "recently_completed",
+]
+ACTIONABLE_PRIORITY_BUCKETS = {bucket for bucket in BUCKET_ORDER if bucket != "recently_completed"}
+
+
+class WorkEvidenceError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Window:
+    since: datetime
+    until: datetime
+    label: str
+
+
+def read_text_file(path: Path) -> str:
+    with path.open("r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def load_config(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    parsed = yaml.safe_load(read_text_file(path))
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"error: {path} must contain a YAML mapping")
+    return parsed
+
+
+def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    window = resolve_window(args, config)
+    explicit_scope = bool(args.repo or args.repo_owner or args.subject)
+    repos = unique(args.repo if explicit_scope else as_str_list(config.get("repositories")))
+    owners = unique(args.repo_owner if explicit_scope else as_str_list(config.get("repo_owners")))
+    subjects = unique(args.subject if explicit_scope else as_str_list(config.get("subjects")))
+    mode = args.mode or str(config.get("mode") or "activity")
+    if mode not in REPORT_MODES:
+        raise SystemExit(f"error: mode must be one of {', '.join(sorted(REPORT_MODES))}")
+    return {
+        "config_path": str(args.config) if args.config else None,
+        "timezone": args.timezone or str(config.get("timezone") or "UTC"),
+        "window": window,
+        "repositories": repos,
+        "repo_owners": owners,
+        "subjects": subjects,
+        "mode": mode,
+        "include_external_activity": bool(args.include_external_activity or config.get("include_external_activity")),
+        "include_bots": bool(args.include_bots or config.get("include_bots")),
+        "noise_filters": config.get("noise_filters") if isinstance(config.get("noise_filters"), dict) else {},
+        "priority_sections": config.get("priority_sections") if isinstance(config.get("priority_sections"), list) else [],
+        "limit_repos": positive_int(args.limit_repos if args.limit_repos is not None else config.get("limit_repos"), 25, "limit_repos"),
+        "collection_limit_items": positive_int(
+            args.collection_limit_items if args.collection_limit_items is not None else config.get("collection_limit_items"),
+            DEFAULT_REPO_ITEM_COLLECTION_LIMIT,
+            "collection_limit_items",
+        ),
+        "release_collection_limit": positive_int(
+            args.release_collection_limit if args.release_collection_limit is not None else config.get("release_collection_limit"),
+            DEFAULT_RELEASE_COLLECTION_LIMIT,
+            "release_collection_limit",
+        ),
+        "workflow_collection_limit": positive_int(
+            args.workflow_collection_limit if args.workflow_collection_limit is not None else config.get("workflow_collection_limit"),
+            DEFAULT_WORKFLOW_COLLECTION_LIMIT,
+            "workflow_collection_limit",
+        ),
+    }
+
+
+def positive_int(value: object, default: int, name: str) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        raise SystemExit(f"error: {name} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise SystemExit(f"error: {name} must be a positive integer")
+        parsed = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise SystemExit(f"error: {name} must be a positive integer") from exc
+    else:
+        raise SystemExit(f"error: {name} must be a positive integer")
+    if parsed < 1:
+        raise SystemExit(f"error: {name} must be a positive integer")
+    return parsed
+
+
+def setting_positive_int(settings: dict[str, Any], name: str, default: int) -> int:
+    value = settings.get(name)
+    return value if isinstance(value, int) and value > 0 else default
+
+
+def resolve_window(args: argparse.Namespace, config: dict[str, Any]) -> Window:
+    until = parse_timestamp(args.until) or datetime.now(timezone.utc)
+    since = parse_timestamp(args.since)
+    label = args.window or str(config.get("default_window") or "24h")
+    if since is None:
+        since = until - timedelta(hours=parse_duration_hours(label))
+    if since >= until:
+        raise SystemExit("error: --since must be before --until")
+    return Window(since=since, until=until, label=label)
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_duration_hours(value: str) -> float:
+    text = value.strip().casefold().replace("_", " ")
+    text = re.sub(r"^(past|last)\s+", "", text)
+    aliases = {"day": 24.0, "24h": 24.0, "week": 168.0, "7d": 168.0}
+    if text in aliases:
+        return aliases[text]
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours)", text)
+    if match:
+        return float(match.group(1))
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(d|day|days)", text)
+    if match:
+        return float(match.group(1)) * 24.0
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(w|week|weeks)", text)
+    if match:
+        return float(match.group(1)) * 168.0
+    raise SystemExit(f"error: unsupported window {value!r}")
+
+
+def as_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return []
+
+
+def unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        stripped = value.strip()
+        key = stripped.casefold()
+        if stripped and key not in seen:
+            seen.add(key)
+            result.append(stripped)
+    return result
+
+
+def deduplicate_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for item in items:
+        key = item_identity(item)
+        if key in seen:
+            seen[key] = merge_duplicate_item(seen[key], item)
+        else:
+            seen[key] = dict(item)
+    return list(seen.values())
+
+
+def collection_lanes(settings: dict[str, Any]) -> dict[str, bool]:
+    mode = str(settings.get("mode") or "activity")
+    return {
+        "recent_activity": True,
+        "open_backlog": mode in {"backlog", "standup"},
+        "recent_completions": mode in {"activity", "backlog", "standup"},
+    }
+
+
+def collect_open_backlog(settings: dict[str, Any]) -> bool:
+    return collection_lanes(settings)["open_backlog"]
+
+
+def item_collection_lane(state: str, entry: dict[str, Any], settings: dict[str, Any]) -> str:
+    mode = str(settings.get("mode") or "activity")
+    if state == "open" and mode == "standup" and item_in_window(entry, state, settings["window"]):
+        return "recent_activity"
+    if state == "open" and collect_open_backlog(settings):
+        return "open_backlog"
+    if state in {"closed", "merged"}:
+        return "recent_completion"
+    return "recent_activity"
+
+
+def should_window_filter_state(state: str, settings: dict[str, Any]) -> bool:
+    return not (state == "open" and collect_open_backlog(settings))
+
+
+def item_identity(item: dict[str, Any]) -> str:
+    kind = item.get("kind")
+    repo = item.get("repo")
+    number = item.get("number")
+    if kind and repo and number is not None:
+        return f"{kind}:{repo}:{number}"
+    if item.get("url"):
+        return str(item["url"])
+    return f"{kind}:{repo}:{item.get('title')}:{item.get('updated_at')}"
+
+
+def merge_duplicate_item(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    primary = preferred_item(existing, incoming)
+    merged = dict(primary)
+    for field, singular in (("subjects", "subject"), ("subject_matches", "subject_match")):
+        values = as_str_list(existing.get(field)) + as_str_list(incoming.get(field))
+        values.extend(value for value in (existing.get(singular), incoming.get(singular)) if isinstance(value, str))
+        if values:
+            merged[field] = unique(values)
+    merged["priority"] = max(int(existing.get("priority") or 0), int(incoming.get("priority") or 0))
+    merged["collection_lane"] = preferred_collection_lane(existing, incoming)
+    if merged.get("bucket") == "recently_completed":
+        merged["handoff"] = None
+    elif not merged.get("handoff"):
+        merged["handoff"] = existing.get("handoff") or incoming.get("handoff")
+    return merged
+
+
+def preferred_collection_lane(*items: dict[str, Any]) -> str | None:
+    lanes = [str(item.get("collection_lane")) for item in items if item.get("collection_lane")]
+    for lane in ("recent_completion", "recent_activity", "open_backlog"):
+        if lane in lanes:
+            return lane
+    return lanes[0] if lanes else None
+
+
+def preferred_item(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    first_score = item_detail_score(first)
+    second_score = item_detail_score(second)
+    return second if second_score > first_score else first
+
+
+def item_detail_score(item: dict[str, Any]) -> int:
+    score = 0
+    if item.get("state") == "merged":
+        score += 20
+    if item.get("state") == "closed":
+        score += 10
+    for field in ("review_decision", "draft", "assignees", "completed_at"):
+        if field in item:
+            score += 3
+    if item.get("kind") != "collection_error":
+        score += 1
+    return score
+
+
+def collect_work_evidence(settings: dict[str, Any]) -> dict[str, Any]:
+    preflight = github_preflight(settings)
+    repos = resolve_repositories(settings)
+    if not repos and not settings["subjects"]:
+        raise WorkEvidenceError("No repositories or subjects configured. Pass --repo, --repo-owner, or --subject.")
+    settings = {**settings, "resolved_repositories": repos}
+    settings.setdefault("collection_warnings", [])
+    items: list[dict[str, Any]] = []
+    for repo in repos:
+        items.extend(collect_repo_items(repo, settings))
+    if settings["subjects"] and (settings["include_external_activity"] or not repos):
+        items.extend(collect_subject_items(settings))
+    items = deduplicate_items(items)
+    buckets = bucket_items(items, settings)
+
+    releases = []
+    workflows = []
+    for repo in repos:
+        releases.extend(collect_repo_releases(repo, settings))
+        workflows.extend(collect_repo_workflows(repo, settings))
+
+    collection_warnings = collection_warnings_from(settings)
+
+    return {
+        "ok": True,
+        "schema_version": 1,
+        "script_version": SCRIPT_VERSION,
+        "generated_at": format_ts(datetime.now(timezone.utc)),
+        "window": window_json(settings["window"]),
+        "timezone": settings["timezone"],
+        "repositories": repos,
+        "subjects": settings["subjects"],
+        "mode": settings["mode"],
+        "collection_lanes": collection_lanes(settings),
+        "preflight": preflight,
+        "buckets": buckets,
+        "summary": summary_counts(buckets, collection_warnings),
+        "display_window": display_window_json(settings["window"], settings["timezone"]),
+        "priority_sections": priority_sections(items, settings),
+        "limitations": [*limitations(settings, repos), *collection_warnings],
+        "releases": releases,
+        "workflows": workflows,
+    }
+
+
+def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
+    checks = []
+    for command in ([GH, "auth", "status"], [GH, "api", "user", "--jq", "{login:.login,id:.id,name:.name}"]):
+        result = run(command)
+        checks.append(command_summary(command, result))
+        if result.returncode != 0:
+            raise WorkEvidenceError(f"GitHub preflight failed: {' '.join(command)}\n{trim(result.stderr or result.stdout)}")
+    owners = settings.get("repo_owners") or []
+    if owners:
+        command = [GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"]
+        result = run(command)
+        checks.append(command_summary(command, result))
+        if result.returncode != 0:
+            raise WorkEvidenceError(f"GitHub repo preflight failed for {owners[0]}: {trim(result.stderr or result.stdout)}")
+    return {"ok": True, "checks": checks}
+
+
+def resolve_repositories(settings: dict[str, Any]) -> list[str]:
+    repos = list(settings["repositories"])
+    for owner in settings["repo_owners"]:
+        command = [GH, "repo", "list", owner, "--limit", str(settings["limit_repos"]), "--json", "nameWithOwner,isArchived"]
+        result = run(command)
+        if result.returncode != 0:
+            raise WorkEvidenceError(f"Unable to list repositories for {owner}: {trim(result.stderr or result.stdout)}")
+        for entry in json.loads(result.stdout or "[]"):
+            if isinstance(entry, dict) and not entry.get("isArchived") and isinstance(entry.get("nameWithOwner"), str):
+                repos.append(entry["nameWithOwner"])
+    return unique(repos)
+
+
+def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        *collect_open_items(repo, "pr", settings),
+        *collect_prs(repo, "closed", settings),
+        *collect_prs(repo, "merged", settings),
+        *collect_open_items(repo, "issue", settings),
+        *collect_issues(repo, "closed", settings),
+    ]
+
+
+def collect_repo_releases(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collection_limit = setting_positive_int(settings, "release_collection_limit", DEFAULT_RELEASE_COLLECTION_LIMIT)
+    command = [
+        GH,
+        "release",
+        "list",
+        "--repo",
+        repo,
+        "--limit",
+        str(collection_limit),
+        "--exclude-drafts",
+        "--exclude-pre-releases",
+        "--json",
+        "tagName,name,createdAt,publishedAt,isDraft,isPrerelease",
+    ]
+    result = run(command)
+    if result.returncode != 0:
+        add_collection_warning(settings, f"Could not collect releases for {repo}: {trim(result.stderr or result.stdout)}")
+        return []
+
+    rows = []
+    window = settings["window"]
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"Release collection for {repo} reached {collection_limit}; release counts may be incomplete.")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isDraft") or entry.get("isPrerelease"):
+            continue
+        pub_str = entry.get("publishedAt") or entry.get("createdAt")
+        pub_dt = parse_timestamp(pub_str)
+        if pub_dt and window.since <= pub_dt <= window.until:
+            rows.append({
+                "repo": repo,
+                "tag_name": entry.get("tagName"),
+                "name": entry.get("name"),
+                "published_at": pub_str,
+                "url": release_url(repo, entry.get("tagName")),
+            })
+    return rows
+
+
+def release_url(repo: str, tag_name: object) -> str | None:
+    return f"https://github.com/{repo}/releases/tag/{tag_name}" if isinstance(tag_name, str) and tag_name else None
+
+
+def collect_repo_workflows(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collection_limit = setting_positive_int(settings, "workflow_collection_limit", DEFAULT_WORKFLOW_COLLECTION_LIMIT)
+    command = [
+        GH,
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--limit",
+        str(collection_limit),
+        "--json",
+        "name,status,conclusion,createdAt,updatedAt,url",
+    ]
+    result = run(command)
+    if result.returncode != 0:
+        add_collection_warning(settings, f"Could not collect workflow runs for {repo}: {trim(result.stderr or result.stdout)}")
+        return []
+
+    rows = []
+    window = settings["window"]
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"Workflow collection for {repo} reached {collection_limit}; automation counts may be incomplete.")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "").casefold()
+        if status != "completed":
+            continue
+        completed_str = entry.get("updatedAt") or entry.get("createdAt")
+        completed_dt = parse_timestamp(completed_str)
+        if completed_dt and window.since <= completed_dt <= window.until:
+            rows.append({
+                "repo": repo,
+                "name": entry.get("name"),
+                "status": status,
+                "conclusion": entry.get("conclusion"),
+                "created_at": entry.get("createdAt"),
+                "completed_at": completed_str,
+                "url": entry.get("url"),
+            })
+    return rows
+
+
+def collect_open_items(repo: str, kind: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    collector = collect_prs if kind == "pr" else collect_issues
+    if settings["mode"] != "standup":
+        return collector(repo, "open", settings)
+    return [
+        *collector(repo, "open", settings, force_window_filter=False),
+        *collector(repo, "open", settings, force_window_filter=True),
+    ]
+
+
+def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    since_day = settings["window"].since.date().isoformat()
+    collection_limit = min(
+        setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT),
+        GITHUB_SEARCH_RESULT_LIMIT,
+    )
+    for subject in settings["subjects"]:
+        for qualifier in ("author", "commenter", "mentions"):
+            query = f"{qualifier}:{subject} updated:>={since_day}"
+            fetched_for_query = 0
+            page = 1
+            while fetched_for_query < collection_limit:
+                per_page = min(GITHUB_SEARCH_PAGE_SIZE, collection_limit - fetched_for_query)
+                result = run(
+                    [
+                        GH,
+                        "api",
+                        "--method",
+                        "GET",
+                        "search/issues",
+                        "-f",
+                        f"q={query}",
+                        "-f",
+                        f"per_page={per_page}",
+                        "-f",
+                        f"page={page}",
+                    ]
+                )
+                if result.returncode != 0:
+                    rows.append(collection_error(f"subject:{subject}", "search", qualifier, result))
+                    break
+                payload = json.loads(result.stdout or "{}")
+                entries = payload.get("items") or [] if isinstance(payload, dict) else []
+                if not isinstance(entries, list):
+                    add_collection_warning(
+                        settings,
+                        f"Subject search for {subject} {qualifier} returned an unexpected response; subject counts may be incomplete.",
+                    )
+                    break
+                total_count = payload.get("total_count") if isinstance(payload, dict) else None
+                incomplete = bool(payload.get("incomplete_results")) if isinstance(payload, dict) else False
+                fetched_for_query += len(entries)
+                for entry in entries:
+                    if not isinstance(entry, dict) or not subject_item_in_window(entry, settings["window"]):
+                        continue
+                    key = str(entry.get("html_url") or entry.get("url") or "")
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    if should_skip_bot(login_from(entry.get("user")), entry.get("user"), settings):
+                        continue
+                    rows.append(normalize_search_item(entry, subject, qualifier, settings))
+                if incomplete or (isinstance(total_count, int) and total_count > fetched_for_query and (fetched_for_query >= collection_limit or len(entries) < per_page)):
+                    add_collection_warning(
+                        settings,
+                        subject_search_warning(subject, qualifier, fetched_for_query, collection_limit),
+                    )
+                if len(entries) < per_page or fetched_for_query >= collection_limit:
+                    break
+                page += 1
+    return rows
+
+
+def subject_search_warning(subject: str, qualifier: str, fetched: int, limit: int) -> str:
+    if fetched >= limit:
+        return f"Subject search for {subject} {qualifier} reached {limit}; subject counts may be incomplete."
+    return f"Subject search for {subject} {qualifier} returned incomplete results after {fetched} item(s); subject counts may be incomplete."
+
+
+def collect_prs(
+    repo: str,
+    state: str,
+    settings: dict[str, Any],
+    force_window_filter: bool | None = None,
+) -> list[dict[str, Any]]:
+    fields = "number,title,url,author,labels,reviewDecision,isDraft,createdAt,updatedAt,closedAt,mergedAt,baseRefName"
+    window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    collection_limit = setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT)
+    command = [
+        GH,
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--limit",
+        str(collection_limit),
+    ]
+    if window_filter:
+        command.extend(["--search", search_window(settings["window"])])
+    command.extend(["--json", fields])
+    result = run(command)
+    if result.returncode != 0:
+        return [collection_error(repo, "pr", state, result)]
+    rows = []
+    entries = json.loads(result.stdout or "[]")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"{repo} {state} PR collection reached {collection_limit}; PR counts may be incomplete.")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if window_filter and not item_in_window(entry, state, settings["window"]):
+            continue
+        if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
+            continue
+        rows.append(normalize_pr(repo, state, entry, settings))
+    return rows
+
+
+def collect_issues(
+    repo: str,
+    state: str,
+    settings: dict[str, Any],
+    force_window_filter: bool | None = None,
+) -> list[dict[str, Any]]:
+    fields = "number,title,url,author,labels,assignees,createdAt,updatedAt,closedAt,stateReason"
+    window_filter = force_window_filter if force_window_filter is not None else should_window_filter_state(state, settings)
+    collection_limit = setting_positive_int(settings, "collection_limit_items", DEFAULT_REPO_ITEM_COLLECTION_LIMIT)
+    command = [
+        GH,
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--limit",
+        str(collection_limit),
+    ]
+    if window_filter:
+        command.extend(["--search", search_window(settings["window"])])
+    command.extend(["--json", fields])
+    result = run(command)
+    if result.returncode != 0:
+        err_msg = (result.stderr or result.stdout or "").casefold()
+        if "disabled issues" in err_msg or "issues are disabled" in err_msg:
+            add_collection_warning(settings, f"Issues are disabled for {repo}.")
+            return []
+        return [collection_error(repo, "issue", state, result)]
+    rows = []
+    entries = json.loads(result.stdout or "[]")
+    if isinstance(entries, list) and len(entries) >= collection_limit:
+        add_collection_warning(settings, f"{repo} {state} issue collection reached {collection_limit}; issue counts may be incomplete.")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if window_filter and not item_in_window(entry, state, settings["window"]):
+            continue
+        if should_skip_bot(login_from(entry.get("author")), entry.get("author"), settings):
+            continue
+        rows.append(normalize_issue(repo, state, entry, settings))
+    return rows
+
+
+def item_in_window(entry: dict[str, Any], state: str, window: Window) -> bool:
+    key = "mergedAt" if state == "merged" else "closedAt" if state == "closed" else "updatedAt"
+    value = entry.get(key) or entry.get("updatedAt") or entry.get("createdAt")
+    when = parse_timestamp(value) if isinstance(value, str) else None
+    return when is not None and window.since <= when <= window.until
+
+
+def subject_item_in_window(entry: dict[str, Any], window: Window) -> bool:
+    value = entry.get("updated_at") or entry.get("created_at")
+    when = parse_timestamp(value) if isinstance(value, str) else None
+    return when is not None and window.since <= when <= window.until
+
+
+def normalize_search_item(entry: dict[str, Any], subject: str, qualifier: str, settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    state = str(entry.get("state") or "open")
+    is_pr = isinstance(entry.get("pull_request"), dict)
+    kind = "pr" if is_pr else "issue"
+    repo = repo_from_search_url(entry.get("repository_url")) or "external"
+    configured_repos = set(as_str_list(settings.get("resolved_repositories") or settings.get("repositories")))
+    if kind == "pr":
+        bucket = classify_pr("closed" if state == "closed" else "open", search_pr_entry(entry), labels)
+    else:
+        bucket = classify_issue("closed" if state == "closed" else "open", labels)
+    return {
+        "kind": kind,
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or f"{kind} involving {subject}",
+        "url": entry.get("html_url"),
+        "author": login_from(entry.get("user")),
+        "labels": labels,
+        "state": state,
+        "collection_lane": "recent_activity",
+        "updated_at": entry.get("updated_at"),
+        "completed_at": entry.get("closed_at") if state == "closed" else None,
+        "bucket": bucket,
+        "subject": subject,
+        "subject_match": qualifier,
+        "handoff": ("github for explicit follow-up on external subject activity" if configured_repos and repo not in configured_repos else None) if state != "closed" else None,
+        "priority": priority_score(labels, settings),
+    }
+
+
+def repo_from_search_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    marker = "/repos/"
+    if marker not in value:
+        return None
+    return value.rsplit(marker, 1)[1]
+
+
+def search_pr_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "isDraft": False,
+        "reviewDecision": "",
+        "updatedAt": entry.get("updated_at"),
+        "closedAt": entry.get("closed_at"),
+    }
+
+
+def search_window(window: Window) -> str:
+    return f"updated:>={window.since.date().isoformat()}"
+
+
+def should_skip_bot(login: str | None, actor: object, settings: dict[str, Any]) -> bool:
+    if settings.get("include_bots"):
+        return False
+    if login and (login.casefold().endswith("[bot]") or login.casefold() in {"dependabot", "github-actions"}):
+        return True
+    return isinstance(actor, dict) and str(actor.get("type") or "").casefold() == "bot"
+
+
+def normalize_pr(repo: str, state: str, entry: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    return {
+        "kind": "pr",
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or "untitled PR",
+        "url": entry.get("url"),
+        "author": login_from(entry.get("author")),
+        "labels": labels,
+        "state": state,
+        "collection_lane": item_collection_lane(state, entry, settings),
+        "review_decision": entry.get("reviewDecision") or "",
+        "draft": bool(entry.get("isDraft")),
+        "updated_at": entry.get("updatedAt"),
+        "completed_at": entry.get("mergedAt") if state == "merged" else None,
+        "bucket": classify_pr(state, entry, labels),
+        "handoff": handoff_for_pr(state, entry, labels),
+        "priority": priority_score(labels, settings),
+    }
+
+
+def normalize_issue(repo: str, state: str, entry: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    labels = labels_from(entry)
+    return {
+        "kind": "issue",
+        "repo": repo,
+        "number": entry.get("number"),
+        "title": entry.get("title") or "untitled issue",
+        "url": entry.get("url"),
+        "author": login_from(entry.get("author")),
+        "labels": labels,
+        "state": state,
+        "collection_lane": item_collection_lane(state, entry, settings),
+        "assignees": [login_from(item) for item in entry.get("assignees") or [] if login_from(item)],
+        "updated_at": entry.get("updatedAt"),
+        "completed_at": entry.get("closedAt") if state == "closed" else None,
+        "bucket": classify_issue(state, labels),
+        "handoff": handoff_for_issue(state, labels),
+        "priority": priority_score(labels, settings),
+    }
+
+
+def labels_from(entry: dict[str, Any]) -> list[str]:
+    labels = []
+    for label in entry.get("labels") or []:
+        if isinstance(label, dict) and isinstance(label.get("name"), str):
+            labels.append(label["name"])
+        elif isinstance(label, str):
+            labels.append(label)
+    return labels
+
+
+def login_from(value: object) -> str | None:
+    return value.get("login") if isinstance(value, dict) and isinstance(value.get("login"), str) else None
+
+
+def classify_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str:
+    label_keys = {label.casefold() for label in labels}
+    if state in {"merged", "closed"}:
+        return "recently_completed"
+    if "blocked" in label_keys or "plan:blocked" in label_keys:
+        return "blocked"
+    if "waiting" in label_keys or "plan:waiting" in label_keys:
+        return "waiting"
+    if entry.get("isDraft"):
+        return "in_progress"
+    if "ready-to-merge" in label_keys or entry.get("reviewDecision") == "APPROVED":
+        return "ready_for_merge_decision"
+    if "needs-attention" in label_keys or "needs attention" in label_keys:
+        return "needs_attention"
+    return "ready_for_review"
+
+
+def classify_issue(state: str, labels: list[str]) -> str:
+    label_keys = {label.casefold() for label in labels}
+    if state == "closed":
+        return "recently_completed"
+    if "blocked" in label_keys or "plan:blocked" in label_keys:
+        return "blocked"
+    if "waiting" in label_keys or "plan:waiting" in label_keys:
+        return "waiting"
+    if "stale" in label_keys or "plan:stale" in label_keys:
+        return "stale_or_needs_reconciliation"
+    if "needs-attention" in label_keys or "needs attention" in label_keys:
+        return "needs_attention"
+    return "in_progress"
+
+
+def handoff_for_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str | None:
+    if state in {"merged", "closed"}:
+        return None
+    if entry.get("reviewDecision") == "APPROVED" or "ready-to-merge" in {label.casefold() for label in labels}:
+        return "repo-readiness or github for a fresh merge decision"
+    return "babysit-pr if this PR needs active monitoring"
+
+
+def handoff_for_issue(state: str, labels: list[str]) -> str | None:
+    if state == "closed":
+        return None
+    label_keys = {label.casefold() for label in labels}
+    if any(label.startswith("plan:") or label == "plan" for label in label_keys):
+        return "github-plan for planning reconciliation"
+    return None
+
+
+def priority_score(labels: list[str], settings: dict[str, Any]) -> int:
+    raw_filters = settings.get("noise_filters")
+    filters: dict[str, Any] = raw_filters if isinstance(raw_filters, dict) else {}
+    noise_labels = {label.casefold() for label in as_str_list(filters.get("labels"))}
+    score = 0
+    for label in labels:
+        key = label.casefold()
+        if key in noise_labels:
+            score -= 5
+        if key in {"security", "urgent", "production", "regression", "needs-attention"}:
+            score += 10
+    return score
+
+
+def collection_error(repo: str, kind: str, state: str, result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "kind": "collection_error",
+        "repo": repo,
+        "state": state,
+        "source_kind": kind,
+        "title": f"Unable to collect {state} {kind}s",
+        "error": trim(result.stderr or result.stdout),
+        "bucket": "needs_attention",
+        "priority": 100,
+    }
+
+
+def add_collection_warning(settings: dict[str, Any], warning: str) -> None:
+    warnings = settings.setdefault("collection_warnings", [])
+    if isinstance(warnings, list) and warning not in warnings:
+        warnings.append(warning)
+
+
+def collection_warnings_from(settings: dict[str, Any]) -> list[str]:
+    warnings = settings.get("collection_warnings")
+    return [warning for warning in warnings if isinstance(warning, str)] if isinstance(warnings, list) else []
+
+
+def bucket_items(items: list[dict[str, Any]], settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKET_ORDER}
+    sorted_items = sorted(items, key=item_sort_key)
+    for item in sorted_items:
+        buckets.setdefault(str(item.get("bucket") or "in_progress"), []).append(item)
+    return {bucket: rows for bucket, rows in buckets.items() if rows}
+
+
+def summary_counts(buckets: dict[str, list[dict[str, Any]]], collection_warnings: list[str]) -> dict[str, int]:
+    rows = [row for bucket in buckets.values() for row in bucket]
+    return {
+        **{bucket: len(buckets.get(bucket) or []) for bucket in BUCKET_ORDER},
+        "open_backlog": sum(1 for row in rows if row.get("collection_lane") == "open_backlog"),
+        "recent_activity": sum(1 for row in rows if row.get("collection_lane") == "recent_activity"),
+        "recent_completions": sum(1 for row in rows if row.get("collection_lane") == "recent_completion"),
+        "collection_warnings": len(collection_warnings),
+    }
+
+
+def item_sort_key(row: dict[str, Any]) -> tuple[int, float]:
+    priority = -int(row.get("priority") or 0)
+    updated = parse_timestamp(str(row.get("updated_at") or ""))
+    timestamp = updated.timestamp() if updated else 0.0
+    return priority, -timestamp
+
+
+def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = []
+    sorted_items = sorted(items, key=item_sort_key)
+    for raw in settings.get("priority_sections") or []:
+        if not isinstance(raw, dict):
+            continue
+        repos = set(as_str_list(raw.get("repositories")))
+        if not repos:
+            continue
+        max_completed = int(raw.get("max_recently_completed") or 3)
+        matched = [
+            item
+            for item in sorted_items
+            if item.get("repo") in repos
+            and item.get("bucket") in ACTIONABLE_PRIORITY_BUCKETS
+        ]
+        completed = [
+            item
+            for item in sorted_items
+            if item.get("repo") in repos and item.get("bucket") == "recently_completed"
+        ]
+        if matched or completed:
+            sections.append(
+                {
+                    "name": str(raw.get("name") or "Priority Section"),
+                    "items": matched[:10],
+                    "item_count": len(matched),
+                    "recently_completed": completed[:max_completed],
+                    "recently_completed_count": len(completed),
+                }
+            )
+    return sections
+
+
+def limitations(settings: dict[str, Any], repos: list[str]) -> list[str]:
+    out = []
+    if settings["mode"] == "activity":
+        out.append("Activity mode applies the window to open and completed work; older open backlog is not included.")
+    elif settings["mode"] == "backlog":
+        out.append("Backlog mode includes open work regardless of update time; completed work remains window-bound.")
+    elif settings["mode"] == "standup":
+        out.append("Standup mode includes open backlog regardless of update time plus recent activity and completions inside the window.")
+    if not settings["subjects"]:
+        out.append("No subjects configured; evidence is repository-scoped only.")
+    elif repos and not settings["include_external_activity"]:
+        out.append("Subject search outside configured repositories was skipped because include_external_activity is false.")
+    if settings["repo_owners"] and len(repos) >= settings["limit_repos"]:
+        out.append("Repository owner scan reached --limit-repos; some repos may be omitted.")
+    out.append("Read-only v1 does not inspect Project fields, deployment state, or full review timelines.")
+    return out
+
+
+def failure_payload(settings: dict[str, Any], error: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "schema_version": 1,
+        "script_version": SCRIPT_VERSION,
+        "generated_at": format_ts(datetime.now(timezone.utc)),
+        "window": window_json(settings["window"]),
+        "display_window": display_window_json(settings["window"], settings["timezone"]),
+        "timezone": settings["timezone"],
+        "error": error,
+        "next_step": "Run `gh auth status` and verify the configured repo/owner is accessible.",
+    }
+
+
+def sanitize_payload_for_json(payload: dict[str, Any]) -> dict[str, Any]:
+    return dict(payload)
+
+def write_or_print(rendered: str, output: str | Path | None) -> None:
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+        return
+    print(rendered, end="")
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def command_summary(command: list[str], result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {"command": command[:3], "returncode": result.returncode, "stderr": trim(result.stderr)}
+
+
+def trim(value: str, limit: int = 700) -> str:
+    text = " ".join((value or "").split())
+    return text[:limit]
+
+
+def window_json(window: Window) -> dict[str, str]:
+    return {"since": format_ts(window.since), "until": format_ts(window.until), "label": window.label}
+
+
+def display_window_json(window: Window, timezone_name: str) -> dict[str, str]:
+    display_tz: tzinfo
+    try:
+        display_tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        display_tz = timezone.utc
+    return {
+        "since": window.since.astimezone(display_tz).replace(microsecond=0).isoformat(),
+        "until": window.until.astimezone(display_tz).replace(microsecond=0).isoformat(),
+        "label": window.label,
+    }
+
+
+def format_ts(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
