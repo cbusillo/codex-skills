@@ -1,6 +1,6 @@
 ---
 name: work-closeout
-description: Use when the user asks to wrap up, clean up, close out a session or workstream, prepare handoff, determine what remains, update or remove stale plans, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
+description: Use when the user asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
 metadata:
   short-description: Close out workstreams cleanly
 ---
@@ -201,8 +201,17 @@ handoff.
 
 ## Plan Hygiene
 
-- Prefer `github` and update the active issue's `Current Status`, finish
-  line, blockers, and Project fields before parking work.
+- Use `github-plan` plus the sibling `github` helpers to update the active
+  issue's `Current Status`, finish line, blockers, and Project fields before
+  parking work.
+- Before parking or closing a workstream, run a Plan Direction Checkpoint:
+  identify the next action, how it fits the current plan, whether the plan or
+  issue graph changed, and where that durable state was updated.
+- If the work revealed a new blocker, dependency, sub-workstream, or stale
+  assumption, update the GitHub issue graph before relying on a handoff summary.
+- Treat an accurate issue graph as closeout evidence. A handoff that describes
+  work not represented in the owning issue, PR, or related issue graph is
+  incomplete unless the user explicitly asked for private/offline parking.
 - After a PR merges, sweep issues referenced by the canonical merged PR body and
   comments. `Refs #...` is intentionally non-closing; close only issues whose
   acceptance criteria were conclusively satisfied by the merge. Otherwise,
@@ -293,7 +302,8 @@ with a shared understanding of the work's quality and "soul."
 Use a compact closeout report:
 
 - Done: what changed or was handled.
-- Remaining: concrete blockers or follow-up work.
+- Remaining: concrete blockers or follow-up work, including how the next action
+  fits the active plan.
 - Checks: gates, inspections, docs, metadata, CI/Actions, and GitHub
   security/quality signals that passed, failed, were pending, or were not run.
 - Love Gate: what you love about the results, and anything you do not love.

@@ -134,6 +134,10 @@ When distilling Chronicle:
 
 - Promote to a skill only when the fact is reusable, public-safe, durable, and
   procedural.
+- Repeated user prompts or corrections such as "what's next and how does it fit
+  the plan?" should become skill behavior when they express a stable workflow
+  preference; prefer routing those to `github-plan`, `work-closeout`, or a
+  repo-specific skill instead of preserving many memory notes.
 - Promote to repo docs or GitHub issues when the fact is repo-specific, product
   specific, architectural, or project-planning related.
 - Move to local config only when the fact is private/local and has a clear config
