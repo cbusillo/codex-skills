@@ -38,8 +38,8 @@ do not need to perform arithmetic or infer collection limits.
 - `repo-readiness` may use the evidence alongside local gates and CI to decide
   readiness.
 - `work-closeout` may use the evidence to park or close a workstream cleanly.
-- Future reporting skills may use the evidence as source material for LLM-led
-  briefs, with citations and explicit uncertainty.
+- `work-brief` uses the evidence as source material for LLM-led briefs, with
+  citations, source limitations, and explicit uncertainty.
 
 ## Compatibility
 

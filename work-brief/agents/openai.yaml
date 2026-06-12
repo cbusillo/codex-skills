@@ -1,0 +1,7 @@
+interface:
+  display_name: "Work Brief"
+  short_description: "Write plan-anchored work briefs from evidence"
+  default_prompt: "Use $work-brief to synthesize collected evidence and durable plan context into an audience-appropriate brief with plan fit, risks, source limitations, and a recommended next action."
+
+policy:
+  allow_implicit_invocation: true

@@ -299,23 +299,6 @@ skills:
             the harness gh issue list boundary. Latest local performance sample
             was within advisory budget.
     known_gaps: []
-  github-work-rollup:
-    status: active
-    risk_classes:
-      - github_read
-      - script_helper
-    checks:
-      - check_id: github-work-rollup-tests
-        kind: script_test
-        mode: ci
-        dimension: github_workflow
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Work rollup collection and rendering covered by pytest suite.
-    known_gaps: []
   google-seo:
     status: active
     risk_classes:
@@ -766,6 +749,29 @@ skills:
         No focused installer script tests yet in this scorecard. Installer
         utility modifies path locations and performs network requests against
         the GitHub API; structural safety is validated statically.
+  work-brief:
+    status: active
+    risk_classes:
+      - github_read
+      - planning
+      - script_helper
+    checks:
+      - check_id: verify-work-brief-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Brief grounding verifier covers unsupported URLs, unsupported issue
+            references, and required source-note caveats.
+    known_gaps:
+      - >-
+        No exec-harness scenario yet for live audience-specific synthesis; the
+        verifier guards grounding while review agents judge output quality.
   work-closeout:
     status: active
     risk_classes:

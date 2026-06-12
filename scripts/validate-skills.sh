@@ -20,7 +20,6 @@ helper_tests=(
 	babysit-pr/scripts/test_gh_pr_watch.py
 	google-seo/scripts/test_bing_webmaster.py
 	google-seo/scripts/test_google_search_console.py
-	github-work-rollup/scripts/test_github_work_rollup.py
 	github/scripts/test_github_work_evidence.py
 	infra-ops/scripts/test_npmplus_ops.py
 	people/scripts/test_resolve_person.py
@@ -38,6 +37,7 @@ helper_tests=(
 	rollout-friction/scripts/validate_run_rollout_memory_long_context_matrix.py
 	rollout-friction/scripts/validate_summarize_rollout_memory_reviews.py
 	rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
+	work-brief/scripts/test_verify_work_brief.py
 )
 
 # Files matching these names are CLIs or fixtures that require arguments/live
