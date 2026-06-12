@@ -127,6 +127,25 @@ def test_rejects_contradicted_source_note() -> None:
     assert errors == ["brief contradicts evidence source limitations"]
 
 
+def test_accepts_grouped_repetitive_source_notes() -> None:
+    grouped_evidence = {
+        "kind": "github_work_evidence",
+        "source_notes": [
+            "Issues are disabled for example-org/archive-one.",
+            "Issues are disabled for example-org/archive-two.",
+            "Workflow collection for example-org/app-one reached 1000; automation counts may be incomplete.",
+            "Workflow collection for example-org/app-two reached 1000; automation counts may be incomplete.",
+        ],
+    }
+
+    errors = verify_work_brief.verify_brief(
+        grouped_evidence,
+        "Source confidence: issues are disabled in two archived repos, and workflow counts are capped so automation counts may be incomplete.",
+    )
+
+    assert errors == []
+
+
 if __name__ == "__main__":
     import pytest
 

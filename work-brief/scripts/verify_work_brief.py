@@ -181,6 +181,8 @@ def missing_source_notes(index: EvidenceIndex, brief: str) -> list[str]:
 
 def source_note_is_reflected(note: str, normalized_brief: str) -> bool:
     normalized_note = normalize_text(note)
+    if grouped_source_note_is_reflected(normalized_note, normalized_brief):
+        return True
     if normalized_note and normalized_note in normalized_brief:
         return True
     if any(phrase in normalized_brief for phrase in source_note_phrases(normalized_note)):
@@ -190,6 +192,22 @@ def source_note_is_reflected(note: str, normalized_brief: str) -> bool:
         return True
     required = min(len(keywords), 3)
     return sum(1 for keyword in keywords if keyword in normalized_brief) >= required
+
+
+def grouped_source_note_is_reflected(normalized_note: str, normalized_brief: str) -> bool:
+    if normalized_note.startswith("issues are disabled for "):
+        return all(word in normalized_brief for word in ("issues", "disabled")) and any(
+            word in normalized_brief for word in ("repo", "repos", "repositories")
+        )
+    if normalized_note.startswith("workflow collection for ") and "automation counts may be incomplete" in normalized_note:
+        return all(word in normalized_brief for word in ("workflow", "counts", "incomplete")) and any(
+            word in normalized_brief for word in ("cap", "capped", "reached", "partial")
+        )
+    if normalized_note.startswith("release collection for ") and "release counts may be incomplete" in normalized_note:
+        return all(word in normalized_brief for word in ("release", "counts", "incomplete")) and any(
+            word in normalized_brief for word in ("cap", "capped", "reached", "partial")
+        )
+    return False
 
 
 def source_note_phrases(normalized_note: str) -> list[str]:

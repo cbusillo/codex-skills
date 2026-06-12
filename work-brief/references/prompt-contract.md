@@ -32,7 +32,14 @@ when they help the reader inspect, approve, unblock, or verify the work.
   blockers, finish lines, and next actions.
 - Say "no plan signal was available" when the evidence does not include plan
   context.
-- Reflect every evidence source note or limitation as a confidence caveat.
+- Reflect every evidence source note or limitation as an audience-shaped
+  confidence caveat. Group repetitive notes by decision impact instead of
+  transcribing collector output verbatim.
+- Label static backlog or inventory counts at first mention. Do not imply they
+  are window deltas unless the evidence includes opened, closed, moved, or
+  changed-in-window facts.
+- Anchor trajectory and trend claims to observed window movement. If only a
+  snapshot is available, say that direction cannot be inferred from the evidence.
 - Distinguish observed facts from inference and recommendation when the reader
   might act on the difference.
 - Do not use fixed report templates, renderer modes, canned report examples, or
@@ -45,7 +52,9 @@ Audience changes altitude and emphasis, not the factual boundary.
 - Peer/operator: queue movement, exact blockers, owners, links, and next steps.
 - Manager: focus, sequencing, risk, confidence, decisions, and plan fit.
 - Executive/customer: bottom line, trajectory, confidence, recommendation, and
-  minimal implementation detail.
+  minimal implementation detail. Name workstreams by product, customer impact,
+  business outcome, or decision; do not enumerate repositories, PRs, internal
+  components, or infrastructure mechanisms unless one is itself the decision.
 
 When the reader is unclear, choose the lowest-friction useful default for the
 request and state the assumption. Ask only when the missing audience or decision

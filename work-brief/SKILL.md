@@ -81,8 +81,13 @@ unless the user separately asks for them and the owning skill is invoked.
 - Make the next action or decision explicit.
 - Separate facts, inference, and recommendation when uncertainty matters.
 - Use links only when they support inspection, approval, or follow-up.
-- Reflect every source note or collection limitation from the evidence.
+- Reflect every source note or collection limitation from the evidence, grouped
+  by reader impact instead of copied as raw collector text.
 - Keep counts and volume language tied to evidence counts, not intuition.
+- Label standing backlog and inventory counts as snapshots unless the evidence
+  shows they changed inside the reporting window.
+- Anchor trend or trajectory claims to observed movement; otherwise say the
+  evidence is a snapshot and cannot prove direction.
 - Do not use fixed report templates, renderer modes, or canned report examples.
 
 ## Audience Handling
@@ -93,7 +98,9 @@ for the reader's decision:
 - A peer or operator needs concrete queue movement, blockers, owners, and links.
 - A manager needs focus, sequencing, plan fit, risks, decisions, and confidence.
 - A leadership or customer reader needs bottom line, trajectory, risk, and the
-  recommended decision with minimal implementation detail.
+  recommended decision with minimal implementation detail. Translate internal
+  repository and PR detail into product outcomes unless the internal item is the
+  decision itself.
 
 If local private people context is available through the `people` skill, it can
 inform tone, depth, and risk lens. Do not publish private people notes.
