@@ -1,6 +1,6 @@
 ---
 name: github-plan
-description: Use when the user asks for a plan, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, cross-repo blockers, milestones, Projects, or replacing local plans with GitHub issues. Think in chat first, then promote durable plans to GitHub with parent issues, sub-issues, blockers, and compact scripted lookups.
+description: Use when the user asks for a plan, what's next / what is next in a plan or workstream, how work fits the plan, plan direction/alignment, durable work tracking, roadmap, workstream planning, GitHub issue-backed planning, issue graphs, parent issues, sub-issues, blockers, milestones, Projects, or replacing local plans with GitHub issues. Think in chat first, then keep long-running work aligned over time by updating Current Status, blockers, relationships, and issue graph state as reality changes.
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
@@ -194,14 +194,55 @@ state. Child issues should each have one scoped finish line and one next action.
 1. Orient from the active issue: finish line, current status, next action, and
    blockers.
 2. Pick one next action and start work.
-3. When a new idea appears, classify it as do now, acceptance criterion, related
-   issue, sub-issue, blocker, or later. Do not pivot without an explicit
-   decision.
+3. When a new idea appears, run a Plan Direction Checkpoint. Classify it as do
+   now, acceptance criterion, related issue, sub-issue, blocker, or later. Do
+   not pivot without updating durable plan state or saying in the chat reply why
+   no plan update is needed.
 4. Before pausing, update `Current Status` or the owning PR/issue comment so the
    user can resume quickly. Do not leave a local handoff file as the only
    recovery source for GitHub-backed work.
 5. Keep the user in maker mode; let Projects or other surfaces handle management
    state.
+
+## Plan Direction Checkpoints
+
+Long-running work drifts when the agent keeps following local discoveries
+without reconnecting them to the durable plan. Treat the plan and issue graph as
+the navigation layer, not as paperwork.
+
+At natural transition points, answer:
+
+```text
+What is next?
+How does it fit the current plan?
+Did the plan or issue graph change?
+What blocker, evidence, or decision explains the direction?
+```
+
+Run this checkpoint:
+
+- after each implementation slice
+- after surprising findings
+- before starting adjacent work that was not already planned
+- before creating, closing, or superseding issues
+- before handoff or closeout
+- when the user asks "what's next", "where are we", or "how does this fit"
+
+If the next action still matches the plan, answer briefly and continue. A
+passing checkpoint does not need a written artifact. Update `Current Status`
+only when the durable recovery state materially changed. If reality changed the
+plan, update the canonical parent issue, sub-issues, blockers, relationships,
+labels, and Project focus before relying on chat memory. If a new thread of work
+appears, classify it as current scope, sub-issue, blocker, related issue, or
+later. Do not let it become an untracked pivot.
+
+For broad workstreams, prefer issue graph changes over prose-only status:
+
+- create a sub-issue for independently finishable work
+- add `blocked-by` / `blocks` for real execution dependencies
+- use `related` for context that should not drive sequencing
+- mark stale or superseded plans clearly
+- keep the parent issue's `Current Status` as the recovery point
 
 When another repo workflow is waiting on CI, deploy, review, or post-merge
 health, keep the main checkout available for verification and parallelize safely:
@@ -352,6 +393,8 @@ Before saying a plan is captured, verify:
 - blockers/dependencies are represented
 - stale, duplicate, related, and PR-linked issues were swept and reconciled
 - `Current Status` and next action are concrete
+- the next action says how it fits the current plan
+- issue graph changes caused by the session were applied or explicitly parked
 - docs are not being used as active plan state
 
 ## Workflow

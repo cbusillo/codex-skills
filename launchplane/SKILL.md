@@ -1,6 +1,6 @@
 ---
 name: launchplane
-description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, and audited operator mutations. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
+description: Use for Launchplane-managed product/runtime state, secrets, config, deployments, rollout direction, product ownership boundaries, merge-train flow, and audited operator mutations. Use with github-plan when Launchplane work needs to stay aligned with a durable plan, issue graph, blockers, or rollout sequence. If authority is unknown or discovering private infrastructure access, use docs-lookup first.
 metadata:
   short-description: Operate Launchplane-managed state
 resources:
@@ -134,6 +134,17 @@ authority for current Launchplane runtime or product state. Files such as
 historical clues, but they are not live records. When a task asks about current
 product state, use the deployed Launchplane service/API or operator UI first;
 use direct database access only from an explicitly approved host-side context.
+
+## Rollout Plan Alignment
+
+For Launchplane rollout, runtime, product-boundary, merge-train, or operator
+work, do not continue from the latest operational finding alone. Before the next
+slice, state how it fits the active Launchplane plan, issue graph, rollout
+sequence, or product ownership boundary.
+
+If an operational finding changes the plan, update the owning GitHub plan issue
+or PR before treating the new path as canonical. Prefer explicit blocker,
+sub-issue, or related-issue edges over burying direction changes in chat.
 
 ## Situational Awareness (Context)
 
