@@ -1241,6 +1241,105 @@ def test_collect_workflows_filters_by_completion_time(monkeypatch: pytest.Monkey
     assert [row["name"] for row in rows] == ["Long running deploy"]
 
 
+def test_executive_activity_comparison_summarizes_previous_window() -> None:
+    window = github_work_rollup.Window(
+        datetime(2026, 6, 1, tzinfo=timezone.utc),
+        datetime(2026, 6, 2, tzinfo=timezone.utc),
+        "24h",
+    )
+
+    summary = github_work_rollup.comparison_summary(
+        {"visible": 5},
+        {"visible": 2},
+        window,
+    )
+
+    assert summary == "Activity was higher than the previous window (+3): 5 visible items this day versus 2 in the previous day."
+    previous = github_work_rollup.preceding_window(window)
+    assert previous.since == datetime(2026, 5, 31, tzinfo=timezone.utc)
+    assert previous.until == datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+def test_executive_activity_comparison_suppresses_incomplete_collection() -> None:
+    settings = {"layout": "executive"}
+    buckets = {
+        "needs_attention": [
+            {
+                "repo": "example-org/missing",
+                "kind": "collection_error",
+                "state": "open",
+                "title": "Unable to collect prs for example-org/missing",
+            }
+        ]
+    }
+
+    comparison = github_work_rollup.collect_activity_comparison(settings, [], buckets, [], [], [])
+
+    assert comparison == {
+        "summary": "Comparison is incomplete because one or more configured sources could not be collected."
+    }
+
+
+def test_configured_repo_gaps_uses_exact_warning_repo_names() -> None:
+    gaps = github_work_rollup.configured_repo_gaps(
+        ["example-org/example-repo", "example-org/example-repo-other"],
+        {},
+        ["Could not collect workflow runs for example-org/example-repo-other: API unavailable for configured token"],
+    )
+
+    assert gaps == ["example-org/example-repo-other"]
+
+
+def test_configured_repo_gaps_ignore_truncation_warnings() -> None:
+    gaps = github_work_rollup.configured_repo_gaps(
+        ["example-org/example-repo"],
+        {},
+        ["Workflow collection for example-org/example-repo reached 100; automation counts may be incomplete."],
+    )
+
+    assert gaps == []
+
+
+def test_executive_activity_comparison_allows_truncation_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    window = github_work_rollup.Window(
+        datetime(2026, 6, 1, tzinfo=timezone.utc),
+        datetime(2026, 6, 2, tzinfo=timezone.utc),
+        "24h",
+    )
+    settings = {"layout": "executive", "window": window, "collection_warnings": []}
+    buckets = {
+        "recently_completed": [
+            {
+                "repo": "example-org/example-repo",
+                "number": 1,
+                "title": "Ship useful work",
+                "kind": "pr",
+                "state": "merged",
+            }
+        ]
+    }
+
+    def fake_collect_activity(
+        _settings: dict[str, object],
+        _repos: list[str],
+    ) -> tuple[list[dict[str, object]], dict[str, list[dict[str, object]]], list[dict[str, object]], list[dict[str, object]]]:
+        return [], {}, [], []
+
+    monkeypatch.setattr(github_work_rollup, "collect_activity", fake_collect_activity)
+
+    comparison = github_work_rollup.collect_activity_comparison(
+        settings,
+        ["example-org/example-repo"],
+        buckets,
+        [],
+        [],
+        ["Workflow collection for example-org/example-repo reached 100; automation counts may be incomplete."],
+    )
+
+    assert comparison is not None
+    assert comparison["summary"].startswith("Activity was higher than the previous window")
+
+
 def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         if command[1:3] == ["auth", "status"]:
@@ -1502,31 +1601,36 @@ def test_render_executive_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Daily Work Brief for Justin" in rendered
-    assert "advanced Example Company's product and operations" in rendered
-    assert "The important read is outcomes, cost, risk, sequencing, and customer impact" in rendered
-    assert "technical depth: low-to-medium" in rendered
+    assert "Work was concentrated in `code`, `example-skills`, especially Every Code / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
     assert "Private note" not in rendered
     assert "## Executive Summary" in rendered
     assert "## Needs Justin's Attention" in rendered
-    assert "## What This Means" in rendered
     assert "## Every Code / Skills Impact" in rendered
-    assert "## Decisions or Risks" in rendered
-    assert "## Supporting Signal" in rendered
-    assert "## Conversation Starters" in rendered
-    assert "## Source Notes" in rendered
+    assert "## Failed Runs" in rendered
+    assert "## Work Items Behind This Brief" in rendered
+    assert "## Questions to Decide" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "meaningful work moved forward while follow-up remains visible for sequencing" in rendered
-    assert "Releases during the day: 1." in rendered
-    assert "A focused day of work" in rendered
-    assert "Automation needs attention because failed workflow runs were collected" in rendered
-    assert "cleared abandoned or superseded change paths" in rendered
-    assert "That matters because finished work has moved from internal activity" in rendered
+    assert "Finished work landed. Open follow-ups to decide: code#101 Critical Bug." in rendered
     assert "Every Code / Skills" in rendered
-    assert "Are the Every Code / Skills changes aligned" in rendered
+    assert "Deploy production" in rendered
+    assert "Completed during the day: code#202 Document auth flow; example-skills#203 Add helper validation." in rendered
+    assert "Still visible for follow-up: code#101 Critical Bug." in rendered
+    assert "Cleared or superseded paths: code#204 Close abandoned auth attempt." in rendered
+    assert "No previous-window baseline was collected for this run." not in rendered
+    assert "What decision would unblock code#101 Critical Bug today?" in rendered
+    assert "Should failed runs in `code` Deploy production change release confidence" in rendered
+    assert "Should code#101 Critical Bug stay active today, wait, or be reframed?" in rendered
 
     assert "## Summary Table" not in rendered
     assert "## Repo Notes" not in rendered
+    assert "## Supporting Signal" not in rendered
+    assert "## Conversation Starters" not in rendered
+    assert "## Decisions or Risks" not in rendered
+    assert "## Source Notes" in rendered
+    assert "Read-only mode" in rendered
+    assert "technical depth" not in rendered
+    assert "Automation needs attention because failed workflow runs were collected" not in rendered
     assert "https://github.com/example-org/code/pull/202" not in rendered
     assert "https://github.com/example-org/example-skills/pull/203" not in rendered
 
@@ -1561,8 +1665,62 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
 
     assert "# Daily Work Brief for Example leader" in rendered
     assert "## Needs Example leader's Attention" in rendered
-    assert "how Example leader expects" in rendered
+    assert "What decision would unblock example-repo#1 Decision needed today?" in rendered
     assert "Justin" not in rendered
+
+
+def test_render_executive_brief_surfaces_configured_repo_coverage_gap() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/example-repo", "example-org/missing"],
+        "layout": "executive",
+        "buckets": {
+            "recently_completed": [
+                {
+                    "repo": "example-org/example-repo",
+                    "number": 2,
+                    "title": "Ship useful summary",
+                    "kind": "pr",
+                    "state": "merged",
+                }
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "coverage_gaps": ["example-org/missing"],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "Collection incomplete for `example-org/missing`; this brief may omit work from those configured sources." in rendered
+
+
+def test_render_executive_brief_surfaces_coverage_gap_without_product_signal() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/missing"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [],
+        "limitations": ["Could not collect issues for example-org/missing: API unavailable"],
+        "coverage_gaps": ["example-org/missing"],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "No active work or material changes were collected" in rendered
+    assert "Collection incomplete for `example-org/missing`; this brief may omit work from those configured sources." in rendered
+    assert "Could not collect issues for example-org/missing: API unavailable" in rendered
 
 
 def test_render_executive_brief_uses_weekly_window_language() -> None:
@@ -1603,9 +1761,9 @@ def test_render_executive_brief_uses_weekly_window_language() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Weekly Work Brief for Justin" in rendered
-    assert "A focused week of work advanced the team's product and operations" in rendered
-    assert "product this week" in rendered
-    assert "Completed during the week: 1 item(s)." in rendered
+    assert "Work was concentrated in `example-repo`, especially Every Code: 1 completed item and 1 open follow-up." in rendered
+    assert "Looking at example-repo#2 Improve owner summaries, did the completed work deliver what you expected" in rendered
+    assert "Completed during the week: example-repo#2 Improve owner summaries." in rendered
     assert "Daily" not in rendered
     assert "focused day of work" not in rendered
     assert "tomorrow's brief" not in rendered
@@ -1640,9 +1798,9 @@ def test_render_executive_brief_uses_custom_window_language() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Current Work Brief for Justin" in rendered
-    assert "A focused stretch of work" in rendered
-    assert "before the next brief" in rendered
-    assert "during the reporting window: 1 item(s)." in rendered
+    assert "Work was concentrated in `example-repo`: 1 completed item." in rendered
+    assert "Looking at example-repo#4 Clarify report cadence, did the completed work deliver what you expected" in rendered
+    assert "Completed during the reporting window: example-repo#4 Clarify report cadence." in rendered
     assert "Daily" not in rendered
     assert "Weekly" not in rendered
     assert "this week" not in rendered
@@ -1670,9 +1828,11 @@ def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "No product or planning movement was collected" in rendered
-    assert "Automation looked healthy" in rendered
+    assert "Automation looked healthy" not in rendered
+    assert "## Failed Runs" in rendered
+    assert "- None collected in this window." in rendered
+    assert "## Work Items Behind This Brief" in rendered
     assert "advanced" not in rendered
-    assert "## What This Means\n\n- No meaningful repo changes were collected" in rendered
 
 
 def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> None:
@@ -1704,10 +1864,10 @@ def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> 
 
     assert "No product or planning movement was collected" in rendered
     assert "abandoned or superseded change paths were cleared in this window" in rendered
-    assert "cleared abandoned or superseded change paths" in rendered
+    assert "abandoned or superseded change paths were cleared in this window" in rendered
     assert "advanced" not in rendered
     assert "meaningful work moved forward" not in rendered
-    assert "Completed during the day: 1 item(s)." in rendered
+    assert "Cleared or superseded paths: example-repo#10 Close abandoned auth attempt." in rendered
 
 
 def test_render_executive_brief_does_not_call_neutral_automation_green() -> None:
@@ -1735,8 +1895,10 @@ def test_render_executive_brief_does_not_call_neutral_automation_green() -> None
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "Automation ran, but the collected sample did not include a successful run." in rendered
+    assert "Automation ran, but the collected sample did not include a successful run." not in rendered
     assert "Automation was green" not in rendered
+    assert "## Failed Runs" in rendered
+    assert "- None collected in this window." in rendered
 
 
 if __name__ == "__main__":
