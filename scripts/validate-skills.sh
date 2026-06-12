@@ -21,6 +21,7 @@ helper_tests=(
 	google-seo/scripts/test_bing_webmaster.py
 	google-seo/scripts/test_google_search_console.py
 	github-work-rollup/scripts/test_github_work_rollup.py
+	github/scripts/test_github_work_evidence.py
 	infra-ops/scripts/test_npmplus_ops.py
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_public_safety.py
