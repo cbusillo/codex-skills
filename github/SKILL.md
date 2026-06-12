@@ -22,6 +22,9 @@ resources:
   - path: scripts/github-repo-snapshot.sh
     kind: script
     description: Capture compact repository, branch, PR, and workflow state for orientation.
+  - path: scripts/github-work-evidence.py
+    kind: script
+    description: Collect bounded read-only cross-repo GitHub work evidence as JSON for planning, readiness, closeout, or LLM-led reporting.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue and Project helper used by GitHub planning workflows.
@@ -40,6 +43,9 @@ resources:
   - path: references/github-projects.md
     kind: reference
     description: GitHub Projects configuration and field reference.
+  - path: references/work-evidence.md
+    kind: reference
+    description: Contract for the read-only GitHub work evidence helper and downstream consumers.
 commands:
   - name: github-pr-view
     source: skill
@@ -102,6 +108,11 @@ commands:
     resource_path: scripts/github-repo-snapshot.sh
     example_argv: ["scripts/github-repo-snapshot.sh", "--json"]
     purpose: Captures compact repo and GitHub state for orientation.
+  - name: github-work-evidence
+    source: skill
+    resource_path: scripts/github-work-evidence.py
+    example_argv: ["uv", "run", "scripts/github-work-evidence.py", "--repo", "OWNER/REPO", "--window", "24h"]
+    purpose: Collects JSON-only GitHub work evidence across repositories, subjects, releases, workflow runs, and mechanical buckets.
 policy:
   command_policies:
     - id: prefer-gh-pr-create-helper
