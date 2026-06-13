@@ -282,7 +282,7 @@ def detect_outcome(episode: Episode, window: list[TraceLine]) -> tuple[str, int 
 
 
 def is_success_snippet(snippet: str) -> bool:
-    return bool(SUCCESS_RE.search(snippet) and not FALSE_SUCCESS_RE.search(snippet))
+    return bool(SUCCESS_RE.search(snippet) and not FAILURE_RE.search(snippet) and not FALSE_SUCCESS_RE.search(snippet))
 
 
 def cost_score(episode: Episode) -> int:

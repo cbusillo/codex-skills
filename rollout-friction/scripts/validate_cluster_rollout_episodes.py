@@ -103,6 +103,8 @@ def test_step_kind_matches_success_as_word(module: ModuleType) -> None:
         raise AssertionError("unsuccessful should not be classified as a resolution")
     if module.step_kind("repeated_command_failure", "command succeeded after retry") != "resolution":
         raise AssertionError("succeeded should be classified as a resolution")
+    if module.step_kind("repeated_command_failure", "pytest summary: 1 failed, 2 passed") == "resolution":
+        raise AssertionError("mixed failure/success summaries should not be classified as resolution")
 
 
 def test_step_kind_rejects_false_success_flags(module: ModuleType) -> None:

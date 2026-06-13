@@ -105,6 +105,19 @@ def test_success_requires_success_word_or_zero_exit(module: ModuleType) -> None:
         raise AssertionError(f"process-exited failure should count as a failure, got {payload['cost']}")
 
 
+def test_mixed_failed_and_passed_summary_stays_unresolved(module: ModuleType) -> None:
+    trace_lines = [module.TraceLine(line=1, snippet="pytest summary: 1 failed, 2 passed", structured=False)]
+    episodes = module.build_episodes(
+        target(),
+        [hit(module, "repeated_command_failure", 1, "pytest summary: 1 failed, 2 passed")],
+        max_gap_lines=5,
+        trace_lines=trace_lines,
+    )
+    payload = module.episode_to_json(episodes[0])
+    if payload["outcome"] != "unresolved":
+        raise AssertionError(f"mixed failure/success summary should stay unresolved, got {payload['outcome']}")
+
+
 def test_false_success_flag_does_not_resolve_episode(module: ModuleType) -> None:
     trace_lines = [
         module.TraceLine(line=1, snippet='{"success": false, "error": "command failed"}', structured=True),
@@ -218,6 +231,7 @@ def main() -> int:
     test_groups_nearby_hits_and_detects_resolution(module)
     test_retry_count_uses_context_window(module)
     test_success_requires_success_word_or_zero_exit(module)
+    test_mixed_failed_and_passed_summary_stays_unresolved(module)
     test_false_success_flag_does_not_resolve_episode(module)
     test_episode_windows_stop_at_neighbor_midpoints(module)
     test_splits_distant_hits_and_detects_user_correction(module)
