@@ -542,6 +542,56 @@ def test_github_plan_sweeps_stale_related_issues() -> None:
     )
 
 
+def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
+    plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    normalized_plan = " ".join(plan_text.split())
+    normalized_github = " ".join(github_text.split())
+    close_argv = command_argv("github-plan", "github-plan-close")
+    close_argv_text = " ".join(close_argv)
+
+    require(
+        close_argv[:3] == ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py"],
+        "github-plan close command metadata must invoke gh-plan.py through uv",
+    )
+    require(
+        "close" in close_argv and "--comment-file" in close_argv,
+        "github-plan close command metadata must expose close --comment-file",
+    )
+    require(
+        "gh-issue" not in close_argv_text,
+        "github-plan close command metadata must not route plan closure through gh-issue",
+    )
+    require(
+        "for completed durable plan issues, use `gh-plan.py close`" in normalized_plan,
+        "github-plan must prefer gh-plan close for completed plan issues",
+    )
+    require(
+        "owns `plan:done` labels, stale `plan:active` cleanup, and project focus updates" in normalized_plan,
+        "github-plan must explain why generic issue close is insufficient for plans",
+    )
+    require(
+        "generic `github/scripts/gh-issue close` helper is for non-plan issues" in normalized_plan,
+        "github-plan must reserve generic issue close for non-plan issues",
+    )
+    require(
+        "closing a durable plan with the generic issue helper can leave planning labels or project fields stale" in normalized_plan,
+        "github-plan must warn about stale labels or Project fields after generic close",
+    )
+    require(
+        "use `gh-plan.py close --comment-file` for durable plan issues" in normalized_plan,
+        "github-plan related issue sweep must route plan issue closure through gh-plan close",
+    )
+    require(
+        "for completed durable plan issues, use `uv run $code_home/skills/github/scripts/gh-plan.py close" in normalized_github,
+        "github raw issue close policy must carve durable plan issues out to gh-plan close",
+    )
+    require(
+        "closes non-plan issues by reading an optional close comment from stdin" in normalized_github,
+        "github raw issue close policy must keep gh-issue close for non-plan issues",
+    )
+
+
 def test_github_and_github_plan_command_boundaries_are_partitioned() -> None:
     github_prefixes = command_policy_prefixes("github")
     plan_prefixes = command_policy_prefixes("github-plan")
@@ -863,6 +913,7 @@ def main() -> None:
         test_launchplane_write_action_helper_contract,
         test_stale_injected_override_paths_are_nonfatal,
         test_github_plan_sweeps_stale_related_issues,
+        test_github_plan_prefers_plan_close_for_completed_plans,
         test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,

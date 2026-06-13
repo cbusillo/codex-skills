@@ -277,6 +277,22 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: Planning helper behavior covered by validate-gh-plan.
+      - check_id: plan-close-helper-scenario
+        kind: exec_harness
+        mode: fake_gh
+        dimension: github_workflow
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-gh-plan-close.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 30000
+          last_validated_ref: prefer-gh-plan-close
+          notes: >-
+            Fake gh scenario verifies completed durable plans route closure
+            through `gh-plan.py close --comment-file` so planning labels and
+            Project focus remain under the planning helper.
       - check_id: plan-index-helper-scenario
         kind: exec_harness
         mode: fake_gh
@@ -438,6 +454,22 @@ skills:
             Validates that closeout recognizes an issue-backed workstream as the
             owning surface before safe-to-exit. Raw harness artifacts remain
             local-only.
+      - check_id: plan-close-preference-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-plan-close-preference.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: prefer-gh-plan-close
+          notes: >-
+            Validates that completed durable plan issues prefer `gh-plan.py close`
+            over generic issue close. Raw harness artifacts remain local-only.
       - check_id: readiness-before-closeout-local-scenario
         kind: exec_harness
         mode: trusted_local_provider

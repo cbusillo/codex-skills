@@ -86,17 +86,28 @@ commands:
   - name: github-issue-create
     source: skill
     resource_path: scripts/gh-issue
-    example_argv: ["github/scripts/gh-issue", "create", "<title>", "--repo", "OWNER/REPO"]
+    example_argv:
+      ["github/scripts/gh-issue", "create", "<title>", "--repo", "OWNER/REPO"]
     purpose: Creates GitHub issues by reading Markdown from stdin; pass the body with shell redirection or a quoted heredoc.
   - name: github-issue-edit
     source: skill
     resource_path: scripts/gh-issue
-    example_argv: ["github/scripts/gh-issue", "edit", "<issue>", "--repo", "OWNER/REPO"]
+    example_argv:
+      ["github/scripts/gh-issue", "edit", "<issue>", "--repo", "OWNER/REPO"]
     purpose: Edits GitHub issues by reading replacement Markdown from stdin; pass the body with shell redirection or a quoted heredoc.
   - name: github-issue-close
     source: skill
     resource_path: scripts/gh-issue
-    example_argv: ["github/scripts/gh-issue", "close", "<issue>", "--repo", "OWNER/REPO", "--reason", "completed"]
+    example_argv:
+      [
+        "github/scripts/gh-issue",
+        "close",
+        "<issue>",
+        "--repo",
+        "OWNER/REPO",
+        "--reason",
+        "completed",
+      ]
     purpose: Closes GitHub issues by reading an optional close comment from stdin; pass the comment with shell redirection or a quoted heredoc.
   - name: github-ci-diagnose
     source: skill
@@ -111,7 +122,16 @@ commands:
   - name: github-work-evidence
     source: skill
     resource_path: scripts/github-work-evidence.py
-    example_argv: ["uv", "run", "scripts/github-work-evidence.py", "--repo", "OWNER/REPO", "--window", "24h"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/github-work-evidence.py",
+        "--repo",
+        "OWNER/REPO",
+        "--window",
+        "24h",
+      ]
     purpose: Collects JSON-only GitHub work evidence across repositories, subjects, releases, workflow runs, and mechanical buckets.
 policy:
   command_policies:
@@ -185,7 +205,14 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-issue
-          example_argv: ["github/scripts/gh-issue", "create", "<title>", "--repo", "OWNER/REPO"]
+          example_argv:
+            [
+              "github/scripts/gh-issue",
+              "create",
+              "<title>",
+              "--repo",
+              "OWNER/REPO",
+            ]
           purpose: Creates issues by reading Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
     - id: prefer-gh-issue-edit-helper
       match:
@@ -195,18 +222,47 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-issue
-          example_argv: ["github/scripts/gh-issue", "edit", "<issue>", "--repo", "OWNER/REPO"]
+          example_argv:
+            [
+              "github/scripts/gh-issue",
+              "edit",
+              "<issue>",
+              "--repo",
+              "OWNER/REPO",
+            ]
           purpose: Edits issues by reading replacement Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
     - id: prefer-gh-issue-close-helper
       match:
         argv_prefix: ["gh", "issue", "close"]
       action: require_preferred
-      message: Raw `gh issue close` can mangle close comments. From the repo root, run `github/scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin.
+      message: Raw `gh issue close` can mangle close comments. For completed durable plan issues, use `uv run $CODE_HOME/skills/github/scripts/gh-plan.py close 123 --comment-file comment.md` so planning labels and Project focus stay in sync. For non-plan issues, run `github/scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin.
       preferred:
         - kind: script
+          path: scripts/gh-plan.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "$CODE_HOME/skills/github/scripts/gh-plan.py",
+              "close",
+              "<issue>",
+              "--comment-file",
+              "<file>",
+            ]
+          purpose: Closes completed durable plan issues while keeping planning labels and Project focus synchronized.
+        - kind: script
           path: scripts/gh-issue
-          example_argv: ["github/scripts/gh-issue", "close", "<issue>", "--repo", "OWNER/REPO", "--reason", "completed"]
-          purpose: Closes issues by reading an optional close comment from stdin; use `< comment.md` or a quoted heredoc for the comment.
+          example_argv:
+            [
+              "github/scripts/gh-issue",
+              "close",
+              "<issue>",
+              "--repo",
+              "OWNER/REPO",
+              "--reason",
+              "completed",
+            ]
+          purpose: Closes non-plan issues by reading an optional close comment from stdin; use `< comment.md` or a quoted heredoc for the comment.
 ---
 
 # GitHub Expert

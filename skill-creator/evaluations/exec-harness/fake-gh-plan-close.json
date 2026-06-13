@@ -1,0 +1,71 @@
+{
+  "name": "fake-gh-plan-close",
+  "model": "gpt-5.1-codex",
+  "prompt": "Close completed durable planning issue #900 through the GitHub planning helper using the provided close-comment.md file.",
+  "files": {
+    "README.md": "# Fake gh planning close fixture\n",
+    "close-comment.md": "Completed with validation evidence.\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "issues": [
+      {
+        "number": 900,
+        "title": "Completed plan",
+        "body": "## Finish Line\nShip the completed plan.\n",
+        "labels": [{ "name": "plan" }, { "name": "plan:active" }],
+        "state": "OPEN",
+        "html_url": "https://github.com/cbusillo/codex-skills/issues/900",
+        "url": "https://github.com/cbusillo/codex-skills/issues/900"
+      }
+    ],
+    "responses": [
+      {
+        "match": {
+          "contains": ["api", "repos/cbusillo/codex-skills/issues/900"]
+        },
+        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"OPEN\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
+      },
+      {
+        "match": {
+          "contains": ["issue close", "900", "--reason", "completed"]
+        },
+        "stdout": "https://github.com/cbusillo/codex-skills/issues/900"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-plan-close-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_plan_close",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills close 900 --comment-file close-comment.md\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-plan-close-2"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": [
+      "api",
+      "issue edit 900",
+      "--remove-label plan:active",
+      "--add-label plan:done",
+      "issue comment 900",
+      "issue close 900"
+    ],
+    "responses_request_count": 2
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

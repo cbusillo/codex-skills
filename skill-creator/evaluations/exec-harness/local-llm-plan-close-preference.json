@@ -1,0 +1,22 @@
+{
+  "name": "local-llm-plan-close-preference",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: GitHub issue #900 is a durable planning issue labeled plan and plan:active. The finish line is complete, and I need to close it with an evidence comment without leaving planning labels or Project focus stale. Choose the owning skill and helper from the loaded skill metadata. Return final answer only as these exact key=value lines with no markdown and no spaces around equals. Required keys: skill, helper, command, generic_issue_close_allowed. Allowed value for skill: github-plan. Allowed value for helper: gh-plan.py. Allowed value for command: close. generic_issue_close_allowed must be exactly `no`.",
+  "files": {
+    "README.md": "# Harness plan close fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "skill=github-plan",
+      "helper=gh-plan.py",
+      "command=close",
+      "generic_issue_close_allowed=no"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}
