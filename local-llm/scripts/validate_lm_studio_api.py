@@ -15,17 +15,35 @@ from lm_studio_api import (
     load_lm_studio_model,
     normalize_endpoint,
     public_endpoint,
+    resolve_endpoint,
     unload_lm_studio_model,
 )
 
 
 def main() -> int:
+    test_cli_base_url_provider_inference()
     test_native_url_derivation()
     test_public_redaction()
     test_unload_requires_instance_id()
     test_native_load_omits_ttl()
     print("ok: lm_studio_api offline validation passed")
     return 0
+
+
+def test_cli_base_url_provider_inference() -> None:
+    default_endpoint = resolve_endpoint({}, None, None)
+    assert default_endpoint["provider"] == "lm_studio"
+    assert default_endpoint["native_base_url"] == "http://127.0.0.1:1234/api/v1"
+
+    lm_studio_override = resolve_endpoint({}, None, "http://127.0.0.1:1234/v1")
+    assert lm_studio_override["provider"] == "lm_studio"
+    assert lm_studio_override["locality"] == "localhost"
+    assert lm_studio_override["native_base_url"] == "http://127.0.0.1:1234/api/v1"
+
+    generic_override = resolve_endpoint({}, None, "http://localhost:8000/v1")
+    assert generic_override["provider"] == "openai_compatible"
+    assert generic_override["locality"] == "localhost"
+    assert "native_base_url" not in generic_override
 
 
 def test_native_url_derivation() -> None:
