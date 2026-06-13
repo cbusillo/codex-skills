@@ -28,6 +28,7 @@ SUCCESS_STEP_RE = re.compile(
     r"\b(success|succeeded|passed|green|mergeable)\b|\bexit[_ -]?code\s*[:=]?\s*0\b|process exited with code 0",
     re.I,
 )
+FALSE_SUCCESS_RE = re.compile(r"(?i)(?:\bsuccess\b|['\"]success['\"])\s*[:=]\s*(?:false|0|null|no)\b")
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,7 +189,7 @@ def step_kind(signal: str, snippet: str) -> str:
     lowered = snippet.lower()
     if signal == "user_context_correction":
         return "user_correction"
-    if SUCCESS_STEP_RE.search(snippet):
+    if SUCCESS_STEP_RE.search(snippet) and not FALSE_SUCCESS_RE.search(snippet):
         return "resolution"
     if "retry" in lowered or "rerun" in lowered or "again" in lowered:
         return "retry"

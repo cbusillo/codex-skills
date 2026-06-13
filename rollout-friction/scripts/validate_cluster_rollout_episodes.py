@@ -105,6 +105,12 @@ def test_step_kind_matches_success_as_word(module: ModuleType) -> None:
         raise AssertionError("succeeded should be classified as a resolution")
 
 
+def test_step_kind_rejects_false_success_flags(module: ModuleType) -> None:
+    for snippet in ('{"success": false, "error": "failed"}', "success=false exit_code=1"):
+        if module.step_kind("repeated_command_failure", snippet) == "resolution":
+            raise AssertionError(f"false success flag should not be classified as resolution: {snippet}")
+
+
 def test_compacts_long_skeleton(module: ModuleType) -> None:
     steps = [{"kind": "signal", "summary": str(index)} for index in range(10)]
     compacted, elided_count = module.compact_steps(steps, max_steps=5)
@@ -124,6 +130,7 @@ def main() -> int:
     test_skeleton_redacts_private_shapes(module)
     test_skeleton_preserves_markup_punctuation(module)
     test_step_kind_matches_success_as_word(module)
+    test_step_kind_rejects_false_success_flags(module)
     test_compacts_long_skeleton(module)
     print("ok validate-cluster-rollout-episodes")
     return 0

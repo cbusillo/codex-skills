@@ -105,6 +105,46 @@ def test_success_requires_success_word_or_zero_exit(module: ModuleType) -> None:
         raise AssertionError(f"process-exited failure should count as a failure, got {payload['cost']}")
 
 
+def test_false_success_flag_does_not_resolve_episode(module: ModuleType) -> None:
+    trace_lines = [
+        module.TraceLine(line=1, snippet='{"success": false, "error": "command failed"}', structured=True),
+    ]
+    episodes = module.build_episodes(
+        target(),
+        [hit(module, "repeated_command_failure", 1, '"success": false error: command failed')],
+        max_gap_lines=5,
+        trace_lines=trace_lines,
+    )
+    payload = module.episode_to_json(episodes[0])
+    if payload["outcome"] != "unresolved":
+        raise AssertionError(f"false success flag should not resolve episode, got {payload['outcome']}")
+
+
+def test_episode_windows_stop_at_neighbor_midpoints(module: ModuleType) -> None:
+    trace_lines = [
+        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True),
+        module.TraceLine(line=6, snippet="Process exited with code 1", structured=True),
+        module.TraceLine(line=8, snippet="Process exited with code 0 and tests passed", structured=True),
+    ]
+    episodes = module.build_episodes(
+        target(),
+        [
+            hit(module, "repeated_command_failure", 1, "Process exited with code 1"),
+            hit(module, "repeated_command_failure", 6, "Process exited with code 1"),
+        ],
+        max_gap_lines=2,
+        trace_lines=trace_lines,
+    )
+    if len(episodes) != 2:
+        raise AssertionError(f"expected two episodes, got {len(episodes)}")
+    first_payload = module.episode_to_json(episodes[0])
+    second_payload = module.episode_to_json(episodes[1])
+    if first_payload["outcome"] != "unresolved":
+        raise AssertionError(f"first episode should not inherit neighbor success, got {first_payload['outcome']}")
+    if second_payload["outcome"] != "resolved_after_retries":
+        raise AssertionError(f"second episode should see its own success, got {second_payload['outcome']}")
+
+
 def test_splits_distant_hits_and_detects_user_correction(module: ModuleType) -> None:
     episodes = module.build_episodes(
         target(),
@@ -178,6 +218,8 @@ def main() -> int:
     test_groups_nearby_hits_and_detects_resolution(module)
     test_retry_count_uses_context_window(module)
     test_success_requires_success_word_or_zero_exit(module)
+    test_false_success_flag_does_not_resolve_episode(module)
+    test_episode_windows_stop_at_neighbor_midpoints(module)
     test_splits_distant_hits_and_detects_user_correction(module)
     test_episode_ids_are_stable(module)
     test_subthreshold_hits_are_filtered(module)

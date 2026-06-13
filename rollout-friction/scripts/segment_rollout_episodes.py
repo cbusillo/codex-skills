@@ -38,6 +38,7 @@ SUCCESS_RE = re.compile(
     r"\b(exit[_ -]?code\s*[:=]?\s*0|process exited with code 0|passed|succeeded|success|green|mergeable)\b",
     re.I,
 )
+FALSE_SUCCESS_RE = re.compile(r"(?i)(?:\bsuccess\b|['\"]success['\"])\s*[:=]\s*(?:false|0|null|no)\b")
 FAILURE_RE = re.compile(
     r"\b(error|failed|failure|exit[_ -]?code\s*[:=]?\s*[1-9][0-9]*|process exited with code [1-9][0-9]*|timed out|timeout|blocked|rate limit|stale)\b",
     re.I,
@@ -206,7 +207,6 @@ def build_episodes(
             current.hits.append(hit)
             current.end_line = hit.line
             continue
-        finalize_episode(current, trace_lines or [], max_gap_lines)
         episodes.append(current)
         current = Episode(
             source_file=target.path,
@@ -215,13 +215,22 @@ def build_episodes(
             end_line=hit.line,
             hits=[hit],
         )
-    finalize_episode(current, trace_lines or [], max_gap_lines)
     episodes.append(current)
+    for index, episode in enumerate(episodes):
+        previous_episode = episodes[index - 1] if index else None
+        next_episode = episodes[index + 1] if index + 1 < len(episodes) else None
+        finalize_episode(episode, trace_lines or [], max_gap_lines, previous_episode, next_episode)
     return episodes
 
 
-def finalize_episode(episode: Episode, trace_lines: list[TraceLine], max_gap_lines: int) -> None:
-    window = outcome_window(episode, trace_lines, max_gap_lines)
+def finalize_episode(
+    episode: Episode,
+    trace_lines: list[TraceLine],
+    max_gap_lines: int,
+    previous_episode: Episode | None = None,
+    next_episode: Episode | None = None,
+) -> None:
+    window = outcome_window(episode, trace_lines, max_gap_lines, previous_episode, next_episode)
     episode.event_count = len(episode.hits)
     episode.retry_count = count_matching(window, r"\b(retry|rerun|again|confirm|attempt)\b")
     episode.tool_call_count = sum(1 for item in window if TOOL_HINT_RE.search(item.snippet))
@@ -236,11 +245,23 @@ def count_matching(items: list[TraceLine], pattern: str) -> int:
     return sum(1 for item in items if regex.search(item.snippet))
 
 
-def outcome_window(episode: Episode, trace_lines: list[TraceLine], max_gap_lines: int) -> list[TraceLine]:
+def outcome_window(
+    episode: Episode,
+    trace_lines: list[TraceLine],
+    max_gap_lines: int,
+    previous_episode: Episode | None = None,
+    next_episode: Episode | None = None,
+) -> list[TraceLine]:
     if not trace_lines:
         return [TraceLine(line=hit.line, snippet=hit.snippet, structured=hit.structured) for hit in episode.hits]
     start = max(0, episode.start_line - max_gap_lines)
     end = episode.end_line + max_gap_lines
+    if previous_episode is not None:
+        midpoint = (previous_episode.end_line + episode.start_line) // 2
+        start = max(start, midpoint + 1)
+    if next_episode is not None:
+        midpoint = (episode.end_line + next_episode.start_line) // 2
+        end = min(end, midpoint)
     return [item for item in trace_lines if start <= item.line <= end]
 
 
@@ -252,12 +273,16 @@ def detect_outcome(episode: Episode, window: list[TraceLine]) -> tuple[str, int 
         if USER_CORRECTION_RE.search(item.snippet):
             return "user_corrected", item.line, item.snippet
     for item in reversed(window):
-        if SUCCESS_RE.search(item.snippet):
+        if is_success_snippet(item.snippet):
             outcome = "resolved_after_retries" if episode.failure_count or episode.retry_count else "resolved_immediately"
             return outcome, item.line, item.snippet
     if episode.failure_count or episode.retry_count:
         return "unresolved", episode.hits[-1].line, episode.hits[-1].snippet
     return "unknown", None, None
+
+
+def is_success_snippet(snippet: str) -> bool:
+    return bool(SUCCESS_RE.search(snippet) and not FALSE_SUCCESS_RE.search(snippet))
 
 
 def cost_score(episode: Episode) -> int:
