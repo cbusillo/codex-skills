@@ -1,0 +1,22 @@
+{
+  "name": "local-llm-closeout-owning-surface",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: We implemented the work requested by GitHub issue #327 in this repo. Can I exit now? Please close out the workstream. Choose what durable surface owns the closeout state. Return final answer only as these exact key=value lines with no markdown and no spaces around equals. Required keys: closeout_skill, owning_surface_type, owning_surface_ref, closeout_state. Allowed value for closeout_skill: work-closeout. Allowed value for owning_surface_type: issue. Allowed value for owning_surface_ref: #327. closeout_state must be exactly `update-or-close-with-evidence`.",
+  "files": {
+    "README.md": "# Harness owning surface fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "closeout_skill=work-closeout",
+      "owning_surface_type=issue",
+      "owning_surface_ref=#327",
+      "closeout_state=update-or-close-with-evidence"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}
