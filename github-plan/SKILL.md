@@ -24,6 +24,10 @@ commands:
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
     purpose: Updates configured Project fields through the planning helper.
+  - name: github-plan-close
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
+    purpose: Closes a completed durable plan issue through the planning helper so labels and Project focus stay in sync.
 policy:
   command_policies:
     - id: prefer-gh-plan-index-for-issue-list
@@ -167,10 +171,19 @@ planning lookup, Project, and GraphQL-to-helper mappings. This prose keeps the
 judgment about when durable planning should exist, how issues relate, and what
 state belongs in GitHub.
 
-For close comments, use `gh-issue close` from the installed `github` skill so
-stdin is passed through a formatting-safe close path. For other multiline
-writes, prefer body files or stdin. Do not pass escaped `\n` through
-shell-quoted flags. Follow `../references/every-code-formatting.md` when
+For completed durable plan issues, use `gh-plan.py close` so the planning helper
+owns `plan:done` labels, stale `plan:active` cleanup, and Project focus updates:
+
+```bash
+skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
+uv run "$skills_home/github/scripts/gh-plan.py" close <issue> --comment-file <file>
+```
+
+The generic `github/scripts/gh-issue close` helper is for non-plan issues, or as
+a fallback when `gh-plan.py close` is unavailable. Closing a durable plan with
+the generic issue helper can leave planning labels or Project fields stale. For
+other multiline writes, prefer body files or stdin. Do not pass escaped `\n`
+through shell-quoted flags. Follow `../references/every-code-formatting.md` when
 writing durable issue bodies, planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
@@ -354,9 +367,12 @@ state.
 
 After a canonical PR merges, inspect the issues it references with `Refs`,
 `Closes`, `Fixes`, or `Resolves`. `Refs` should remain non-closing by default.
-For each referenced issue, either close it with installed `github/scripts/gh-issue
-close` and a multiline evidence comment when the merge conclusively satisfies
-the finish line, or update/comment the remaining state and leave it open.
+For each referenced issue, either close it with evidence when the merge
+conclusively satisfies the finish line, or update/comment the remaining state
+and leave it open. Use `gh-plan.py close --comment-file` for durable plan issues
+so planning labels and Project fields stay synchronized. Use installed
+`github/scripts/gh-issue close` with a multiline evidence comment for non-plan
+issues.
 
 Local handoff documents are not durable planning records unless the user asked
 for offline/private handoff. If a session created `handoff*.md` or similar
@@ -407,5 +423,5 @@ Before saying a plan is captured, verify:
 6. Use blockers, sub-issues, and related links to represent the execution graph.
 7. Add configured Project fields only as view/tracking layers.
 8. Keep `Current Status`, acceptance criteria, decisions, and validation current.
-9. When work completes, update status and close or relabel the issue; do not
-   leave stale local plan files behind.
+9. When work completes, update status and close durable plan issues with
+   `gh-plan.py close`; do not leave stale local plan files behind.

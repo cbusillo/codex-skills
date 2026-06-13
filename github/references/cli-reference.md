@@ -113,8 +113,8 @@ the Project sync operation that needs follow-up, and compact
 
 ## Formatting Tip
 
-For multiline issue create/edit bodies, prefer `scripts/gh-issue` so literal
-Markdown is read from stdin and passed to `gh` with `--body-file`:
+For multiline ordinary issue create/edit bodies, prefer `scripts/gh-issue` so
+literal Markdown is read from stdin and passed to `gh` with `--body-file`:
 
 ```bash
 scripts/gh-issue create "Audit repo metadata" --repo OWNER/REPO <<'EOF'
@@ -135,10 +135,13 @@ EOF
 ```
 
 `gh issue close` does not support `--body-file`; `scripts/gh-issue close` reads
-stdin and uses the best available safe transport. Ordinary close comments are
-passed as `gh issue close --comment` so the close and comment are one `gh`
-operation. Large comments are posted first with `gh issue comment --body-file`,
-then the issue is closed, so the body is streamed instead of inlined into argv.
+stdin and uses the best available safe transport for non-plan issues. Ordinary
+close comments are passed as `gh issue close --comment` so the close and comment
+are one `gh` operation. Large comments are posted first with
+`gh issue comment --body-file`, then the issue is closed, so the body is streamed
+instead of inlined into argv. For completed durable plan issues, use
+`scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
+in sync.
 
 For timeline comments, use `scripts/gh-comment` or
 `scripts/gh-pr.py comment --body-file`. For PR review feedback, use
