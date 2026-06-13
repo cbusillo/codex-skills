@@ -248,6 +248,40 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertEqual(rendered[0]["read_token_status"]["reason"], "oauth_refresh_http_503")
         self.assertIn("retry status later", rendered[0]["read_token_status"]["action"])
 
+    def test_status_treats_invalid_client_refresh_failure_as_invalid_config(self) -> None:
+        rendered: list[dict[str, Any]] = []
+
+        with TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            (config_dir / "oauth-client.json").write_text(
+                json.dumps({"installed": {"client_id": "client", "client_secret": "secret"}})
+            )
+            (config_dir / "search-console-token.json").write_text(
+                json.dumps({"refresh_token": "secret-refresh"})
+            )
+
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, config_dir)
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "token_request",
+                        side_effect=google_search_console.OAuthTokenRequestError(
+                            401, "invalid_client"
+                        ),
+                    )
+                )
+                stack.enter_context(
+                    patch.object(google_search_console, "print_json", side_effect=rendered.append)
+                )
+                google_search_console.cmd_status(argparse.Namespace())
+
+        self.assertEqual(rendered[0]["read_token_state"], "invalid")
+        self.assertEqual(rendered[0]["read_token_status"]["reason"], "oauth_client_invalid")
+        self.assertIn("fix OAuth client config", rendered[0]["read_token_status"]["action"])
+        self.assertIn("run auth", rendered[0]["read_token_status"]["action"])
+        self.assertNotIn("secret-refresh", json.dumps(rendered[0]))
+
     def test_status_validation_does_not_rewrite_token_file(self) -> None:
         with TemporaryDirectory() as tmp:
             config_dir = Path(tmp)
@@ -374,6 +408,55 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertIn("Browser callback timed out after 5 minutes", stderr.getvalue())
         token_request.assert_not_called()
 
+    def test_auth_invalid_client_reports_config_action(self) -> None:
+        class FakeServer:
+            server_port = 8765
+            oauth_code = "code"
+            oauth_error = None
+            callback_timed_out = False
+            timeout = None
+
+            def handle_request(self) -> None:
+                return
+
+            def server_close(self) -> None:
+                return
+
+        stderr = None
+
+        with TemporaryDirectory() as tmp:
+            with ExitStack() as stack:
+                self.patch_config_paths(stack, Path(tmp))
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "client_config",
+                        return_value={"client_id": "client", "client_secret": "secret"},
+                    )
+                )
+                stack.enter_context(
+                    patch.object(google_search_console, "OAuthHTTPServer", return_value=FakeServer())
+                )
+                stack.enter_context(patch.object(google_search_console.webbrowser, "open"))
+                stack.enter_context(
+                    patch.object(
+                        google_search_console,
+                        "token_request",
+                        side_effect=google_search_console.OAuthTokenRequestError(
+                            401, "invalid_client"
+                        ),
+                    )
+                )
+                stderr = stack.enter_context(
+                    patch.object(google_search_console.sys, "stderr", io.StringIO())
+                )
+                with self.assertRaises(SystemExit):
+                    google_search_console.run_auth("read")
+
+        assert stderr is not None
+        self.assertIn("fix OAuth client config, then run auth", stderr.getvalue())
+        self.assertNotIn("secret", stderr.getvalue())
+
     def test_token_paths_are_separate_by_access_level(self) -> None:
         self.assertEqual(
             google_search_console.token_path("read").name,
@@ -453,6 +536,46 @@ class GoogleSearchConsoleHelperTest(TestCase):
 
         self.assertIn("write token expired or revoked; run auth-write", stderr.getvalue())
         self.assertNotIn("secret-refresh", stderr.getvalue())
+
+    def test_access_token_invalid_client_reports_config_action(self) -> None:
+        cases = [
+            ("read", "search-console-token.json", "auth"),
+            ("write", "search-console-write-token.json", "auth-write"),
+        ]
+        for access_level, token_file, auth_command in cases:
+            with self.subTest(access_level=access_level), TemporaryDirectory() as tmp:
+                config_dir = Path(tmp)
+                (config_dir / "oauth-client.json").write_text(
+                    json.dumps({"installed": {"client_id": "client", "client_secret": "secret"}})
+                )
+                (config_dir / token_file).write_text(
+                    json.dumps({"refresh_token": "secret-refresh"})
+                )
+
+                stderr = None
+                with ExitStack() as stack:
+                    self.patch_config_paths(stack, config_dir)
+                    stack.enter_context(
+                        patch.object(
+                            google_search_console,
+                            "token_request",
+                            side_effect=google_search_console.OAuthTokenRequestError(
+                                401, "invalid_client"
+                            ),
+                        )
+                    )
+                    stderr = stack.enter_context(
+                        patch.object(google_search_console.sys, "stderr", io.StringIO())
+                    )
+                    with self.assertRaises(SystemExit):
+                        google_search_console.access_token(access_level)
+
+                assert stderr is not None
+                self.assertIn(
+                    f"fix OAuth client config, then run {auth_command}",
+                    stderr.getvalue(),
+                )
+                self.assertNotIn("secret-refresh", stderr.getvalue())
 
     def test_submit_sitemap_uses_webmasters_put_endpoint(self) -> None:
         calls = []
