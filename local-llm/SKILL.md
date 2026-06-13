@@ -12,13 +12,19 @@ resources:
     description: Public-safe template for private `.local/local-llm.yaml` endpoint and role overrides.
   - path: scripts/lm_studio_inventory.py
     kind: script
-    description: List models from an LM Studio/OpenAI-compatible `/v1/models` endpoint with local config awareness.
+    description: List API-visible models and LM Studio native runtime state when available.
+  - path: scripts/lm_studio_api.py
+    kind: script
+    description: Shared endpoint, model-role, lifecycle, and redaction helpers for local LLM scripts.
   - path: scripts/lm_studio_chat.py
     kind: script
-    description: Send a bounded one-shot chat prompt to an LM Studio/OpenAI-compatible `/v1/chat/completions` endpoint.
+    description: Send a bounded one-shot chat prompt with optional LM Studio API lifecycle management.
   - path: scripts/lm_studio_benchmark.py
     kind: script
     description: Benchmark configured or explicit local models with short cold/fast response probes.
+  - path: scripts/validate_lm_studio_api.py
+    kind: script
+    description: Offline validation for LM Studio API URL, redaction, and unload guard semantics.
 commands:
   - name: local-llm-inventory
     source: skill
@@ -36,6 +42,11 @@ commands:
         "local-llm/scripts/lm_studio_chat.py",
         "--role",
         "rollout_scout",
+        "--load-policy",
+        "jit_chat",
+        "--ttl",
+        "300",
+        "--warmup",
         "--prompt",
         "Reply with OK",
         "--json",
@@ -126,7 +137,38 @@ Benchmark output is local machine evidence, not public truth. Keep private endpo
 
 ## LM Studio Mechanics
 
-LM Studio exposes local models through OpenAI-compatible endpoints such as `/v1/models` and `/v1/chat/completions`. The `lms` CLI can list, download, load, and unload models. These scripts use the HTTP API because it also works for compatible local or private endpoints.
+LM Studio exposes local models through OpenAI-compatible endpoints such as
+`/v1/models` and `/v1/chat/completions`, plus native lifecycle endpoints under
+`/api/v1`. Use the bundled scripts as the normal path so endpoint selection,
+trust/locality, tokens, TTL, context, warm-up, and redacted reporting stay tied
+to `.local/local-llm.yaml`.
+
+Inventory is catalog and runtime evidence, not a universal loaded-state proof.
+`lm_studio_inventory.py` lists `/v1/models` API-visible models and, for
+`provider: lm_studio`, attempts the native runtime model endpoint. Treat loaded
+instance counts as authoritative only when the native runtime response provides
+them; otherwise use a harmless warm-up chat and the response `served_model`
+field before sending private prompts.
+
+For ordinary local runs, prefer API JIT loading through
+`lm_studio_chat.py --load-policy jit_chat --ttl <seconds> --warmup`. The warm-up
+request uses non-sensitive text first, can absorb cold-load latency, and records
+the served model before private content is sent. TTL on `/v1/chat/completions`
+is an LM Studio JIT hint; already-loaded manual or explicit instances may keep
+their load-time TTL instead of honoring per-request TTL.
+
+For deterministic long-context or load-parameter-sensitive runs, use
+`--load-policy api_explicit` with role or CLI `context_length`,
+`flash_attention`, and `--unload-after` when cleanup should be immediate. This
+uses `/api/v1/models/load` before chat and unloads only by the returned
+`instance_id`; do not attempt model-name-only unloads. On the tested LM Studio
+build, native load accepts context and flash-attention options but rejects TTL,
+so TTL remains a JIT-chat hint rather than an explicit-load cleanup mechanism.
+
+The `lms` CLI is an operator fallback for local diagnostics, downloads, or
+manual recovery when the HTTP lifecycle path is unavailable. For non-local LM
+Studio instances, CLI commands must target the serving host explicitly, so API
+helpers are preferred for trusted LAN and remote-private endpoints.
 
 Large reasoning models may return no assistant content when `max_tokens` is too low because the budget is consumed by reasoning. Increase `max_tokens` for deep models before declaring them unusable.
 

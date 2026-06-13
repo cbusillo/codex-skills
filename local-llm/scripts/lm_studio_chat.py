@@ -11,29 +11,32 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
-import yaml
+from lm_studio_api import (
+    DEFAULT_BASE_URL,
+    DEFAULT_CONFIG,
+    MODEL_INDEX,
+    LocalLLMError,
+    load_lm_studio_model,
+    load_yaml,
+    parse_float_option,
+    parse_int_option,
+    post_json,
+    public_endpoint,
+    resolve_endpoint,
+    resolve_role,
+    role_model,
+    unload_lm_studio_model,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_CONFIG = ROOT / ".local" / "local-llm.yaml"
-MODEL_INDEX = SCRIPT_DIR.parent / "references" / "model-index.yaml"
-DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_MAX_INPUT_CHARS = 12_000
 CHANNEL_RE = re.compile(r"<\|channel\|>\w+\s*(?:<\|constrain\|>\w+)?\s*<\|message\|>", re.I)
-
-
-class LocalLLMError(RuntimeError):
-    pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-input-chars", type=int, default=DEFAULT_MAX_INPUT_CHARS)
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--timeout", type=float)
+    parser.add_argument("--load-policy", choices=("none", "jit_chat", "api_explicit"), help="Model lifecycle policy. Defaults to role load_policy or none.")
+    parser.add_argument("--ttl", type=int, help="TTL seconds for LM Studio JIT chat loading.")
+    parser.add_argument("--context-length", type=int, help="Context length for LM Studio api_explicit load policy.")
+    parser.add_argument("--flash-attention", action="store_true", help="Request flash attention for LM Studio api_explicit load.")
+    parser.add_argument("--warmup", action="store_true", help="Run a harmless probe before sending the prompt.")
+    parser.add_argument("--unload-after", action="store_true", help="Unload the instance loaded by api_explicit after the chat request.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.prompt and args.prompt_file:
@@ -79,84 +88,6 @@ def main() -> int:
     return 0
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise LocalLLMError(f"invalid YAML in {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise LocalLLMError(f"{path} must contain a YAML mapping")
-    return data
-
-
-def resolve_role(config: dict[str, Any], index: dict[str, Any], role_name: str | None) -> dict[str, Any]:
-    if not role_name:
-        return {}
-    public_roles = index.get("model_roles") if isinstance(index.get("model_roles"), dict) else {}
-    private_roles = config.get("model_roles") if isinstance(config.get("model_roles"), dict) else {}
-    merged: dict[str, Any] = {}
-    if isinstance(public_roles.get(role_name), dict):
-        merged.update(public_roles[role_name])
-    if isinstance(private_roles.get(role_name), dict):
-        merged.update(private_roles[role_name])
-    if not merged:
-        raise LocalLLMError(f"unknown model role: {role_name}")
-    merged["name"] = role_name
-    return merged
-
-
-def role_model(role: dict[str, Any]) -> str | None:
-    for key in ("primary", "model", "fast", "fallback"):
-        value = role.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def resolve_endpoint(config: dict[str, Any], endpoint_id: str | None, base_url: str | None, role: dict[str, Any]) -> dict[str, Any]:
-    if base_url:
-        return {
-            "id": "cli",
-            "provider": "openai_compatible",
-            "base_url": base_url.rstrip("/"),
-            "locality": infer_locality(base_url),
-            "trust": "cli_override",
-        }
-    endpoints = config.get("endpoints") if isinstance(config.get("endpoints"), dict) else {}
-    selected = endpoint_id or role.get("endpoint") or config.get("default_endpoint")
-    if endpoint_id and endpoint_id not in endpoints:
-        raise LocalLLMError(f"endpoint not found in local config: {endpoint_id}")
-    if selected and selected not in endpoints:
-        raise LocalLLMError(f"default endpoint not found in local config: {selected}")
-    if selected and selected in endpoints:
-        endpoint = dict(endpoints[selected] or {})
-        endpoint["id"] = selected
-    else:
-        endpoint = {
-            "id": "default-localhost",
-            "provider": "lm_studio",
-            "base_url": DEFAULT_BASE_URL,
-            "locality": "localhost",
-            "trust": "private_local",
-        }
-    if endpoint.get("enabled") is False:
-        raise LocalLLMError(f"endpoint {endpoint.get('id')} is disabled")
-    endpoint["base_url"] = str(endpoint.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
-    locality = str(endpoint.get("locality") or infer_locality(endpoint["base_url"])).strip()
-    endpoint["locality"] = locality if locality in {"localhost", "trusted_lan", "remote_private", "cloud"} else "remote_private"
-    return endpoint
-
-
-def infer_locality(base_url: str) -> str:
-    parsed = urlparse(base_url)
-    host = (parsed.hostname or "").casefold()
-    if host in {"127.0.0.1", "::1", "localhost"}:
-        return "localhost"
-    return "cloud"
-
-
 def read_prompt(args: argparse.Namespace) -> str:
     if args.prompt_file:
         try:
@@ -172,7 +103,54 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
     max_tokens = parse_int_option(args.max_tokens, role.get("max_tokens"), 900, "max_tokens")
     timeout = parse_float_option(args.timeout, role.get("timeout_seconds"), 120, "timeout_seconds")
     temperature = parse_float_option(args.temperature, role.get("temperature"), 0.2, "temperature")
-    payload = {
+    lifecycle = prepare_lifecycle(endpoint, model, args, role, timeout)
+    response: dict[str, Any] | None = None
+    try:
+        if args.warmup:
+            warmup_payload = chat_payload(model, "Reply with exactly: OK", "You are a readiness probe.", temperature, 16)
+            if lifecycle.get("load_policy") == "jit_chat" and lifecycle.get("ttl_seconds"):
+                warmup_payload["ttl"] = lifecycle["ttl_seconds"]
+            warmup_response = post_json(
+                f"{endpoint['base_url']}/chat/completions",
+                warmup_payload,
+                endpoint,
+                timeout,
+                error_context="warmup chat request failed",
+            )
+            lifecycle["warmup_served_model"] = warmup_response.get("model")
+        payload = chat_payload(model, prompt, system, temperature, max_tokens)
+        if lifecycle.get("load_policy") == "jit_chat" and lifecycle.get("ttl_seconds"):
+            payload["ttl"] = lifecycle["ttl_seconds"]
+        response = post_json(
+            f"{endpoint['base_url']}/chat/completions",
+            payload,
+            endpoint,
+            timeout,
+            error_context=f"chat request failed for {endpoint.get('id')}",
+        )
+    finally:
+        if args.unload_after and lifecycle.get("loaded_instance_id"):
+            lifecycle["unload_response"] = unload_lm_studio_model(endpoint, str(lifecycle["loaded_instance_id"]), timeout)
+    if response is None:
+        raise LocalLLMError("chat request failed before a response was returned")
+    content = extract_content(response)
+    if not content:
+        raise LocalLLMError("endpoint returned no assistant content; increase --max-tokens for reasoning models")
+    return {
+        "ok": True,
+        "model": model,
+        "served_model": response.get("model"),
+        "role": role.get("name"),
+        "endpoint": public_endpoint(endpoint),
+        "prompt_chars": len(prompt),
+        "max_tokens": max_tokens,
+        "lifecycle": lifecycle,
+        "content": content,
+    }
+
+
+def chat_payload(model: str, prompt: str, system: str, temperature: float, max_tokens: int) -> dict[str, Any]:
+    return {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -182,40 +160,56 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
         "max_tokens": max_tokens,
         "stream": False,
     }
-    response = post_json(f"{endpoint['base_url']}/chat/completions", payload, endpoint, timeout)
-    error = response.get("error") if isinstance(response, dict) else None
-    if error:
-        message = error.get("message") if isinstance(error, dict) else str(error)
-        raise LocalLLMError(f"API error: {message}")
-    content = extract_content(response)
-    if not content:
-        raise LocalLLMError("endpoint returned no assistant content; increase --max-tokens for reasoning models")
-    return {
-        "ok": True,
-        "model": model,
-        "role": role.get("name"),
-        "endpoint": public_endpoint(endpoint),
-        "prompt_chars": len(prompt),
-        "max_tokens": max_tokens,
-        "content": content,
-    }
 
 
-def post_json(url: str, payload: dict[str, Any], endpoint: dict[str, Any], timeout: float) -> dict[str, Any]:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **request_headers(endpoint)})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8", errors="replace"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise LocalLLMError(f"chat request failed for {endpoint.get('id')}: {exc}") from exc
+def prepare_lifecycle(endpoint: dict[str, Any], model: str, args: argparse.Namespace, role: dict[str, Any], timeout: float) -> dict[str, Any]:
+    raw_load_config = role.get("load")
+    load_config: dict[str, Any] = raw_load_config if isinstance(raw_load_config, dict) else {}
+    policy = normalize_load_policy(args.load_policy or str(role.get("load_policy") or load_config.get("policy") or "none"))
+    ttl_source = role.get("ttl_seconds") or load_config.get("ttl_seconds")
+    ttl = parse_int_option(args.ttl, ttl_source, 0, "ttl") if args.ttl or ttl_source else None
+    lifecycle: dict[str, Any] = {"load_policy": policy, "ttl_seconds": ttl}
+    if policy == "none":
+        return lifecycle
+    if policy == "jit_chat":
+        if endpoint.get("provider") != "lm_studio":
+            raise LocalLLMError("jit_chat load policy requires provider=lm_studio")
+        return lifecycle
+    if policy == "api_explicit":
+        context_source = role.get("context_length") or load_config.get("context_length")
+        context_length = (
+            parse_int_option(args.context_length, context_source, 0, "context_length")
+            if args.context_length or context_source
+            else None
+        )
+        flash_attention = True if args.flash_attention else load_config.get("flash_attention")
+        if ttl:
+            lifecycle["ttl_note"] = "ttl is not sent to LM Studio native load; use --unload-after for explicit cleanup"
+        response = load_lm_studio_model(
+            endpoint,
+            model,
+            timeout,
+            context_length=context_length,
+            flash_attention=flash_attention,
+            echo_load_config=True,
+        )
+        lifecycle.update(
+            {
+                "loaded_instance_id": response.get("instance_id"),
+                "load_response": {
+                    "status": response.get("status"),
+                    "load_time_seconds": response.get("load_time_seconds"),
+                    "load_config": response.get("load_config"),
+                },
+            }
+        )
+        return lifecycle
+    raise LocalLLMError(f"unknown load policy: {policy}")
 
 
-def request_headers(endpoint: dict[str, Any]) -> dict[str, str]:
-    token_env = endpoint.get("token_env")
-    if isinstance(token_env, str) and token_env.strip() and os.environ.get(token_env.strip()):
-        return {"Authorization": f"Bearer {os.environ[token_env.strip()]}"}
-    return {}
+def normalize_load_policy(policy: str) -> str:
+    aliases = {"jit": "jit_chat", "explicit": "api_explicit", "native": "api_explicit"}
+    return aliases.get(policy, policy)
 
 
 def extract_content(response: dict[str, Any]) -> str:
@@ -227,17 +221,6 @@ def extract_content(response: dict[str, Any]) -> str:
     return CHANNEL_RE.sub("", str(content or "")).strip()
 
 
-def public_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": endpoint.get("id"),
-        "provider": endpoint.get("provider"),
-        "base_url": public_base_url(endpoint),
-        "locality": endpoint.get("locality"),
-        "trust": endpoint.get("trust"),
-        "uses_token_env": bool(endpoint.get("token_env")),
-    }
-
-
 def emit(payload: dict[str, Any], *, json_mode: bool) -> None:
     if json_mode:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -245,36 +228,6 @@ def emit(payload: dict[str, Any], *, json_mode: bool) -> None:
         print(payload["content"])
     else:
         print(f"error: {payload.get('error')}", file=sys.stderr)
-
-
-def parse_int_option(cli_value: int | None, role_value: object, default: int, name: str) -> int:
-    value = cli_value if cli_value is not None else role_value
-    if value is None:
-        return default
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise LocalLLMError(f"{name} must be an integer") from exc
-    if parsed <= 0:
-        raise LocalLLMError(f"{name} must be positive")
-    return parsed
-
-
-def parse_float_option(cli_value: float | None, role_value: object, default: float, name: str) -> float:
-    value = cli_value if cli_value is not None else role_value
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise LocalLLMError(f"{name} must be numeric") from exc
-
-
-def public_base_url(endpoint: dict[str, Any]) -> str:
-    base_url = str(endpoint.get("base_url") or "")
-    if endpoint.get("locality") == "localhost":
-        return base_url
-    return f"[redacted:{endpoint.get('locality') or 'remote'}]"
 
 
 if __name__ == "__main__":

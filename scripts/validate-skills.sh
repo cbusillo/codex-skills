@@ -23,6 +23,7 @@ helper_tests=(
 	github-work-rollup/scripts/test_github_work_rollup.py
 	github/scripts/test_github_work_evidence.py
 	infra-ops/scripts/test_npmplus_ops.py
+	local-llm/scripts/validate_lm_studio_api.py
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_public_safety.py
 	jetbrains-inspection/tests/test_jb_inspect.py
@@ -31,11 +32,13 @@ helper_tests=(
 	skill-creator/scripts/test_validate_skill_scorecard.py
 	skill-creator/scripts/validate-command-policy-simulator.py
 	rollout-friction/scripts/validate_analyze_rollouts.py
+	rollout-friction/scripts/validate_cluster_rollout_episodes.py
 	rollout-friction/scripts/validate_extract_rollout_memory.py
 	rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py
 	rollout-friction/scripts/validate_reduce_rollout_memory_reviews.py
 	rollout-friction/scripts/validate_review_rollout_memory_batches.py
 	rollout-friction/scripts/validate_run_rollout_memory_long_context_matrix.py
+	rollout-friction/scripts/validate_segment_rollout_episodes.py
 	rollout-friction/scripts/validate_summarize_rollout_memory_reviews.py
 	rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
 )

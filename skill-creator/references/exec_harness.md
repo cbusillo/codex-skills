@@ -83,11 +83,18 @@ timeout_seconds: 180
 max_seconds: 90
 ```
 
-Before a local-model run, check availability:
+Before a local-model run, check API visibility and runtime evidence:
 
 ```bash
 uv run local-llm/scripts/lm_studio_inventory.py --json
 ```
+
+Inventory shows catalog visibility and LM Studio native runtime state when that
+endpoint exposes it; it is not by itself proof that the intended model is warm.
+For private prompts, use the local-llm warm-up/readiness flow first, for example
+`lm_studio_chat.py --role <role> --load-policy jit_chat --ttl <seconds>
+--warmup --prompt "Reply with OK" --json`, and check the served model in the
+result before running the harness scenario.
 
 Prefer roles and models already curated by `local-llm/references/model-index.yaml`:
 

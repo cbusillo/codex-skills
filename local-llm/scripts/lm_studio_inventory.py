@@ -11,25 +11,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import urllib.error
-import urllib.request
-from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = ROOT / ".local" / "local-llm.yaml"
-DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
-LOCALITIES = {"localhost", "trusted_lan", "remote_private", "cloud"}
-
-
-class LocalLLMError(RuntimeError):
-    pass
+from lm_studio_api import (
+    DEFAULT_BASE_URL,
+    DEFAULT_CONFIG,
+    LocalLLMError,
+    fetch_lm_studio_runtime,
+    fetch_openai_models,
+    load_yaml,
+    public_endpoint,
+    resolve_endpoint,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,120 +40,27 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        config = load_config(args.config)
+        config = load_yaml(args.config)
         endpoint = resolve_endpoint(config, args.endpoint, args.base_url)
-        models = fetch_models(endpoint, args.timeout)
+        models = fetch_openai_models(endpoint, args.timeout)
     except LocalLLMError as exc:
         payload = {"ok": False, "error": str(exc)}
         emit(payload, json_mode=args.json)
         return 1
+    try:
+        runtime = fetch_lm_studio_runtime(endpoint, args.timeout)
+    except LocalLLMError as exc:
+        runtime = {"available": False, "error": str(exc)}
 
     payload = {
         "ok": True,
         "endpoint": public_endpoint(endpoint),
         "models": models,
         "model_count": len(models),
+        "runtime": runtime,
     }
     emit(payload, json_mode=args.json)
     return 0
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise LocalLLMError(f"invalid YAML in {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise LocalLLMError("local LLM config must be a YAML mapping")
-    return data
-
-
-def resolve_endpoint(config: dict[str, Any], endpoint_id: str | None, base_url: str | None) -> dict[str, Any]:
-    if base_url:
-        return {
-            "id": "cli",
-            "provider": "openai_compatible",
-            "base_url": normalize_base_url(base_url),
-            "locality": infer_locality(base_url),
-            "trust": "cli_override",
-        }
-    endpoints = config.get("endpoints") if isinstance(config.get("endpoints"), dict) else {}
-    selected = endpoint_id or config.get("default_endpoint")
-    if endpoint_id and endpoint_id not in endpoints:
-        raise LocalLLMError(f"endpoint not found in local config: {endpoint_id}")
-    if selected and selected not in endpoints:
-        raise LocalLLMError(f"default endpoint not found in local config: {selected}")
-    if selected and selected in endpoints:
-        endpoint = dict(endpoints[selected] or {})
-        endpoint["id"] = selected
-    else:
-        endpoint = {
-            "id": "default-localhost",
-            "provider": "lm_studio",
-            "base_url": DEFAULT_BASE_URL,
-            "locality": "localhost",
-            "trust": "private_local",
-            "enabled": True,
-        }
-    if endpoint.get("enabled") is False:
-        raise LocalLLMError(f"endpoint {endpoint.get('id')} is disabled")
-    endpoint["base_url"] = normalize_base_url(str(endpoint.get("base_url") or DEFAULT_BASE_URL))
-    locality = str(endpoint.get("locality") or infer_locality(endpoint["base_url"])).strip()
-    endpoint["locality"] = locality if locality in LOCALITIES else "remote_private"
-    return endpoint
-
-
-def infer_locality(base_url: str) -> str:
-    parsed = urlparse(base_url)
-    host = (parsed.hostname or "").casefold()
-    if host in {"127.0.0.1", "::1", "localhost"}:
-        return "localhost"
-    return "cloud"
-
-
-def normalize_base_url(value: str) -> str:
-    return value.rstrip("/")
-
-
-def fetch_models(endpoint: dict[str, Any], timeout: float) -> list[dict[str, Any]]:
-    url = f"{endpoint['base_url']}/models"
-    request = urllib.request.Request(url, headers=request_headers(endpoint))
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise LocalLLMError(f"unable to query models from {endpoint['id']}: {exc}") from exc
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, list):
-        raise LocalLLMError("/models response did not contain a data list")
-    models = []
-    for item in data:
-        if isinstance(item, dict) and isinstance(item.get("id"), str):
-            models.append({"id": item["id"], "object": item.get("object")})
-    return sorted(models, key=lambda model: model["id"])
-
-
-def request_headers(endpoint: dict[str, Any]) -> dict[str, str]:
-    headers = {"Accept": "application/json"}
-    token_env = endpoint.get("token_env")
-    if isinstance(token_env, str) and token_env.strip():
-        token = os.environ.get(token_env.strip())
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def public_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": endpoint.get("id"),
-        "provider": endpoint.get("provider"),
-        "base_url": public_base_url(endpoint),
-        "locality": endpoint.get("locality"),
-        "trust": endpoint.get("trust"),
-        "uses_token_env": bool(endpoint.get("token_env")),
-    }
 
 
 def emit(payload: dict[str, Any], *, json_mode: bool) -> None:
@@ -170,15 +72,14 @@ def emit(payload: dict[str, Any], *, json_mode: bool) -> None:
         return
     endpoint = payload["endpoint"]
     print(f"endpoint: {endpoint['id']} ({endpoint['locality']}, {endpoint['base_url']})")
+    runtime = payload.get("runtime")
+    if isinstance(runtime, dict):
+        if runtime.get("available") is False or runtime.get("error"):
+            print(f"loaded instances: unknown ({runtime.get('error', 'runtime unavailable')})")
+        else:
+            print(f"loaded instances: {runtime.get('loaded_instance_count', 0)}")
     for model in payload["models"]:
         print(model["id"])
-
-
-def public_base_url(endpoint: dict[str, Any]) -> str:
-    base_url = str(endpoint.get("base_url") or "")
-    if endpoint.get("locality") == "localhost":
-        return base_url
-    return f"[redacted:{endpoint.get('locality') or 'remote'}]"
 
 
 if __name__ == "__main__":

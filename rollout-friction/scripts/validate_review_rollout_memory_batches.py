@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
 # ///
 """Focused validation for review_rollout_memory_batches.py."""
 
@@ -42,13 +44,14 @@ def test_write_summary_counts_results() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        args = Namespace(prompts=root / "prompts.jsonl", model="qwen3-coder-64b", base_url="http://127.0.0.1:1234/v1")
+        args = Namespace(prompts=root / "prompts.jsonl", model="qwen3-coder-64b")
+        runtime = runtime_fixture(module)
         summaries = [
             {"ok": True, "candidate_count": 2, "covered_count": 2, "note_count": 1, "discard_count": 1},
             {"ok": False, "candidate_count": 3, "covered_count": 1, "note_count": 0, "discard_count": 1},
         ]
         summary_path = root / "summary.json"
-        module.write_summary(summary_path, args, summaries)
+        module.write_summary(summary_path, args, runtime, summaries)
         with summary_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
     if payload["ok_count"] != 1 or payload["failed_count"] != 1:
@@ -99,12 +102,29 @@ def oversize_args(root: Path) -> Namespace:
     )
 
 
+def runtime_fixture(module: ModuleType) -> dict[str, object]:
+    endpoint = module.resolve_endpoint({}, None, "http://127.0.0.1:1234/v1")
+    return {
+        "endpoint": endpoint,
+        "role": {"name": "test"},
+        "model": "qwen3-coder-64b",
+        "lifecycle": {"load_policy": "jit_chat", "ttl_seconds": 300},
+    }
+
+
+def test_base_url_override_infers_lm_studio_provider() -> None:
+    module = load_module()
+    endpoint = module.resolve_endpoint({}, None, "http://127.0.0.1:1234/v1")
+    if endpoint.get("provider") != "lm_studio" or "native_base_url" not in endpoint:
+        raise AssertionError(f"localhost LM Studio base URL should infer native lifecycle: {endpoint}")
+
+
 def test_chat_rejects_oversize_prompts() -> None:
     module = load_module()
     batch = {"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 50}]}
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            module.chat(batch, oversize_args(Path(tmp)), retry_attempt=1)
+            module.chat(batch, oversize_args(Path(tmp)), runtime_fixture(module), retry_attempt=1)
         except module.PromptTooLargeError:
             return
     raise AssertionError("expected oversized prompt to be rejected")
@@ -116,7 +136,7 @@ def test_local_review_payload_context_stuffs_trusted_local_prompt() -> None:
         args = oversize_args(Path(tmp))
         args.max_input_chars = 1_000
         prompt = json.dumps({"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "Remember x."}]})
-        payload = module.local_review_payload(prompt, args, retry_attempt=1)
+        payload = module.local_review_payload(prompt, args, runtime_fixture(module), retry_attempt=1)
     messages = payload.get("messages")
     if not isinstance(messages, list) or len(messages) != 2:
         raise AssertionError(f"local review should send system and user messages: {payload}")
@@ -130,6 +150,19 @@ def test_local_review_payload_context_stuffs_trusted_local_prompt() -> None:
     for forbidden in ("message_file", "message-file", "context_files", "context-files"):
         if forbidden in serialized:
             raise AssertionError(f"local trusted review should not use {forbidden}: {payload}")
+    if payload.get("ttl") != 300:
+        raise AssertionError(f"jit lifecycle should add TTL to local review payload: {payload}")
+
+
+def test_local_review_payload_omits_ttl_for_api_explicit() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        args = oversize_args(Path(tmp))
+        runtime = runtime_fixture(module)
+        runtime["lifecycle"] = {"load_policy": "api_explicit", "ttl_seconds": 300}
+        payload = module.local_review_payload("{}", args, runtime, retry_attempt=1)
+    if "ttl" in payload:
+        raise AssertionError(f"explicit native lifecycle must not add chat TTL: {payload}")
 
 
 def test_review_batch_records_oversize_prompt_failure() -> None:
@@ -137,7 +170,7 @@ def test_review_batch_records_oversize_prompt_failure() -> None:
     batch = {"batch": 1, "candidates": [{"candidate_id": "memcand_a", "text": "x" * 50}]}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        summary = module.review_batch(batch, 1, oversize_args(root))
+        summary = module.review_batch(batch, 1, oversize_args(root), runtime_fixture(module))
         validation_path = root / "batch-001.validation.json"
         with validation_path.open("r", encoding="utf-8") as handle:
             validation = json.load(handle)
@@ -152,8 +185,10 @@ def main() -> int:
     test_write_summary_counts_results()
     test_split_batch_halves_candidates()
     test_batch_label_for_path()
+    test_base_url_override_infers_lm_studio_provider()
     test_chat_rejects_oversize_prompts()
     test_local_review_payload_context_stuffs_trusted_local_prompt()
+    test_local_review_payload_omits_ttl_for_api_explicit()
     test_review_batch_records_oversize_prompt_failure()
     print("ok validate-review-rollout-memory-batches")
     return 0
