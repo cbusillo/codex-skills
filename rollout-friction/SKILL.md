@@ -9,9 +9,15 @@ resources:
   - path: scripts/analyze_rollouts.py
     kind: script
     description: Deterministic local rollout/session friction analyzer.
+  - path: scripts/segment_rollout_episodes.py
+    kind: script
+    description: Group deterministic friction hits into costed episodes with basic outcome classification.
+  - path: scripts/cluster_rollout_episodes.py
+    kind: script
+    description: Cluster friction episodes and emit compact trajectory skeletons for human or model review.
   - path: scripts/extract_rollout_memory.py
     kind: script
-    description: Extract destination-aware durable-memory candidates from local rollout/session traces.
+    description: Legacy broad extraction of destination-aware durable-memory candidates from local rollout/session traces.
   - path: scripts/review_rollout_memory_batches.py
     kind: script
     description: Run trusted-local LLM review over extractor prompt batches and validate coverage.
@@ -46,6 +52,29 @@ commands:
         "~/.code/sessions",
       ]
     purpose: Analyze local rollout/session traces for workflow friction signals.
+  - name: segment-rollout-episodes
+    source: skill
+    resource_path: scripts/segment_rollout_episodes.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/segment_rollout_episodes.py",
+        "--paths-file",
+        ".local/rollout-friction/<run-id>/paths.txt",
+      ]
+    purpose: Convert friction signal hits into JSONL episodes with cost and outcome metadata.
+  - name: cluster-rollout-episodes
+    source: skill
+    resource_path: scripts/cluster_rollout_episodes.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/cluster_rollout_episodes.py",
+        ".local/rollout-friction/<run-id>/episodes.jsonl",
+      ]
+    purpose: Cluster episodes and produce compact redacted trajectory skeletons for targeted review.
   - name: extract-rollout-memory
     source: skill
     resource_path: scripts/extract_rollout_memory.py
@@ -60,7 +89,7 @@ commands:
         "--output-dir",
         ".local/rollout-memory/<run-id>",
       ]
-    purpose: Write local candidate and prompt artifacts for durable-memory review.
+    purpose: Legacy broad candidate extraction for explicit durable-memory review, not the default friction-audit path.
   - name: review-rollout-memory-batches
     source: skill
     resource_path: scripts/review_rollout_memory_batches.py
@@ -170,9 +199,19 @@ rollout files, session traces, runout files, or agent workflow friction.
    space-joined path string. Keep `--max-files`, total `--max-bytes`, and
    optional `--max-file-bytes` bounded, and read `scan_limitations` separately
    from findings when judging degraded scans. Keep analysis local.
-3. Review the findings and inspect only the minimum raw trace snippets needed to
-   understand high-value signals.
-4. If a local LLM is useful, use it only as a private bounded scout. When the
+3. Run `segment_rollout_episodes.py` over the same bounded source set to turn
+   line-level signal hits into costed friction episodes. Episodes are the review
+   unit: they preserve the intent-to-outcome shape better than individual
+   snippets while still avoiding raw trace dumps.
+4. Run `cluster_rollout_episodes.py` on the episode JSONL to collapse recurring
+   patterns into root-cause clusters and compact trajectory skeletons. Review
+   high-cost clusters before inspecting raw trace snippets. Skeleton output is
+   redacted by default; pass `--trusted-originals` only for approved local-only
+   review where path/email/id shapes are useful. Treat hit counts as triage, not
+   as proof that thousands of durable lessons exist.
+5. If a local LLM is useful, give it trajectory skeletons or redacted analyzer
+   output, not broad memory-candidate batches. Use it only as a private bounded
+   scout. When the
    optional `local-llm` skill is available, first resolve the endpoint locality
    and trust from local config or inventory:
    - For trusted `localhost` or trusted-LAN endpoints, original private local
@@ -191,25 +230,28 @@ rollout files, session traces, runout files, or agent workflow friction.
      another.
      Ask for missing classes or false-positive patterns, then verify every
      suggestion yourself against maintained sources before acting.
-5. Classify each finding as one of:
+6. Classify each cluster or high-cost episode as one of:
    - `promote-to-skill`
    - `fix-script-or-helper`
    - `fix-harness`
    - `move-to-local-config`
    - `investigate-repo-workflow`
    - `ignore-noise`
-6. Verify any durable recommendation against maintained sources before proposing
+7. Verify any durable recommendation against maintained sources before proposing
    it. Examples: local code, skill files, repo docs, GitHub state, harness code,
    official docs, or config schemas.
-7. Present a concise proposal with the signal, evidence summary, likely cause,
+8. Present a concise proposal with the cluster, evidence summary, likely cause,
    recommended destination, and exact changes that would need approval.
-8. Ask for explicit human approval before making any changes.
+9. Ask for explicit human approval before making any changes.
 
 ## Memory Extraction Workflow
 
 Use this only after explicit approval to inspect rollout/session traces for
-durable memory candidates. This workflow prepares review artifacts; it does not
-apply memory updates by itself.
+durable memory candidates. This legacy broad-extraction workflow prepares review
+artifacts; it does not apply memory updates by itself. Prefer the episode and
+cluster workflow above for ordinary rollout-friction audits; use broad memory
+extraction only when the user explicitly asks to mine rollout traces for durable
+memory/profile/local-config candidates.
 
 1. Run `extract_rollout_memory.py` with explicit time/file bounds and an ignored
    `.local/rollout-memory/<run-id>/` output directory. Use `--trusted-originals`
