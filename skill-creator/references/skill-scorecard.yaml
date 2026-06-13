@@ -421,6 +421,23 @@ skills:
       - private_context
       - script_helper
     checks:
+      - check_id: closeout-owning-surface-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-closeout-owning-surface.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: fix-issue-aware-closeout
+          notes: >-
+            Validates that closeout recognizes an issue-backed workstream as the
+            owning surface before safe-to-exit. Raw harness artifacts remain
+            local-only.
       - check_id: readiness-before-closeout-local-scenario
         kind: exec_harness
         mode: trusted_local_provider

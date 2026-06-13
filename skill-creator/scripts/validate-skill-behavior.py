@@ -645,6 +645,40 @@ def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
     )
 
 
+def test_work_closeout_requires_issue_aware_safe_exit() -> None:
+    closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
+    normalized = " ".join(closeout_text.split())
+
+    require(
+        "name the owning durable surface" in normalized,
+        "work-closeout must require explicit owning surface acknowledgement",
+    )
+    require(
+        "the pr, issue, github plan, saved local plan, or explicit \"none\"" in normalized,
+        "work-closeout must enumerate PR/issue/plan/local-plan/none owning surfaces",
+    )
+    require(
+        "owning durable surface was named as closed/updated with evidence" in normalized,
+        "safe-to-exit yes must require the owning surface to be current or absent",
+    )
+    require(
+        "left open or parked with the current blocker and next action" in normalized,
+        "work-closeout must require parked owning surfaces to hold blocker and next action",
+    )
+    require(
+        "owning issue, pr, github plan, or saved local plan remains stale" in normalized,
+        "safe-to-exit no must block on stale owning durable surfaces",
+    )
+    require(
+        "resolved without a merged pr" in normalized and "evidence-backed comment" in normalized,
+        "work-closeout must cover resolved issue-backed work without a merged PR",
+    )
+    require(
+        "source-of-truth docs" in normalized and "compare that state with the owning issue/plan" in normalized,
+        "work-closeout must reconcile docs/source-of-truth state with GitHub issue/plan state",
+    )
+
+
 def test_infra_ops_owns_live_infra_actions() -> None:
     infra_source = (ROOT / "infra-ops" / "SKILL.md").read_text()
     infra_text = infra_source.lower()
@@ -833,6 +867,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
+        test_work_closeout_requires_issue_aware_safe_exit,
         test_infra_ops_owns_live_infra_actions,
         test_infra_ops_private_context_command_detects_docs_pointer,
         test_infra_ops_private_context_command_reports_missing,

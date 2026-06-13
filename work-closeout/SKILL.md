@@ -29,7 +29,11 @@ Leave the user with a truthful closeout answer:
 ## Workflow
 
 1. Identify the repo, branch, active task, and whether a PR/issue/plan is in
-   play.
+   play. Before saying "safe to exit," name the owning durable surface in the
+   closeout answer: the PR, issue, GitHub plan, saved local plan, or explicit
+   "none" when no owning surface exists. Also state whether that surface was
+   closed, updated, left open or parked with the current blocker and next action,
+   or confirmed not applicable, with evidence.
 2. If `.github/github.json` exists, read it and check metadata
    freshness. Compare the current work with
    `metadataFreshness.updateWhen` and
@@ -78,6 +82,11 @@ Leave the user with a truthful closeout answer:
 5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project planning state. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
+   If source-of-truth docs, runbooks, deployment notes, or another durable record
+   contain the decisive completion or blocker evidence, compare that state with
+   the owning issue/plan before saying safe to exit. If they disagree, reconcile
+   the issue/plan/docs state or report safe-to-exit as conditional/no with the
+   mismatch named.
 6. If design collaboration was part of the work, make sure accepted direction,
    browser QA evidence, tradeoffs, and remaining design work are captured in the
    relevant GitHub planning issue or PR.
@@ -134,6 +143,8 @@ Safe to exit: yes
 - Work is complete or explicitly out of scope.
 - Gates, inspections, docs checks, metadata checks, and post-merge checks are
   done or explicitly not applicable.
+- The owning durable surface was named as closed/updated with evidence, or no
+  owning PR, issue, GitHub plan, or saved local plan was in play.
 - Background auto-review findings, when available, have been matched to the
   current branch/PR/head SHA; current-target findings are resolved,
   non-blocking, or explicitly tracked for follow-up; relevant current-target
@@ -147,6 +158,8 @@ Safe to exit: conditional
 - Work is unfinished but intentionally parked.
 - Blockers and next steps are recorded in a PR, issue, GitHub plan, or explicit
   local/offline saved plan.
+- The owning durable surface is named, current, and contains the blocker or next
+  action needed to resume.
 - Failing and not-run checks are recorded with reasons.
 - Current auto-review blockers, if any, are recorded in the PR, issue, or plan
   that owns the unfinished work.
@@ -157,6 +170,10 @@ Safe to exit: no
 
 - Uncommitted or unexplained work remains.
 - Expected gates/readiness checks have not been run and no reason is recorded.
+- An owning issue, PR, GitHub plan, or saved local plan remains stale, incorrectly
+  blocked, or missing the completed/remaining work state.
+- Source-of-truth docs or runbooks disagree with the owning issue/plan and that
+  disagreement has not been reconciled or explicitly parked.
 - Failing checks, docs/metadata/security follow-up, PR/CI/review state, or
   cleanup work is unresolved and untracked.
 - Temporary artifacts or processes could confuse the next session.
@@ -204,6 +221,9 @@ handoff.
 - Use `github-plan` plus the sibling `github` helpers to update the active
   issue's `Current Status`, finish line, blockers, and Project fields before
   parking work.
+- For issue-backed work that is resolved without a merged PR, close the owning
+  issue with a concise evidence-backed comment, or leave it open with the current
+  blocker and next action. Do not rely on a local summary as the only record.
 - Before parking or closing a workstream, run a Plan Direction Checkpoint:
   identify the next action, how it fits the current plan, whether the plan or
   issue graph changed, and where that durable state was updated.
@@ -313,6 +333,9 @@ Use a compact closeout report:
 - Cleanup: artifacts, plans, handoffs, branches, or worktrees removed or left
   intentionally.
 - State: dirty files, PR status, CI status, or plan status when relevant.
+- Owning surface: PR, issue, GitHub plan, saved local plan, or none; say whether
+  it was closed, updated, left open or parked with current blocker and next
+  action, or not applicable.
 - Safe to exit: yes/no/conditional, with the condition if needed.
 
 If there are no remaining items, say so plainly. Do not over-explain command
