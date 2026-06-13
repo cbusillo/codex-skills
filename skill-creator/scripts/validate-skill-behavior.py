@@ -81,6 +81,16 @@ def command_policy_prefixes(skill_name: str) -> set[tuple[str, ...]]:
     return prefixes
 
 
+def command_policy_by_id(skill_name: str, policy_id: str) -> dict[str, Any]:
+    frontmatter = skill_frontmatter(skill_name)
+    policies = frontmatter.get("policy", {}).get("command_policies", [])
+    require(isinstance(policies, list), f"{skill_name} command policies must be a list")
+    for policy in policies:
+        if isinstance(policy, dict) and policy.get("id") == policy_id:
+            return policy
+    raise AssertionError(f"{skill_name} must define command policy {policy_id}")
+
+
 def test_chronicle_stays_quiet_when_unavailable() -> None:
     text = (ROOT / "chronicle" / "SKILL.md").read_text()
     lower = text.lower()
@@ -549,6 +559,17 @@ def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
     normalized_github = " ".join(github_text.split())
     close_argv = command_argv("github-plan", "github-plan-close")
     close_argv_text = " ".join(close_argv)
+    raw_issue_close_policy = command_policy_by_id("github", "prefer-gh-issue-close-helper")
+    raw_issue_close_preferred = raw_issue_close_policy.get("preferred", [])
+    require(
+        isinstance(raw_issue_close_preferred, list),
+        "github raw issue close policy preferred entries must be a list",
+    )
+    raw_issue_close_preferred_text = " ".join(
+        " ".join(str(token) for token in entry.get("example_argv", []))
+        for entry in raw_issue_close_preferred
+        if isinstance(entry, dict)
+    ).lower()
 
     require(
         close_argv[:3] == ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py"],
@@ -583,12 +604,21 @@ def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
         "github-plan related issue sweep must route plan issue closure through gh-plan close",
     )
     require(
-        "for completed durable plan issues, use `uv run $code_home/skills/github/scripts/gh-plan.py close" in normalized_github,
-        "github raw issue close policy must carve durable plan issues out to gh-plan close",
+        "if the target is a completed durable plan issue, switch to `github-plan`" in normalized_github
+        and "uv run $code_home/skills/github/scripts/gh-plan.py close 123 --comment-file comment.md" in normalized_github,
+        "github raw issue close policy must mention the durable-plan exception without owning it",
     )
     require(
-        "closes non-plan issues by reading an optional close comment from stdin" in normalized_github,
+        "closes ordinary non-plan issues by reading an optional close comment from stdin" in normalized_github,
         "github raw issue close policy must keep gh-issue close for non-plan issues",
+    )
+    require(
+        "github/scripts/gh-issue close" in raw_issue_close_preferred_text,
+        "github raw issue close policy must prefer gh-issue for ordinary closes",
+    )
+    require(
+        "gh-plan.py" not in raw_issue_close_preferred_text,
+        "github raw issue close policy must not list gh-plan as an unconditional preferred helper",
     )
 
 
