@@ -69,7 +69,7 @@ def test_skeleton_redacts_private_shapes(module: ModuleType) -> None:
                 "secret",
                 40,
                 "token=abc123 path /Users/example/private/file.py rel rollout-friction/scripts/foo.py "
-                "tmp /tmp/private.log tilde ~/.ssh/id_rsa email a@example.com",
+                "dot ./local/file.py tmp /tmp/private.log tilde ~/.ssh/id_rsa email a@example.com",
             )
         ],
         top_clusters=10,
@@ -77,9 +77,25 @@ def test_skeleton_redacts_private_shapes(module: ModuleType) -> None:
         trusted_originals=False,
     )
     summary = payload["skeletons"][0]["steps"][0]["summary"]
-    for forbidden in ("/Users/example", "rollout-friction/scripts", "/tmp/private", "~/.ssh", "a@example.com", "token=abc123"):
+    for forbidden in (
+        "/Users/example",
+        "rollout-friction/scripts",
+        "./local/file.py",
+        "/tmp/private",
+        "~/.ssh",
+        "a@example.com",
+        "token=abc123",
+    ):
         if forbidden in summary:
             raise AssertionError(f"skeleton summary leaked {forbidden!r}: {summary}")
+
+
+def test_skeleton_preserves_markup_punctuation(module: ModuleType) -> None:
+    summary = module.sanitize("<context>Review completed.</context> Next sentence.", trusted_originals=False)
+    if "<path-redacted>" in summary:
+        raise AssertionError(f"markup punctuation should not be redacted as a path: {summary}")
+    if "completed.</context>" not in summary:
+        raise AssertionError(f"expected markup sentence punctuation to survive: {summary}")
 
 
 def test_step_kind_matches_success_as_word(module: ModuleType) -> None:
@@ -106,6 +122,7 @@ def main() -> int:
     module = load_module()
     test_clusters_by_signal_signature(module)
     test_skeleton_redacts_private_shapes(module)
+    test_skeleton_preserves_markup_punctuation(module)
     test_step_kind_matches_success_as_word(module)
     test_compacts_long_skeleton(module)
     print("ok validate-cluster-rollout-episodes")

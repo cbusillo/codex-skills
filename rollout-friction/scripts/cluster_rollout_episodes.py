@@ -19,7 +19,7 @@ from typing import Any
 
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|password|secret|bearer)['\"]?\s*[:=]\s*\S+")
 PATH_RE = re.compile(
-    r"(?<![\w:])(?:~|\.{1,2}|/(?:Users|home|private|var|tmp|opt|Volumes)|[A-Za-z]:\\|[A-Za-z0-9_.-]+/)"
+    r"(?<![\w:])(?:~[/\\]|\.{1,2}[/\\]|/(?:Users|home|private|var|tmp|opt|Volumes)|[A-Za-z]:\\|[A-Za-z0-9_.-]+/)"
     r"[^\s,;:)]+"
 )
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
