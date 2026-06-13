@@ -1754,6 +1754,9 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
     assert "The visible decision is how to sequence Codex Lab dogfood work inside the Every Code product area" in rendered
     assert "- **Codex Lab**: Codex Lab dogfood work inside the Every Code product area" in rendered
     assert "Key initiatives: Code Bridge." in rendered
+    assert "Impact: turns finished work into a checkable result before the next cycle commits more effort." in rendered
+    assert "Risk if delayed: the open items can fan out into parallel work before the decision loop closes." in rendered
+    assert "Confidence: medium; based on 3 GitHub items across 1 initiative" in rendered
     assert "Every Code Product Issues MVP" not in rendered
     assert "Every Code product MVP" not in rendered
 
@@ -1983,6 +1986,180 @@ def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
 
     assert "## Every Code Product and Skills Impact" in rendered
     assert "## Skills and Every Code Product Impact" not in rendered
+
+
+def test_render_executive_brief_theme_titles_use_key_phrases_without_semicolon_soup() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 45,
+                    "title": "Define Code Bridge protocol, trust, and payload contract",
+                    "kind": "issue",
+                    "state": "open",
+                },
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 28,
+                    "title": "Codex Lab MVP dogfood plan",
+                    "kind": "issue",
+                    "state": "open",
+                },
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 63,
+                    "title": "Scope owner review follow-up",
+                    "kind": "issue",
+                    "state": "open",
+                },
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+    outcome = next(line for line in rendered.splitlines() if line.startswith("The useful signal is"))
+
+    assert "Code Bridge, Codex Lab, and 1 more related item" in outcome
+    assert ";" not in outcome
+    assert "trust, and payload contract" not in outcome
+
+
+def test_render_executive_brief_theme_titles_keep_title_fallbacks_per_item() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 11,
+                    "title": "fix broken config",
+                    "kind": "issue",
+                    "state": "open",
+                },
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 45,
+                    "title": "Define Code Bridge protocol",
+                    "kind": "issue",
+                    "state": "open",
+                },
+            ]
+        },
+        "priority_sections": [],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+    outcome = next(line for line in rendered.splitlines() if line.startswith("The useful signal is"))
+
+    assert "fix broken config and Code Bridge" in outcome
+    assert "more related" not in outcome
+
+
+def test_render_executive_brief_varies_impact_lines_by_workstream_signal() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "workstream": "Codex Lab",
+                "initiatives": ["Code Bridge"],
+                "items": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 28,
+                        "title": "Codex Lab MVP dogfood plan",
+                        "kind": "issue",
+                        "state": "open",
+                    }
+                ],
+                "item_count": 1,
+                "recently_completed": [],
+            },
+            {
+                "name": "Example Skill Updates",
+                "workstream": "Work Brief skill",
+                "items": [],
+                "recently_completed": [
+                    {
+                        "repo": "example-org/example-skills",
+                        "number": 203,
+                        "title": "Add helper validation",
+                        "kind": "pr",
+                        "state": "merged",
+                    }
+                ],
+                "recently_completed_count": 1,
+            },
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+    bullets = [line for line in rendered.splitlines() if line.startswith("- **")]
+
+    assert any("Impact: sequencing the open thread now keeps it from stalling neighboring priorities." in line for line in bullets)
+    assert any("Impact: confirms the shipped change matches intent before attention moves on." in line for line in bullets)
+    assert any("Confidence: medium; based on 1 GitHub item across 1 initiative" in line for line in bullets)
+    assert len(set(bullets)) == len(bullets)
+
+
+def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "workstream": "Codex Lab",
+                "items": [],
+                "recently_completed": [],
+            }
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+    bullet = next(line for line in rendered.splitlines() if line.startswith("- **Codex Lab**"))
+
+    assert "no active signal" in bullet
+    assert "concrete validation path" not in bullet
+    assert "Impact:" not in bullet
+    assert "Risk if delayed:" not in bullet
+    assert "Confidence: low" in bullet
 
 
 def test_render_executive_brief_surfaces_configured_repo_coverage_gap() -> None:

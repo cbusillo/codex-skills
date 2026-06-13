@@ -1509,12 +1509,16 @@ def compact_titles(items: list[dict[str, Any]], limit: int = 3) -> str:
 
 def executive_theme_titles(items: list[dict[str, Any]], limit: int = 2) -> str:
     work_items = real_work_items(items)
-    titles = [str(item.get("title") or "untitled") for item in work_items[:limit]]
-    if not titles:
+    themes: list[str] = []
+    for item in work_items[:limit]:
+        title = str(item.get("title") or "untitled")
+        phrases = title_key_phrases(title)
+        themes.append(phrases[0] if phrases else title)
+    if not themes:
         return "general product and operations work"
     if len(work_items) > limit:
-        titles.append("other related work")
-    return "; ".join(titles)
+        themes.append(item_count_phrase(len(work_items) - limit, "more related item"))
+    return prose_join(themes)
 
 
 def prose_join(items: list[str]) -> str:
@@ -1694,8 +1698,8 @@ def executive_release_titles(items: list[dict[str, Any]], limit: int = 2) -> str
     if not titles:
         return "recent release work"
     if len(items) > limit:
-        titles.append("other releases")
-    return "; ".join(titles)
+        titles.append(item_count_phrase(len(items) - limit, "more release"))
+    return prose_join(titles)
 
 
 def executive_evidence_lines(
@@ -1973,10 +1977,31 @@ def executive_workstream_summary(workstream: ExecutiveWorkstream) -> str:
         if why_now_source
         else "Why now: the collected signal is too thin for a stronger claim."
     )
-    impact = "Impact: gives the next cycle a concrete validation path instead of another planning loop."
-    risk = "Risk if delayed: active follow-ups can drift into parallel work before the decision loop closes."
-    confidence = "Confidence: medium; GitHub shows direction and momentum, but not full product or deployment state."
-    return f"{workstream.relationship}: {movement_text}.{initiative_text} {why_now} {impact} {risk} {confidence}"
+    analysis: list[str] = []
+    if workstream.completed_count and workstream.active_count:
+        analysis.append("Impact: turns finished work into a checkable result before the next cycle commits more effort.")
+    elif workstream.active_count:
+        analysis.append("Impact: sequencing the open thread now keeps it from stalling neighboring priorities.")
+    elif workstream.completed_count:
+        analysis.append("Impact: confirms the shipped change matches intent before attention moves on.")
+
+    if workstream.active_count >= 2:
+        analysis.append("Risk if delayed: the open items can fan out into parallel work before the decision loop closes.")
+    elif workstream.active_count == 1:
+        analysis.append("Risk if delayed: the open thread can drift without an explicit owner or next decision.")
+    elif workstream.completed_count:
+        analysis.append("Risk if delayed: finished work may go unvalidated and quietly diverge from intent.")
+
+    total_signal = workstream.active_count + workstream.completed_count
+    if total_signal:
+        initiative_count = len(workstream.initiatives)
+        initiative_clause = f" across {item_count_phrase(initiative_count, 'initiative')}" if initiative_count else ""
+        analysis.append(
+            f"Confidence: medium; based on {item_count_phrase(total_signal, 'GitHub item')}{initiative_clause}, which shows direction but not full product or deployment state."
+        )
+    else:
+        analysis.append("Confidence: low; the configured area was present, but GitHub did not show enough movement for a stronger claim.")
+    return f"{workstream.relationship}: {movement_text}.{initiative_text} {why_now} {' '.join(analysis)}"
 
 
 def executive_story_lines(
