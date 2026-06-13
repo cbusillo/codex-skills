@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--load-policy", choices=("none", "jit_chat", "api_explicit"))
+    parser.add_argument("--ttl", type=int)
+    parser.add_argument("--context-length", type=int)
+    parser.add_argument("--flash-attention", action="store_true")
+    parser.add_argument("--warmup", action="store_true")
+    parser.add_argument("--unload-after", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -73,6 +79,12 @@ def run_one(endpoint: dict[str, Any], role: dict[str, Any], model: str, args: ar
         max_tokens=args.max_tokens,
         timeout=args.timeout,
         temperature=0,
+        load_policy=args.load_policy,
+        ttl=args.ttl,
+        context_length=args.context_length,
+        flash_attention=args.flash_attention,
+        warmup=args.warmup,
+        unload_after=args.unload_after,
     )
     started = time.monotonic()
     try:
@@ -84,6 +96,8 @@ def run_one(endpoint: dict[str, Any], role: dict[str, Any], model: str, args: ar
             "elapsed_seconds": round(elapsed, 3),
             "content_chars": len(result["content"]),
             "content_preview": result["content"][:80],
+            "served_model": result.get("served_model"),
+            "lifecycle": result.get("lifecycle"),
         }
     except LocalLLMError as exc:
         elapsed = time.monotonic() - started

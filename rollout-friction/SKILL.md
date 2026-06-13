@@ -20,7 +20,7 @@ resources:
     description: Legacy broad extraction of destination-aware durable-memory candidates from local rollout/session traces.
   - path: scripts/review_rollout_memory_batches.py
     kind: script
-    description: Run trusted-local LLM review over extractor prompt batches and validate coverage.
+    description: Run trusted-local LLM review over extractor prompt batches with local-llm API lifecycle support and validate coverage.
   - path: scripts/reduce_rollout_memory_reviews.py
     kind: script
     description: Reduce strict-valid local LLM review outputs into a draft apply plan.
@@ -99,6 +99,12 @@ commands:
         "run",
         "rollout-friction/scripts/review_rollout_memory_batches.py",
         ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
+        "--role",
+        "rollout_memory_review",
+        "--load-policy",
+        "api_explicit",
+        "--unload-after",
+        "--warmup",
         "--output-dir",
         ".local/rollout-memory/<run-id>/reviews",
       ]
@@ -267,8 +273,14 @@ memory/profile/local-config candidates.
    likely to truncate or omit candidate IDs. Validate with
    `validate_rollout_memory_llm_results.py` before scaling.
 4. Use `review_rollout_memory_batches.py` only against trusted local/private
-   endpoints. Use `--split-on-failure` when malformed or incomplete batches
-   need deterministic child-batch retries.
+   endpoints. Resolve endpoint, role, model, TTL, and context through the
+   `local-llm` skill's API-first lifecycle. For broad extraction batches,
+   prefer `--role rollout_memory_review --load-policy api_explicit --warmup
+   --unload-after` so the context/load parameters are explicit and the warm-up
+   sends only harmless text before private rollout prompts. Use JIT+TTL for
+   smaller scout passes, not broad memory-review batches. Use
+   `--split-on-failure` when malformed or incomplete batches need deterministic
+   child-batch retries.
 5. Apply nothing from a batch that fails strict JSON or candidate coverage until
    it is rerun, split, or manually reviewed.
 6. Run `reduce_rollout_memory_reviews.py` only after strict validation. Treat the
@@ -385,9 +397,9 @@ Look for concrete patterns, not vibes:
 - If LM Studio is unavailable or times out, continue with analyzer output and
   human review. Do not retry repeatedly unless the user explicitly wants an LM
   Studio diagnostic pass.
-- Use `uv run rollout-friction/scripts/benchmark_lm_studio.py` only for local
-  LM Studio setup diagnostics. Benchmark results are machine-local evidence, not
-  public skill content.
+- Prefer `uv run local-llm/scripts/lm_studio_benchmark.py --role rollout_scout`
+  for local setup diagnostics. Benchmark results are machine-local evidence,
+  not public skill content.
 
 ## Reporting
 

@@ -101,7 +101,9 @@ When distilling Chronicle:
    is available, use it to verify endpoint locality and trust before passing raw
    Chronicle input; if locality is cloud, unknown, disabled, or untrusted, abort
    or require explicit approval for the exact destination and scope. Keep this
-   skill's memory-specific evidence, redaction, and write rules in force.
+   skill's memory-specific evidence, redaction, and write rules in force. For
+   private source material, establish API readiness with a harmless warm-up or
+   served-model check before sending the raw archive content.
 3. Use sampling first, then chunked full-archive passes if the sample shows real
    value. For full passes, use a map/reduce flow that helps find recurring
    evidence, then have the Every Code agent review those scout notes before
