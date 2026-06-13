@@ -33,7 +33,8 @@ commands:
   - name: google-search-console-auth-write
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "auth-write"]
+    example_argv:
+      ["uv", "run", "scripts/google-search-console.py", "auth-write"]
     purpose: Runs the explicit write-scope OAuth flow for sitemap submission.
   - name: google-search-console-sites
     source: skill
@@ -43,32 +44,76 @@ commands:
   - name: google-search-console-init
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "init", "~/Downloads/client_secret.json"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/google-search-console.py",
+        "init",
+        "~/Downloads/client_secret.json",
+      ]
     purpose: Installs a desktop OAuth client JSON into the shared local config.
   - name: google-search-console-sitemaps
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "sitemaps", "example.com"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/google-search-console.py",
+        "sitemaps",
+        "example.com",
+      ]
     purpose: Lists submitted sitemaps for a Search Console property.
   - name: google-search-console-submit-sitemap
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "submit-sitemap", "example.com", "https://www.example.com/sitemap.xml"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/google-search-console.py",
+        "submit-sitemap",
+        "example.com",
+        "https://www.example.com/sitemap.xml",
+      ]
     purpose: Submits a sitemap using the separate write token.
   - name: google-search-console-search-analytics
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "search-analytics", "example.com", "--start-date", "YYYY-MM-DD", "--end-date", "YYYY-MM-DD", "--dimension", "query"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/google-search-console.py",
+        "search-analytics",
+        "example.com",
+        "--start-date",
+        "YYYY-MM-DD",
+        "--end-date",
+        "YYYY-MM-DD",
+        "--dimension",
+        "query",
+      ]
     purpose: Queries Search Analytics rows for a site property.
   - name: google-search-console-inspect
     source: skill
     resource_path: scripts/google-search-console.py
-    example_argv: ["uv", "run", "scripts/google-search-console.py", "inspect", "example.com", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/google-search-console.py",
+        "inspect",
+        "example.com",
+        "https://www.example.com/",
+      ]
     purpose: Retrieves URL inspection status for a property URL.
   - name: google-cloud-inventory
     source: skill
     resource_path: scripts/google-cloud-inventory.sh
-    example_argv: ["scripts/google-cloud-inventory.sh", "--project", "<project-id>"]
+    example_argv:
+      ["scripts/google-cloud-inventory.sh", "--project", "<project-id>"]
     purpose: Collects read-only Google Cloud project inventory for SEO tooling triage.
   - name: bing-webmaster-status
     source: skill
@@ -83,37 +128,92 @@ commands:
   - name: bing-webmaster-submit-feed
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-feed", "https://www.example.com/", "https://www.example.com/sitemap.xml"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "submit-feed",
+        "https://www.example.com/",
+        "https://www.example.com/sitemap.xml",
+      ]
     purpose: Submits a sitemap or feed through Bing Webmaster Tools.
   - name: bing-webmaster-url-info
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "url-info", "https://www.example.com/", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "url-info",
+        "https://www.example.com/",
+        "https://www.example.com/",
+      ]
     purpose: Reads Bing index details for one URL.
   - name: bing-webmaster-submit-url
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-url", "https://www.example.com/", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "submit-url",
+        "https://www.example.com/",
+        "https://www.example.com/",
+      ]
     purpose: Submits one URL directly to Bing Webmaster Tools.
   - name: bing-webmaster-url-quota
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "url-quota", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "url-quota",
+        "https://www.example.com/",
+      ]
     purpose: Checks Bing URL submission quota for a verified site.
   - name: bing-webmaster-submit-url-batch
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "submit-url-batch", "https://www.example.com/", "--url-file", "urls.txt"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "submit-url-batch",
+        "https://www.example.com/",
+        "--url-file",
+        "urls.txt",
+      ]
     purpose: Submits up to 500 URLs directly to Bing Webmaster Tools.
   - name: bing-indexnow-verify
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "indexnow-verify", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "indexnow-verify",
+        "https://www.example.com/",
+      ]
     purpose: Shows IndexNow key hosting instructions, redacting the key unless explicitly revealed.
   - name: bing-indexnow-submit
     source: skill
     resource_path: scripts/bing-webmaster.py
-    example_argv: ["uv", "run", "scripts/bing-webmaster.py", "indexnow-submit", "--url", "https://www.example.com/"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/bing-webmaster.py",
+        "indexnow-submit",
+        "--url",
+        "https://www.example.com/",
+      ]
     purpose: Submits URL changes through IndexNow using the configured IndexNow key.
 ---
 
@@ -162,6 +262,11 @@ verification file. Bing Webmaster API keys are user-scoped in Bing Webmaster
 Tools, so treat them like account credentials.
 
 ## Search Console OAuth
+
+Search Console commands use OAuth client JSON and local OAuth tokens; they do
+not use `PAGESPEED_INSIGHTS_API_KEY`, `BING_WEBMASTER_API_KEY`, or
+`BING_INDEXNOW_KEY`. Those API keys belong to PageSpeed, Bing Webmaster Tools,
+and IndexNow workflows only.
 
 The OAuth client should be a Google Auth Platform / APIs & Services
 **Desktop app** client in the shared tooling project. If the app is in Testing,

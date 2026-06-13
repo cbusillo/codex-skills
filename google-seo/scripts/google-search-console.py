@@ -45,6 +45,17 @@ RAW_SENSITIVE_KEYS = {
 }
 
 
+class OAuthTokenRequestError(Exception):
+    def __init__(self, status_code: int, oauth_error: str | None = None):
+        super().__init__(oauth_error or f"HTTP {status_code}")
+        self.status_code = status_code
+        self.oauth_error = oauth_error
+
+
+class TokenFileError(Exception):
+    pass
+
+
 def runtime_home() -> Path:
     if os.environ.get("CODE_HOME"):
         return Path(os.environ["CODE_HOME"]).expanduser()
@@ -116,6 +127,7 @@ def token_path(access_level: str) -> Path:
     if access_level == "write":
         return WRITE_TOKEN_PATH
     fail(f"unknown access level: {access_level}")
+    raise AssertionError("unreachable")
 
 
 def scopes_for(access_level: str) -> list[str]:
@@ -124,15 +136,30 @@ def scopes_for(access_level: str) -> list[str]:
     if access_level == "write":
         return [WRITE_SCOPE]
     fail(f"unknown access level: {access_level}")
+    raise AssertionError("unreachable")
 
 
 def load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         fail(f"missing {path}")
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         fail(f"invalid JSON in {path}: {exc}")
+    if not isinstance(data, dict):
+        fail(f"invalid JSON object in {path}")
+    return data
+    raise AssertionError("unreachable")
+
+
+def try_load_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TokenFileError from exc
+    if not isinstance(data, dict):
+        raise TokenFileError
+    return data
 
 
 def client_config() -> dict[str, Any]:
@@ -144,6 +171,18 @@ def client_config() -> dict[str, Any]:
     if not data.get("client_id") or not data.get("client_secret"):
         fail(f"{CLIENT_PATH} must contain an OAuth client_id and client_secret")
     return data
+
+
+def client_config_ready() -> bool:
+    try:
+        data = try_load_json(CLIENT_PATH)
+    except TokenFileError:
+        return False
+    if "installed" in data:
+        data = data["installed"]
+    elif "web" in data:
+        data = data["web"]
+    return bool(isinstance(data, dict) and data.get("client_id") and data.get("client_secret"))
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -200,9 +239,20 @@ def http_json(
             payload = response.read().decode("utf-8")
             return json.loads(payload) if payload else {}
     except urllib.error.HTTPError as exc:
-        fail(f"HTTP {exc.code} from {url}; response detail omitted", public=False)
-    except urllib.error.URLError as exc:
-        fail(f"request failed for {url}; reason omitted", public=False)
+        fail(f"HTTP {exc.code} from Search Console endpoint; response detail omitted", public=False)
+    except urllib.error.URLError:
+        fail("request failed for Search Console endpoint; reason omitted", public=False)
+    raise AssertionError("unreachable")
+
+
+def oauth_error_from_response(exc: urllib.error.HTTPError) -> str | None:
+    try:
+        payload = exc.read().decode("utf-8")
+        data = json.loads(payload) if payload else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    value = data.get("error") if isinstance(data, dict) else None
+    return str(value) if value else None
 
 
 def token_request(params: dict[str, str]) -> dict[str, Any]:
@@ -220,22 +270,142 @@ def token_request(params: dict[str, str]) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        fail(
-            f"OAuth token request failed with HTTP {exc.code}; response detail omitted",
-            public=False,
-        )
+        raise OAuthTokenRequestError(exc.code, oauth_error_from_response(exc)) from exc
+    except urllib.error.URLError as exc:
+        raise OAuthTokenRequestError(0) from exc
+
+
+def auth_command_for(access_level: str) -> str:
+    if access_level == "read":
+        return "auth"
+    if access_level == "write":
+        return "auth-write"
+    fail(f"unknown access level: {access_level}")
+    raise AssertionError("unreachable")
+
+
+def refresh_access_token(
+    access_level: str,
+    *,
+    persist: bool = True,
+) -> tuple[dict[str, Any], str]:
+    config = client_config()
+    path = token_path(access_level)
+    try:
+        token_data = load_json(path)
+    except SystemExit as exc:
+        raise TokenFileError("token_file_invalid") from exc
+    refresh_token = token_data.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise TokenFileError(f"{path} has no refresh_token")
+    refreshed = token_request(
+        {
+            "client_id": str(config["client_id"]),
+            "client_secret": str(config["client_secret"]),
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+    )
+    access_token_value = refreshed.get("access_token")
+    if not access_token_value:
+        raise OAuthTokenRequestError(200)
+    if persist:
+        token_data.update(refreshed)
+        token_data["refresh_token"] = refresh_token
+        atomic_json(path, token_data)
+    return refreshed, str(access_token_value)
+
+
+def token_status(access_level: str, *, validate: bool = True) -> dict[str, Any]:
+    path = token_path(access_level)
+    auth_command = auth_command_for(access_level)
+    if not path.exists():
+        return {
+            "configured": False,
+            "state": "missing",
+            "action": f"run {auth_command}",
+        }
+    try:
+        token_data = try_load_json(path)
+    except TokenFileError:
+        return {
+            "configured": True,
+            "state": "invalid",
+            "reason": "token_file_invalid",
+            "action": f"run {auth_command} if this persists",
+        }
+    refresh_token = token_data.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return {
+            "configured": True,
+            "state": "invalid",
+            "reason": "token_file_invalid",
+            "action": f"run {auth_command} if this persists",
+        }
+    if not validate or not CLIENT_PATH.exists():
+        return {
+            "configured": True,
+            "state": "configured",
+            "action": "run status after OAuth client config is installed to validate",
+        }
+    if not client_config_ready():
+        return {
+            "configured": True,
+            "state": "configured",
+            "reason": "oauth_client_invalid",
+            "action": "fix OAuth client config, then run status to validate",
+        }
+
+    try:
+        refresh_access_token(access_level, persist=False)
+    except OAuthTokenRequestError as exc:
+        if exc.oauth_error == "invalid_grant":
+            return {
+                "configured": True,
+                "state": "invalid",
+                "reason": "expired_or_revoked",
+                "action": f"run {auth_command}",
+            }
+        return {
+            "configured": True,
+            "state": "configured",
+            "reason": f"oauth_refresh_http_{exc.status_code}",
+            "action": "retry status later; run auth only if this persists",
+        }
+    except TokenFileError as exc:
+        reason = str(exc) or "token_file_invalid"
+        if reason not in {"oauth_client_invalid", "token_file_invalid"}:
+            reason = "token_file_invalid"
+        return {
+            "configured": True,
+            "state": "invalid",
+            "reason": reason,
+            "action": f"run {auth_command} if this persists",
+        }
+
+    return {
+        "configured": True,
+        "state": "valid",
+        "action": None,
+    }
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
-    read_token_configured = READ_TOKEN_PATH.exists()
-    write_token_configured = WRITE_TOKEN_PATH.exists()
+    read_token = token_status("read")
+    write_token = token_status("write")
+    read_token_configured = bool(read_token["configured"])
+    write_token_configured = bool(write_token["configured"])
     status = {
         "config_dir": str(CONFIG_DIR),
         "client_configured": CLIENT_PATH.exists(),
         "token_configured": read_token_configured,
         "scope": READ_SCOPE,
         "read_token_configured": read_token_configured,
+        "read_token_state": read_token["state"],
+        "read_token_status": read_token,
         "write_token_configured": write_token_configured,
+        "write_token_state": write_token["state"],
+        "write_token_status": write_token,
         "sitemap_submission_configured": write_token_configured,
         "read_scope": READ_SCOPE,
         "write_scope": WRITE_SCOPE,
@@ -284,16 +454,25 @@ def run_auth(access_level: str) -> None:
         fail_oauth_callback_timeout()
     if not server.oauth_code:
         fail("OAuth flow did not return an authorization code")
+    oauth_code = str(server.oauth_code)
+    client_id = str(config["client_id"])
+    client_secret = str(config["client_secret"])
 
-    token_data = token_request(
-        {
-            "code": server.oauth_code,
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        }
-    )
+    try:
+        token_data = token_request(
+            {
+                "code": oauth_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            }
+        )
+    except OAuthTokenRequestError as exc:
+        fail(
+            f"OAuth token request failed with HTTP {exc.status_code}; response detail omitted",
+            public=False,
+        )
     if "refresh_token" not in token_data:
         fail("OAuth response did not include a refresh token; rerun auth with consent")
     token_data["access_level"] = access_level
@@ -312,27 +491,20 @@ def cmd_auth_write(_args: argparse.Namespace) -> None:
 
 
 def access_token(access_level: str = DEFAULT_ACCESS_LEVEL) -> str:
-    config = client_config()
-    path = token_path(access_level)
-    token_data = load_json(path)
-    refresh_token = token_data.get("refresh_token")
-    if not refresh_token:
-        fail(f"{path} has no refresh_token; run auth again")
-    refreshed = token_request(
-        {
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }
-    )
-    token_data.update(refreshed)
-    token_data["refresh_token"] = refresh_token
-    atomic_json(path, token_data)
-    access_token_value = refreshed.get("access_token")
-    if not access_token_value:
-        fail("OAuth refresh response did not include an access token", public=False)
-    return str(access_token_value)
+    try:
+        _, access_token_value = refresh_access_token(access_level)
+    except TokenFileError:
+        fail(f"{token_path(access_level)} has no usable refresh_token; run {auth_command_for(access_level)}")
+    except OAuthTokenRequestError as exc:
+        if exc.oauth_error == "invalid_grant":
+            fail(
+                f"{access_level} token expired or revoked; run {auth_command_for(access_level)}"
+            )
+        fail(
+            f"{access_level} token refresh failed with HTTP {exc.status_code}; response detail omitted",
+            public=False,
+        )
+    return access_token_value
 
 
 def site_url(value: str) -> str:

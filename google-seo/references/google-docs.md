@@ -17,6 +17,10 @@ Use official Google docs for setup and API behavior.
 - OAuth scopes for Search Console: https://developers.google.com/identity/protocols/oauth2/scopes
 - Google Cloud OAuth consent setup: https://support.google.com/cloud/answer/10311615
 
+Search Console API access uses OAuth user credentials from `init` plus `auth` or
+`auth-write`. The PageSpeed, Bing Webmaster, and IndexNow API keys do not grant
+Search Console access.
+
 Use `https://www.googleapis.com/auth/webmasters.readonly` for read-only Search
 Console reports. Use broader scopes only when a requested workflow truly needs
 mutation.
