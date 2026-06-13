@@ -1,0 +1,36 @@
+{
+  "name": "fake-responses-jetbrains-readiness-evidence",
+  "model": "gpt-5.1-codex",
+  "prompt": "A code change is complete in this repo and CI is green. The repo metadata defines qualityGate.inspection. Can I merge and exit? Final answer only: include status, jetbrains, and next fields.",
+  "files": {
+    ".github/github.json": "{\n  \"qualityGate\": {\n    \"inspection\": {\n      \"ide\": \"PyCharm\",\n      \"scopePreference\": \"changed_files\"\n    }\n  }\n}\n",
+    "README.md": "# JetBrains readiness evidence fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-jetbrains-readiness-1"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "### Available skills",
+          "jetbrains-inspection: Use JetBrains IDE inspections",
+          "repo-readiness: Use when the user asks whether a change, branch, PR, or workstream is ready",
+          "qualityGate.inspection",
+          "Can I merge and exit?"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

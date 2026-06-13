@@ -144,7 +144,7 @@ findings; stale results still exit non-zero and are not clean.
   IDE warnings, static analysis, or inspection quality gates.
 - When normal tests pass but IDE-only analysis may catch framework/plugin issues.
 
-For tiny docs-only or non-code edits, record a concise not-run reason when an
+For docs-only or non-code edits, record a concise not-run reason when an
 inspection would be disproportionate.
 
 ## Scope Selection
@@ -161,7 +161,14 @@ policy. The helper reads `.github/github.json` when present:
 - `jetbrains.worktreeStrategy`
 - `jetbrains.scopePreference`
 
-If config is absent, the helper infers from git and the current working tree.
+If config is absent, the helper infers from git and the current working tree. For
+a one-off inspection, a missing inspection config can use the safe default
+`changed_files` scope when the helper can infer the correct route. Do not
+silently turn that inference into durable repo policy. If the configured IDE,
+scope, project path, or worktree strategy is blank, contradictory, or feels
+wrong for the active worktree, ask the user before changing policy or treating
+the value as authoritative; otherwise report the mismatch as a not-clean
+readiness blocker.
 
 ## Worktree Safety
 

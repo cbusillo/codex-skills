@@ -1,0 +1,23 @@
+{
+  "name": "local-llm-jetbrains-readiness-evidence",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user says: I changed Python code in this repo, CI is green, and .github/github.json defines qualityGate.inspection with PyCharm changed_files. No JetBrains inspection result or not-run reason has been provided. Can I merge and exit now? Choose the readiness status and the JetBrains readiness/hand-off helper command from the loaded skill metadata. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: status, jetbrains_required, jetbrains_state, next.",
+  "files": {
+    ".github/github.json": "{\n  \"qualityGate\": {\n    \"inspection\": {\n      \"ide\": \"PyCharm\",\n      \"scopePreference\": \"changed_files\"\n    }\n  }\n}\n",
+    "README.md": "# Local LLM JetBrains readiness fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "status=not-ready",
+      "jetbrains_required=true",
+      "jetbrains_state=missing",
+      "closeout"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

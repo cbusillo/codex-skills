@@ -391,6 +391,21 @@ skills:
       - readiness_closeout
       - script_helper
     checks:
+      - check_id: fake-responses-jetbrains-readiness-evidence
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-responses-jetbrains-readiness-evidence.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Deterministic harness fixture checks that a configured code-change
+            readiness prompt receives the JetBrains evidence and not-run-reason
+            contract in model context.
       - check_id: jb-inspect-tests
         kind: script_test
         mode: ci
@@ -401,6 +416,34 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: Inspection helper routing and lifecycle covered by tests.
+      - check_id: jetbrains-readiness-evidence-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Behavior validation requires configured code-change readiness,
+            GitHub PR/merge moments, and closeout to carry JetBrains evidence or
+            explicit not-run reasons.
+      - check_id: local-llm-jetbrains-readiness-evidence
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-jetbrains-readiness-evidence.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Local-model advisory fixture checks that a code-change readiness
+            prompt with configured inspection is classified as not fully ready
+            when JetBrains evidence and not-run reasons are both absent.
     known_gaps:
       - No performance budget yet for inspection closeout flows.
   launchplane:
@@ -666,6 +709,19 @@ skills:
       - readiness_closeout
       - github_workflow
     checks:
+      - check_id: jetbrains-readiness-evidence-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Behavior validation requires configured code-change readiness to
+            include JetBrains evidence, tracked findings, or an explicit not-run
+            reason before reporting fully ready.
       - check_id: readiness-closeout-contract
         kind: static_validator
         mode: ci
@@ -822,6 +878,19 @@ skills:
       - readiness_closeout
       - planning
     checks:
+      - check_id: jetbrains-readiness-evidence-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Behavior validation requires closeout to block `Safe to exit: yes`
+            for configured code changes without JetBrains evidence or an
+            explicit not-run reason.
       - check_id: readiness-closeout-contract
         kind: static_validator
         mode: ci
