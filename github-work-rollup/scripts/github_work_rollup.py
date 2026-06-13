@@ -73,6 +73,18 @@ class BriefPeriod:
     source_window: str
 
 
+@dataclass(frozen=True)
+class ExecutiveWorkstream:
+    portfolio_area: str
+    workstream: str
+    relationship: str
+    initiatives: tuple[str, ...]
+    active_count: int
+    completed_count: int
+    active_titles: tuple[str, ...]
+    completed_titles: tuple[str, ...]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect a read-only GitHub work rollup.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional local YAML config.")
@@ -487,21 +499,11 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
     settings = {**settings, "resolved_repositories": repos}
     settings.setdefault("collection_warnings", [])
     recipient_profile = resolve_recipient_profile(settings)
-    items: list[dict[str, Any]] = []
-    for repo in repos:
-        items.extend(collect_repo_items(repo, settings))
-    if settings["subjects"] and (settings["include_external_activity"] or not repos):
-        items.extend(collect_subject_items(settings))
-    items = deduplicate_items(items)
-    buckets = bucket_items(items, settings)
-
-    releases = []
-    workflows = []
-    for repo in repos:
-        releases.extend(collect_repo_releases(repo, settings))
-        workflows.extend(collect_repo_workflows(repo, settings))
+    items, buckets, releases, workflows = collect_activity(settings, repos)
 
     collection_warnings = collection_warnings_from(settings)
+    limitations_list = [*limitations(settings, repos), *collection_warnings]
+    comparison = collect_activity_comparison(settings, repos, buckets, releases, workflows, collection_warnings)
 
     return {
         "ok": True,
@@ -524,10 +526,140 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "summary": summary_counts(buckets, collection_warnings),
         "display_window": display_window_json(settings["window"], settings["timezone"]),
         "priority_sections": priority_sections(items, settings),
-        "limitations": [*limitations(settings, repos), *collection_warnings],
+        "limitations": limitations_list,
+        "coverage_gaps": configured_repo_gaps(repos, buckets, limitations_list),
         "releases": releases,
         "workflows": workflows,
+        "activity_comparison": comparison,
     }
+
+
+def collect_activity(
+    settings: dict[str, Any],
+    repos: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
+    items: list[dict[str, Any]] = []
+    for repo in repos:
+        items.extend(collect_repo_items(repo, settings))
+    if settings["subjects"] and (settings["include_external_activity"] or not repos):
+        items.extend(collect_subject_items(settings))
+    items = deduplicate_items(items)
+    buckets = bucket_items(items, settings)
+
+    releases: list[dict[str, Any]] = []
+    workflows: list[dict[str, Any]] = []
+    for repo in repos:
+        releases.extend(collect_repo_releases(repo, settings))
+        workflows.extend(collect_repo_workflows(repo, settings))
+    return items, buckets, releases, workflows
+
+
+def configured_repo_gaps(repos: list[str], buckets: dict[str, list[dict[str, Any]]], limitations_list: list[str]) -> list[str]:
+    gaps: list[str] = []
+    for repo in repos:
+        repo_errors = [
+            item
+            for rows in buckets.values()
+            for item in rows
+            if item.get("repo") == repo and is_collection_error(item)
+        ]
+        repo_limitations = [note for note in limitations_list if collection_warning_repo(note) == repo]
+        if repo_errors or repo_limitations:
+            gaps.append(repo)
+    return unique(gaps)
+
+
+def collection_warning_repo(note: str) -> str | None:
+    if not note.startswith("Could not collect "):
+        return None
+    prefix, separator, _message = note.partition(":")
+    if not separator:
+        return None
+    _collection_kind, separator, repo = prefix.partition(" for ")
+    return repo.strip() if separator else None
+
+
+def collect_activity_comparison(
+    settings: dict[str, Any],
+    repos: list[str],
+    current_buckets: dict[str, list[dict[str, Any]]],
+    current_releases: list[dict[str, Any]],
+    current_workflows: list[dict[str, Any]],
+    current_warnings: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if settings.get("layout") != "executive":
+        return None
+    if has_collection_failures(current_buckets, current_warnings or []):
+        return {"summary": "Comparison is incomplete because one or more configured sources could not be collected."}
+    current = comparison_counts(current_buckets, current_releases, current_workflows)
+    previous_window = preceding_window(settings["window"])
+    previous_settings = {**settings, "window": previous_window, "collection_warnings": []}
+    try:
+        _, previous_buckets, previous_releases, previous_workflows = collect_activity(previous_settings, repos)
+    except Exception as exc:  # pragma: no cover - defensive for best-effort comparison only
+        return {"summary": f"Previous-window comparison could not be collected: {exc}"}
+    previous_warnings = collection_warnings_from(previous_settings)
+    if has_collection_failures(previous_buckets, previous_warnings):
+        return {"summary": "Comparison is incomplete because one or more configured sources could not be collected in the previous window."}
+    previous = comparison_counts(previous_buckets, previous_releases, previous_workflows)
+    return {
+        "summary": comparison_summary(current, previous, settings["window"]),
+        "current": current,
+        "previous": previous,
+        "previous_window": window_json(previous_window),
+    }
+
+
+def has_collection_failures(buckets: dict[str, list[dict[str, Any]]], warnings: list[str]) -> bool:
+    if any(is_collection_error(item) for rows in buckets.values() for item in rows):
+        return True
+    return any("Could not collect" in warning for warning in warnings)
+
+
+def preceding_window(window: Window) -> Window:
+    duration = window.until - window.since
+    return Window(since=window.since - duration, until=window.since, label=f"previous {window.label}")
+
+
+def comparison_counts(
+    buckets: dict[str, list[dict[str, Any]]],
+    releases: list[dict[str, Any]],
+    workflows: list[dict[str, Any]],
+) -> dict[str, int]:
+    completed_items = real_work_items(buckets.get("recently_completed") or [])
+    open_items = [
+        item
+        for bucket, rows in buckets.items()
+        if bucket != "recently_completed"
+        for item in real_work_items(rows)
+    ]
+    failed_runs = [workflow for workflow in workflows if str(workflow.get("conclusion") or "").casefold() == "failure"]
+    return {
+        "completed": len(completed_items),
+        "open": len(open_items),
+        "releases": len(releases),
+        "failed_runs": len(failed_runs),
+        "visible": len(completed_items) + len(open_items) + len(releases),
+    }
+
+
+def comparison_summary(current: dict[str, int], previous: dict[str, int], window: Window) -> str:
+    current_visible = current.get("visible", 0)
+    previous_visible = previous.get("visible", 0)
+    delta = current_visible - previous_visible
+    if previous_visible == 0 and current_visible:
+        trend = "higher than the previous window, which had no visible work"
+    elif delta > 0:
+        trend = f"higher than the previous window (+{delta})"
+    elif delta < 0:
+        trend = f"lower than the previous window ({delta})"
+    else:
+        trend = "about even with the previous window"
+    period = brief_period({"window": window_json(window)}).source_window
+    return (
+        f"Activity was {trend}: {item_count_phrase(current_visible, 'visible item')} this {period} "
+        f"versus {previous_visible} in the previous {period}."
+    )
 
 
 def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
@@ -1102,16 +1234,23 @@ def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> 
             for item in sorted_items
             if item.get("repo") in repos
             and item.get("bucket") in ACTIONABLE_PRIORITY_BUCKETS
+            and not is_collection_error(item)
         ]
         completed = [
             item
             for item in sorted_items
-            if item.get("repo") in repos and item.get("bucket") == "recently_completed"
+            if item.get("repo") in repos
+            and item.get("bucket") == "recently_completed"
+            and not is_collection_error(item)
         ]
         if matched or completed:
             sections.append(
                 {
                     "name": str(raw.get("name") or "Priority Section"),
+                    "portfolio_area": str(raw.get("portfolio_area") or raw.get("name") or "Priority Section"),
+                    "workstream": str(raw.get("workstream") or ""),
+                    "relationship": str(raw.get("relationship") or ""),
+                    "initiatives": as_str_list(raw.get("initiatives")),
                     "items": matched[:10],
                     "item_count": len(matched),
                     "recently_completed": completed[:max_completed],
@@ -1290,6 +1429,75 @@ def linked_item_ref(item: dict[str, Any]) -> str:
     return f"[{ref}]({url}) {title}" if url else f"{ref} {title}"
 
 
+def is_collection_error(item: dict[str, Any]) -> bool:
+    return item.get("kind") == "collection_error"
+
+
+def real_work_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in items if not is_collection_error(item)]
+
+
+def executive_item_ref(item: dict[str, Any]) -> str:
+    repo = str(item.get("repo") or "")
+    number = item.get("number")
+    title = str(item.get("title") or "untitled")
+    prefix = f"{repo_short_name(repo)}#{number}" if number else repo_short_name(repo)
+    return f"{prefix} {title}".strip()
+
+
+def executive_item_refs(items: list[dict[str, Any]], limit: int = 3) -> str:
+    work_items = real_work_items(items)
+    refs = [executive_item_ref(item) for item in work_items[:limit]]
+    if not refs:
+        return "none collected"
+    if len(work_items) > limit:
+        refs.append(f"{len(work_items) - limit} more")
+    return "; ".join(refs)
+
+
+def executive_item_topic(items: list[dict[str, Any]], limit: int = 2) -> str:
+    work_items = real_work_items(items)
+    if not work_items:
+        return "this work"
+    refs = [executive_item_ref(item) for item in work_items[:limit]]
+    if len(work_items) > limit:
+        refs.append("the rest of the active set")
+    return "; ".join(refs)
+
+
+def item_count_phrase(count: int, singular: str) -> str:
+    suffix = "" if count == 1 else "s"
+    return f"{count} {singular}{suffix}"
+
+
+def repo_visible_work_count(data: dict[str, list[dict[str, Any]]]) -> int:
+    return sum(
+        len(real_work_items(data[key]))
+        for key in ("pr_merged", "pr_closed", "pr_open", "issue_open", "issue_closed")
+    ) + len(data["releases"])
+
+
+def top_visible_repo_names(repo_data: dict[str, dict[str, list[dict[str, Any]]]], limit: int = 4) -> list[str]:
+    ranked = sorted(
+        ((repo_visible_work_count(data), repo) for repo, data in repo_data.items()),
+        key=lambda item: (-item[0], item[1]),
+    )
+    return [repo for count, repo in ranked if count > 0][:limit]
+
+
+def item_group_counts(items: list[dict[str, Any]], limit: int = 4) -> str:
+    counts: dict[str, int] = {}
+    for item in real_work_items(items):
+        repo = str(item.get("repo") or "")
+        if repo:
+            counts[repo_short_name(repo)] = counts.get(repo_short_name(repo), 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    pieces = [f"`{repo}` {count}" for repo, count in ranked[:limit]]
+    if len(ranked) > limit:
+        pieces.append(f"{len(ranked) - limit} more repos")
+    return ", ".join(pieces) if pieces else "none"
+
+
 def compact_titles(items: list[dict[str, Any]], limit: int = 3) -> str:
     titles = [str(item.get("title") or "untitled") for item in items[:limit]]
     if not titles:
@@ -1300,24 +1508,23 @@ def compact_titles(items: list[dict[str, Any]], limit: int = 3) -> str:
 
 
 def executive_theme_titles(items: list[dict[str, Any]], limit: int = 2) -> str:
-    titles = [str(item.get("title") or "untitled") for item in items[:limit]]
-    if not titles:
+    work_items = real_work_items(items)
+    themes: list[str] = []
+    for item in work_items[:limit]:
+        title = str(item.get("title") or "untitled")
+        phrases = title_key_phrases(title)
+        themes.append(phrases[0] if phrases else title)
+    if not themes:
         return "general product and operations work"
-    if len(items) > limit:
-        titles.append("other related work")
-    return "; ".join(titles)
+    if len(work_items) > limit:
+        themes.append(item_count_phrase(len(work_items) - limit, "more related item"))
+    return prose_join(themes)
 
 
 def prose_join(items: list[str]) -> str:
     if len(items) <= 2:
         return " and ".join(items)
     return ", ".join(items[:-1]) + f", and {items[-1]}"
-
-
-def executive_action_join(items: list[str]) -> str:
-    if len(items) <= 2:
-        return " and ".join(items)
-    return "; ".join(items[:-1]) + f"; and {items[-1]}"
 
 
 def brief_period(payload: dict[str, Any]) -> BriefPeriod:
@@ -1358,50 +1565,6 @@ def brief_period(payload: dict[str, Any]) -> BriefPeriod:
     )
 
 
-def audience_phrase(profile: dict[str, Any]) -> str:
-    company = profile.get("company")
-    if isinstance(company, str) and company.strip():
-        return company
-    return "the team"
-
-
-def impact_for_repo(data: dict[str, list[dict[str, Any]]], profile: dict[str, Any]) -> str:
-    if data["releases"]:
-        if data["attention"]:
-            return (
-                "That matters because finished work has moved from internal activity into something people can actually use or verify, "
-                "while there is still a visible decision or follow-up to clear."
-            )
-        return "That matters because finished work has moved from internal activity into something people can actually use or verify."
-    if data["attention"]:
-        return "That matters because there is a visible decision or follow-up to clear."
-    if data["pr_merged"] or data["issue_closed"]:
-        return "That matters because completed work reduces ambiguity and moves the product closer to routine, dependable use."
-    if data["pr_open"] or data["issue_open"]:
-        return "That matters because the remaining work is visible enough to decide whether it should stay active, wait, or become a later follow-up."
-    if data["pr_closed"]:
-        return "That matters because abandoned or superseded paths are being cleared instead of left as distracting noise."
-    return "That matters because it gives the next planning conversation a clearer starting point."
-
-
-def repo_owner_outcome_sentence(repo: str, data: dict[str, list[dict[str, Any]]], profile: dict[str, Any]) -> str | None:
-    actions = []
-    if data["releases"]:
-        actions.append("made finished changes available as a release")
-    if data["pr_merged"]:
-        actions.append(f"finished work around {executive_theme_titles(data['pr_merged'])}")
-    if data["issue_closed"]:
-        actions.append(f"resolved work around {executive_theme_titles(data['issue_closed'])}")
-    if data["pr_closed"]:
-        actions.append("cleared abandoned or superseded change paths")
-    if data["pr_open"] or data["issue_open"]:
-        open_items = [*data["pr_open"], *data["issue_open"]]
-        actions.append(f"kept {executive_theme_titles(open_items)} visible for follow-up")
-    if not actions:
-        return None
-    return f"`{repo_short_name(repo)}` {executive_action_join(actions)}. {impact_for_repo(data, profile)}"
-
-
 def repo_outcome_sentence(repo: str, data: dict[str, list[dict[str, Any]]]) -> str | None:
     pieces = []
     if data["releases"]:
@@ -1433,11 +1596,66 @@ def workflow_health_summary(repo_data: dict[str, dict[str, list[dict[str, Any]]]
     return total, successful, failed
 
 
+def failed_workflow_items(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> list[dict[str, Any]]:
+    failed: list[dict[str, Any]] = []
+    for repo, data in repo_data.items():
+        for workflow in data["workflows"]:
+            if str(workflow.get("conclusion") or "").casefold() == "failure":
+                failed.append({**workflow, "repo": repo})
+    return failed
+
+
+def workflow_item_ref(workflow: dict[str, Any]) -> str:
+    repo = repo_short_name(str(workflow.get("repo") or ""))
+    name = str(workflow.get("name") or workflow.get("workflowName") or "workflow")
+    url = workflow.get("url")
+    label = f"`{repo}` {name}" if repo else name
+    return f"[{label}]({url})" if isinstance(url, str) and url else label
+
+
+def failed_workflow_lines(workflows: list[dict[str, Any]], limit: int = 5) -> list[str]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for workflow in workflows:
+        repo = str(workflow.get("repo") or "")
+        name = str(workflow.get("name") or workflow.get("workflowName") or "workflow")
+        key = (repo, name)
+        entry = grouped.setdefault(key, {"workflow": workflow, "count": 0})
+        entry["count"] += 1
+
+    lines: list[str] = []
+    ranked = sorted(grouped.values(), key=lambda entry: (-int(entry["count"]), workflow_item_ref(entry["workflow"])))
+    for entry in ranked[:limit]:
+        count = int(entry["count"])
+        ref = workflow_item_ref(entry["workflow"])
+        if count == 1:
+            lines.append(f"- {ref} failed once in this window.")
+        else:
+            lines.append(f"- {ref} failed {count} times in this window.")
+    remaining = len(ranked) - limit
+    if remaining > 0:
+        lines.append(f"- Plus {item_count_phrase(remaining, 'additional failed workflow group')}.")
+    return lines
+
+
+def failed_workflow_topics(workflows: list[dict[str, Any]], limit: int = 2) -> str:
+    grouped: dict[tuple[str, str], int] = {}
+    for workflow in workflows:
+        repo = repo_short_name(str(workflow.get("repo") or ""))
+        name = str(workflow.get("name") or workflow.get("workflowName") or "workflow")
+        grouped[(repo, name)] = grouped.get((repo, name), 0) + 1
+    ranked = sorted(grouped.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))
+    topics = [f"`{repo}` {name}" for (repo, name), _count in ranked[:limit]]
+    if len(ranked) > limit:
+        topics.append("other failed runs")
+    return prose_join(topics) if topics else "failed runs"
+
+
 def attention_items_from_repo_data(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> list[dict[str, Any]]:
     attention_items: list[dict[str, Any]] = []
     for repo, data in repo_data.items():
         for item in data["attention"]:
-            attention_items.append({**item, "repo": repo})
+            if not is_collection_error(item):
+                attention_items.append({**item, "repo": repo})
     return attention_items
 
 
@@ -1447,17 +1665,14 @@ def repo_risk_lines(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> li
         failed = [workflow for workflow in data["workflows"] if str(workflow.get("conclusion") or "").casefold() == "failure"]
         if failed:
             risk_lines.append(f"`{repo_short_name(repo)}` had {len(failed)} failed workflow run(s).")
-        if data["attention"]:
-            risk_lines.append(f"`{repo_short_name(repo)}` has {len(data['attention'])} item(s) that need explicit attention.")
+        attention = real_work_items(data["attention"])
+        if attention:
+            risk_lines.append(f"`{repo_short_name(repo)}` has {len(attention)} item(s) that need explicit attention.")
     return risk_lines
 
 
 def completion_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
     return total_repo_count(repo_data, "pr_merged") + total_repo_count(repo_data, "pr_closed") + total_repo_count(repo_data, "issue_closed")
-
-
-def executive_finished_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
-    return total_repo_count(repo_data, "pr_merged") + total_repo_count(repo_data, "issue_closed") + total_repo_count(repo_data, "releases")
 
 
 def abandoned_change_total(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> int:
@@ -1478,14 +1693,427 @@ def automation_sentence(workflow_total: int, workflow_success: int, workflow_fai
     return f"Automation had {workflow_total} completed workflow run(s), but none reported success."
 
 
-def executive_automation_sentence(workflow_total: int, workflow_success: int, workflow_failed: int) -> str | None:
-    if not workflow_total:
+def executive_release_titles(items: list[dict[str, Any]], limit: int = 2) -> str:
+    titles = [str(item.get("name") or item.get("tag_name") or "release") for item in items[:limit]]
+    if not titles:
+        return "recent release work"
+    if len(items) > limit:
+        titles.append(item_count_phrase(len(items) - limit, "more release"))
+    return prose_join(titles)
+
+
+def executive_evidence_lines(
+    repo_data: dict[str, dict[str, list[dict[str, Any]]]],
+    period: BriefPeriod,
+) -> list[str]:
+    completed = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_merged"], *data["issue_closed"]]
+    ]
+    cleared = [
+        item
+        for data in repo_data.values()
+        for item in data["pr_closed"]
+    ]
+    open_items = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_open"], *data["issue_open"]]
+    ]
+    releases = [release for data in repo_data.values() for release in data["releases"]]
+
+    lines = [
+        "Concrete GitHub items behind the summary:",
+        f"- Completed by repo: {item_group_counts(completed)}.",
+        f"- Open follow-up by repo: {item_group_counts(open_items)}.",
+        f"- Completed during the {period.source_window}: {executive_item_refs(completed)}.",
+        f"- Still visible for follow-up: {executive_item_refs(open_items)}.",
+    ]
+    if cleared:
+        lines.append(f"- Cleared or superseded paths: {executive_item_refs(cleared)}.")
+    if releases:
+        release_refs = "; ".join(executive_release_titles([release], 1) for release in releases[:3])
+        if len(releases) > 3:
+            release_refs += f"; {len(releases) - 3} more"
+        lines.append(f"- Releases during the {period.source_window}: {release_refs}.")
+    return lines
+
+
+def executive_activity_comparison_line(payload: dict[str, Any]) -> str:
+    comparison = payload.get("activity_comparison") or payload.get("historical_comparison")
+    if isinstance(comparison, str) and comparison.strip():
+        return comparison.strip()
+    if isinstance(comparison, dict):
+        summary = comparison.get("summary") or comparison.get("text")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    return ""
+
+
+def executive_work_counts(repo_data: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, int]:
+    completed = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_merged"], *data["issue_closed"]]
+    ]
+    cleared = [item for data in repo_data.values() for item in data["pr_closed"]]
+    open_items = [item for data in repo_data.values() for item in [*data["pr_open"], *data["issue_open"]]]
+    releases = [release for data in repo_data.values() for release in data["releases"]]
+    return {
+        "completed": len(real_work_items(completed)),
+        "cleared": len(real_work_items(cleared)),
+        "open": len(real_work_items(open_items)),
+        "releases": len(releases),
+    }
+
+
+def movement_phrase(counts: dict[str, int]) -> str:
+    pieces: list[str] = []
+    if counts["completed"]:
+        pieces.append(item_count_phrase(counts["completed"], "completed item"))
+    if counts["cleared"]:
+        pieces.append(item_count_phrase(counts["cleared"], "cleared path"))
+    if counts["releases"]:
+        pieces.append(item_count_phrase(counts["releases"], "release"))
+    if counts["open"]:
+        pieces.append(item_count_phrase(counts["open"], "open follow-up"))
+    return prose_join(pieces) if pieces else "no GitHub-visible product movement"
+
+
+def item_titles(items: list[dict[str, Any]]) -> list[str]:
+    return [str(item.get("title") or "untitled") for item in real_work_items(items)]
+
+
+LEADING_TITLE_VERBS = {
+    "add",
+    "align",
+    "approve",
+    "audit",
+    "build",
+    "clarify",
+    "complete",
+    "control",
+    "define",
+    "design",
+    "fix",
+    "gate",
+    "implement",
+    "improve",
+    "investigate",
+    "plan",
+    "port",
+    "prefer",
+    "purge",
+    "record",
+    "remove",
+    "replace",
+    "require",
+    "recheck",
+    "refresh",
+    "rescope",
+    "route",
+    "run",
+    "scope",
+    "surface",
+    "use",
+    "validate",
+}
+TRAILING_SCOPE_TERMS = {"MVP", "PR", "URL"}
+CONNECTOR_WORDS = {"and", "for", "in", "inside", "of", "on", "to", "with"}
+GENERIC_LOWER_TITLE_WORDS = {
+    "contract",
+    "contracts",
+    "dogfood",
+    "gate",
+    "gating",
+    "plan",
+    "protocol",
+    "readiness",
+    "scope",
+    "slice",
+    "sweep",
+    "trust",
+    "validation",
+    "vertical",
+}
+
+
+def is_title_name_token(word: str) -> bool:
+    return word.isupper() or (word[:1].isupper() and word[1:].islower())
+
+
+def normalized_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip(" -:;,.()[]{}")
+
+
+def title_key_phrases(title: str) -> list[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]*", title.replace("-", " "))
+    phrases: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if not is_title_name_token(word) or word.casefold() in LEADING_TITLE_VERBS:
+            index += 1
+            continue
+        candidate_words = [word]
+        index += 1
+        while index < len(words) and len(candidate_words) < 4:
+            next_word = words[index]
+            normalized_next = next_word.casefold()
+            if normalized_next in CONNECTOR_WORDS:
+                index += 1
+                break
+            if is_title_name_token(next_word):
+                candidate_words.append(next_word)
+                index += 1
+                continue
+            if len(candidate_words) == 1 and normalized_next not in GENERIC_LOWER_TITLE_WORDS:
+                candidate_words.append(next_word)
+                index += 1
+            break
+        while candidate_words and candidate_words[-1] in TRAILING_SCOPE_TERMS:
+            candidate_words.pop()
+        phrase = normalized_phrase(" ".join(candidate_words))
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def phrase_mentions(titles: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    phrase_order: dict[str, int] = {}
+    for title in titles:
+        for phrase in title_key_phrases(title):
+            phrase_order.setdefault(phrase, len(phrase_order))
+            counts[phrase] = counts.get(phrase, 0) + 1
+    return [
+        phrase
+        for phrase, _count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], phrase_order[item[0]], item[0].casefold()),
+        )
+    ]
+
+
+def is_portfolio_alias(phrase: str, portfolio_area: str) -> bool:
+    normalized = phrase.casefold()
+    portfolio = portfolio_area.casefold()
+    return normalized == portfolio or normalized in portfolio
+
+
+def is_configured_initiative(phrase: str, initiatives: list[str]) -> bool:
+    normalized = phrase.casefold()
+    return any(normalized == initiative.casefold() for initiative in initiatives)
+
+
+def executive_section_workstream(section: dict[str, Any]) -> ExecutiveWorkstream:
+    portfolio_area = str(section.get("portfolio_area") or section.get("name") or "Priority area")
+    items = real_work_items(section.get("items") or [])
+    completed_items = real_work_items(section.get("recently_completed") or [])
+    titles = [*item_titles(items), *item_titles(completed_items)]
+    inferred_phrases = phrase_mentions(titles)
+    explicit_initiatives = as_str_list(section.get("initiatives"))
+    explicit_workstream = str(section.get("workstream") or "").strip()
+    workstream = explicit_workstream
+    if not workstream:
+        for phrase in inferred_phrases:
+            if not is_portfolio_alias(phrase, portfolio_area) and not is_configured_initiative(
+                phrase, explicit_initiatives
+            ):
+                workstream = phrase
+                break
+    if not workstream:
+        workstream = portfolio_area
+
+    initiatives = explicit_initiatives or [
+        phrase
+        for phrase in inferred_phrases
+        if phrase.casefold() != workstream.casefold() and not is_portfolio_alias(phrase, portfolio_area)
+    ][:3]
+
+    relationship = str(section.get("relationship") or "").strip()
+    if not relationship:
+        if workstream.casefold() != portfolio_area.casefold():
+            relationship = f"{workstream} work inside {portfolio_area}"
+        else:
+            relationship = workstream
+
+    return ExecutiveWorkstream(
+        portfolio_area=portfolio_area,
+        workstream=workstream,
+        relationship=relationship,
+        initiatives=tuple(initiatives),
+        active_count=int(section.get("item_count") or len(items)),
+        completed_count=int(section.get("recently_completed_count") or len(completed_items)),
+        active_titles=tuple(item_titles(items)),
+        completed_titles=tuple(item_titles(completed_items)),
+    )
+
+
+def executive_section_label(section: dict[str, Any]) -> str:
+    workstream = executive_section_workstream(section)
+    if workstream.workstream.casefold() == workstream.portfolio_area.casefold():
+        return workstream.workstream
+    return workstream.relationship
+
+
+def executive_workstream_summary(workstream: ExecutiveWorkstream) -> str:
+    movement: list[str] = []
+    if workstream.completed_count:
+        movement.append(item_count_phrase(workstream.completed_count, "recent completion"))
+    if workstream.active_count:
+        movement.append(item_count_phrase(workstream.active_count, "active follow-up"))
+    movement_text = prose_join(movement) if movement else "no active signal"
+    initiative_text = f" Key initiatives: {prose_join(list(workstream.initiatives[:3]))}." if workstream.initiatives else ""
+    why_now_source = workstream.completed_titles[0] if workstream.completed_titles else None
+    active_source = workstream.active_titles[0] if workstream.active_titles else None
+    why_now = (
+        f"Why now: {why_now_source} has landed, so the next visible decision is {active_source}."
+        if why_now_source and active_source
+        else f"Why now: {active_source} is visible and needs sequencing."
+        if active_source
+        else "Why now: recent completion created a decision point for follow-up."
+        if why_now_source
+        else "Why now: the collected signal is too thin for a stronger claim."
+    )
+    analysis: list[str] = []
+    if workstream.completed_count and workstream.active_count:
+        analysis.append("Impact: turns finished work into a checkable result before the next cycle commits more effort.")
+    elif workstream.active_count:
+        analysis.append("Impact: sequencing the open thread now keeps it from stalling neighboring priorities.")
+    elif workstream.completed_count:
+        analysis.append("Impact: confirms the shipped change matches intent before attention moves on.")
+
+    if workstream.active_count >= 2:
+        analysis.append("Risk if delayed: the open items can fan out into parallel work before the decision loop closes.")
+    elif workstream.active_count == 1:
+        analysis.append("Risk if delayed: the open thread can drift without an explicit owner or next decision.")
+    elif workstream.completed_count:
+        analysis.append("Risk if delayed: finished work may go unvalidated and quietly diverge from intent.")
+
+    total_signal = workstream.active_count + workstream.completed_count
+    if total_signal:
+        initiative_count = len(workstream.initiatives)
+        initiative_clause = f" across {item_count_phrase(initiative_count, 'initiative')}" if initiative_count else ""
+        analysis.append(
+            f"Confidence: medium; based on {item_count_phrase(total_signal, 'GitHub item')}{initiative_clause}, which shows direction but not full product or deployment state."
+        )
+    else:
+        analysis.append("Confidence: low; the configured area was present, but GitHub did not show enough movement for a stronger claim.")
+    return f"{workstream.relationship}: {movement_text}.{initiative_text} {why_now} {' '.join(analysis)}"
+
+
+def executive_story_lines(
+    repo_data: dict[str, dict[str, list[dict[str, Any]]]],
+    focus_sections: list[dict[str, Any]],
+    comparison: str,
+) -> list[str]:
+    completed = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_merged"], *data["issue_closed"]]
+    ]
+    open_items = [item for data in repo_data.values() for item in [*data["pr_open"], *data["issue_open"]]]
+    counts = executive_work_counts(repo_data)
+    top_repos = top_visible_repo_names(repo_data, 4)
+    focus_names = [executive_section_label(section) for section in focus_sections[:2] if isinstance(section, dict)]
+    focus_clause = f", especially {prose_join(focus_names)}" if focus_names else ""
+    if focus_names:
+        lead = f"The visible decision is how to sequence {prose_join(focus_names)}: {movement_phrase(counts)}."
+    elif top_repos:
+        lead = f"Work was concentrated in {repo_display_list(top_repos)}{focus_clause}: {movement_phrase(counts)}."
+    else:
+        lead = "No clear product story was collected in this window."
+
+    outcome = ""
+    if completed and open_items:
+        outcome = f"Finished work landed; the next choices are concentrated around {executive_theme_titles(open_items, 2)}."
+    elif completed:
+        outcome = "The visible work mostly landed; the next question is whether the result matches the intended direction."
+    elif open_items:
+        outcome = f"The useful signal is what still needs a decision: {executive_theme_titles(open_items, 2)}."
+    else:
+        outcome = "There is not enough GitHub-visible movement here to justify a long executive read."
+
+    lines = [lead, outcome]
+    if comparison:
+        lines.append(comparison)
+    return lines
+
+
+def coverage_gap_line(coverage_gaps: list[str]) -> str | None:
+    if not coverage_gaps:
         return None
-    if workflow_failed:
-        return "Automation needs attention because failed workflow runs were collected; check the supporting signal before treating the work as ready."
-    if workflow_success:
-        return "Automation looked healthy in the collected sample."
-    return "Automation ran, but the collected sample did not include a successful run."
+    gap_names = ", ".join(f"`{repo}`" for repo in coverage_gaps)
+    return f"Collection incomplete for {gap_names}; this brief may omit work from those configured sources."
+
+
+def executive_conversation_starters(
+    repo_data: dict[str, dict[str, list[dict[str, Any]]]],
+    focus_sections: list[dict[str, Any]],
+    attention_items: list[dict[str, Any]],
+    failed_workflows: list[dict[str, Any]],
+    period: BriefPeriod,
+) -> list[str]:
+    starters: list[str] = []
+
+    if focus_sections:
+        labels = [executive_section_label(section) for section in focus_sections[:2] if isinstance(section, dict)]
+        if labels:
+            starters.append(
+                f"Which outcome should {prose_join(labels)} prove {period.alignment_window}, and what should wait?"
+            )
+
+    if attention_items:
+        starters.append(
+            f"What decision would unblock {executive_item_refs(attention_items, 2)} {period.alignment_window}?"
+        )
+
+    if failed_workflows:
+        starters.append(
+            f"Should failed runs in {failed_workflow_topics(failed_workflows)} change release confidence, or are they known noise?"
+        )
+
+    open_items = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_open"], *data["issue_open"]]
+    ]
+    if open_items:
+        starters.append(
+            f"Should {executive_theme_titles(open_items, 2)} stay active {period.alignment_window}, wait, or be reframed?"
+        )
+
+    releases = [release for data in repo_data.values() for release in data["releases"]]
+    if releases:
+        starters.append(
+            f"Is {executive_release_titles(releases)} ready for daily use, or should the next brief call out validation risk?"
+        )
+
+    finished_items = [
+        item
+        for data in repo_data.values()
+        for item in [*data["pr_merged"], *data["issue_closed"]]
+    ]
+    if finished_items:
+        starters.append(
+            f"Looking at {executive_theme_titles(finished_items, 2)}, did the completed work deliver what you expected, or is there a gap to close?"
+        )
+
+    focus_items: list[dict[str, Any]] = []
+    for section in focus_sections:
+        focus_items.extend(section.get("recently_completed") or [])
+        focus_items.extend(section.get("items") or [])
+    if focus_items:
+        starters.append(
+            f"Should the next brief keep following {executive_theme_titles(focus_items)}, or shift attention elsewhere?"
+        )
+
+    if not starters:
+        starters.append(f"Is anything from this window worth escalating to the team before {period.followup_phrase}?")
+
+    return starters[:3]
 
 
 def recipient_profile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1531,9 +2159,35 @@ def focus_area_label(payload: dict[str, Any]) -> str:
 
 
 def focus_area_heading(payload: dict[str, Any]) -> str:
+    sections = payload.get("priority_sections") or []
+    if len(sections) == 1 and isinstance(sections[0], dict):
+        label = str(sections[0].get("name") or "").strip()
+        if label:
+            return f"{label} Impact"
+    portfolio_labels = [
+        str(section.get("portfolio_area") or section.get("name") or "")
+        for section in sections
+        if isinstance(section, dict)
+    ]
+    category_labels: list[str] = []
+    for label in portfolio_labels:
+        normalized = label.casefold()
+        if "every code" in normalized:
+            for category in ("Every Code", "Skills") if "skill" in normalized else ("Every Code Product",):
+                if category not in category_labels:
+                    category_labels.append(category)
+            continue
+        if "skill" in normalized:
+            category = "Skills"
+        else:
+            category = label.strip()
+        if category and category not in category_labels:
+            category_labels.append(category)
+    if category_labels:
+        category_order = {"Every Code Product": 0, "Every Code": 1, "Skills": 2}
+        ordered_categories = sorted(category_labels, key=lambda category: (category_order.get(category, 99), category))
+        return f"{prose_join(ordered_categories[:3])} Impact"
     label = focus_area_label(payload)
-    if label == "Codex Skill Updates and Every Code Product Issues":
-        return "Every Code and Skills Impact"
     return f"{label} Impact"
 
 
@@ -1543,54 +2197,6 @@ def decision_framing(profile: dict[str, Any]) -> str:
     if profile.get("framing"):
         return str(profile["framing"])
     return "priority, risk, sequencing, and impact"
-
-
-def executive_headline(
-    repo_data: dict[str, dict[str, list[dict[str, Any]]]],
-    active_repos: list[str],
-    profile: dict[str, Any],
-    focus_sections: list[dict[str, Any]],
-    period: BriefPeriod,
-) -> str:
-    audience = audience_phrase(profile)
-    if not active_repos:
-        return f"No material GitHub movement was collected for {audience} in this window."
-
-    repo_focus = repo_display_list(active_repos, 3)
-    focus_names = [str(section.get("name")) for section in focus_sections[:2] if section.get("name")]
-    if focus_names:
-        focus_text = " and ".join(focus_names)
-        return (
-            f"A {period.summary_subject} advanced {audience}'s product and operations across {repo_focus}, "
-            f"with the clearest movement in {focus_text}."
-        )
-    return f"A {period.summary_subject} advanced {audience}'s product and operations across {repo_focus}."
-
-
-def executive_impact_sentence(
-    finished: int,
-    open_work: int,
-    release_count: int,
-    cleared_paths: int,
-    profile: dict[str, Any],
-) -> str:
-    framing = decision_framing(profile)
-    if finished and open_work:
-        progress_clause = "meaningful work moved forward while follow-up remains visible for sequencing"
-    elif finished:
-        progress_clause = "meaningful work moved forward"
-    elif open_work:
-        progress_clause = "the visible value is clarity about what still needs sequencing"
-    else:
-        progress_clause = "the visible value is situational awareness rather than a finished-work signal"
-
-    details = []
-    if release_count:
-        details.append("some finished work reached a releasable checkpoint")
-    if cleared_paths:
-        details.append("some abandoned or superseded change paths were cleared")
-    suffix = f", and {prose_join(details)}" if details else ""
-    return f"The important read is {framing}: {progress_clause}{suffix}."
 
 
 def report_window_text(payload: dict[str, Any]) -> str:
@@ -1698,12 +2304,11 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     active_repos = active_repo_names(repo_data)
     product_repos = product_signal_repo_names(repo_data)
     recipient = str(payload.get("report_recipient") or "the recipient")
-    completed = completion_total(repo_data)
-    finished = executive_finished_total(repo_data)
     cleared_paths = abandoned_change_total(repo_data)
-    open_work = open_work_total(repo_data)
-    release_count = total_repo_count(repo_data, "releases")
-    workflow_total, workflow_success, workflow_failed = workflow_health_summary(repo_data)
+    failed_workflows = failed_workflow_items(repo_data)
+    focus_sections = payload.get("priority_sections") or []
+    comparison_line = executive_activity_comparison_line(payload)
+    coverage_gaps = as_str_list(payload.get("coverage_gaps"))
 
     lines = [
         f"# {period.title_prefix} Work Brief for {payload['report_recipient']}",
@@ -1714,22 +2319,23 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
         "",
     ]
 
+    comparison_in_summary = False
     if product_repos:
-        lines.append(executive_headline(repo_data, product_repos, profile, payload.get("priority_sections") or [], period))
-        lines.append(executive_impact_sentence(finished, open_work, release_count, cleared_paths, profile))
-        health = executive_automation_sentence(workflow_total, workflow_success, workflow_failed)
-        if health:
-            lines.append(health)
+        lines.extend(executive_story_lines(repo_data, focus_sections, comparison_line))
+        comparison_in_summary = bool(comparison_line)
+        if failed_workflows:
+            lines.append(f"Automation drag was concentrated in {failed_workflow_topics(failed_workflows)}.")
     elif active_repos:
         if cleared_paths:
             lines.append("No product or planning movement was collected, but abandoned or superseded change paths were cleared in this window.")
         else:
             lines.append("No product or planning movement was collected, but automation activity was visible in this window.")
-        health = executive_automation_sentence(workflow_total, workflow_success, workflow_failed)
-        if health:
-            lines.append(health)
     else:
         lines.append("No active work or material changes were collected for the configured scope in this window.")
+
+    gap_line = coverage_gap_line(coverage_gaps)
+    if gap_line:
+        lines.append(gap_line)
 
     attention_items = attention_items_from_repo_data(repo_data)
 
@@ -1739,59 +2345,32 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
             handoff = f" Handoff: {item['handoff']}." if item.get("handoff") else ""
             lines.append(f"- {linked_item_ref(item)}.{handoff}")
 
-    lines.extend(["", "## What This Means", ""])
-    change_lines = [sentence for repo, data in sorted(repo_data.items()) if (sentence := repo_owner_outcome_sentence(repo, data, profile))]
-    if change_lines:
-        lines.extend(f"- {line}" for line in change_lines[:8])
-    else:
-        lines.append("- No meaningful repo changes were collected in this window.")
-
-    focus_sections = payload.get("priority_sections") or []
     if focus_sections:
         lines.extend(["", f"## {focus_area_heading(payload)}", ""])
         for section in focus_sections:
-            name = str(section.get("name") or "Priority area")
-            items = section.get("items") or []
-            completed_items = section.get("recently_completed") or []
-            item_count = int(section.get("item_count") or len(items))
-            completed_count = int(section.get("recently_completed_count") or len(completed_items))
-            themes = executive_theme_titles((completed_items or items), 2) if completed_items or items else "general priority work"
-            if completed_count and item_count:
-                summary = f"finished work moved forward while related follow-up remains visible. Themes: {themes}."
-            elif completed_count:
-                summary = f"finished work moved forward. Themes: {themes}."
-            elif item_count:
-                summary = f"open work remains visible for sequencing. Themes: {themes}."
-            else:
-                summary = "no active signal was collected in this window."
-            lines.append(f"- **{name}**: {summary}")
+            workstream = executive_section_workstream(section)
+            lines.append(f"- **{workstream.workstream}**: {executive_workstream_summary(workstream)}")
 
-    risk_lines = repo_risk_lines(repo_data)
-    if risk_lines:
-        lines.extend(["", "## Decisions or Risks", ""])
-        lines.extend(f"- {line}" for line in risk_lines[:6])
+    lines.extend(["", "## Failed Runs", ""])
+    if failed_workflows:
+        lines.extend(failed_workflow_lines(failed_workflows))
+    else:
+        lines.append("- None collected in this window.")
 
-    lines.extend(["", "## Supporting Signal", ""])
-    lines.append(f"- Completed during the {period.source_window}: {completed} item(s).")
-    lines.append(f"- Open work visible now: {open_work} item(s).")
-    lines.append(f"- Releases during the {period.source_window}: {release_count}.")
-    if workflow_total:
-        lines.append(f"- Automation: {workflow_success} successful and {workflow_failed} failed workflow run(s) collected.")
+    evidence_lines = executive_evidence_lines(repo_data, period)
+    if evidence_lines:
+        lines.extend(["", "## Work Items Behind This Brief", ""])
+        lines.extend(evidence_lines)
+        if comparison_line and not comparison_in_summary:
+            lines.append(f"- Previous-window context: {comparison_line}")
 
-    lines.extend(["", "## Conversation Starters", ""])
-    if risk_lines:
-        lines.append(f"- Do any of the flagged risks need a decision {period.alignment_window}?")
-    if focus_sections:
-        lines.append(f"- Are the {focus_area_label(payload)} changes aligned with how {recipient} expects to use the product {period.alignment_window}?")
-    if open_work:
-        lines.append("- Which visible open work should stay active versus move to backlog?")
-    if not risk_lines and not open_work:
-        lines.append(f"- Is there any follow-up outside GitHub that should be captured before {period.followup_phrase}?")
+    lines.extend(["", "## Questions to Decide", ""])
+    lines.extend(
+        f"- {starter}"
+        for starter in executive_conversation_starters(repo_data, focus_sections, attention_items, failed_workflows, period)
+    )
 
     limitations_list = payload.get("limitations") or []
-    profile_note = profile_source_note(profile)
-    if profile_note:
-        limitations_list = [*limitations_list, profile_note]
     if limitations_list:
         lines.extend(["", "## Source Notes"])
         lines.extend(f"- {item}" for item in limitations_list)

@@ -20,14 +20,15 @@ Treat these as private unless the user explicitly says they are safe to publish:
 - Local filesystem paths, checkout paths, terminal session names, worker
   hostnames, and ignored config paths that reveal machine topology.
 
-## Safe Examples
+## Runtime Authority
 
-Repo-owned product, app, preview, deploy, and health-check URLs are not
-automatically Launchplane context. In private implementation repos, they may be
-committed when they are intentionally documented operational metadata, such as
-top-level `healthUrls` or readiness endpoints in operations docs. This does not
-make Launchplane service/operator/context URLs, trace URLs, provider payloads,
-or copied private runtime evidence safe to publish.
+Launchplane-managed product, app, preview, deploy, provider, lane, tenant, and
+health-check coordinates are runtime authority. Do not commit them as examples,
+repo metadata, workflow defaults, readiness endpoints, or copied provider
+payloads. Use the Launchplane service API, operator UI, managed service records,
+or scoped operator input for real values.
+
+## Safe Examples
 
 Use fake placeholders in committed examples:
 
