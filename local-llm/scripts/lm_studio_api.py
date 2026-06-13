@@ -1,5 +1,12 @@
 """Shared LM Studio/OpenAI-compatible endpoint helpers."""
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
+# ///
+
 from __future__ import annotations
 
 import json
