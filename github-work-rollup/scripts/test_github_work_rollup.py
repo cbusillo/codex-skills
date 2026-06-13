@@ -1581,6 +1581,9 @@ def test_render_executive_brief_markdown() -> None:
         "priority_sections": [
             {
                 "name": "Every Code / Skills",
+                "workstream": "Every Code skill reporting",
+                "relationship": "Every Code skill reporting inside Every Code / Skills",
+                "initiatives": ["Work Brief"],
                 "items": [],
                 "recently_completed": [
                     {
@@ -1601,7 +1604,7 @@ def test_render_executive_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Daily Work Brief for Justin" in rendered
-    assert "Work was concentrated in `code`, `example-skills`, especially Every Code / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
+    assert "The visible decision is how to sequence Every Code skill reporting inside Every Code / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
     assert "Private note" not in rendered
     assert "## Executive Summary" in rendered
     assert "## Needs Justin's Attention" in rendered
@@ -1611,8 +1614,9 @@ def test_render_executive_brief_markdown() -> None:
     assert "## Questions to Decide" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "Finished work landed. Open follow-ups to decide: code#101 Critical Bug." in rendered
-    assert "Every Code / Skills" in rendered
+    assert "Finished work landed; the next choices are concentrated around Critical Bug." in rendered
+    assert "Every Code skill reporting inside Every Code / Skills" in rendered
+    assert "Key initiatives: Work Brief." in rendered
     assert "Deploy production" in rendered
     assert "Completed during the day: code#202 Document auth flow; example-skills#203 Add helper validation." in rendered
     assert "Still visible for follow-up: code#101 Critical Bug." in rendered
@@ -1620,7 +1624,7 @@ def test_render_executive_brief_markdown() -> None:
     assert "No previous-window baseline was collected for this run." not in rendered
     assert "What decision would unblock code#101 Critical Bug today?" in rendered
     assert "Should failed runs in `code` Deploy production change release confidence" in rendered
-    assert "Should code#101 Critical Bug stay active today, wait, or be reframed?" in rendered
+    assert "Should Critical Bug stay active today, wait, or be reframed?" not in rendered
 
     assert "## Summary Table" not in rendered
     assert "## Repo Notes" not in rendered
@@ -1667,6 +1671,318 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
     assert "## Needs Example leader's Attention" in rendered
     assert "What decision would unblock example-repo#1 Decision needed today?" in rendered
     assert "Justin" not in rendered
+
+
+def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_area() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 28,
+                    "title": "Codex Lab MVP dogfood plan",
+                    "kind": "issue",
+                    "state": "open",
+                },
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 45,
+                    "title": "Define Code Bridge protocol, trust, and payload contract",
+                    "kind": "issue",
+                    "state": "open",
+                },
+            ],
+            "recently_completed": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 52,
+                    "title": "Run Codex Lab dogfood readiness sweep",
+                    "kind": "issue",
+                    "state": "closed",
+                }
+            ],
+        },
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "portfolio_area": "Every Code Product Issues",
+                "workstream": "Codex Lab",
+                "relationship": "Codex Lab dogfood work inside the Every Code product area",
+                "initiatives": ["Code Bridge"],
+                "items": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 28,
+                        "title": "Codex Lab MVP dogfood plan",
+                        "kind": "issue",
+                        "state": "open",
+                    },
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 45,
+                        "title": "Define Code Bridge protocol, trust, and payload contract",
+                        "kind": "issue",
+                        "state": "open",
+                    },
+                ],
+                "item_count": 2,
+                "recently_completed": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 52,
+                        "title": "Run Codex Lab dogfood readiness sweep",
+                        "kind": "issue",
+                        "state": "closed",
+                    }
+                ],
+                "recently_completed_count": 1,
+            }
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "The visible decision is how to sequence Codex Lab dogfood work inside the Every Code product area" in rendered
+    assert "- **Codex Lab**: Codex Lab dogfood work inside the Every Code product area" in rendered
+    assert "Key initiatives: Code Bridge." in rendered
+    assert "Every Code Product Issues MVP" not in rendered
+    assert "Every Code product MVP" not in rendered
+
+
+def test_render_executive_brief_infers_workstream_without_using_portfolio_name_as_alias() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 28,
+                    "title": "Codex Lab MVP dogfood plan",
+                    "kind": "issue",
+                    "state": "open",
+                }
+            ],
+            "recently_completed": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 52,
+                    "title": "Run Codex Lab dogfood readiness sweep",
+                    "kind": "issue",
+                    "state": "closed",
+                }
+            ],
+        },
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "items": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 28,
+                        "title": "Codex Lab MVP dogfood plan",
+                        "kind": "issue",
+                        "state": "open",
+                    }
+                ],
+                "item_count": 1,
+                "recently_completed": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 52,
+                        "title": "Run Codex Lab dogfood readiness sweep",
+                        "kind": "issue",
+                        "state": "closed",
+                    }
+                ],
+                "recently_completed_count": 1,
+            }
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "The visible decision is how to sequence Codex Lab work inside Every Code Product Issues" in rendered
+    assert "- **Codex Lab**: Codex Lab work inside Every Code Product Issues" in rendered
+    assert "- **Every Code Product Issues**" not in rendered
+
+
+def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 28,
+                    "title": "Codex lab dogfood plan",
+                    "kind": "issue",
+                    "state": "open",
+                }
+            ]
+        },
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "items": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 28,
+                        "title": "Codex lab dogfood plan",
+                        "kind": "issue",
+                        "state": "open",
+                    }
+                ],
+                "item_count": 1,
+                "recently_completed": [],
+            }
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "- **Codex lab**" in rendered
+    assert "- **Codex**" not in rendered
+
+
+def test_render_executive_brief_does_not_select_configured_initiative_as_workstream() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab"],
+        "layout": "executive",
+        "buckets": {
+            "in_progress": [
+                {
+                    "repo": "example-org/codex-lab",
+                    "number": 45,
+                    "title": "Code Bridge protocol for Codex Lab",
+                    "kind": "issue",
+                    "state": "open",
+                }
+            ]
+        },
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "initiatives": ["Code Bridge"],
+                "items": [
+                    {
+                        "repo": "example-org/codex-lab",
+                        "number": 45,
+                        "title": "Code Bridge protocol for Codex Lab",
+                        "kind": "issue",
+                        "state": "open",
+                    }
+                ],
+                "item_count": 1,
+                "recently_completed": [],
+            }
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "- **Codex Lab**: Codex Lab work inside Every Code Product Issues" in rendered
+    assert "Key initiatives: Code Bridge." in rendered
+    assert "- **Code Bridge**" not in rendered
+
+
+def test_render_executive_brief_keeps_mixed_focus_heading_specific() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [
+            {
+                "name": "Every Code Product Issues",
+                "workstream": "Codex Lab",
+                "items": [],
+                "recently_completed": [],
+            },
+            {
+                "name": "Example Skill Updates",
+                "workstream": "Work Brief skill",
+                "items": [],
+                "recently_completed": [],
+            },
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "## Every Code Product and Skills Impact" in rendered
+    assert "## Every Code Product Impact" not in rendered
+
+
+def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
+    payload = {
+        "ok": True,
+        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "layout": "executive",
+        "buckets": {},
+        "priority_sections": [
+            {
+                "name": "Example Skill Updates",
+                "workstream": "Work Brief skill",
+                "items": [],
+                "recently_completed": [],
+            },
+            {
+                "name": "Every Code Product Issues",
+                "workstream": "Codex Lab",
+                "items": [],
+                "recently_completed": [],
+            },
+        ],
+        "limitations": [],
+        "releases": [],
+        "workflows": [],
+    }
+
+    rendered = github_work_rollup.render_payload(payload, "markdown")
+
+    assert "## Every Code Product and Skills Impact" in rendered
+    assert "## Skills and Every Code Product Impact" not in rendered
 
 
 def test_render_executive_brief_surfaces_configured_repo_coverage_gap() -> None:
@@ -1761,8 +2077,8 @@ def test_render_executive_brief_uses_weekly_window_language() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Weekly Work Brief for Justin" in rendered
-    assert "Work was concentrated in `example-repo`, especially Every Code: 1 completed item and 1 open follow-up." in rendered
-    assert "Looking at example-repo#2 Improve owner summaries, did the completed work deliver what you expected" in rendered
+    assert "The visible decision is how to sequence Every Code: 1 completed item and 1 open follow-up." in rendered
+    assert "Looking at Improve owner summaries, did the completed work deliver what you expected" in rendered
     assert "Completed during the week: example-repo#2 Improve owner summaries." in rendered
     assert "Daily" not in rendered
     assert "focused day of work" not in rendered
@@ -1799,7 +2115,7 @@ def test_render_executive_brief_uses_custom_window_language() -> None:
 
     assert "# Current Work Brief for Justin" in rendered
     assert "Work was concentrated in `example-repo`: 1 completed item." in rendered
-    assert "Looking at example-repo#4 Clarify report cadence, did the completed work deliver what you expected" in rendered
+    assert "Looking at Clarify report cadence, did the completed work deliver what you expected" in rendered
     assert "Completed during the reporting window: example-repo#4 Clarify report cadence." in rendered
     assert "Daily" not in rendered
     assert "Weekly" not in rendered

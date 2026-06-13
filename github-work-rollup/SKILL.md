@@ -95,6 +95,21 @@ Supported config fields:
 - `noise_filters`
 - `priority_sections`
 
+Each `priority_sections` entry may also include executive-facing metadata:
+
+- `portfolio_area`: broad bucket or product area, such as an internal planning
+  section name
+- `workstream`: canonical workstream name to render in executive briefs
+- `relationship`: plain-language relationship between the workstream and the
+  portfolio area
+- `initiatives`: compact list of named initiatives inside the workstream
+
+Use these fields when a GitHub grouping label is broader than the work it
+contains. For example, a portfolio area can be "Every Code Product Issues" while
+the workstream remains "Codex Lab" and the initiative is "Code Bridge". If these
+fields are absent, executive rendering infers a workstream from item titles, but
+explicit metadata is more reliable.
+
 Use `.local/github-work-rollup.yaml` for private routine defaults. Do not commit
 private subjects, repository lists, output paths, or personal routing details.
 Use `references/github-work-rollup.local.example.yaml` as the public-safe shape.

@@ -6,7 +6,7 @@
 timezone: America/New_York
 default_window: 24h
 mode: standup
-layout: operator  # Choices: operator, manager, executive
+layout: operator # Choices: operator, manager, executive
 report_recipient: example team
 people_index: .local/people.yaml
 subjects:
@@ -27,5 +27,12 @@ noise_filters:
     - dependencies
 priority_sections:
   - name: Codex Skill Updates
+    # Optional executive metadata keeps portfolio buckets distinct from the
+    # actual workstreams and initiatives inside them.
+    portfolio_area: Example Product Area
+    workstream: Example Workstream
+    relationship: Example Workstream inside Example Product Area
+    initiatives:
+      - Example Initiative
     repositories:
       - example-org/example-skills

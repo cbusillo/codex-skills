@@ -73,6 +73,18 @@ class BriefPeriod:
     source_window: str
 
 
+@dataclass(frozen=True)
+class ExecutiveWorkstream:
+    portfolio_area: str
+    workstream: str
+    relationship: str
+    initiatives: tuple[str, ...]
+    active_count: int
+    completed_count: int
+    active_titles: tuple[str, ...]
+    completed_titles: tuple[str, ...]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect a read-only GitHub work rollup.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional local YAML config.")
@@ -1235,6 +1247,10 @@ def priority_sections(items: list[dict[str, Any]], settings: dict[str, Any]) -> 
             sections.append(
                 {
                     "name": str(raw.get("name") or "Priority Section"),
+                    "portfolio_area": str(raw.get("portfolio_area") or raw.get("name") or "Priority Section"),
+                    "workstream": str(raw.get("workstream") or ""),
+                    "relationship": str(raw.get("relationship") or ""),
+                    "initiatives": as_str_list(raw.get("initiatives")),
                     "items": matched[:10],
                     "item_count": len(matched),
                     "recently_completed": completed[:max_completed],
@@ -1765,6 +1781,204 @@ def item_titles(items: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("title") or "untitled") for item in real_work_items(items)]
 
 
+LEADING_TITLE_VERBS = {
+    "add",
+    "align",
+    "approve",
+    "audit",
+    "build",
+    "clarify",
+    "complete",
+    "control",
+    "define",
+    "design",
+    "fix",
+    "gate",
+    "implement",
+    "improve",
+    "investigate",
+    "plan",
+    "port",
+    "prefer",
+    "purge",
+    "record",
+    "remove",
+    "replace",
+    "require",
+    "recheck",
+    "refresh",
+    "rescope",
+    "route",
+    "run",
+    "scope",
+    "surface",
+    "use",
+    "validate",
+}
+TRAILING_SCOPE_TERMS = {"MVP", "PR", "URL"}
+CONNECTOR_WORDS = {"and", "for", "in", "inside", "of", "on", "to", "with"}
+GENERIC_LOWER_TITLE_WORDS = {
+    "contract",
+    "contracts",
+    "dogfood",
+    "gate",
+    "gating",
+    "plan",
+    "protocol",
+    "readiness",
+    "scope",
+    "slice",
+    "sweep",
+    "trust",
+    "validation",
+    "vertical",
+}
+
+
+def is_title_name_token(word: str) -> bool:
+    return word.isupper() or (word[:1].isupper() and word[1:].islower())
+
+
+def normalized_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip(" -:;,.()[]{}")
+
+
+def title_key_phrases(title: str) -> list[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]*", title.replace("-", " "))
+    phrases: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if not is_title_name_token(word) or word.casefold() in LEADING_TITLE_VERBS:
+            index += 1
+            continue
+        candidate_words = [word]
+        index += 1
+        while index < len(words) and len(candidate_words) < 4:
+            next_word = words[index]
+            normalized_next = next_word.casefold()
+            if normalized_next in CONNECTOR_WORDS:
+                index += 1
+                break
+            if is_title_name_token(next_word):
+                candidate_words.append(next_word)
+                index += 1
+                continue
+            if len(candidate_words) == 1 and normalized_next not in GENERIC_LOWER_TITLE_WORDS:
+                candidate_words.append(next_word)
+                index += 1
+            break
+        while candidate_words and candidate_words[-1] in TRAILING_SCOPE_TERMS:
+            candidate_words.pop()
+        phrase = normalized_phrase(" ".join(candidate_words))
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def phrase_mentions(titles: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    phrase_order: dict[str, int] = {}
+    for title in titles:
+        for phrase in title_key_phrases(title):
+            phrase_order.setdefault(phrase, len(phrase_order))
+            counts[phrase] = counts.get(phrase, 0) + 1
+    return [
+        phrase
+        for phrase, _count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], phrase_order[item[0]], item[0].casefold()),
+        )
+    ]
+
+
+def is_portfolio_alias(phrase: str, portfolio_area: str) -> bool:
+    normalized = phrase.casefold()
+    portfolio = portfolio_area.casefold()
+    return normalized == portfolio or normalized in portfolio
+
+
+def is_configured_initiative(phrase: str, initiatives: list[str]) -> bool:
+    normalized = phrase.casefold()
+    return any(normalized == initiative.casefold() for initiative in initiatives)
+
+
+def executive_section_workstream(section: dict[str, Any]) -> ExecutiveWorkstream:
+    portfolio_area = str(section.get("portfolio_area") or section.get("name") or "Priority area")
+    items = real_work_items(section.get("items") or [])
+    completed_items = real_work_items(section.get("recently_completed") or [])
+    titles = [*item_titles(items), *item_titles(completed_items)]
+    inferred_phrases = phrase_mentions(titles)
+    explicit_initiatives = as_str_list(section.get("initiatives"))
+    explicit_workstream = str(section.get("workstream") or "").strip()
+    workstream = explicit_workstream
+    if not workstream:
+        for phrase in inferred_phrases:
+            if not is_portfolio_alias(phrase, portfolio_area) and not is_configured_initiative(
+                phrase, explicit_initiatives
+            ):
+                workstream = phrase
+                break
+    if not workstream:
+        workstream = portfolio_area
+
+    initiatives = explicit_initiatives or [
+        phrase
+        for phrase in inferred_phrases
+        if phrase.casefold() != workstream.casefold() and not is_portfolio_alias(phrase, portfolio_area)
+    ][:3]
+
+    relationship = str(section.get("relationship") or "").strip()
+    if not relationship:
+        if workstream.casefold() != portfolio_area.casefold():
+            relationship = f"{workstream} work inside {portfolio_area}"
+        else:
+            relationship = workstream
+
+    return ExecutiveWorkstream(
+        portfolio_area=portfolio_area,
+        workstream=workstream,
+        relationship=relationship,
+        initiatives=tuple(initiatives),
+        active_count=int(section.get("item_count") or len(items)),
+        completed_count=int(section.get("recently_completed_count") or len(completed_items)),
+        active_titles=tuple(item_titles(items)),
+        completed_titles=tuple(item_titles(completed_items)),
+    )
+
+
+def executive_section_label(section: dict[str, Any]) -> str:
+    workstream = executive_section_workstream(section)
+    if workstream.workstream.casefold() == workstream.portfolio_area.casefold():
+        return workstream.workstream
+    return workstream.relationship
+
+
+def executive_workstream_summary(workstream: ExecutiveWorkstream) -> str:
+    movement: list[str] = []
+    if workstream.completed_count:
+        movement.append(item_count_phrase(workstream.completed_count, "recent completion"))
+    if workstream.active_count:
+        movement.append(item_count_phrase(workstream.active_count, "active follow-up"))
+    movement_text = prose_join(movement) if movement else "no active signal"
+    initiative_text = f" Key initiatives: {prose_join(list(workstream.initiatives[:3]))}." if workstream.initiatives else ""
+    why_now_source = workstream.completed_titles[0] if workstream.completed_titles else None
+    active_source = workstream.active_titles[0] if workstream.active_titles else None
+    why_now = (
+        f"Why now: {why_now_source} has landed, so the next visible decision is {active_source}."
+        if why_now_source and active_source
+        else f"Why now: {active_source} is visible and needs sequencing."
+        if active_source
+        else "Why now: recent completion created a decision point for follow-up."
+        if why_now_source
+        else "Why now: the collected signal is too thin for a stronger claim."
+    )
+    impact = "Impact: gives the next cycle a concrete validation path instead of another planning loop."
+    risk = "Risk if delayed: active follow-ups can drift into parallel work before the decision loop closes."
+    confidence = "Confidence: medium; GitHub shows direction and momentum, but not full product or deployment state."
+    return f"{workstream.relationship}: {movement_text}.{initiative_text} {why_now} {impact} {risk} {confidence}"
+
+
 def executive_story_lines(
     repo_data: dict[str, dict[str, list[dict[str, Any]]]],
     focus_sections: list[dict[str, Any]],
@@ -1778,20 +1992,22 @@ def executive_story_lines(
     open_items = [item for data in repo_data.values() for item in [*data["pr_open"], *data["issue_open"]]]
     counts = executive_work_counts(repo_data)
     top_repos = top_visible_repo_names(repo_data, 4)
-    focus_names = [str(section.get("name")) for section in focus_sections[:2] if section.get("name")]
+    focus_names = [executive_section_label(section) for section in focus_sections[:2] if isinstance(section, dict)]
     focus_clause = f", especially {prose_join(focus_names)}" if focus_names else ""
-    if top_repos:
+    if focus_names:
+        lead = f"The visible decision is how to sequence {prose_join(focus_names)}: {movement_phrase(counts)}."
+    elif top_repos:
         lead = f"Work was concentrated in {repo_display_list(top_repos)}{focus_clause}: {movement_phrase(counts)}."
     else:
         lead = "No clear product story was collected in this window."
 
     outcome = ""
     if completed and open_items:
-        outcome = f"Finished work landed. Open follow-ups to decide: {executive_item_topic(open_items, 2)}."
+        outcome = f"Finished work landed; the next choices are concentrated around {executive_theme_titles(open_items, 2)}."
     elif completed:
         outcome = "The visible work mostly landed; the next question is whether the result matches the intended direction."
     elif open_items:
-        outcome = f"The useful signal is what still needs a decision: {executive_item_topic(open_items, 2)}."
+        outcome = f"The useful signal is what still needs a decision: {executive_theme_titles(open_items, 2)}."
     else:
         outcome = "There is not enough GitHub-visible movement here to justify a long executive read."
 
@@ -1817,9 +2033,21 @@ def executive_conversation_starters(
 ) -> list[str]:
     starters: list[str] = []
 
+    if focus_sections:
+        labels = [executive_section_label(section) for section in focus_sections[:2] if isinstance(section, dict)]
+        if labels:
+            starters.append(
+                f"Which outcome should {prose_join(labels)} prove {period.alignment_window}, and what should wait?"
+            )
+
     if attention_items:
         starters.append(
             f"What decision would unblock {executive_item_refs(attention_items, 2)} {period.alignment_window}?"
+        )
+
+    if failed_workflows:
+        starters.append(
+            f"Should failed runs in {failed_workflow_topics(failed_workflows)} change release confidence, or are they known noise?"
         )
 
     open_items = [
@@ -1829,12 +2057,7 @@ def executive_conversation_starters(
     ]
     if open_items:
         starters.append(
-            f"Should {executive_item_topic(open_items, 2)} stay active {period.alignment_window}, wait, or be reframed?"
-        )
-
-    if failed_workflows:
-        starters.append(
-            f"Should failed runs in {failed_workflow_topics(failed_workflows)} change release confidence, or are they known noise?"
+            f"Should {executive_theme_titles(open_items, 2)} stay active {period.alignment_window}, wait, or be reframed?"
         )
 
     releases = [release for data in repo_data.values() for release in data["releases"]]
@@ -1850,7 +2073,7 @@ def executive_conversation_starters(
     ]
     if finished_items:
         starters.append(
-            f"Looking at {executive_item_topic(finished_items, 2)}, did the completed work deliver what you expected, or is there a gap to close?"
+            f"Looking at {executive_theme_titles(finished_items, 2)}, did the completed work deliver what you expected, or is there a gap to close?"
         )
 
     focus_items: list[dict[str, Any]] = []
@@ -1911,9 +2134,35 @@ def focus_area_label(payload: dict[str, Any]) -> str:
 
 
 def focus_area_heading(payload: dict[str, Any]) -> str:
+    sections = payload.get("priority_sections") or []
+    if len(sections) == 1 and isinstance(sections[0], dict):
+        label = str(sections[0].get("name") or "").strip()
+        if label:
+            return f"{label} Impact"
+    portfolio_labels = [
+        str(section.get("portfolio_area") or section.get("name") or "")
+        for section in sections
+        if isinstance(section, dict)
+    ]
+    category_labels: list[str] = []
+    for label in portfolio_labels:
+        normalized = label.casefold()
+        if "every code" in normalized:
+            for category in ("Every Code", "Skills") if "skill" in normalized else ("Every Code Product",):
+                if category not in category_labels:
+                    category_labels.append(category)
+            continue
+        if "skill" in normalized:
+            category = "Skills"
+        else:
+            category = label.strip()
+        if category and category not in category_labels:
+            category_labels.append(category)
+    if category_labels:
+        category_order = {"Every Code Product": 0, "Every Code": 1, "Skills": 2}
+        ordered_categories = sorted(category_labels, key=lambda category: (category_order.get(category, 99), category))
+        return f"{prose_join(ordered_categories[:3])} Impact"
     label = focus_area_label(payload)
-    if label == "Codex Skill Updates and Every Code Product Issues":
-        return "Every Code and Skills Impact"
     return f"{label} Impact"
 
 
@@ -2074,21 +2323,8 @@ def render_executive_brief_markdown(payload: dict[str, Any]) -> str:
     if focus_sections:
         lines.extend(["", f"## {focus_area_heading(payload)}", ""])
         for section in focus_sections:
-            name = str(section.get("name") or "Priority area")
-            items = section.get("items") or []
-            completed_items = section.get("recently_completed") or []
-            item_count = int(section.get("item_count") or len(items))
-            completed_count = int(section.get("recently_completed_count") or len(completed_items))
-            themes = executive_theme_titles((completed_items or items), 2) if completed_items or items else "general priority work"
-            if completed_count and item_count:
-                summary = f"finished work moved forward while related follow-up remains visible. Themes: {themes}."
-            elif completed_count:
-                summary = f"finished work moved forward. Themes: {themes}."
-            elif item_count:
-                summary = f"open work remains visible for sequencing. Themes: {themes}."
-            else:
-                summary = "no active signal was collected in this window."
-            lines.append(f"- **{name}**: {summary}")
+            workstream = executive_section_workstream(section)
+            lines.append(f"- **{workstream.workstream}**: {executive_workstream_summary(workstream)}")
 
     lines.extend(["", "## Failed Runs", ""])
     if failed_workflows:
