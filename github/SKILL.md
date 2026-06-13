@@ -338,7 +338,14 @@ invocation rules.
 - **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
   targeted JetBrains inspections on changed files or touched directories before
   pushing a branch or updating a PR whenever the repo has an IDE project
-  available. If unavailable, record the not-run reason before pushing.
+  available. If `.github/github.json` defines `qualityGate.inspection`, PR
+  creation/update, ready-to-merge claims, and merges must carry JetBrains
+  evidence from the delegated helper or an explicit not-run reason. If that
+  inspection config is blank, missing, contradictory, or surprising, do not
+  silently invent repo policy: use a safe one-off `changed_files` check only when
+  the helper can infer the correct route, and ask the user before changing
+  durable config or treating a suspicious value as authoritative. If unavailable,
+  record the not-run reason before pushing.
 - **Verification**: After merge, verify Actions and relevant security/quality
   signals before closing related planning state.
 - **Labels**: Use `github-plan` labels only for durable planning issues. For PR

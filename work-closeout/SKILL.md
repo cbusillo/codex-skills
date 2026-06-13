@@ -180,7 +180,13 @@ Safe to exit: no
 
 For code changes, broad practical lint/static analysis and `jetbrains-inspection`
 state must be included in closeout, or there must be a documented not-run reason
-or intentional parking decision.
+or intentional parking decision. When `.github/github.json` defines
+`qualityGate.inspection`, missing JetBrains evidence for code changes prevents
+`Safe to exit: yes`; use conditional/no until the inspection is clean, findings
+are fixed or tracked, or the not-run reason is explicit. If the inspection
+config is blank or feels wrong, ask the user before changing durable policy or
+trusting a suspicious value; for a one-off local check, prefer the helper's safe
+inferred route with `changed_files` scope and report the assumption.
 
 ## Parking Work
 

@@ -49,8 +49,13 @@ git status --short --branch
    JetBrains IDE project is available or required. Start with changed files or
    the touched directory so the checked scope stays aligned with the session's
    actual edits. Repeat after later edits that could affect inspected code.
-   Record explicit not-run reasons when inspections are unavailable or
-   intentionally parked.
+   When `.github/github.json` defines `qualityGate.inspection`, readiness for a
+   code change must include JetBrains evidence from the delegated helper
+   (`closeout` for final readiness) or an explicit not-run reason. If that
+   inspection config is blank, missing, contradictory, or surprising, do not
+   silently invent durable policy: use a safe one-off `changed_files` default
+   only when the helper can infer a correct route, and ask the user before
+   changing repo policy or treating a suspicious config as authoritative.
 
 If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
@@ -154,6 +159,13 @@ run with the reason. Ask before running gates that mutate shared environments or
 external resources. If linting a file for the first time, dry-run first when the
 environment supports it.
 
+For code-change readiness, inspection evidence is one of: a clean
+`jetbrains-inspection closeout` result with scope and route, actionable findings
+that were fixed or tracked, or a concrete not-run reason such as unavailable IDE,
+blocked indexing, docs-only scope, or user-approved parking. Missing inspection
+evidence for a configured code gate means the readiness answer is not fully
+ready.
+
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
 findings are broad but real, call them out and decide whether to include a
@@ -190,6 +202,13 @@ session drift, unavailable IDE, ambiguous routing, or wrong-worktree routing as
 not-clean states. Do not add suppressions, disable inspections, or change IDE
 inspection profiles without explicit approval unless the repo already has an
 approved convention.
+
+If the repo inspection config is blank or feels wrong, ask the user when the
+choice affects durable repo policy or readiness. Examples: configured IDE does
+not match the open project, configured scope is disproportionate to the change,
+or configured paths point away from the active worktree. For a one-off local
+check with no durable policy change, prefer the helper's safe inferred route and
+`changed_files` scope, and report that assumption.
 
 ## Output Format
 

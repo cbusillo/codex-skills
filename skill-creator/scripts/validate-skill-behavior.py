@@ -725,6 +725,68 @@ def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
     )
 
 
+def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
+    readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
+    closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    inspection_text = (ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower()
+    normalized_readiness = " ".join(readiness_text.split())
+    normalized_closeout = " ".join(closeout_text.split())
+    normalized_github = " ".join(github_text.split())
+    normalized_inspection = " ".join(inspection_text.split())
+
+    require(
+        "qualitygate.inspection" in normalized_readiness
+        and "jetbrains evidence" in normalized_readiness
+        and "explicit not-run reason" in normalized_readiness,
+        "repo-readiness must require JetBrains evidence or a not-run reason for configured code gates",
+    )
+    require(
+        "missing inspection evidence" in normalized_readiness
+        and "configured code gate" in normalized_readiness
+        and "not fully ready" in normalized_readiness,
+        "repo-readiness must not call configured code changes fully ready without inspection evidence",
+    )
+    require(
+        "ask the user before changing repo policy" in normalized_readiness
+        and "safe inferred route" in normalized_readiness,
+        "repo-readiness must distinguish blank/suspicious durable config from safe one-off inference",
+    )
+    require(
+        "pr creation/update" in normalized_github
+        and "ready-to-merge claims" in normalized_github
+        and "merges must carry jetbrains evidence" in normalized_github,
+        "github workflow must carry JetBrains evidence through PR and merge moments",
+    )
+    require(
+        "use a safe one-off `changed_files` check" in normalized_github
+        and "ask the user before changing durable config" in normalized_github,
+        "github workflow must ask before trusting blank or suspicious inspection config as durable policy",
+    )
+    require(
+        "missing jetbrains evidence" in normalized_closeout
+        and "code changes" in normalized_closeout
+        and "safe to exit: yes" in normalized_closeout,
+        "work-closeout must block safe-to-exit yes when configured code inspection evidence is missing",
+    )
+    require(
+        "blank or feels wrong" in normalized_closeout
+        and "helper's safe inferred route with `changed_files` scope" in normalized_closeout,
+        "work-closeout must preserve the ask-vs-one-off distinction for inspection config",
+    )
+    require(
+        "do not silently turn that inference into durable repo policy" in normalized_inspection
+        and "ask the user before changing policy" in normalized_inspection,
+        "jetbrains-inspection must teach safe inference without inventing durable policy",
+    )
+    require(
+        "docs-only" in normalized_readiness
+        and "do not run full code gates" in normalized_readiness
+        and "docs-only or non-code edits" in normalized_inspection,
+        "JetBrains inspection guidance must preserve the docs-only/non-code exemption path",
+    )
+
+
 def test_work_closeout_requires_issue_aware_safe_exit() -> None:
     closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
     normalized = " ".join(closeout_text.split())
@@ -948,6 +1010,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
+        test_code_readiness_requires_jetbrains_inspection_evidence,
         test_work_closeout_requires_issue_aware_safe_exit,
         test_infra_ops_owns_live_infra_actions,
         test_infra_ops_private_context_command_detects_docs_pointer,
