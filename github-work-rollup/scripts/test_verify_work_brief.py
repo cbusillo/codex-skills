@@ -311,6 +311,34 @@ def test_accepts_repository_only_scope_for_no_subjects_source_note() -> None:
     assert errors == []
 
 
+def test_rejects_missing_short_source_note() -> None:
+    short_note_evidence = {
+        "kind": "github_work_evidence",
+        "limitations": ["API down"],
+    }
+
+    errors = verify_work_brief.verify_brief(
+        short_note_evidence,
+        "Source caveat: workflow data may be partial.",
+    )
+
+    assert errors == ["brief must reflect source note: API down"]
+
+
+def test_accepts_reflected_short_source_note() -> None:
+    short_note_evidence = {
+        "kind": "github_work_evidence",
+        "limitations": ["API down"],
+    }
+
+    errors = verify_work_brief.verify_brief(
+        short_note_evidence,
+        "Source caveat: API down, so workflow data may be partial.",
+    )
+
+    assert errors == []
+
+
 if __name__ == "__main__":
     import pytest
 

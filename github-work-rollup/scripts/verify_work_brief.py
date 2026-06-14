@@ -274,7 +274,7 @@ def source_note_is_reflected(note: str, normalized_brief: str) -> bool:
         return True
     keywords = source_note_keywords(normalized_note)
     if not keywords:
-        return True
+        return not normalized_note
     required = min(len(keywords), 3)
     return sum(1 for keyword in keywords if keyword in normalized_brief) >= required
 
@@ -308,7 +308,9 @@ def grouped_source_note_is_reflected(normalized_note: str, normalized_brief: str
 
 def source_note_phrases(normalized_note: str) -> list[str]:
     words = normalized_note.split()
-    return [" ".join(words[index : index + 4]) for index in range(max(len(words) - 3, 0))]
+    if len(words) < 4:
+        return [normalized_note] if normalized_note else []
+    return [" ".join(words[index : index + 4]) for index in range(len(words) - 3)]
 
 
 def source_note_keywords(normalized_note: str) -> list[str]:
