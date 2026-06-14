@@ -16,6 +16,9 @@ resources:
   - path: scripts/verify_work_brief.py
     kind: script
     description: Verifier script that checks a Markdown brief against the evidence JSON.
+  - path: scripts/synthesize_work_brief.py
+    kind: script
+    description: Direct local-LLM work brief synthesizer that uses prompt-contract.md as the system prompt and verifies the result.
 commands:
   - name: github-work-rollup
     source: skill
@@ -33,6 +36,22 @@ commands:
         "markdown",
       ]
     purpose: Emit a read-only GitHub work rollup for configured or requested repos.
+  - name: synthesize-work-brief
+    source: skill
+    resource_path: scripts/synthesize_work_brief.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/synthesize_work_brief.py",
+        "--evidence",
+        "evidence.json",
+        "--audience",
+        "manager",
+        "--brief-output",
+        "brief.md",
+      ]
+    purpose: Generate a verified manager/executive brief from saved evidence through a direct local LLM call.
 workflow_defaults:
   - name: window
     value: 24h
@@ -240,6 +259,30 @@ reports.
      --evidence evidence.json \
      --brief brief.md
    ```
+
+   To avoid ordinary agent system-prompt contamination, use the direct local LLM
+   synthesizer when a polished manager or executive brief should be written by a
+   trusted local model:
+
+   ```bash
+   uv run scripts/github_work_rollup.py \
+     --config .local/github-work-rollup.yaml \
+     --layout executive \
+     --format json \
+     --output .local/github-work-rollup/evidence.json
+
+   uv run scripts/synthesize_work_brief.py \
+     --evidence .local/github-work-rollup/evidence.json \
+     --audience executive \
+     --report-recipient "Example leader" \
+     --brief-output .local/github-work-rollup/brief.md \
+     --warmup
+   ```
+
+   The synthesizer reads `references/prompt-contract.md` as the exact system
+   prompt, sends the evidence JSON as the user prompt, uses the `local-llm`
+   model role `work_brief_writer` by default, and runs `verify_work_brief.py`
+   unless `--no-verify` is explicitly supplied for debugging.
 
    Emphasize:
    - needs attention

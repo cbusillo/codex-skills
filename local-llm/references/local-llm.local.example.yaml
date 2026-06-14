@@ -46,6 +46,16 @@ model_roles:
       policy: api_explicit
       context_length: 131072
       flash_attention: true
+  work_brief_writer:
+    endpoint: lmstudio-localhost
+    primary: qwen3-coder-64b
+    fallback: qwen3-coder-next
+    max_tokens: 3500
+    timeout_seconds: 420
+    load:
+      policy: api_explicit
+      context_length: 131072
+      flash_attention: true
 trusted_networks:
   - name: example-home-lan
     locality: trusted_lan

@@ -157,6 +157,51 @@ def test_rejects_unsupported_natural_language_issue_reference() -> None:
     assert "unsupported issue/PR reference not present in evidence: 99" in errors
 
 
+def test_ignores_workflow_run_natural_language_reference() -> None:
+    workflow_evidence = evidence()
+    workflow_evidence["workflow_runs"] = [
+        {
+            "repo": "example-org/example-repo",
+            "databaseId": 123456,
+            "url": "https://github.com/example-org/example-repo/actions/runs/123456",
+        }
+    ]
+
+    errors = verify_work_brief.verify_brief(
+        workflow_evidence,
+        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+    )
+
+    assert errors == []
+
+
+def test_rejects_unsupported_workflow_run_natural_language_reference() -> None:
+    errors = verify_work_brief.verify_brief(
+        evidence(),
+        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+    )
+
+    assert "unsupported issue/PR reference not present in evidence: #123456" in errors
+
+
+def test_ignores_actions_run_markdown_link_label() -> None:
+    workflow_evidence = evidence()
+    workflow_evidence["workflow_runs"] = [
+        {
+            "repo": "example-org/example-repo",
+            "databaseId": 123456,
+            "url": "https://github.com/example-org/example-repo/actions/runs/123456",
+        }
+    ]
+
+    errors = verify_work_brief.verify_brief(
+        workflow_evidence,
+        "Validation run [#123456](https://github.com/example-org/example-repo/actions/runs/123456) failed. Confidence caveat: workflow counts may be incomplete.",
+    )
+
+    assert errors == []
+
+
 def test_rejects_ambiguous_bare_issue_reference() -> None:
     errors = verify_work_brief.verify_brief(
         ambiguous_bare_ref_evidence(),
@@ -247,6 +292,20 @@ def test_accepts_grouped_repetitive_source_notes() -> None:
     errors = verify_work_brief.verify_brief(
         grouped_evidence,
         "Source confidence: issues are disabled in two archived repos, and workflow counts are capped so automation counts may be incomplete.",
+    )
+
+    assert errors == []
+
+
+def test_accepts_repository_only_scope_for_no_subjects_source_note() -> None:
+    scoped_evidence = {
+        "kind": "github_work_evidence",
+        "limitations": ["No subjects configured; rollup is repository-scoped only."],
+    }
+
+    errors = verify_work_brief.verify_brief(
+        scoped_evidence,
+        "Confidence caveat: Scope is example-org/example-repo repository only; no person-specific subject signal is included.",
     )
 
     assert errors == []
