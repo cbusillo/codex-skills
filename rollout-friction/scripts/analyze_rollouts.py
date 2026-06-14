@@ -113,6 +113,19 @@ DIFF_OR_STATIC_CONTEXT_RE = re.compile(
     re.I,
 )
 AUTO_REVIEW_TEXT_RE = re.compile(r"\bauto[-\s]?review\b", re.I)
+AUTO_REVIEW_LOOP_EVIDENCE_RE = re.compile(
+    r"Auto Review:\s*[1-9][0-9]*\s+issue|"
+    r"Background auto-review completed|"
+    r"Detached proposal at .*/auto-review|"
+    r"Worktree path:\s*.*/auto-review|"
+    r"branch=auto-review|"
+    r"auto[-\s]?review[^\n]{0,180}\b(detached proposal|worktree path|merge this worktree|cherry-pick|re-validate|revalidate|open PR)\b",
+    re.I,
+)
+AUTO_REVIEW_POSITIVE_RE = re.compile(
+    r"auto[-\s]?review[^\n]{0,180}\b(merged|passed|clean|no issues|useful|valid|applied|fixed)\b",
+    re.I,
+)
 STATIC_CONFIG_LINE_RE = re.compile(
     r"^\s*(?:[-+]\s*)?(?:#|[-*]\s+|"
     r"(?:name|on|push|pull_request|branches|jobs|steps|run|uses|with|env|permissions|"
@@ -169,6 +182,18 @@ NESTED_JSON_STRING_KEYS = {
     "content",
     "message",
 }
+COMMAND_FAILURE_TAG_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("missing_command", re.compile(r"\b(command not found|[A-Za-z0-9_.-]+ not found|not found:|No such file or directory)\b", re.I)),
+    ("missing_module", re.compile(r"\b(module not found|No module named|cannot find module|ModuleNotFoundError)\b", re.I)),
+    ("timeout", re.compile(r"\b(timed out|timeout)\b", re.I)),
+    ("permission", re.compile(r"\b(permission denied|operation not permitted|EACCES)\b", re.I)),
+    ("network", re.compile(r"\b(ECONNREFUSED|connection refused|connection reset|DNS|ENOTFOUND|network)\b", re.I)),
+    ("test_failure", re.compile(r"\b(pytest|failed tests?|test failed|[1-9][0-9]* failed[, ]+[0-9]+ passed)\b", re.I)),
+    ("lint_or_format", re.compile(r"\b(lint|eslint|ruff|mypy|prettier|black|format check)\b", re.I)),
+    ("git_failure", re.compile(r"\b(git|merge conflict|non-fast-forward|protected branch|working tree)\b", re.I)),
+    ("github_cli", re.compile(r"\b(gh |GitHub|GraphQL|REST|mergeable|statusCheckRollup)\b", re.I)),
+    ("exit_code", re.compile(r"\b(exit[_ -]?code\s*[:=]?\s*[1-9][0-9]*|process exited with code [1-9][0-9]*)\b", re.I)),
+)
 
 
 class Signal:
@@ -210,18 +235,20 @@ class Signal:
 
 
 class Hit:
-    __slots__ = ("file", "line", "snippet", "structured")
+    __slots__ = ("file", "line", "snippet", "structured", "tags")
 
     file: Path
     line: int
     snippet: str
     structured: bool
+    tags: tuple[str, ...]
 
-    def __init__(self, file: Path, line: int, snippet: str, structured: bool = False) -> None:
+    def __init__(self, file: Path, line: int, snippet: str, structured: bool = False, tags: Iterable[str] = ()) -> None:
         self.file = file
         self.line = line
         self.snippet = snippet
         self.structured = structured
+        self.tags = tuple(tags)
 
 
 class Finding:
@@ -898,6 +925,7 @@ def scan(
                 for occurrence, match in enumerate(signal.pattern.finditer(text)):
                     if should_skip_signal_match(signal.name, text, canonical_text, match):
                         continue
+                    tags = signal_tags(signal.name, text, canonical_text)
                     line_signal_key = (path, line_no, signal.name)
                     line_texts = line_signal_texts.setdefault(line_signal_key, set())
                     if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
@@ -913,6 +941,7 @@ def scan(
                             line=line_no,
                             snippet=redacted(text, context_chars),
                             structured=is_structured,
+                            tags=tags,
                         )
                     )
     return {
@@ -939,9 +968,31 @@ def should_skip_signal_match(
 ) -> bool:
     if signal_name in {"repeated_command_failure", "missing_dependency_or_tool"}:
         return looks_like_static_match_context(text, match)
+    if signal_name == "auto_review_loop" and not is_auto_review_loop_evidence(canonical_text):
+        return True
     if signal_name in {"auto_review_loop", "auto_review_valid_finding"}:
         return looks_like_static_diff_or_config(text) and AUTO_REVIEW_TEXT_RE.search(canonical_text) is None
     return False
+
+
+def is_auto_review_loop_evidence(text: str) -> bool:
+    return bool(AUTO_REVIEW_LOOP_EVIDENCE_RE.search(text) and not AUTO_REVIEW_POSITIVE_RE.search(text))
+
+
+def signal_tags(signal_name: str, text: str, canonical_text: str) -> tuple[str, ...]:
+    if signal_name != "repeated_command_failure":
+        return ()
+    combined = f"{canonical_text}\n{text}"
+    tags = [tag for tag, pattern in COMMAND_FAILURE_TAG_RULES if pattern.search(combined)]
+    if re.search(r"\bCommand failed\b", combined, re.I):
+        tags.append("command_failed")
+    if re.search(r"Traceback \(most recent call last\)", combined):
+        tags.append("python_traceback")
+    if re.search(r"zsh:[^\n]*(unmatched|parse error)|unexpected EOF", combined, re.I):
+        tags.append("shell_parse")
+    if re.search(r"\b(rate limit|HTTP 429|quota exceeded|secondary rate)\b", combined, re.I):
+        tags.append("rate_limit")
+    return tuple(sorted(set(tags)))
 
 
 def looks_like_static_diff_or_config(text: str) -> bool:
@@ -996,6 +1047,7 @@ def stable_file_id(path: Path) -> str:
 
 def finding_to_json(finding: Finding) -> dict[str, Any]:
     examples = finding.hits[:3]
+    tag_counts = Counter(tag for hit in finding.hits for tag in hit.tags)
     return {
         "signal": finding.signal.name,
         "severity": finding.signal.severity,
@@ -1003,6 +1055,7 @@ def finding_to_json(finding: Finding) -> dict[str, Any]:
         "count": finding.count,
         "structured_payload_count": finding.structured_count,
         "broad_context_count": finding.count - finding.structured_count,
+        "tag_counts": dict(sorted(tag_counts.items())),
         "files": [
             {"id": stable_file_id(Path(path)), "hits": count}
             for path, count in finding.files.most_common()
@@ -1013,11 +1066,28 @@ def finding_to_json(finding: Finding) -> dict[str, Any]:
                 "line": hit.line,
                 "snippet": hit.snippet,
                 "evidence_type": "structured_payload" if hit.structured else "broad_context",
+                "tags": list(hit.tags),
             }
             for hit in examples
         ],
         "likely_cause": finding.signal.likely_cause,
         "recommended_destination": finding.signal.destination,
+    }
+
+
+def scan_summary(targets: list[ScanTarget], limitations: list[Limitation]) -> dict[str, Any]:
+    limitation_counts = Counter(limitation.kind for limitation in limitations)
+    truncated_file_count = sum(1 for target in targets if target.truncated)
+    skipped_file_count = sum(limitation.file_count or 0 for limitation in limitations if limitation.kind in {"file_count_limit", "total_byte_limit"})
+    scanned_bytes = sum(target.read_bytes for target in targets)
+    total_candidate_bytes = sum(target.file_bytes for target in targets)
+    return {
+        "scan_degraded": bool(limitations),
+        "limitation_counts": dict(sorted(limitation_counts.items())),
+        "truncated_file_count": truncated_file_count,
+        "skipped_file_count": skipped_file_count,
+        "scanned_bytes": scanned_bytes,
+        "candidate_bytes_seen": total_candidate_bytes,
     }
 
 
@@ -1041,6 +1111,7 @@ def limitation_to_json(limitation: Limitation) -> dict[str, Any]:
 def emit_json(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
     payload = {
         "ok": True,
+        "scan_summary": scan_summary(targets, limitations),
         "scanned_files": [
             {
                 "id": stable_file_id(target.path),
@@ -1060,6 +1131,12 @@ def emit_json(targets: list[ScanTarget], findings: dict[str, Finding], limitatio
 def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
     print(f"Scanned {len(targets)} file(s).")
     if limitations:
+        summary = scan_summary(targets, limitations)
+        print(
+            "Scan degraded: "
+            f"{summary['truncated_file_count']} truncated, "
+            f"{summary['skipped_file_count']} skipped; use --json for full details."
+        )
         print("Scan limitations:")
         for limitation in limitations[:TEXT_LIMITATION_DISPLAY_LIMIT]:
             suffix = f" file_id={stable_file_id(limitation.file)}" if limitation.file is not None else ""
@@ -1082,10 +1159,15 @@ def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitatio
         print(f"category: {finding.signal.category}")
         print(f"recommended_destination: {finding.signal.destination}")
         print(f"likely_cause: {finding.signal.likely_cause}")
+        tag_counts = Counter(tag for hit in finding.hits for tag in hit.tags)
+        if tag_counts:
+            tags = ", ".join(f"{tag}={count}" for tag, count in sorted(tag_counts.items()))
+            print(f"tags: {tags}")
         print("evidence:")
         for hit in finding.hits[:3]:
             evidence_type = "structured_payload" if hit.structured else "broad_context"
-            print(f"- file_id={stable_file_id(hit.file)} line={hit.line} type={evidence_type}: {hit.snippet}")
+            tags = f" tags={','.join(hit.tags)}" if hit.tags else ""
+            print(f"- file_id={stable_file_id(hit.file)} line={hit.line} type={evidence_type}{tags}: {hit.snippet}")
 
 
 def severity_rank(severity: str) -> int:
