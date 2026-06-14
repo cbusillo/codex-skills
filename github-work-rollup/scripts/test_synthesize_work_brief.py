@@ -181,6 +181,7 @@ def test_verifier_failure_returns_error_and_preserves_brief(tmp_path: Path) -> N
         synthesize_work_brief.synthesize(args, runner=runner)
     except synthesize_work_brief.SynthesisError as exc:
         assert "brief verification failed" in str(exc)
+        assert str(args.brief_output) in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected verifier failure")
 

@@ -139,7 +139,12 @@ def synthesize(args: argparse.Namespace, *, runner: Runner = subprocess.run) -> 
             verify_target = temporary_brief_path
         verify_result = None
         if not args.no_verify:
-            verify_result = run_verifier(args.evidence, verify_target, args.plan_context, runner=runner)
+            try:
+                verify_result = run_verifier(args.evidence, verify_target, args.plan_context, runner=runner)
+            except SynthesisError as exc:
+                if brief_path:
+                    raise SynthesisError(f"{exc}; unverified brief remains at {brief_path}") from exc
+                raise
     finally:
         if temporary_brief_path is not None:
             temporary_brief_path.unlink(missing_ok=True)

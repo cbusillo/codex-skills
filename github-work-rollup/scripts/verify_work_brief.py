@@ -70,6 +70,7 @@ class EvidenceIndex:
     ambiguous_short_names: set[str]
     bare_refs: set[str]
     ambiguous_bare_refs: set[str]
+    workflow_run_refs: set[str]
     source_notes: list[str]
 
 
@@ -117,6 +118,7 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
     repos_by_short_name: dict[str, set[str]] = {}
     repos_by_bare_ref: dict[str, set[str]] = {}
     repo_unknown_bare_refs: set[str] = set()
+    workflow_run_refs: set[str] = set()
     source_notes: list[str] = []
 
     def record_repo(repo: str) -> None:
@@ -159,6 +161,9 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
                     repo, number = match.groups()
                     record_repo(repo)
                     record_ref(repo, number)
+                run_match = GITHUB_ACTIONS_RUN_URL_RE.search(url)
+                if run_match:
+                    workflow_run_refs.add(run_match.group("number"))
 
     visit(evidence)
     ambiguous_short_names = {name for name, repos in repos_by_short_name.items() if len(repos) > 1}
@@ -176,6 +181,7 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
         ambiguous_short_names=ambiguous_short_names,
         bare_refs=bare_refs,
         ambiguous_bare_refs=ambiguous_bare_refs,
+        workflow_run_refs=workflow_run_refs,
         source_notes=dedupe(source_notes),
     )
 
@@ -189,8 +195,12 @@ def unsupported_urls(index: EvidenceIndex, brief: str) -> list[str]:
 
 def unsupported_refs(index: EvidenceIndex, brief: str) -> list[str]:
     errors: list[str] = []
-    workflow_run_spans = {match.span("number") for match in WORKFLOW_RUN_REF_RE.finditer(brief)}
-    workflow_run_spans.update(markdown_workflow_run_ref_spans(brief))
+    workflow_run_spans = {
+        match.span("number")
+        for match in WORKFLOW_RUN_REF_RE.finditer(brief)
+        if match.group("number") in index.workflow_run_refs
+    }
+    workflow_run_spans.update(markdown_workflow_run_ref_spans(brief, index.workflow_run_refs))
     for repo, number in sorted(QUALIFIED_REF_RE.findall(brief)):
         ref = f"{repo}#{number}"
         if ref not in index.qualified_refs:
@@ -222,7 +232,7 @@ def unsupported_refs(index: EvidenceIndex, brief: str) -> list[str]:
     return errors
 
 
-def markdown_workflow_run_ref_spans(brief: str) -> set[tuple[int, int]]:
+def markdown_workflow_run_ref_spans(brief: str, workflow_run_refs: set[str]) -> set[tuple[int, int]]:
     spans: set[tuple[int, int]] = set()
     for link_match in MARKDOWN_LINK_RE.finditer(brief):
         url = link_match.group("url")
@@ -230,6 +240,8 @@ def markdown_workflow_run_ref_spans(brief: str) -> set[tuple[int, int]]:
         if not run_match:
             continue
         number = run_match.group("number")
+        if number not in workflow_run_refs:
+            continue
         label = link_match.group("label")
         label_offset = link_match.start("label")
         label_index = label.find(number)

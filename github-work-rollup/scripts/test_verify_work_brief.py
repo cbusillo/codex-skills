@@ -158,12 +158,30 @@ def test_rejects_unsupported_natural_language_issue_reference() -> None:
 
 
 def test_ignores_workflow_run_natural_language_reference() -> None:
+    workflow_evidence = evidence()
+    workflow_evidence["workflow_runs"] = [
+        {
+            "repo": "example-org/example-repo",
+            "databaseId": 123456,
+            "url": "https://github.com/example-org/example-repo/actions/runs/123456",
+        }
+    ]
+
+    errors = verify_work_brief.verify_brief(
+        workflow_evidence,
+        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+    )
+
+    assert errors == []
+
+
+def test_rejects_unsupported_workflow_run_natural_language_reference() -> None:
     errors = verify_work_brief.verify_brief(
         evidence(),
         "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
     )
 
-    assert errors == []
+    assert "unsupported issue/PR reference not present in evidence: #123456" in errors
 
 
 def test_ignores_actions_run_markdown_link_label() -> None:
