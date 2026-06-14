@@ -91,6 +91,10 @@ findings/status matter.
    practical gate for the repo and change.
 6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
+   If an open PR still needs repeated CI/review/mergeability polling after a
+   branch update, check rerun, rebase, review-fix push, or "safe to exit" check,
+   route that follow-through to `babysit-pr`; keep this skill focused on the
+   point-in-time readiness verdict and evidence.
    For stacked PRs, include whether a rollup/integration PR would be safer or
    faster than merging each layer and rerunning expensive checks repeatedly,
    unless repo metadata or task context says Launchplane owns the merge train.

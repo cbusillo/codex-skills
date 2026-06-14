@@ -132,6 +132,12 @@ Default to PR-backed implementation work.
 - Do not close externally reported issues just because a fix PR merged. Leave a
   validation comment and close only after the reporter/current user confirms or
   explicitly asks.
+- When PR work shifts from one-shot diagnosis into repeated CI, review,
+  mergeability, or merged/closed follow-through, route that loop to
+  `babysit-pr`. This includes after branch updates, rebases, check reruns,
+  review-fix pushes, and closeout questions such as whether the PR merged or it
+  is safe to exit. Use `babysit-pr --once` for already merged/closed evidence and
+  `--watch` while an open PR still needs active follow-through.
 
 ### Superseded Or Competing PRs
 

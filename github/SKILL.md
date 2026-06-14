@@ -395,6 +395,11 @@ invocation rules.
   so JSON stdout remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
+- **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix
+  push leaves an open PR needing repeated CI, review, mergeability, or
+  merged/closed polling, hand off to `babysit-pr` instead of continuing ad hoc
+  polling in this skill. Use a `babysit-pr --once` snapshot for already
+  merged/closed PR closeout evidence.
 - **Superseded PRs**: When multiple PRs target the same issue or workstream,
   pick a canonical PR, ensure stale PRs use `Refs` instead of closing keywords,
   comment with the winning PR, and close superseded PRs with
