@@ -10,6 +10,12 @@ resources:
   - path: references/github-work-rollup.local.example.yaml
     kind: reference
     description: Public-safe example local config for routine rollup defaults.
+  - path: references/prompt-contract.md
+    kind: reference
+    description: Agent synthesis prompt and grounding rules for work briefs.
+  - path: scripts/verify_work_brief.py
+    kind: script
+    description: Verifier script that checks a Markdown brief against the evidence JSON.
 commands:
   - name: github-work-rollup
     source: skill
@@ -224,7 +230,18 @@ reports.
 4. Treat the helper output as the source of truth for collected GitHub state. It
    includes collection metadata, auth/API preflight status, rollup buckets, and
    limitations.
-5. Write a concise judgment-oriented report. Do not dump every event. Emphasize:
+5. Synthesize a concise judgment-oriented report. Follow the synthesis and
+   grounding rules in `references/prompt-contract.md`. When drafting a
+   manager, executive, or other narrative brief from JSON evidence, verify the
+   brief before presenting it:
+
+   ```bash
+   uv run scripts/verify_work_brief.py \
+     --evidence evidence.json \
+     --brief brief.md
+   ```
+
+   Emphasize:
    - needs attention
    - blocked or waiting work
    - ready for review

@@ -321,6 +321,18 @@ skills:
       - github_read
       - script_helper
     checks:
+      - check_id: github-work-brief-verifier-tests
+        kind: script_test
+        mode: ci
+        dimension: github_workflow
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Brief verifier covers unsupported links, unsupported issue
+            references, and required source-note caveats.
       - check_id: github-work-rollup-tests
         kind: script_test
         mode: ci
