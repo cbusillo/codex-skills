@@ -148,7 +148,9 @@ Safe to exit: yes
 - Background auto-review findings, when available, have been matched to the
   current branch/PR/head SHA; current-target findings are resolved,
   non-blocking, or explicitly tracked for follow-up; relevant current-target
-  auto-review runs are not still in-flight.
+  auto-review runs are not still in-flight. In-flight auto-review runs that
+  apply to the current target SHA are a pending gate; activity in generated
+  detached `auto-review-<hex>` worktrees for older branches or snapshots is not.
 - PR, issue, GitHub plan, and any explicit local plan state is current.
 - No important untracked artifacts, transient processes, or hidden follow-up
   remain.

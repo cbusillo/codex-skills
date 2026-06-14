@@ -154,6 +154,13 @@ The watcher surfaces review items from:
 It intentionally surfaces common automated reviewer bot feedback in addition to human reviewer feedback. Most unrelated bot noise should still be ignored.
 For safety, the watcher only auto-surfaces trusted human review authors (for example repo OWNER/MEMBER/COLLABORATOR, plus the authenticated operator) and approved review bots matched by the watcher defaults.
 On a fresh watcher state file, existing pending review feedback may be surfaced immediately (not only comments that arrive after monitoring starts). This is intentional so already-open review comments are not missed.
+For automated review feedback, match the feedback's commit/snapshot SHA to the
+current PR `headRefOid` before treating it as actionable for the current branch.
+Automated findings tied to an older SHA are stale proposal history by default;
+surface them as context only unless they still reproduce on the current PR head.
+A generated detached local `~/.code/working/<repo>/branches/auto-review-<hex>`
+worktree is not itself dirty active state, but its findings are still actionable
+when their snapshot SHA matches the current PR head.
 
 When you agree with a comment and it is actionable:
 
