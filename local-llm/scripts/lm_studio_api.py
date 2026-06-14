@@ -129,8 +129,7 @@ def infer_locality(base_url: str) -> str:
 
 def infer_provider(base_url: str) -> str:
     parsed = urlparse(base_url)
-    host = (parsed.hostname or "").casefold()
-    if parsed.port == 1234 or host in {"127.0.0.1", "::1", "localhost"}:
+    if parsed.port == 1234:
         return "lm_studio"
     return "openai_compatible"
 
