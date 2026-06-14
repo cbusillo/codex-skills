@@ -9,6 +9,7 @@ curated_models:
       - rollout_scout
       - dense_trace_review
       - code_workflow_audit
+      - work_brief_writer
     strengths:
       - grounded analyzer review
       - workflow and code false-positive detection
@@ -104,6 +105,17 @@ model_roles:
     temperature: 0.1
     max_tokens: 7000
     timeout_seconds: 600
+    load:
+      policy: api_explicit
+      context_length: 131072
+      flash_attention: true
+  work_brief_writer:
+    description: Trusted-local synthesis of GitHub work briefs from evidence JSON.
+    primary: qwen3-coder-64b
+    fallback: qwen3-coder-next
+    temperature: 0.2
+    max_tokens: 3500
+    timeout_seconds: 420
     load:
       policy: api_explicit
       context_length: 131072
