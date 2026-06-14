@@ -66,6 +66,7 @@ class EvidenceIndex:
     short_refs: set[str]
     ambiguous_short_names: set[str]
     bare_refs: set[str]
+    ambiguous_bare_refs: set[str]
     source_notes: list[str]
 
 
@@ -111,16 +112,18 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
     qualified_refs: set[str] = set()
     short_ref_candidates: set[str] = set()
     repos_by_short_name: dict[str, set[str]] = {}
-    bare_refs: set[str] = set()
+    repos_by_bare_ref: dict[str, set[str]] = {}
+    repo_unknown_bare_refs: set[str] = set()
     source_notes: list[str] = []
 
     def record_repo(repo: str) -> None:
         repos_by_short_name.setdefault(repo.rsplit("/", 1)[-1], set()).add(repo)
 
     def record_ref(repo: str, number: int | str) -> None:
-        bare_refs.add(str(number))
-        qualified_refs.add(f"{repo}#{number}")
-        short_ref_candidates.add(f"{repo.rsplit('/', 1)[-1]}#{number}")
+        number_text = str(number)
+        repos_by_bare_ref.setdefault(number_text, set()).add(repo)
+        qualified_refs.add(f"{repo}#{number_text}")
+        short_ref_candidates.add(f"{repo.rsplit('/', 1)[-1]}#{number_text}")
 
     def visit(value: Any, repo_hint: str | None = None) -> None:
         nonlocal source_notes
@@ -135,7 +138,7 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
                 if next_repo:
                     record_ref(next_repo, raw_number)
                 else:
-                    bare_refs.add(str(raw_number))
+                    repo_unknown_bare_refs.add(str(raw_number))
             for key, item in value.items():
                 if key in {"source_notes", "limitations"} and isinstance(item, list):
                     source_notes.extend(str(note) for note in item if str(note).strip())
@@ -159,12 +162,17 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
     short_refs = {
         ref for ref in short_ref_candidates if ref.rsplit("#", 1)[0] not in ambiguous_short_names
     }
+    ambiguous_bare_refs = {
+        number for number, repos in repos_by_bare_ref.items() if len(repos) > 1
+    }
+    bare_refs = (set(repos_by_bare_ref) - ambiguous_bare_refs) | repo_unknown_bare_refs
     return EvidenceIndex(
         urls=urls,
         qualified_refs=qualified_refs,
         short_refs=short_refs,
         ambiguous_short_names=ambiguous_short_names,
         bare_refs=bare_refs,
+        ambiguous_bare_refs=ambiguous_bare_refs,
         source_notes=dedupe(source_notes),
     )
 
@@ -193,10 +201,14 @@ def unsupported_refs(index: EvidenceIndex, brief: str) -> list[str]:
         elif ref not in index.short_refs:
             errors.append(f"unsupported issue/PR reference not present in evidence: {ref}")
     for number in sorted(set(BARE_REF_RE.findall(brief))):
-        if number not in index.bare_refs:
+        if number in index.ambiguous_bare_refs:
+            errors.append(f"ambiguous bare issue/PR reference; use owner/repo form: #{number}")
+        elif number not in index.bare_refs:
             errors.append(f"unsupported issue/PR reference not present in evidence: #{number}")
     for number in sorted(set(NATURAL_REF_RE.findall(brief))):
-        if number not in index.bare_refs:
+        if number in index.ambiguous_bare_refs:
+            errors.append(f"ambiguous bare issue/PR reference; use owner/repo form: {number}")
+        elif number not in index.bare_refs:
             errors.append(f"unsupported issue/PR reference not present in evidence: {number}")
     return errors
 

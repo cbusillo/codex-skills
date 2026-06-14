@@ -58,6 +58,27 @@ def ambiguous_short_name_evidence() -> dict[str, object]:
     }
 
 
+def ambiguous_bare_ref_evidence() -> dict[str, object]:
+    return {
+        "kind": "github_work_evidence",
+        "source_notes": ["Read-only evidence."],
+        "buckets": {
+            "ready_for_review": [
+                {
+                    "repo": "example-org/app-one",
+                    "number": 7,
+                    "url": "https://github.com/example-org/app-one/pull/7",
+                },
+                {
+                    "repo": "other-org/app-two",
+                    "number": 7,
+                    "url": "https://github.com/other-org/app-two/pull/7",
+                },
+            ]
+        },
+    }
+
+
 def test_accepts_grounded_links_refs_and_source_caveat() -> None:
     brief = """
 The review queue now centers on example-org/example-repo#42
@@ -134,6 +155,33 @@ def test_rejects_unsupported_natural_language_issue_reference() -> None:
     )
 
     assert "unsupported issue/PR reference not present in evidence: 99" in errors
+
+
+def test_rejects_ambiguous_bare_issue_reference() -> None:
+    errors = verify_work_brief.verify_brief(
+        ambiguous_bare_ref_evidence(),
+        "#7 is ready. Source limitation: Read-only evidence.",
+    )
+
+    assert "ambiguous bare issue/PR reference; use owner/repo form: #7" in errors
+
+
+def test_rejects_ambiguous_natural_language_issue_reference() -> None:
+    errors = verify_work_brief.verify_brief(
+        ambiguous_bare_ref_evidence(),
+        "PR 7 is ready. Source limitation: Read-only evidence.",
+    )
+
+    assert "ambiguous bare issue/PR reference; use owner/repo form: 7" in errors
+
+
+def test_accepts_qualified_reference_when_bare_reference_is_ambiguous() -> None:
+    errors = verify_work_brief.verify_brief(
+        ambiguous_bare_ref_evidence(),
+        "example-org/app-one#7 is ready. Source limitation: Read-only evidence.",
+    )
+
+    assert errors == []
 
 
 def test_accepts_plan_context_refs() -> None:
