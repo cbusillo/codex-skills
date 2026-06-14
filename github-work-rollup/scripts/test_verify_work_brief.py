@@ -176,6 +176,27 @@ def test_rejects_bare_ref_from_unrelated_numeric_metadata() -> None:
     assert "unsupported issue/PR reference not present in evidence: #123" in errors
 
 
+def test_derived_context_counts_do_not_authorize_bare_refs() -> None:
+    context_evidence = evidence()
+    context_evidence["derived_context"] = {
+        "repositories": [
+            {
+                "repo": "example-org/example-repo",
+                "open_count": 42,
+                "completed_count": 2,
+                "url": "https://github.com/example-org/example-repo",
+            }
+        ]
+    }
+
+    errors = verify_work_brief.verify_brief(
+        context_evidence,
+        "#2 should be discussed. Workflow counts may be incomplete.",
+    )
+
+    assert "unsupported issue/PR reference not present in evidence: #2" in errors
+
+
 def test_ignores_workflow_run_natural_language_reference() -> None:
     workflow_evidence = evidence()
     workflow_evidence["workflow_runs"] = [

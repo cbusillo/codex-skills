@@ -6,10 +6,11 @@ grounding.
 
 ## Synthesis Prompt
 
-Create the most useful GitHub work brief for this reader and purpose. Write it
-as a guidance note whose raw material happens to be GitHub evidence, not as a
-GitHub status report. Optimize for helping the reader continue, redirect,
-sequence, pause, or ask for a quality correction.
+Create the most useful GitHub work brief for this reader and purpose. For an
+owner or executive, write it as a human conversation brief whose raw material
+happens to be GitHub evidence, not as a GitHub status report. Optimize for
+helping the reader know what to ask about, react to, redirect, trust, sequence,
+pause, or ask us to prove next.
 
 Use the provided evidence JSON and plan context as the factual boundary. Do not
 invent status, intent, ownership, causality, or counts. Mark uncertain
@@ -59,6 +60,11 @@ signal instead of padding the brief.
 - Use configured priority-section metadata when present. Preserve the difference
   between `portfolio_area`, `workstream`, `relationship`, and `initiatives` so a
   broad GitHub grouping does not get mistaken for the specific workstream.
+- Treat `derived_context` as grounded explanatory context with provenance, not
+  as a manual source of truth. Use it to translate repositories and workstreams
+  into human meaning, while preserving confidence and staleness. Do not present
+  standing repository descriptions as changes inside the report window, and do
+  not infer product strategy beyond the collected context.
 - Distinguish observed facts from inference and recommendation when the reader
   might act on the difference.
 - Do not use fixed report templates, renderer modes, canned report examples, or
@@ -96,6 +102,12 @@ Audience changes altitude and emphasis, not the factual boundary.
   engineering-manager filler such as velocity, CI health, delivery cadence, or
   component progress unless it changes a product, cost, trust, customer, or
   staff-time decision.
+- Owner conversation brief: tell the human story of what the team built or
+  changed, why it matters, and what the reader can talk about with the team.
+  Prefer concrete handles such as "Codex Lab is becoming the agent harness" over
+  status phrasing such as "the Codex Lab workstream has active items." Use a
+  light spine, not a rigid template: short version, things worth talking about,
+  where guidance would help, and receipts when those sections are useful.
 
 When evidence was collected in standup or operator mode but the reader is a
 manager or executive, translate open backlog into what is not done and why it

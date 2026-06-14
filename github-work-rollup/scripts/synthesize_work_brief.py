@@ -22,6 +22,7 @@ LM_CHAT_PATH = ROOT / "local-llm" / "scripts" / "lm_studio_chat.py"
 VERIFY_PATH = SCRIPT_DIR / "verify_work_brief.py"
 DEFAULT_ROLE = "work_brief_writer"
 DEFAULT_MAX_INPUT_CHARS = 200_000
+BRIEF_STYLES = {"standard", "conversation"}
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -43,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional durable plan context JSON file. May be repeated.",
     )
     parser.add_argument("--audience", choices=("operator", "manager", "executive"), default="manager")
+    parser.add_argument(
+        "--brief-style",
+        choices=sorted(BRIEF_STYLES),
+        help="Writing style. Defaults to conversation for executive briefs and standard otherwise.",
+    )
     parser.add_argument("--report-recipient", help="Human-facing recipient label for the brief.")
     parser.add_argument(
         "--brief-output",
@@ -78,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.max_input_chars <= 0:
         parser.error("--max-input-chars must be positive")
+    args.brief_style = args.brief_style or ("conversation" if args.audience == "executive" else "standard")
     return args
 
 
@@ -104,12 +111,14 @@ def synthesize(args: argparse.Namespace, *, runner: Runner = subprocess.run) -> 
     evidence = read_json(args.evidence, "evidence")
     plan_context = [read_json(path, "plan context") for path in args.plan_context]
     contract = read_text(CONTRACT_PATH)
+    brief_style = resolved_brief_style(args.audience, getattr(args, "brief_style", None))
     user_prompt = build_user_prompt(
         evidence=evidence,
         evidence_path=args.evidence,
         plan_context=plan_context,
         plan_context_paths=args.plan_context,
         audience=args.audience,
+        brief_style=brief_style,
         report_recipient=args.report_recipient,
     )
     if args.prompt_output:
@@ -151,7 +160,9 @@ def synthesize(args: argparse.Namespace, *, runner: Runner = subprocess.run) -> 
     return {
         "ok": True,
         "audience": args.audience,
+        "brief_style": brief_style,
         "report_recipient": args.report_recipient,
+        "derived_context_present": bool(isinstance(evidence, dict) and evidence.get("derived_context")),
         "evidence_path": str(args.evidence),
         "plan_context_paths": [str(path) for path in args.plan_context],
         "brief_path": str(brief_path) if brief_path else None,
@@ -169,26 +180,60 @@ def build_user_prompt(
     plan_context: list[Any],
     plan_context_paths: list[Path],
     audience: str,
+    brief_style: str,
     report_recipient: str | None,
 ) -> str:
+    derived_context = evidence.get("derived_context") if isinstance(evidence, dict) else None
+    evidence_for_prompt = evidence_without_derived_context(evidence)
     parts = [
         "Reader and purpose:",
         f"- audience: {audience}",
+        f"- brief style: {brief_style}",
         f"- recipient: {report_recipient or 'unspecified'}",
         "- task: write a concise GitHub work brief as Markdown only",
         "- use the system prompt as the full writing and grounding contract",
-        "",
-        "Evidence source:",
-        f"- file: {evidence_path}",
-        "",
-        "Source limitations to reflect in the brief:",
-        *source_limitations(evidence),
-        "",
-        "Evidence JSON:",
-        "```json",
-        json.dumps(evidence, indent=2, sort_keys=True),
-        "```",
     ]
+    if brief_style == "conversation":
+        parts.extend(
+            [
+                "- write as a human conversation brief for a busy owner",
+                "- lead with what the work gives the reader to talk about with the team",
+                "- use light structure; avoid dev-manager status scaffolding and raw metrics as the story",
+            ]
+        )
+    parts.extend(
+        [
+            "",
+            "Evidence source:",
+            f"- file: {evidence_path}",
+            "",
+            "Source limitations to reflect in the brief:",
+            *source_limitations(evidence),
+            "- Every listed limitation must be reflected in the brief, folded into the relevant point or receipts.",
+        ]
+    )
+    if derived_context:
+        parts.extend(
+            [
+                "",
+                "Derived context for human meaning:",
+                "- treat this as grounded explanatory context with provenance, not as a new manual source of truth",
+                "- do not present standing repo descriptions as changes inside the report window",
+                "- preserve confidence/staleness wording when the context is inferred or thin",
+                "```json",
+                json.dumps(derived_context, indent=2, sort_keys=True),
+                "```",
+            ]
+        )
+    parts.extend(
+        [
+            "",
+            "Evidence JSON:",
+            "```json",
+            json.dumps(evidence_for_prompt, indent=2, sort_keys=True),
+            "```",
+        ]
+    )
     if plan_context:
         parts.extend(
             [
@@ -206,6 +251,16 @@ def build_user_prompt(
         parts.extend(["", "Plan context: no plan signal was provided."])
     parts.extend(["", "Return only the Markdown brief. Do not wrap it in a code fence."])
     return "\n".join(parts)
+
+
+def resolved_brief_style(audience: str, brief_style: str | None) -> str:
+    return brief_style or ("conversation" if audience == "executive" else "standard")
+
+
+def evidence_without_derived_context(evidence: Any) -> Any:
+    if not isinstance(evidence, dict) or "derived_context" not in evidence:
+        return evidence
+    return {key: value for key, value in evidence.items() if key != "derived_context"}
 
 
 def source_limitations(evidence: Any) -> list[str]:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 import json
 import subprocess
@@ -57,6 +58,8 @@ def args(**overrides: object) -> argparse.Namespace:
         "collection_limit_items": None,
         "release_collection_limit": None,
         "workflow_collection_limit": None,
+        "include_derived_context": False,
+        "context_repo_limit": None,
         "include_bots": False,
         "include_external_activity": False,
     }
@@ -67,6 +70,10 @@ def args(**overrides: object) -> argparse.Namespace:
 def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess[str] | None:
     if command[1:3] in (["release", "list"], ["run", "list"]):
         return completed(command, [])
+    if command[1:3] == ["repo", "view"]:
+        return completed(command, {"description": "", "homepageUrl": "", "repositoryTopics": [], "url": ""})
+    if command[1] == "api" and len(command) > 2 and str(command[2]).endswith("/readme"):
+        return completed(command, {"message": "Not Found"}, returncode=1)
     return None
 
 
@@ -311,6 +318,100 @@ def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPat
     assert "trust_handling" not in payload["recipient_profile"]
     assert "report_guidance" not in payload["recipient_profile"]
     assert "company_scale" not in payload["recipient_profile"]
+
+
+def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    readme = base64.b64encode(
+        b"# Codex Lab\n\nCodex Lab is a harness for agent workflows.\n\n## Details\nMore text."
+    ).decode("ascii")
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["repo", "view"]:
+            return completed(
+                command,
+                {
+                    "description": "New harness for agent workflows.",
+                    "homepageUrl": "https://example.test/codex-lab",
+                    "repositoryTopics": [{"name": "agents"}],
+                    "url": "https://github.com/example-org/codex-lab",
+                },
+            )
+        if command[1] == "api" and command[2] == "repos/example-org/codex-lab/readme":
+            return completed(
+                command,
+                {
+                    "content": readme,
+                    "encoding": "base64",
+                    "path": "README.md",
+                    "sha": "abc123",
+                    "html_url": "https://github.com/example-org/codex-lab/blob/main/README.md",
+                },
+            )
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(
+        args(repo=["example-org/codex-lab"], include_derived_context=True, context_repo_limit=5),
+        {},
+    )
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    context = payload["derived_context"]
+    assert context["source"].startswith("derived from GitHub")
+    assert context["repositories"][0]["repo"] == "example-org/codex-lab"
+    assert context["repositories"][0]["description"] == "New harness for agent workflows."
+    assert context["repositories"][0]["topics"] == ["agents"]
+    assert "Codex Lab is a harness" in context["repositories"][0]["readme"]["excerpt"]
+    assert context["repositories"][0]["claims"][0]["standing_context"] is True
+    assert any(command[1:3] == ["repo", "view"] for command in calls)
+    assert any(command[1:3] == ["api", "repos/example-org/codex-lab/readme"] for command in calls)
+
+
+def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[1:3] == ["auth", "status"]:
+            return completed(command, "")
+        if command[1:3] == ["api", "user"]:
+            return completed(command, {"login": "example-user"})
+        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
+            return completed(command, [])
+        if command[1:3] == ["repo", "view"]:
+            return completed(
+                command,
+                {
+                    "description": "Repo with no README.",
+                    "homepageUrl": "",
+                    "repositoryTopics": [],
+                    "url": "https://github.com/example-org/no-readme",
+                },
+            )
+        if command[1] == "api" and command[2] == "repos/example-org/no-readme/readme":
+            return completed(command, {"message": "Not Found"}, returncode=1)
+        if response := empty_enrichment_response(command):
+            return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    settings = github_work_rollup.resolve_settings(
+        args(repo=["example-org/no-readme"], include_derived_context=True),
+        {},
+    )
+
+    payload = github_work_rollup.collect_rollup(settings)
+
+    assert payload["derived_context"]["repositories"][0]["description"] == "Repo with no README."
+    assert not any("README context" in limitation for limitation in payload["limitations"])
 
 
 def test_bucket_items_orders_attention_before_noise() -> None:

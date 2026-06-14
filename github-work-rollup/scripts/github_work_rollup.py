@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -37,6 +38,9 @@ REPORT_LAYOUTS = {"operator", "manager", "executive"}
 DEFAULT_REPO_ITEM_COLLECTION_LIMIT = 1000
 DEFAULT_RELEASE_COLLECTION_LIMIT = 1000
 DEFAULT_WORKFLOW_COLLECTION_LIMIT = 1000
+DEFAULT_CONTEXT_REPO_LIMIT = 25
+README_EXCERPT_CHAR_LIMIT = 1200
+DESCRIPTION_CHAR_LIMIT = 500
 GITHUB_SEARCH_PAGE_SIZE = 100
 GITHUB_SEARCH_RESULT_LIMIT = 1000
 BUCKET_ORDER = [
@@ -107,6 +111,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collection-limit-items", type=int, help="Maximum PRs/issues to collect per repo/state before rendering limits are applied.")
     parser.add_argument("--release-collection-limit", type=int, help="Maximum releases to collect per repo before window filtering.")
     parser.add_argument("--workflow-collection-limit", type=int, help="Maximum workflow runs to collect per repo before window filtering.")
+    parser.add_argument("--include-derived-context", action="store_true", help="Collect bounded repo/workstream context for LLM synthesis.")
+    parser.add_argument("--context-repo-limit", type=int, help="Maximum repositories to enrich with derived context.")
     parser.add_argument("--include-bots", action="store_true")
     parser.add_argument("--include-external-activity", action="store_true")
     return parser.parse_args()
@@ -197,6 +203,14 @@ def resolve_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[s
             args.workflow_collection_limit if args.workflow_collection_limit is not None else config.get("workflow_collection_limit"),
             DEFAULT_WORKFLOW_COLLECTION_LIMIT,
             "workflow_collection_limit",
+        ),
+        "include_derived_context": bool(getattr(args, "include_derived_context", False) or config.get("include_derived_context")),
+        "context_repo_limit": positive_int(
+            getattr(args, "context_repo_limit", None)
+            if getattr(args, "context_repo_limit", None) is not None
+            else config.get("context_repo_limit"),
+            DEFAULT_CONTEXT_REPO_LIMIT,
+            "context_repo_limit",
         ),
     }
 
@@ -500,6 +514,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("collection_warnings", [])
     recipient_profile = resolve_recipient_profile(settings)
     items, buckets, releases, workflows = collect_activity(settings, repos)
+    derived_context = collect_derived_context(settings, repos, items)
 
     collection_warnings = collection_warnings_from(settings)
     limitations_list = [*limitations(settings, repos), *collection_warnings]
@@ -526,6 +541,7 @@ def collect_rollup(settings: dict[str, Any]) -> dict[str, Any]:
         "summary": summary_counts(buckets, collection_warnings),
         "display_window": display_window_json(settings["window"], settings["timezone"]),
         "priority_sections": priority_sections(items, settings),
+        "derived_context": derived_context,
         "limitations": limitations_list,
         "coverage_gaps": configured_repo_gaps(repos, buckets, limitations_list),
         "releases": releases,
@@ -690,6 +706,203 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
             if isinstance(entry, dict) and not entry.get("isArchived") and isinstance(entry.get("nameWithOwner"), str):
                 repos.append(entry["nameWithOwner"])
     return unique(repos)
+
+
+def collect_derived_context(settings: dict[str, Any], repos: list[str], items: list[dict[str, Any]]) -> dict[str, Any]:
+    if not settings.get("include_derived_context"):
+        return {}
+    context_limit = setting_positive_int(settings, "context_repo_limit", DEFAULT_CONTEXT_REPO_LIMIT)
+    selected_repos = select_context_repos(repos, items, context_limit)
+    repo_contexts = []
+    for repo in selected_repos:
+        repo_contexts.append(collect_repo_context(repo, settings))
+    return {
+        "schema_version": 1,
+        "generated_at": format_ts(datetime.now(timezone.utc)),
+        "source": "derived from GitHub repo metadata, README excerpts, priority-section metadata, and collected work items",
+        "repo_limit": context_limit,
+        "repositories": repo_contexts,
+        "workstreams": derived_workstream_context(settings, items),
+        "notes": [
+            "Derived context is explanatory support for LLM synthesis, not a manual source of truth.",
+            "Standing repo descriptions must not be presented as changes inside the report window.",
+        ],
+    }
+
+
+def select_context_repos(repos: list[str], items: list[dict[str, Any]], limit: int) -> list[str]:
+    scores = {repo: 0 for repo in repos}
+    for item in items:
+        repo = item.get("repo")
+        if not isinstance(repo, str) or repo not in scores:
+            continue
+        score = 1
+        bucket = item.get("bucket")
+        if bucket in ACTIONABLE_PRIORITY_BUCKETS:
+            score += 5
+        if bucket == "recently_completed":
+            score += 3
+        score += int(item.get("priority") or 0)
+        scores[repo] = scores.get(repo, 0) + score
+    ranked = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
+    return [repo for repo, _score in ranked[:limit]]
+
+
+def collect_repo_context(repo: str, settings: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "repo": repo,
+        "fetched_at": format_ts(datetime.now(timezone.utc)),
+        "sources": [],
+        "claims": [],
+    }
+    metadata = collect_repo_metadata(repo, settings)
+    if metadata:
+        context.update(metadata)
+        source = {"kind": "repo_metadata", "url": f"https://github.com/{repo}"}
+        context["sources"].append(source)
+        description = str(metadata.get("description") or "").strip()
+        if description:
+            context["claims"].append(
+                derived_claim(
+                    "standing_context",
+                    truncate_text(description, DESCRIPTION_CHAR_LIMIT),
+                    [source],
+                    "high",
+                )
+            )
+    readme = collect_repo_readme(repo, settings)
+    if readme:
+        context["readme"] = readme
+        source = {"kind": "readme", "url": str(readme.get("url") or ""), "sha": str(readme.get("sha") or "")}
+        context["sources"].append(source)
+        excerpt = str(readme.get("excerpt") or "").strip()
+        if excerpt:
+            context["claims"].append(derived_claim("standing_context", excerpt, [source], "medium"))
+    return context
+
+
+def collect_repo_metadata(repo: str, settings: dict[str, Any]) -> dict[str, Any]:
+    result = run([GH, "repo", "view", repo, "--json", "description,homepageUrl,repositoryTopics,url"])
+    if result.returncode != 0:
+        add_collection_warning(settings, f"Could not collect repo context for {repo}: {trim(result.stderr or result.stdout)}")
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        add_collection_warning(settings, f"Could not parse repo context for {repo}; derived context may be incomplete.")
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    topics = []
+    for topic in payload.get("repositoryTopics") or []:
+        if isinstance(topic, dict) and isinstance(topic.get("name"), str):
+            topics.append(topic["name"])
+        elif isinstance(topic, str):
+            topics.append(topic)
+    return {
+        "description": truncate_text(str(payload.get("description") or ""), DESCRIPTION_CHAR_LIMIT),
+        "homepage_url": payload.get("homepageUrl") or "",
+        "topics": topics,
+        "url": payload.get("url") or f"https://github.com/{repo}",
+    }
+
+
+def collect_repo_readme(repo: str, settings: dict[str, Any]) -> dict[str, Any]:
+    result = run([GH, "api", f"repos/{repo}/readme"])
+    if result.returncode != 0:
+        message = result.stderr or result.stdout or ""
+        if not is_not_found_response(message):
+            add_collection_warning(settings, f"Could not collect README context for {repo}: {trim(message)}")
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        add_collection_warning(settings, f"Could not parse README context for {repo}; derived context may be incomplete.")
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    raw_content = payload.get("content")
+    encoding = str(payload.get("encoding") or "")
+    if not isinstance(raw_content, str) or encoding.casefold() != "base64":
+        return {}
+    try:
+        decoded = base64.b64decode(raw_content, validate=False).decode("utf-8", errors="replace")
+    except (ValueError, OSError):
+        add_collection_warning(settings, f"Could not decode README context for {repo}; derived context may be incomplete.")
+        return {}
+    excerpt = readme_excerpt(decoded, README_EXCERPT_CHAR_LIMIT)
+    if not excerpt:
+        return {}
+    return {
+        "path": payload.get("path") or "README",
+        "sha": payload.get("sha") or "",
+        "url": payload.get("html_url") or f"https://github.com/{repo}",
+        "excerpt": excerpt,
+    }
+
+
+def derived_workstream_context(settings: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contexts = []
+    for section in priority_sections(items, settings):
+        repos = []
+        for raw in settings.get("priority_sections") or []:
+            if isinstance(raw, dict) and str(raw.get("name") or "Priority Section") == section.get("name"):
+                repos = as_str_list(raw.get("repositories"))
+                break
+        contexts.append(
+            {
+                "name": section.get("name"),
+                "portfolio_area": section.get("portfolio_area"),
+                "workstream": section.get("workstream"),
+                "relationship": section.get("relationship"),
+                "initiatives": section.get("initiatives") or [],
+                "repositories": repos,
+                "active_titles": [str(item.get("title") or "") for item in (section.get("items") or [])[:5]],
+                "recently_completed_titles": [
+                    str(item.get("title") or "") for item in (section.get("recently_completed") or [])[:5]
+                ],
+                "source": "priority_sections metadata plus collected issue/PR titles",
+            }
+        )
+    return contexts
+
+
+def is_not_found_response(message: str) -> bool:
+    normalized = message.casefold()
+    return "not found" in normalized or "http 404" in normalized or "status 404" in normalized
+
+
+def derived_claim(kind: str, text: str, sources: list[dict[str, Any]], confidence: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "text": text,
+        "sources": sources,
+        "confidence": confidence,
+        "standing_context": kind == "standing_context",
+    }
+
+
+def readme_excerpt(text: str, limit: int) -> str:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if lines:
+                lines.append("")
+            continue
+        if line.startswith("!") or line.startswith("[") and "](" in line:
+            continue
+        lines.append(line)
+        if len("\n".join(lines)) >= limit:
+            break
+    return truncate_text("\n".join(lines).strip(), limit)
+
+
+def truncate_text(text: str, limit: int) -> str:
+    clean = re.sub(r"\s+", " ", text).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(limit - 1, 0)].rstrip() + "…"
 
 
 def collect_repo_items(repo: str, settings: dict[str, Any]) -> list[dict[str, Any]]:
