@@ -33,6 +33,7 @@ def hit(module: ModuleType, signal: str, line: int, snippet: str) -> object:
         line=line,
         snippet=snippet,
         structured=True,
+        tags=module.ANALYZER.signal_tags(signal, snippet, module.ANALYZER.canonical_hit_text(snippet)),
         severity=meta.severity,
         category=meta.category,
         destination=meta.destination,
@@ -66,6 +67,24 @@ def test_groups_nearby_hits_and_detects_resolution(module: ModuleType) -> None:
         raise AssertionError(f"expected resolved_after_retries, got {payload['outcome']}")
     if payload["cost"]["retry_count"] < 1:
         raise AssertionError("retry count should be captured")
+
+
+def test_episode_carries_failure_cause_tags(module: ModuleType) -> None:
+    episodes = module.build_episodes(
+        target(),
+        [
+            hit(module, "repeated_command_failure", 1, "pytest summary: 1 failed, 2 passed"),
+            hit(module, "repeated_command_failure", 2, "Process exited with code 1"),
+            hit(module, "repeated_command_failure", 3, "Command failed: uv not found"),
+        ],
+        max_gap_lines=5,
+        trace_lines=[],
+    )
+    payload = module.episode_to_json(episodes[0])
+    tags = payload.get("tag_counts", {})
+    for expected in ("test_failure", "exit_code", "missing_command", "command_failed"):
+        if expected not in tags:
+            raise AssertionError(f"missing failure tag {expected!r}: {payload}")
 
 
 def test_retry_count_uses_context_window(module: ModuleType) -> None:
@@ -229,6 +248,7 @@ def test_time_filters_use_analyzer_timestamp_parser(module: ModuleType) -> None:
 def main() -> int:
     module = load_module()
     test_groups_nearby_hits_and_detects_resolution(module)
+    test_episode_carries_failure_cause_tags(module)
     test_retry_count_uses_context_window(module)
     test_success_requires_success_word_or_zero_exit(module)
     test_mixed_failed_and_passed_summary_stays_unresolved(module)

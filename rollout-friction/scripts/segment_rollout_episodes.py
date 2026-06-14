@@ -13,6 +13,7 @@ import importlib.util
 import json
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ class EventHit:
     line: int
     snippet: str
     structured: bool
+    tags: tuple[str, ...]
     severity: str
     category: str
     destination: str
@@ -156,6 +158,7 @@ def collect_hits_and_lines(target: Any, args: argparse.Namespace) -> tuple[list[
             for occurrence, match in enumerate(signal.pattern.finditer(text)):
                 if ANALYZER.should_skip_signal_match(signal.name, text, canonical_text, match):
                     continue
+                tags = ANALYZER.signal_tags(signal.name, text, canonical_text)
                 line_key = (line_no, signal.name)
                 line_texts = line_signal_texts.setdefault(line_key, set())
                 if is_summary and ANALYZER.summary_only_repeats_seen_values(canonical_text, line_texts):
@@ -171,6 +174,7 @@ def collect_hits_and_lines(target: Any, args: argparse.Namespace) -> tuple[list[
                         line=line_no,
                         snippet=snippet,
                         structured=is_structured,
+                        tags=tags,
                         severity=signal.severity,
                         category=signal.category,
                         destination=signal.destination,
@@ -319,6 +323,7 @@ def primary_hit(episode: Episode) -> EventHit:
 
 def episode_to_json(episode: Episode) -> dict[str, Any]:
     primary = primary_hit(episode)
+    tag_counts = Counter(tag for hit in episode.hits for tag in hit.tags)
     return {
         "schema_version": 1,
         "episode_id": episode.episode_id,
@@ -328,6 +333,7 @@ def episode_to_json(episode: Episode) -> dict[str, Any]:
         "end_line": episode.end_line,
         "primary_signal": primary.signal,
         "signals": sorted({hit.signal for hit in episode.hits}),
+        "tag_counts": dict(sorted(tag_counts.items())),
         "severity": primary.severity,
         "category": primary.category,
         "recommended_destination": primary.destination,
@@ -348,6 +354,7 @@ def episode_to_json(episode: Episode) -> dict[str, Any]:
                 "line": hit.line,
                 "snippet": hit.snippet,
                 "evidence_type": "structured_payload" if hit.structured else "broad_context",
+                "tags": list(hit.tags),
             }
             for hit in episode.hits
         ],

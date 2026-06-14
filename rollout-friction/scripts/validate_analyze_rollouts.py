@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("analyze_rollouts.py")
@@ -257,6 +260,139 @@ def test_lm_studio_scout_strips_channel_wrappers() -> None:
     )
     if normalized != '{"ok":true}':
         raise AssertionError(f"unexpected normalized scout content: {normalized!r}")
+
+
+def load_scout_module() -> ModuleType:
+    scout_script = Path(__file__).with_name("lm_studio_scout.py")
+    spec = importlib.util.spec_from_file_location("lm_studio_scout", scout_script)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load lm_studio_scout.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_lm_studio_scout_delegates_to_local_llm_chat() -> None:
+    module = load_scout_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        report = Path(tmp) / "report.md"
+        report.write_text("redacted rollout summary", encoding="utf-8")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "model": "test/model",
+                    "served_model": "test/model",
+                    "role": "rollout_scout",
+                    "endpoint": {"id": "local", "locality": "localhost"},
+                    "content": "Missing Signals\n- none",
+                }
+            ),
+            stderr="",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured["command"] = command
+            captured["input"] = kwargs.get("input")
+            captured["timeout"] = kwargs.get("timeout")
+            return completed
+
+        stdout = io.StringIO()
+        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            sys, "argv", ["lm_studio_scout.py", "--json", "--warmup", "--load-policy", "jit_chat", str(report)]
+        ), redirect_stdout(stdout):
+            exit_code = module.main()
+    if exit_code != 0:
+        raise AssertionError(f"expected scout success, got {exit_code}")
+    output = json.loads(stdout.getvalue())
+    if output["analysis"] != "Missing Signals\n- none" or output["model"] != "test/model":
+        raise AssertionError(f"unexpected scout envelope: {output}")
+    command = captured.get("command")
+    if not isinstance(command, list):
+        raise AssertionError("subprocess command was not captured")
+    if command[:2] != ["uv", "run"]:
+        raise AssertionError(f"scout should run the dependency-aware uv script path: {command}")
+    for expected in ("--json", "--role", "rollout_scout", "--warmup", "--load-policy", "jit_chat"):
+        if expected not in command:
+            raise AssertionError(f"missing forwarded argument {expected!r}: {command}")
+    if "--timeout" in command:
+        raise AssertionError(f"default role-based scout should let local-llm use the role timeout: {command}")
+    prompt = captured.get("input")
+    if not isinstance(prompt, str) or "redacted rollout summary" not in prompt or "Review this redacted" not in prompt:
+        raise AssertionError(f"scout prompt was not sent through stdin: {prompt!r}")
+
+
+def test_lm_studio_scout_deep_forwards_timeout() -> None:
+    module = load_scout_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        report = Path(tmp) / "report.md"
+        report.write_text("redacted rollout summary", encoding="utf-8")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"ok": True, "model": "test/model", "content": "analysis text"}),
+            stderr="",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured["command"] = command
+            captured["timeout"] = kwargs.get("timeout")
+            return completed
+
+        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            sys, "argv", ["lm_studio_scout.py", "--deep", str(report)]
+        ), redirect_stdout(io.StringIO()):
+            exit_code = module.main()
+    if exit_code != 0:
+        raise AssertionError(f"expected scout success, got {exit_code}")
+    command = captured.get("command")
+    if not isinstance(command, list):
+        raise AssertionError("subprocess command was not captured")
+    if "--timeout" not in command or "180" not in command:
+        raise AssertionError(f"--deep should forward the deep timeout: {command}")
+    if captured.get("timeout") != 190:
+        raise AssertionError(f"parent timeout should wrap the explicit deep timeout: {captured}")
+
+
+def test_lm_studio_scout_reports_chat_errors() -> None:
+    module = load_scout_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        report = Path(tmp) / "report.md"
+        report.write_text("redacted rollout summary", encoding="utf-8")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps({"ok": False, "error": "connection refused"}),
+            stderr="",
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(module.subprocess, "run", return_value=completed), mock.patch.object(
+            sys, "argv", ["lm_studio_scout.py", str(report)]
+        ), redirect_stdout(stdout):
+            exit_code = module.main()
+    if exit_code != 1 or "Scout unavailable: connection refused" not in stdout.getvalue():
+        raise AssertionError(f"expected graceful scout-unavailable output: {stdout.getvalue()!r}")
+
+
+def test_lm_studio_scout_rejects_null_byte_report() -> None:
+    module = load_scout_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        report = Path(tmp) / "report.md"
+        report.write_bytes(b"redacted\x00summary")
+        stderr = io.StringIO()
+        with mock.patch.object(module.subprocess, "run") as fake_run, mock.patch.object(
+            sys, "argv", ["lm_studio_scout.py", str(report)]
+        ), redirect_stderr(stderr):
+            exit_code = module.main()
+    if exit_code != 2 or fake_run.called:
+        raise AssertionError("null-byte reports should fail before invoking local-llm chat")
+    if "null bytes" not in stderr.getvalue():
+        raise AssertionError(f"expected null-byte error, got {stderr.getvalue()!r}")
 
 
 def test_nested_json_fragments_count_once_per_line() -> None:
@@ -746,6 +882,82 @@ def test_distinct_auto_review_events_still_count_as_loop() -> None:
         raise AssertionError("distinct auto-review events should still count as review-loop evidence")
 
 
+def test_auto_review_branch_chatter_is_not_a_loop() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "event_msg", "payload": {"aggregated_output": "Checking branch auto-review-628291b6 status."}},
+                {"type": "event_msg", "payload": {"aggregated_output": "The auto-review branch appears in git history."}},
+                {"type": "event_msg", "payload": {"aggregated_output": "Discussed auto-review as a possible local workflow."}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auto_review_loop" in findings:
+        raise AssertionError("plain auto-review branch chatter should not become a high-severity loop")
+
+
+def test_auto_review_ledger_discussion_is_not_a_loop() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"type": "event_msg", "payload": {"aggregated_output": "The auto-review ledger still prints findings=2 but the sidecar reports zero findings."}},
+                {"type": "event_msg", "payload": {"aggregated_output": "I checked the stale auto-review detail and the active checkout is already fixed."}},
+                {"type": "event_msg", "payload": {"aggregated_output": "The compact auto-review ledger is inconsistent with its sidecar."}},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "auto_review_loop" in findings:
+        raise AssertionError("stale ledger discussion should not count as fresh auto-review loop evidence")
+
+
+def test_command_failure_tags_are_exported() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "error: pytest summary: 1 failed, 2 passed"},
+                {"message": "Process exited with code 1"},
+                {"message": "Command failed: uv not found"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    finding = findings.get("repeated_command_failure")
+    if finding is None:
+        raise AssertionError("expected repeated_command_failure finding")
+    payload = module.finding_to_json(finding)
+    tags = payload.get("tag_counts", {})
+    for expected in ("test_failure", "exit_code", "missing_command", "command_failed"):
+        if expected not in tags:
+            raise AssertionError(f"missing tag {expected!r}: {payload}")
+
+
+def test_scan_summary_reports_degraded_scan() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = root / "session-one.jsonl"
+        second = root / "session-two.jsonl"
+        third = root / "session-three.jsonl"
+        first.write_text("x" * 100, encoding="utf-8")
+        second.write_text("y" * 100, encoding="utf-8")
+        third.write_text("z" * 100, encoding="utf-8")
+        files, limitations = module.iter_candidate_files([root], max_files=10)
+        targets, scan_limitations = module.plan_scan_targets(files, max_bytes=50, max_file_bytes=30)
+        summary = module.scan_summary(targets, [*limitations, *scan_limitations])
+    if not summary["scan_degraded"]:
+        raise AssertionError(f"expected degraded scan summary: {summary}")
+    if summary["truncated_file_count"] != 2 or summary["skipped_file_count"] != 1:
+        raise AssertionError(f"expected two truncated and one skipped file: {summary}")
+    counts = summary["limitation_counts"]
+    if counts.get("per_file_byte_limit") != 1 or counts.get("total_byte_limit") != 2:
+        raise AssertionError(f"expected limitation reason counts: {summary}")
+
+
 def test_spaced_auto_review_with_diff_marker_is_preserved() -> None:
     module = load_module()
     review_with_diff = "Auto Review: 1 issue found. The finding was valid. diff --git a/foo b/foo"
@@ -1036,6 +1248,14 @@ def main() -> int:
     test_partial_diff_headers_do_not_count_as_failures()
     test_repeated_identical_auto_review_events_still_count_as_loop()
     test_distinct_auto_review_events_still_count_as_loop()
+    test_auto_review_branch_chatter_is_not_a_loop()
+    test_auto_review_ledger_discussion_is_not_a_loop()
+    test_command_failure_tags_are_exported()
+    test_scan_summary_reports_degraded_scan()
+    test_lm_studio_scout_delegates_to_local_llm_chat()
+    test_lm_studio_scout_deep_forwards_timeout()
+    test_lm_studio_scout_reports_chat_errors()
+    test_lm_studio_scout_rejects_null_byte_report()
     test_spaced_auto_review_with_diff_marker_is_preserved()
     test_plain_workflow_branch_failure_text_is_not_static_config()
     test_structured_payload_counts_are_separate_from_broad_context()

@@ -16,21 +16,43 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
-DEFAULT_MODEL = os.environ.get("ROLLOUT_FRICTION_LM_MODEL", "openai/gpt-oss-20b")
-DEFAULT_TIMEOUT = 45
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CHAT_SCRIPT = REPO_ROOT / "local-llm" / "scripts" / "lm_studio_chat.py"
+DEFAULT_BASE_URL = None
+DEFAULT_MODEL = os.environ.get("ROLLOUT_FRICTION_LM_MODEL")
+DEFAULT_ROLE = "rollout_scout"
+DEFAULT_TIMEOUT: float | None = None
+FALLBACK_PARENT_TIMEOUT = 300
 DEEP_TIMEOUT = 180
 DEFAULT_MAX_INPUT_CHARS = 12_000
 DEFAULT_MAX_TOKENS = 900
 
 CHANNEL_RE = re.compile(r"<\|channel\|>\w+\s*(?:<\|constrain\|>\w+)?\s*<\|message\|>", re.I)
+SCOUT_SYSTEM_PROMPT = (
+    "You are a private local scout for an agent workflow audit. "
+    "This is about local coding-agent workflow friction, not "
+    "application security, web traffic, or threat modeling. "
+    "Do not propose credential-leakage, brute-force, IP-rate, "
+    "bot-traffic, or security-audit work. "
+    "Use only the redacted report. Do not ask for raw traces. "
+    "Give concise, implementation-oriented hypotheses."
+)
+SCOUT_USER_PREAMBLE = (
+    "Review this redacted rollout-friction analyzer report. "
+    "Identify missed friction classes, likely false positives, "
+    "and concrete analyzer or skill improvements. Group output as: "
+    "Missing Signals, False Positives, Skill Guidance, Validation. "
+    "Stay inside coding-agent workflow mechanics such as helper "
+    "routing, retries, worktrees, validation gates, local config, "
+    "status polling, model-scout boundaries, and trace false "
+    "positives."
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,8 +60,11 @@ def parse_args() -> argparse.Namespace:
         description="Run a bounded local LM Studio scout over a redacted rollout-friction report."
     )
     parser.add_argument("report", type=Path, help="Redacted analyzer report or synthesized notes.")
+    parser.add_argument("--config", type=Path, help="Private local-llm config path passed to lm_studio_chat.py.")
+    parser.add_argument("--endpoint", help="Endpoint id from private local-llm config.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--role", default=DEFAULT_ROLE, help="Role from local-llm model index/private config.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument(
         "--deep",
@@ -48,6 +73,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-input-chars", type=int, default=DEFAULT_MAX_INPUT_CHARS)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    parser.add_argument("--load-policy", choices=("none", "jit_chat", "api_explicit"), help="Forwarded local-llm lifecycle policy.")
+    parser.add_argument("--ttl", type=int, help="Forwarded LM Studio JIT TTL seconds.")
+    parser.add_argument("--warmup", action="store_true", help="Run harmless local-llm warmup before the scout prompt.")
+    parser.add_argument("--unload-after", action="store_true", help="Unload an explicitly loaded LM Studio instance after chat.")
     parser.add_argument("--json", action="store_true", help="Emit metadata plus scout text as JSON.")
     args = parser.parse_args()
     if args.max_input_chars <= 0:
@@ -59,7 +88,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    timeout = DEEP_TIMEOUT if args.deep and args.timeout == DEFAULT_TIMEOUT else args.timeout
+    timeout = DEEP_TIMEOUT if args.deep and args.timeout is None else args.timeout
     try:
         report = args.report.expanduser().read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -70,49 +99,14 @@ def main() -> int:
         return 2
 
     report = report[: args.max_input_chars]
-    payload = {
-        "model": args.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a private local scout for an agent workflow audit. "
-                    "This is about local coding-agent workflow friction, not "
-                    "application security, web traffic, or threat modeling. "
-                    "Do not propose credential-leakage, brute-force, IP-rate, "
-                    "bot-traffic, or security-audit work. "
-                    "Use only the redacted report. Do not ask for raw traces. "
-                    "Give concise, implementation-oriented hypotheses."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Review this redacted rollout-friction analyzer report. "
-                    "Identify missed friction classes, likely false positives, "
-                    "and concrete analyzer or skill improvements. Group output as: "
-                    "Missing Signals, False Positives, Skill Guidance, Validation. "
-                    "Stay inside coding-agent workflow mechanics such as helper "
-                    "routing, retries, worktrees, validation gates, local config, "
-                    "status polling, model-scout boundaries, and trace false "
-                    "positives.\n\n"
-                    f"{report}"
-                ),
-            },
-        ],
-        "temperature": 0.2,
-        "max_tokens": args.max_tokens,
-        "stream": False,
-    }
-
     try:
-        response = post_json(f"{args.base_url.rstrip('/')}/chat/completions", payload, timeout)
+        response = run_chat(report, args, timeout)
     except ScoutError as exc:
         print(f"# Scout unavailable: {exc}")
         print("# Continue with analyzer output and human review; do not retry in a loop.")
         return 1
 
-    content = extract_content(response)
+    content = normalize_content(str(response.get("content") or ""))
     if not content:
         print("error: LM Studio returned no assistant content", file=sys.stderr)
         return 1
@@ -120,7 +114,10 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "model": args.model,
+                    "model": response.get("model") or args.model,
+                    "served_model": response.get("served_model"),
+                    "role": response.get("role") or args.role,
+                    "endpoint": response.get("endpoint"),
                     "timeout_seconds": timeout,
                     "report_chars": len(report),
                     "analysis": content,
@@ -137,42 +134,66 @@ class ScoutError(RuntimeError):
     pass
 
 
-def post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
+def run_chat(report: str, args: argparse.Namespace, timeout: float | None) -> dict[str, Any]:
+    if not CHAT_SCRIPT.exists():
+        raise ScoutError(f"local-llm chat helper is missing: {CHAT_SCRIPT}")
+    prompt = f"{SCOUT_USER_PREAMBLE}\n\n{report}"
+    command = [
+        "uv",
+        "run",
+        str(CHAT_SCRIPT),
+        "--json",
+        "--system",
+        SCOUT_SYSTEM_PROMPT,
+        "--max-tokens",
+        str(args.max_tokens),
+    ]
+    if timeout is not None:
+        command.extend(["--timeout", str(timeout)])
+    if args.config:
+        command.extend(["--config", str(args.config)])
+    if args.endpoint:
+        command.extend(["--endpoint", args.endpoint])
+    if args.base_url:
+        command.extend(["--base-url", args.base_url])
+    if args.model:
+        command.extend(["--model", args.model])
+    elif args.role:
+        command.extend(["--role", args.role])
+    if args.load_policy:
+        command.extend(["--load-policy", args.load_policy])
+    if args.ttl:
+        command.extend(["--ttl", str(args.ttl)])
+    if args.warmup:
+        command.append("--warmup")
+    if args.unload_after:
+        command.append("--unload-after")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
-    except TimeoutError as exc:
-        raise ScoutError(f"request timed out after {timeout:g}s") from exc
-    except urllib.error.URLError as exc:
-        raise ScoutError(f"request failed: {exc.reason}") from exc
+        parent_timeout = timeout + 10 if timeout is not None else FALLBACK_PARENT_TIMEOUT
+        completed = subprocess.run(
+            command,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=parent_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        limit = timeout + 10 if timeout is not None else FALLBACK_PARENT_TIMEOUT
+        raise ScoutError(f"local-llm chat helper timed out after {limit:g}s") from exc
 
     try:
-        parsed = json.loads(body)
+        parsed = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise ScoutError(f"response was not JSON: {exc}") from exc
+        stderr = completed.stderr.strip()
+        detail = f" stderr={stderr}" if stderr else ""
+        raise ScoutError(f"local-llm chat helper returned non-JSON output: {exc}{detail}") from exc
     if not isinstance(parsed, dict):
-        raise ScoutError("response JSON was not an object")
-    if parsed.get("error"):
-        raise ScoutError(f"model error: {parsed['error']}")
+        raise ScoutError("local-llm chat helper JSON was not an object")
+    if completed.returncode != 0 or not parsed.get("ok"):
+        error = parsed.get("error") or completed.stderr.strip() or f"exit {completed.returncode}"
+        raise ScoutError(str(error))
     return parsed
-
-
-def extract_content(response: dict[str, Any]) -> str:
-    choices = response.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if not isinstance(content, str):
-        return ""
-    return normalize_content(content)
 
 
 def normalize_content(content: str) -> str:

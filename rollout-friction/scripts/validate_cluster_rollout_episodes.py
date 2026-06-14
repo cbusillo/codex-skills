@@ -41,8 +41,9 @@ def episode(episode_id: str, cost: int, snippet: str, outcome: str = "unresolved
         "outcome": outcome,
         "cost_score": cost,
         "likely_cause": "Commands or tools failed repeatedly.",
+        "tag_counts": {"exit_code": 1},
         "hits": [
-            {"signal": "repeated_command_failure", "line": 1, "snippet": snippet, "evidence_type": "structured_payload"},
+            {"signal": "repeated_command_failure", "line": 1, "snippet": snippet, "evidence_type": "structured_payload", "tags": ["exit_code"]},
             {"signal": "shell_quoting_or_parse_error", "line": 2, "snippet": "zsh: unmatched quote", "evidence_type": "structured_payload"},
         ],
     }
@@ -60,6 +61,10 @@ def test_clusters_by_signal_signature(module: ModuleType) -> None:
     cluster = payload["clusters"][0]
     if cluster["episode_count"] != 2 or cluster["max_cost_score"] != 30:
         raise AssertionError("cluster should aggregate episode count and representative cost")
+    if cluster.get("tag_counts") != {"exit_code": 2}:
+        raise AssertionError(f"cluster should aggregate failure tags: {cluster}")
+    if "tags" not in payload["skeletons"][0]["steps"][0]:
+        raise AssertionError("skeleton steps should preserve per-hit tags")
 
 
 def test_skeleton_redacts_private_shapes(module: ModuleType) -> None:

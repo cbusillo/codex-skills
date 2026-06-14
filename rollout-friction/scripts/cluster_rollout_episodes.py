@@ -111,6 +111,12 @@ def build_clusters(
         cluster_id = cluster_id_for(key)
         outcome_mix = Counter(str(item.get("outcome") or "unknown") for item in items)
         signal_counts = Counter(signal for item in items for signal in item.get("signals", []))
+        tag_counts = Counter(
+            tag
+            for item in items
+            for tag, count in normalized_tag_counts(item).items()
+            for _ in range(count)
+        )
         skeleton = skeleton_for(cluster_id, representative, len(items), max_steps, trusted_originals)
         skeletons.append(skeleton)
         clusters.append(
@@ -119,6 +125,7 @@ def build_clusters(
                 "cluster_id": cluster_id,
                 "label": cluster_label(signal_counts, representative),
                 "signals": sorted(signal_counts),
+                "tag_counts": dict(sorted(tag_counts.items())),
                 "primary_signal": representative.get("primary_signal"),
                 "category": representative.get("category"),
                 "recommended_destination": representative.get("recommended_destination"),
@@ -151,6 +158,30 @@ def cluster_label(signal_counts: Counter[str], representative: dict[str, Any]) -
     return f"{top} ({outcome})"
 
 
+def normalized_tag_counts(episode: dict[str, Any]) -> dict[str, int]:
+    raw_counts = episode.get("tag_counts")
+    if isinstance(raw_counts, dict):
+        counts: dict[str, int] = {}
+        for tag, count in raw_counts.items():
+            if not isinstance(tag, str):
+                continue
+            try:
+                numeric_count = int(count)
+            except (TypeError, ValueError):
+                continue
+            if numeric_count > 0:
+                counts[tag] = numeric_count
+        return counts
+    counts = Counter(
+        tag
+        for hit in episode.get("hits", [])
+        if isinstance(hit, dict)
+        for tag in hit.get("tags", [])
+        if isinstance(tag, str)
+    )
+    return dict(counts)
+
+
 def skeleton_for(
     cluster_id: str,
     episode: dict[str, Any],
@@ -169,6 +200,7 @@ def skeleton_for(
                 "kind": step_kind(str(hit.get("signal") or ""), snippet),
                 "signal": hit.get("signal"),
                 "line": hit.get("line"),
+                "tags": hit.get("tags") if isinstance(hit.get("tags"), list) else [],
                 "summary": sanitize(snippet, trusted_originals),
             }
         )

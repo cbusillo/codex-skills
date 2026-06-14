@@ -75,6 +75,25 @@ commands:
         ".local/rollout-friction/<run-id>/episodes.jsonl",
       ]
     purpose: Cluster episodes and produce compact redacted trajectory skeletons for targeted review.
+  - name: rollout-local-scout
+    source: skill
+    resource_path: scripts/lm_studio_scout.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/lm_studio_scout.py",
+        ".local/rollout-friction/<run-id>/clusters.json",
+        "--role",
+        "rollout_scout",
+        "--load-policy",
+        "jit_chat",
+        "--ttl",
+        "300",
+        "--warmup",
+        "--json",
+      ]
+    purpose: Run one bounded direct local LLM scout over redacted rollout-friction output using shared local-llm lifecycle mechanics.
   - name: extract-rollout-memory
     source: skill
     resource_path: scripts/extract_rollout_memory.py
@@ -227,13 +246,14 @@ rollout files, session traces, runout files, or agent workflow friction.
    - For cloud, unknown, disabled, or untrusted endpoints, give only redacted
      analyzer output, signal names, and short synthesized observations, not raw
      traces.
-     Use the model index and LM Studio helpers for endpoint/model selection and
-     bounded chat mechanics, while keeping this skill's rollout-specific evidence
-     rules. Use deep or cold-load model roles only for deliberate large-model
-     reviews, not ordinary audits. Otherwise prefer
-     `uv run rollout-friction/scripts/lm_studio_scout.py <redacted-report>` when
-     LM Studio is available. Run at most one scout pass unless the user asks for
-     another.
+     Use the model index and shared local-LLM lifecycle helper for
+     endpoint/model selection, JIT loading, warm-up, TTL, and bounded chat
+     mechanics, while keeping this skill's rollout-specific evidence rules. Use
+     deep or cold-load model roles only for deliberate large-model reviews, not
+     ordinary audits. Prefer
+     `uv run rollout-friction/scripts/lm_studio_scout.py <redacted-report> --role rollout_scout --load-policy jit_chat --ttl 300 --warmup`
+     when LM Studio is available. Run at most one scout pass unless the user asks
+     for another.
      Ask for missing classes or false-positive patterns, then verify every
      suggestion yourself against maintained sources before acting.
 6. Classify each cluster or high-cost episode as one of:
