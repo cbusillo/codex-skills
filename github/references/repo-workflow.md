@@ -45,6 +45,8 @@ If a workflow wait by name reports no runs found, or GitHub returns transient
 mergeability/rollup states such as `mergeable: UNKNOWN` or queued
 `statusCheckRollup` entries, switch to `gh-pr.py checks <pr-or-url>` for PR-head
 check state instead of repeatedly polling workflow names or GraphQL rollups.
+Do not use raw `gh pr checks --watch` or `gh run watch` as the normal PR wait
+loop; use `babysit-pr` when checks need ongoing PR-level follow-through.
 When `github-repo-snapshot.sh --json` cannot use `gh-pr.py`, PR entries are
 explicitly degraded with `snapshotReadiness.degraded: true` and no merge
 readiness. Do not make readiness or merge decisions from that fallback shape;
