@@ -157,6 +157,25 @@ def test_rejects_unsupported_natural_language_issue_reference() -> None:
     assert "unsupported issue/PR reference not present in evidence: 99" in errors
 
 
+def test_rejects_bare_ref_from_unrelated_numeric_metadata() -> None:
+    metadata_evidence = evidence()
+    metadata_evidence["workflow_runs"] = [
+        {
+            "repo": "example-org/example-repo",
+            "number": 123,
+            "databaseId": 456,
+            "url": "https://github.com/example-org/example-repo/actions/runs/456",
+        }
+    ]
+
+    errors = verify_work_brief.verify_brief(
+        metadata_evidence,
+        "#123 is ready. Workflow counts may be incomplete.",
+    )
+
+    assert "unsupported issue/PR reference not present in evidence: #123" in errors
+
+
 def test_ignores_workflow_run_natural_language_reference() -> None:
     workflow_evidence = evidence()
     workflow_evidence["workflow_runs"] = [
@@ -255,7 +274,9 @@ def test_requires_source_note_reflection() -> None:
         "example-org/example-repo#42 is the next review item.",
     )
 
-    assert errors == ["brief must include a source limitation or confidence caveat"]
+    assert errors == [
+        "brief must reflect source note: Workflow collection reached the configured cap; workflow counts may be incomplete."
+    ]
 
 
 def test_rejects_generic_caveat_without_source_note_content() -> None:
@@ -267,6 +288,15 @@ def test_rejects_generic_caveat_without_source_note_content() -> None:
     assert errors == [
         "brief must reflect source note: Workflow collection reached the configured cap; workflow counts may be incomplete."
     ]
+
+
+def test_accepts_paraphrased_source_note_without_marker_words() -> None:
+    errors = verify_work_brief.verify_brief(
+        evidence(),
+        "example-org/example-repo#42 is the next review item. Automation totals are capped and workflow counts may be incomplete.",
+    )
+
+    assert errors == []
 
 
 def test_rejects_contradicted_source_note() -> None:
