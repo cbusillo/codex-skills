@@ -33,6 +33,20 @@ FAILURE_STEP_RE = re.compile(
     r"\b(error|failed|failure|exit[_ -]?code\s*[:=]?\s*[1-9][0-9]*|process exited with code [1-9][0-9]*|timed out|timeout|blocked|rate limit|stale)\b",
     re.I,
 )
+ROOT_CAUSE_TAG_PRIORITY = {
+    "rate_limit": 0,
+    "missing_command": 1,
+    "missing_module": 1,
+    "permission": 2,
+    "git_failure": 3,
+    "network": 4,
+    "lint_or_format": 5,
+    "test_failure": 6,
+    "python_traceback": 7,
+    "timeout": 8,
+}
+CAUSE_TAG_PRIORITY = {**ROOT_CAUSE_TAG_PRIORITY, "github_cli": 20, "command_failed": 21, "exit_code": 22}
+GENERIC_CAUSE_TAGS = {"command_failed", "exit_code"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,9 +92,39 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
 
 def cluster_key(episode: dict[str, Any]) -> tuple[str, ...]:
     signals = tuple(sorted(str(signal) for signal in episode.get("signals", []) if signal))
+    cause = command_failure_cause(episode)
+    if cause:
+        return ("repeated_command_failure", f"cause:{cause}")
     category = str(episode.get("category") or "unknown")
     destination = str(episode.get("recommended_destination") or "unknown")
     return (*signals, f"category:{category}", f"destination:{destination}")
+
+
+def command_failure_cause(episode: dict[str, Any]) -> str | None:
+    signals = {str(signal) for signal in episode.get("signals", []) if signal}
+    if "repeated_command_failure" not in signals:
+        return None
+    tag_counts = normalized_tag_counts(episode)
+    ranked_tags = [
+        (tag, count)
+        for tag, count in tag_counts.items()
+        if count > 0 and tag in ROOT_CAUSE_TAG_PRIORITY
+    ]
+    if not ranked_tags:
+        ranked_tags = [
+            (tag, count)
+            for tag, count in tag_counts.items()
+            if count > 0 and tag not in GENERIC_CAUSE_TAGS
+        ]
+    if not ranked_tags:
+        ranked_tags = [(tag, count) for tag, count in tag_counts.items() if count > 0]
+    if not ranked_tags:
+        return "unclassified"
+    tag, _count = sorted(
+        ranked_tags,
+        key=lambda item: (-item[1], CAUSE_TAG_PRIORITY.get(item[0], 99), item[0]),
+    )[0]
+    return tag
 
 
 def cluster_id_for(key: tuple[str, ...]) -> str:
@@ -111,6 +155,7 @@ def build_clusters(
         cluster_id = cluster_id_for(key)
         outcome_mix = Counter(str(item.get("outcome") or "unknown") for item in items)
         signal_counts = Counter(signal for item in items for signal in item.get("signals", []))
+        cause_counts = Counter(cause for item in items if (cause := command_failure_cause(item)))
         tag_counts = Counter(
             tag
             for item in items
@@ -125,6 +170,8 @@ def build_clusters(
                 "cluster_id": cluster_id,
                 "label": cluster_label(signal_counts, representative),
                 "signals": sorted(signal_counts),
+                "dominant_cause": cause_counts.most_common(1)[0][0] if cause_counts else None,
+                "cause_counts": dict(sorted(cause_counts.items())),
                 "tag_counts": dict(sorted(tag_counts.items())),
                 "primary_signal": representative.get("primary_signal"),
                 "category": representative.get("category"),

@@ -26,7 +26,17 @@ def load_module() -> ModuleType:
     return module
 
 
-def episode(episode_id: str, cost: int, snippet: str, outcome: str = "unresolved") -> dict[str, object]:
+def episode(
+    episode_id: str,
+    cost: int,
+    snippet: str,
+    outcome: str = "unresolved",
+    tags: dict[str, int] | None = None,
+    signals: list[str] | None = None,
+) -> dict[str, object]:
+    tag_counts = tags or {"exit_code": 1}
+    step_tags = list(tag_counts)
+    episode_signals = signals or ["repeated_command_failure", "shell_quoting_or_parse_error"]
     return {
         "schema_version": 1,
         "episode_id": episode_id,
@@ -34,16 +44,16 @@ def episode(episode_id: str, cost: int, snippet: str, outcome: str = "unresolved
         "start_line": 1,
         "end_line": 3,
         "primary_signal": "repeated_command_failure",
-        "signals": ["repeated_command_failure", "shell_quoting_or_parse_error"],
+        "signals": episode_signals,
         "severity": "medium",
         "category": "command-friction",
         "recommended_destination": "fix-script-or-helper",
         "outcome": outcome,
         "cost_score": cost,
         "likely_cause": "Commands or tools failed repeatedly.",
-        "tag_counts": {"exit_code": 1},
+        "tag_counts": tag_counts,
         "hits": [
-            {"signal": "repeated_command_failure", "line": 1, "snippet": snippet, "evidence_type": "structured_payload", "tags": ["exit_code"]},
+            {"signal": "repeated_command_failure", "line": 1, "snippet": snippet, "evidence_type": "structured_payload", "tags": step_tags},
             {"signal": "shell_quoting_or_parse_error", "line": 2, "snippet": "zsh: unmatched quote", "evidence_type": "structured_payload"},
         ],
     }
@@ -65,6 +75,62 @@ def test_clusters_by_signal_signature(module: ModuleType) -> None:
         raise AssertionError(f"cluster should aggregate failure tags: {cluster}")
     if "tags" not in payload["skeletons"][0]["steps"][0]:
         raise AssertionError("skeleton steps should preserve per-hit tags")
+
+
+def test_repeated_command_clusters_split_by_dominant_cause(module: ModuleType) -> None:
+    payload = module.build_clusters(
+        [
+            episode("gh", 30, "gh run view failed", tags={"github_cli": 3, "exit_code": 1}),
+            episode("lint", 20, "ruff check failed", tags={"lint_or_format": 3, "exit_code": 1}),
+        ],
+        top_clusters=10,
+        max_steps=8,
+        trusted_originals=False,
+    )
+    causes = {cluster.get("dominant_cause") for cluster in payload["clusters"]}
+    if causes != {"github_cli", "lint_or_format"}:
+        raise AssertionError(f"expected separate command-failure clusters by cause, got {payload['clusters']}")
+
+
+def test_repeated_command_clusters_keep_same_cause_together(module: ModuleType) -> None:
+    payload = module.build_clusters(
+        [
+            episode(
+                "gh-a",
+                30,
+                "gh run view failed",
+                tags={"github_cli": 2, "exit_code": 1},
+                signals=["repeated_command_failure", "github_workflow_wait_miss"],
+            ),
+            episode(
+                "gh-b",
+                20,
+                "gh api failed",
+                tags={"github_cli": 1},
+                signals=["repeated_command_failure", "shell_quoting_or_parse_error"],
+            ),
+        ],
+        top_clusters=10,
+        max_steps=8,
+        trusted_originals=False,
+    )
+    if payload["total_cluster_count"] != 1:
+        raise AssertionError(f"expected same dominant cause to aggregate, got {payload['clusters']}")
+    cluster = payload["clusters"][0]
+    if cluster.get("dominant_cause") != "github_cli" or cluster.get("cause_counts") != {"github_cli": 2}:
+        raise AssertionError(f"expected github_cli cause summary, got {cluster}")
+
+
+def test_rate_limit_beats_github_wrapper_cause(module: ModuleType) -> None:
+    payload = module.build_clusters(
+        [episode("rate", 20, "gh api GraphQL rate limit", tags={"github_cli": 9, "rate_limit": 1})],
+        top_clusters=10,
+        max_steps=8,
+        trusted_originals=False,
+    )
+    cluster = payload["clusters"][0]
+    if cluster.get("dominant_cause") != "rate_limit" or cluster.get("cause_counts") != {"rate_limit": 1}:
+        raise AssertionError(f"expected rate_limit to beat github_cli wrapper tag, got {cluster}")
 
 
 def test_skeleton_redacts_private_shapes(module: ModuleType) -> None:
@@ -134,6 +200,9 @@ def test_compacts_long_skeleton(module: ModuleType) -> None:
 def main() -> int:
     module = load_module()
     test_clusters_by_signal_signature(module)
+    test_repeated_command_clusters_split_by_dominant_cause(module)
+    test_repeated_command_clusters_keep_same_cause_together(module)
+    test_rate_limit_beats_github_wrapper_cause(module)
     test_skeleton_redacts_private_shapes(module)
     test_skeleton_preserves_markup_punctuation(module)
     test_step_kind_matches_success_as_word(module)
