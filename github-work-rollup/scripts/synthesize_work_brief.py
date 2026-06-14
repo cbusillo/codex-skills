@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
+# dependencies = [
+#     "PyYAML>=6.0.0",
+# ]
 # ///
 """Synthesize a verified work brief from GitHub work evidence."""
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -17,11 +21,18 @@ from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
+LOCAL_LLM_SCRIPT_DIR = ROOT / "local-llm" / "scripts"
+LOCAL_LLM_API_PATH = LOCAL_LLM_SCRIPT_DIR / "lm_studio_api.py"
+DEFAULT_LOCAL_LLM_CONFIG = ROOT / ".local" / "local-llm.yaml"
+MODEL_INDEX = ROOT / "local-llm" / "references" / "model-index.yaml"
 CONTRACT_PATH = SCRIPT_DIR.parent / "references" / "prompt-contract.md"
-LM_CHAT_PATH = ROOT / "local-llm" / "scripts" / "lm_studio_chat.py"
+LM_CHAT_PATH = LOCAL_LLM_SCRIPT_DIR / "lm_studio_chat.py"
 VERIFY_PATH = SCRIPT_DIR / "verify_work_brief.py"
 DEFAULT_ROLE = "work_brief_writer"
 DEFAULT_MAX_INPUT_CHARS = 200_000
+DEFAULT_RESPONSE_TOKENS = 900
+CONTEXT_CHAR_RATIO = 4
+CONTEXT_TOKEN_RESERVE = 1024
 BRIEF_STYLES = {"standard", "conversation"}
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -73,7 +84,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flash-attention", action="store_true")
     parser.add_argument("--warmup", action="store_true")
     parser.add_argument("--unload-after", action="store_true")
-    parser.add_argument("--max-input-chars", type=int, default=DEFAULT_MAX_INPUT_CHARS)
+    parser.add_argument(
+        "--max-input-chars",
+        type=int,
+        help=(
+            "Prompt preflight limit. Defaults to the smaller of the script default "
+            "and the configured model context budget."
+        ),
+    )
     parser.add_argument(
         "--allow-truncate",
         action="store_true",
@@ -82,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-verify", action="store_true", help="Skip verify_work_brief.py.")
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable synthesis summary.")
     args = parser.parse_args()
-    if args.max_input_chars <= 0:
+    if args.max_input_chars is not None and args.max_input_chars <= 0:
         parser.error("--max-input-chars must be positive")
     args.brief_style = args.brief_style or ("conversation" if args.audience == "executive" else "standard")
     return args
@@ -111,6 +129,8 @@ def synthesize(args: argparse.Namespace, *, runner: Runner = subprocess.run) -> 
     evidence = read_json(args.evidence, "evidence")
     plan_context = [read_json(path, "plan context") for path in args.plan_context]
     contract = read_text(CONTRACT_PATH)
+    if getattr(args, "max_input_chars", None) is None:
+        args.max_input_chars = resolve_max_input_chars(args, system_prompt=contract)
     brief_style = resolved_brief_style(args.audience, getattr(args, "brief_style", None))
     user_prompt = build_user_prompt(
         evidence=evidence,
@@ -272,6 +292,70 @@ def source_limitations(evidence: Any) -> list[str]:
         if isinstance(value, list):
             notes.extend(str(item).strip() for item in value if str(item).strip())
     return [f"- {note}" for note in notes] or ["- no explicit source limitations were present"]
+
+
+def resolve_max_input_chars(args: argparse.Namespace, *, system_prompt: str | None = None) -> int:
+    explicit_limit = getattr(args, "max_input_chars", None)
+    if explicit_limit is not None:
+        if explicit_limit <= 0:
+            raise SynthesisError("--max-input-chars must be positive")
+        return explicit_limit
+    context_budget = configured_context_input_chars(args, system_prompt=system_prompt)
+    if context_budget is None:
+        return DEFAULT_MAX_INPUT_CHARS
+    return max(1, min(DEFAULT_MAX_INPUT_CHARS, context_budget))
+
+
+def configured_context_input_chars(args: argparse.Namespace, *, system_prompt: str | None = None) -> int | None:
+    role = local_llm_role_config(args)
+    raw_load = role.get("load")
+    load_config = raw_load if isinstance(raw_load, dict) else {}
+    context_source = role.get("context_length") or load_config.get("context_length")
+    if getattr(args, "context_length", None) is None and context_source is None:
+        return None
+    api = load_local_llm_api()
+    context_length = api.parse_int_option(getattr(args, "context_length", None), context_source, 0, "context_length")
+    if context_length <= 0:
+        return None
+    max_tokens = api.parse_int_option(
+        getattr(args, "max_tokens", None), role.get("max_tokens"), DEFAULT_RESPONSE_TOKENS, "max_tokens"
+    )
+    usable_tokens = context_length - max_tokens - CONTEXT_TOKEN_RESERVE
+    if usable_tokens <= 0:
+        raise SynthesisError(
+            f"configured context length {context_length} is too small for max_tokens {max_tokens} "
+            f"plus reserve {CONTEXT_TOKEN_RESERVE}"
+        )
+    usable_chars = usable_tokens * CONTEXT_CHAR_RATIO
+    if system_prompt:
+        usable_chars -= len(system_prompt)
+    if usable_chars <= 0:
+        raise SynthesisError(
+            f"configured context length {context_length} leaves no prompt room after max_tokens {max_tokens}, "
+            f"reserve {CONTEXT_TOKEN_RESERVE}, and system prompt"
+        )
+    return usable_chars
+
+
+def local_llm_role_config(args: argparse.Namespace) -> dict[str, Any]:
+    config_path = getattr(args, "local_llm_config", None) or DEFAULT_LOCAL_LLM_CONFIG
+    try:
+        api = load_local_llm_api()
+        config = api.load_yaml(Path(config_path))
+        index = api.load_yaml(MODEL_INDEX)
+        return api.resolve_role(config, index, getattr(args, "role", DEFAULT_ROLE))
+    except Exception as exc:
+        raise SynthesisError(f"unable to resolve local LLM role for prompt budget: {exc}") from exc
+
+
+def load_local_llm_api() -> Any:
+    spec = importlib.util.spec_from_file_location("local_llm_api_for_work_brief", LOCAL_LLM_API_PATH)
+    if spec is None or spec.loader is None:
+        raise SynthesisError(f"unable to load local LLM helper from {LOCAL_LLM_API_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def build_lm_command(args: argparse.Namespace, contract: str) -> list[str]:

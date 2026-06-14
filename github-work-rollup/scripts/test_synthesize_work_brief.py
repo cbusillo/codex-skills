@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "pytest>=8.0.0",
+#     "PyYAML>=6.0.0",
 # ]
 # ///
 from __future__ import annotations
@@ -251,6 +252,40 @@ def test_rejects_oversized_prompt_without_explicit_truncation(tmp_path: Path) ->
         assert "exceeding --max-input-chars" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected oversized prompt failure")
+
+
+def test_default_prompt_limit_respects_configured_context(tmp_path: Path) -> None:
+    payload = evidence()
+    payload["buckets"] = {"ready_for_review": [{"repo": "example-org/example-repo", "number": i} for i in range(200)]}
+    args = args_for(
+        tmp_path,
+        evidence_payload=payload,
+        context_length=8192,
+        max_tokens=1500,
+        max_input_chars=None,
+    )
+    runner = FakeRunner()
+    expected_limit = synthesize_work_brief.resolve_max_input_chars(
+        args, system_prompt=read_text(synthesize_work_brief.CONTRACT_PATH)
+    )
+
+    try:
+        synthesize_work_brief.synthesize(args, runner=runner)
+    except synthesize_work_brief.SynthesisError as exc:
+        assert "exceeding --max-input-chars" in str(exc)
+        assert str(expected_limit) in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected context-capped prompt failure")
+
+    assert runner.calls == []
+
+
+def test_explicit_prompt_limit_overrides_context_default(tmp_path: Path) -> None:
+    args = args_for(tmp_path, context_length=4096, max_tokens=1500, max_input_chars=50_000)
+
+    summary = synthesize_work_brief.synthesize(args, runner=FakeRunner())
+
+    assert summary["ok"] is True
 
 
 def test_no_verify_skips_verifier(tmp_path: Path) -> None:
