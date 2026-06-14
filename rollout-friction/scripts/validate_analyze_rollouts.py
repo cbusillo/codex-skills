@@ -96,8 +96,10 @@ def test_json_object_summary_preserves_multi_field_signals() -> None:
 def test_command_and_shell_friction_signals() -> None:
     assert_signals(
         [
-            "Blocked git switch creating or detaching a branch. Resend with 'confirm:' if requested.",
-            "confirm: git switch -c feature/example",
+            "Command guard: Blocked git switch creating or detaching a branch. Resend with 'confirm:' if requested.",
+            "Command guard: Blocked git switch creating or detaching a branch. Resend with 'confirm:' if requested.",
+            "Command guard: Blocked git checkout with branch-changing flag. Resend with 'confirm:' if requested.",
+            "Blocked git checkout with branch-changing flag. Switching branches can discard or hide in-progress changes.",
             "zsh:1: unmatched \"",
             "Process exited with code 1",
             "Process exited with code 1",
@@ -105,6 +107,23 @@ def test_command_and_shell_friction_signals() -> None:
         ],
         {"blocked_git_safety_prompt", "shell_quoting_or_parse_error", "repeated_command_failure"},
     )
+
+
+def test_single_git_safety_guard_does_not_count_as_friction() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "message": "Command guard: Blocked git checkout with branch-changing flag. Switching branches can discard or hide in-progress changes. original_script: git checkout -b fix-example resend_exact_argv: [\"confirm: git checkout -b fix-example\"]"
+                },
+                {"message": "Blocked git checkout with branch-changing flag. Resend with 'confirm:' if requested."},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    if "blocked_git_safety_prompt" in findings:
+        raise AssertionError("one blocked-git guard block should not become rollout friction by itself")
 
 
 def test_auto_review_valid_finding_signal() -> None:
@@ -172,6 +191,110 @@ def test_github_plan_doc_dump_does_not_count_as_github_rate_limit() -> None:
     unexpected = {"github_graphql_rate_limit", "generic_rate_limit"} & set(findings)
     if unexpected:
         raise AssertionError(f"github-plan docs should not count as live rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_rate_limit_guidance_payload_does_not_count_as_live_quota_pressure() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "If GraphQL is exhausted but REST/core quota remains available, do not keep retrying GraphQL-backed gh pr view. Use the PR helper and report GraphQL-only surfaces."
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "purpose: Performs the approved merge through the REST helper. match: argv_prefix: [\"gh\", \"pr\", \"checks\"] before batching those operations, check rate limits."
+                    },
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"guidance payloads should not count as live quota pressure: {sorted(unexpected)}")
+
+
+def test_rate_limit_secret_placeholder_and_static_diff_do_not_count() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml\n@@ -95,6 +95,8 @@ jobs:\n+ LAUNCHPLANE_PUBLIC_INGRESS_GITHUB_[REDACTED_SECRET] secrets.LAUNCHPLANE_PUBLIC_INGRESS_GITHUB_RATE_LIMIT_TOKEN"
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "aggregated_output": "status=ok message='TOKEN_[REDACTED_SECRET]_RATE_LIMIT placeholder documented in config sample'"
+                    },
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"generic_rate_limit", "github_graphql_rate_limit", "github_rest_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"secret placeholders/static diffs should not count as rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_rate_limit_markdown_docs_and_type_annotations_do_not_count() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {
+                    "message": "# CI / Review Heuristics Treat as branch-related when logs clearly indicate a regression caused by the PR branch; rate limits are a checklist item."
+                },
+                {
+                    "message": "gh_api_payloads: dict[str, dict[str, object]] | None = None  # helper test fixture for rate-limit cases"
+                },
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    unexpected = {"generic_rate_limit", "github_graphql_rate_limit", "github_rest_rate_limit"} & set(findings)
+    if unexpected:
+        raise AssertionError(f"markdown docs/type annotations should not count as rate-limit evidence: {sorted(unexpected)}")
+
+
+def test_live_rate_limit_evidence_still_counts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "GraphQL API returned secondary rate limit while polling projects"},
+                {"message": "REST API rate limit exceeded with X-RateLimit-Remaining: 0"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    for expected in {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"}:
+        if expected not in findings:
+            raise AssertionError(f"real rate-limit evidence should still report {expected}: {sorted(findings)}")
+
+
+def test_redacted_live_rate_limit_evidence_still_counts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                {"message": "GITHUB_TOKEN[REDACTED_SECRET]: API rate limit exceeded during REST retry"},
+                {"message": "description: GraphQL quota exhausted while polling projects"},
+            ],
+        )
+        findings = module.scan([trace], max_bytes=100_000, context_chars=240)
+    for expected in {"github_graphql_rate_limit", "github_rest_rate_limit"}:
+        if expected not in findings:
+            raise AssertionError(f"redacted/live quota failures should still report {expected}: {sorted(findings)}")
 
 
 def test_auth_login_noise_is_classified_without_generic_failure() -> None:
@@ -1225,7 +1348,16 @@ def main() -> int:
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
     test_command_and_shell_friction_signals()
+    test_single_git_safety_guard_does_not_count_as_friction()
     test_auto_review_valid_finding_signal()
+    test_skill_guidance_does_not_count_as_github_rate_limit()
+    test_helper_doc_dump_does_not_count_as_github_rate_limit()
+    test_github_plan_doc_dump_does_not_count_as_github_rate_limit()
+    test_rate_limit_guidance_payload_does_not_count_as_live_quota_pressure()
+    test_rate_limit_secret_placeholder_and_static_diff_do_not_count()
+    test_rate_limit_markdown_docs_and_type_annotations_do_not_count()
+    test_live_rate_limit_evidence_still_counts()
+    test_redacted_live_rate_limit_evidence_still_counts()
     test_nested_json_fragments_count_once_per_line()
     test_pretty_json_object_counts_as_one_record()
     test_structured_json_record_counts_distinct_repeated_hits()
