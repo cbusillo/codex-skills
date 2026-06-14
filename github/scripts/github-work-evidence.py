@@ -55,6 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collection-limit-items", type=int, help="Maximum PRs/issues to collect per repo/state.")
     parser.add_argument("--release-collection-limit", type=int, help="Maximum releases to collect per repo before window filtering.")
     parser.add_argument("--workflow-collection-limit", type=int, help="Maximum workflow runs to collect per repo before window filtering.")
+    parser.add_argument("--include-derived-context", action="store_true", help="Include derived repo/workstream context for LLM synthesis.")
+    parser.add_argument("--context-repo-limit", type=int, help="Maximum repositories to enrich with derived context.")
     parser.add_argument("--include-bots", action="store_true")
     parser.add_argument("--include-external-activity", action="store_true")
     return parser.parse_args()
@@ -113,6 +115,8 @@ def evidence_args(args: argparse.Namespace) -> argparse.Namespace:
         collection_limit_items=args.collection_limit_items,
         release_collection_limit=args.release_collection_limit,
         workflow_collection_limit=args.workflow_collection_limit,
+        include_derived_context=args.include_derived_context,
+        context_repo_limit=args.context_repo_limit,
         include_bots=args.include_bots,
         include_external_activity=args.include_external_activity,
     )
@@ -143,6 +147,7 @@ def evidence_payload(payload: dict[str, Any], settings: dict[str, Any]) -> dict[
         "summary": payload.get("summary") or {},
         "buckets": payload.get("buckets") or {},
         "priority_sections": payload.get("priority_sections") or [],
+        "derived_context": payload.get("derived_context") or {},
         "releases": payload.get("releases") or [],
         "workflows": payload.get("workflows") or [],
         "source_notes": source_notes,
