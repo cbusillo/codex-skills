@@ -104,6 +104,25 @@ AUTH_LOGIN_NOISE_RE = re.compile(
     r")\b",
     re.I,
 )
+RATE_LIMIT_GUIDANCE_RE = re.compile(
+    r"\b("
+    r"if\s+(?:GraphQL|REST|[^\n]{0,40}rate limit)|"
+    r"when\s+(?:GraphQL|REST|[^\n]{0,40}rate limit)|"
+    r"before\s+[^\n]{0,80}\bcheck rate limits?\b|"
+    r"do not keep retrying|prefer REST|fallback to REST|"
+    r"rate[- ]limit pressure should be classified|"
+    r"use .*helper.*rate limit|"
+    r"usage:\s+[^\n]{0,120}\brate-limit\b|"
+    r"Handle GitHub [^\n]{0,120}\brate limits\b|"
+    r"purpose:|description:|match:|argv_prefix:"
+    r")",
+    re.I,
+)
+RATE_LIMIT_PLACEHOLDER_RE = re.compile(
+    r"\b(?:GITHUB|TOKEN|SECRET|API[_-]?KEY|PASSWORD)[A-Z0-9_\-]*\[REDACTED_SECRET\]"
+    r"|\[REDACTED_SECRET\][A-Z0-9_\-]*(?:LIMIT|QUOTA|RATE)",
+    re.I,
+)
 DIFF_OR_STATIC_CONTEXT_RE = re.compile(
     r"\bdiff --git\b|(?:^|\n)\s*(?:[A-Za-z_]+\=)?@@\s+-\d|"
     r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?index [0-9a-f]{7,}\.{2}[0-9a-f]{7,}\b|"
@@ -400,9 +419,10 @@ SIGNALS: list[Signal] = [
         "blocked_git_safety_prompt",
         "low",
         "execution-friction",
-        re.compile(r"Blocked git (switch|checkout)|Resend with 'confirm:'|confirm: git", re.I),
+        re.compile(r"(?:Command guard:\s*)?Blocked git (switch|checkout)", re.I),
         "investigate-repo-workflow",
         "Git safety prompts protected worktrees but added retry friction; inspect whether branch setup can be more deliberate before command execution.",
+        threshold=4,
     ),
     Signal(
         "shell_quoting_or_parse_error",
@@ -966,6 +986,8 @@ def should_skip_signal_match(
     canonical_text: str,
     match: re.Match[str],
 ) -> bool:
+    if signal_name in {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"}:
+        return looks_like_rate_limit_false_positive(text, canonical_text, match)
     if signal_name in {"repeated_command_failure", "missing_dependency_or_tool"}:
         return looks_like_static_match_context(text, match)
     if signal_name == "auto_review_loop" and not is_auto_review_loop_evidence(canonical_text):
@@ -973,6 +995,47 @@ def should_skip_signal_match(
     if signal_name in {"auto_review_loop", "auto_review_valid_finding"}:
         return looks_like_static_diff_or_config(text) and AUTO_REVIEW_TEXT_RE.search(canonical_text) is None
     return False
+
+
+def looks_like_rate_limit_false_positive(text: str, canonical_text: str, match: re.Match[str]) -> bool:
+    if looks_like_static_match_context(text, match):
+        return True
+    line = matched_line(text, match)
+    combined = f"{canonical_text}\n{line}"
+    if looks_like_live_rate_limit_evidence(combined):
+        return False
+    if looks_like_flattened_static_payload(combined):
+        return True
+    if RATE_LIMIT_PLACEHOLDER_RE.search(combined):
+        return True
+    if RATE_LIMIT_GUIDANCE_RE.search(combined):
+        return True
+    return False
+
+
+def looks_like_flattened_static_payload(text: str) -> bool:
+    return bool(
+        re.search(r"\bdiff --git\b|\bindex [0-9a-f]{7,}\.{2}[0-9a-f]{7,}\b|\b@@ -\d+", text)
+        or re.search(r"\b(purpose|description|match|argv_prefix):\b", text, re.I)
+        or re.search(r"\bUse only when the user explicitly requests\b", text, re.I)
+        or re.search(r"\busage:\s+[^\n]{0,160}\brate-limit\b", text, re.I)
+        or re.search(r"\bconfig\.toml\b|\[\[agents\]\]", text, re.I)
+        or re.search(r"(?:^|\n|\s)#\s+[^\n]{0,160}\b(heuristics|checklist|guidance)\b", text, re.I)
+        or re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:dict|list|tuple|set)\[", text)
+    )
+
+
+def looks_like_live_rate_limit_evidence(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(HTTP\s*429|429\b|quota exceeded|quota exhausted|secondary rate limit|"
+            r"API rate limit exceeded|rate limit exceeded|too many requests|abuse detection|"
+            r"X-RateLimit-Remaining\s*[:=]\s*0|quota remaining\s*[:=]\s*0|"
+            r"rate[- ]limit remaining\s*[:=]\s*0)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def is_auto_review_loop_evidence(text: str) -> bool:
@@ -1002,12 +1065,16 @@ def looks_like_static_diff_or_config(text: str) -> bool:
 def looks_like_static_match_context(text: str, match: re.Match[str]) -> bool:
     if not looks_like_static_diff_or_config(text):
         return False
+    line = matched_line(text, match)
+    return looks_like_static_diff_line(line) or looks_like_static_config_line(line)
+
+
+def matched_line(text: str, match: re.Match[str]) -> str:
     line_start = text.rfind("\n", 0, match.start()) + 1
     line_end = text.find("\n", match.end())
     if line_end == -1:
         line_end = len(text)
-    line = text[line_start:line_end]
-    return looks_like_static_diff_line(line) or looks_like_static_config_line(line)
+    return text[line_start:line_end]
 
 
 def looks_like_static_diff_line(line: str) -> bool:
