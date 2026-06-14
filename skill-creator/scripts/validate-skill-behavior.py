@@ -112,8 +112,79 @@ def test_chronicle_stays_quiet_when_unavailable() -> None:
 
 def test_launchplane_product_config_uses_operator_api_first() -> None:
     text = (ROOT / "launchplane" / "SKILL.md").read_text()
+    context_contract = (
+        ROOT / "launchplane" / "references" / "context-helper-contract.md"
+    ).read_text()
+    operator_contract = (
+        ROOT / "launchplane" / "references" / "operator-contract.md"
+    ).read_text()
+    public_safety = (ROOT / "launchplane" / "references" / "public-safety.md").read_text()
     lower = text.lower()
     normalized = " ".join(lower.split())
+    normalized_context = " ".join(context_contract.lower().split())
+    normalized_operator = " ".join(operator_contract.lower().split())
+    normalized_public = " ".join(public_safety.lower().split())
+
+    runtime_authority_terms = (
+        "product",
+        "tenant",
+        "repository",
+        "branch",
+        "domain",
+        "lane",
+        "provider-target",
+        "runtime-environment",
+        "authz",
+        "operator",
+    )
+
+    require(
+        "runtime authority boundary" in normalized,
+        "Launchplane skill must put the runtime authority boundary near the top",
+    )
+    require(
+        "checked-in files are not runtime authority" in normalized,
+        "Launchplane skill must reject checked-in files as runtime authority",
+    )
+    require(
+        all(term in normalized for term in runtime_authority_terms),
+        "Launchplane skill must name non-secret topology authority examples",
+    )
+    require(
+        "non-secret topology can still steer production behavior" in normalized,
+        "Launchplane skill must distinguish runtime authority from secrets only",
+    )
+    require(
+        "never use them as evidence of the current live value" in normalized,
+        "Launchplane skill must forbid treating checked-in hints as live values",
+    )
+    require(
+        "service/operator state wins" in normalized,
+        "Launchplane skill must prefer service/operator state over stale repo metadata",
+    )
+    require(
+        "checked-in config, workflow defaults, checked-in examples, and archived workstation files are not authoritative"
+        in normalized_operator,
+        "Launchplane operator contract must reject checked-in/workflow/workstation authority",
+    )
+    require(
+        "fail closed and ask for the service/operator source instead of inferring it from repo-local files"
+        in normalized_operator,
+        "Launchplane operator contract must fail closed instead of inferring live topology",
+    )
+    require(
+        "checked-in repo metadata, workflow defaults, examples, and archived workstation files"
+        in normalized_context,
+        "Launchplane context contract must keep checked-in metadata as routing context only",
+    )
+    require(
+        "they are not authoritative for live product" in normalized_context,
+        "Launchplane context contract must reject checked-in metadata as live authority",
+    )
+    require(
+        "this is not only a secret-handling rule" in normalized_public,
+        "Launchplane public-safety guidance must cover non-secret runtime authority",
+    )
 
     require(
         "use the service api path from the operator contract first" in normalized,
@@ -235,6 +306,18 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Launchplane skill must forbid plaintext secret helper input surfaces",
     )
     require(
+        "the payload file is explicit private operator input" in normalized_contract,
+        "Write-action contract must identify payload files as private operator input",
+    )
+    require(
+        "must live outside the active repository or worktree" in normalized_contract,
+        "Write-action contract must keep payload files outside the repo/worktree",
+    )
+    require(
+        "unsupported runtime-authority shapes must also fail closed" in normalized_contract,
+        "Write-action contract must fail closed for checked-in runtime authority shapes",
+    )
+    require(
         "explicit write actions fail closed" in normalized_contract,
         "Write-action contract must fail closed for explicit writes",
     )
@@ -272,6 +355,10 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper must refuse stdin payload transport",
     )
     require(
+        "repo_local_payload_unsupported" in normalized_helper,
+        "Write-action helper must refuse repo-local payload files",
+    )
+    require(
         "idempotency_key_required" in normalized_helper,
         "Write-action helper must require idempotency keys for mutating calls",
     )
@@ -304,6 +391,106 @@ def test_launchplane_write_action_helper_contract() -> None:
         "missing_operator_config" in json.dumps(payload),
         "Write-action helper must explain missing operator config compactly",
     )
+
+    repo_payload = ROOT / ".tmp-launchplane-repo-payload.json"
+    try:
+        repo_payload.write_text('{"reason":"example"}\n', encoding="utf-8")
+        repo_local = subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "--config",
+                str(ROOT / ".missing-launchplane-operator-config.json"),
+                "product-config-dry-run",
+                "--payload-file",
+                str(repo_payload),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("LAUNCHPLANE_")
+            },
+        )
+    finally:
+        repo_payload.unlink(missing_ok=True)
+    require(repo_local.returncode == 2, "Write-action helper must reject repo-local payload files")
+    repo_payload_error = json.loads(repo_local.stdout)
+    require(
+        "repo_local_payload_unsupported" in json.dumps(repo_payload_error),
+        "Write-action helper must report repo-local payload rejection compactly",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        external_payload = Path(tmp) / "operator-payload.json"
+        external_payload.write_text('{"reason":"external"}\n', encoding="utf-8")
+        external_private = subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "--config",
+                str(ROOT / ".missing-launchplane-operator-config.json"),
+                "product-config-dry-run",
+                "--payload-file",
+                str(external_payload),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("LAUNCHPLANE_")
+            },
+        )
+        require(
+            external_private.returncode == 2,
+            "Write-action helper should reach missing-config handling for external payload files",
+        )
+        external_private_error = json.loads(external_private.stdout)
+        require(
+            "missing_operator_config" in json.dumps(external_private_error)
+            and "repo_local_payload_unsupported" not in json.dumps(external_private_error),
+            "Write-action helper must not reject external private payload files as repo-local",
+        )
+        repo_symlink = ROOT / ".tmp-launchplane-repo-payload-link.json"
+        try:
+            repo_symlink.symlink_to(external_payload)
+            symlink_local = subprocess.run(
+                [
+                    sys.executable,
+                    str(helper),
+                    "--config",
+                    str(ROOT / ".missing-launchplane-operator-config.json"),
+                    "product-config-dry-run",
+                    "--payload-file",
+                    str(repo_symlink),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if not key.startswith("LAUNCHPLANE_")
+                },
+            )
+        finally:
+            repo_symlink.unlink(missing_ok=True)
+        require(
+            symlink_local.returncode == 2,
+            "Write-action helper must reject repo-local symlink payload files",
+        )
+        symlink_payload_error = json.loads(symlink_local.stdout)
+        require(
+            "repo_local_payload_unsupported" in json.dumps(symlink_payload_error),
+            "Write-action helper must report repo-local symlink payload rejection compactly",
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         env_path = Path(tmp) / "local-operator.env"

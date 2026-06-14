@@ -28,6 +28,12 @@ repo metadata, workflow defaults, readiness endpoints, or copied provider
 payloads. Use the Launchplane service API, operator UI, managed service records,
 or scoped operator input for real values.
 
+This is not only a secret-handling rule. Non-secret topology such as domains,
+lanes, provider targets, route batches, runtime environment names, repository or
+branch bindings, authz grants, and operator identities can steer production
+behavior. Committed files may describe generic schemas or fake/public-safe
+examples, but they must not become the source of truth for current live values.
+
 ## Safe Examples
 
 Use fake placeholders in committed examples:

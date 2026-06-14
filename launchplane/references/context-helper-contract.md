@@ -10,6 +10,13 @@ requests, Projects, checks, and comments remain the source of truth for planning
 and code workflow. Launchplane may provide compact product/runtime/evidence
 context that helps a skill decide what to inspect next.
 
+For Launchplane-managed runtime state, the Launchplane service/operator record
+is the authority. Checked-in repo metadata, workflow defaults, examples, and
+archived workstation files may point to this helper or explain how to reach the
+right service, but they are not authoritative for live product, tenant,
+repository, branch, domain, lane, provider-target, runtime-environment, authz,
+operator, route, or health-check values.
+
 ## Invocation
 
 ```sh
@@ -132,6 +139,9 @@ Skills consuming this contract should:
   unless it has been reviewed for public safety
 - use Launchplane context as a hint for what to inspect next, not as permission
   to mutate provider state
+- treat checked-in config as routing context only; if a needed live runtime value
+  is absent from Launchplane context, stop for service/operator input instead of
+  inferring it from repo-local files
 
 Write-capable Launchplane workflows belong to explicit operator paths and
 Launchplane route-specific authorization, not this read-context helper contract.
