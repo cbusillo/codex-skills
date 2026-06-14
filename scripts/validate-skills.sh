@@ -35,6 +35,7 @@ helper_tests=(
 	skill-creator/scripts/test_validate_skill_scorecard.py
 	skill-creator/scripts/validate-command-policy-simulator.py
 	rollout-friction/scripts/validate_analyze_rollouts.py
+	rollout-friction/scripts/validate_classify_auto_review_ledger.py
 	rollout-friction/scripts/validate_cluster_rollout_episodes.py
 	rollout-friction/scripts/validate_extract_rollout_memory.py
 	rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py

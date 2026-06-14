@@ -322,11 +322,17 @@ invocation rules.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
   releasable, or otherwise clean, check background auto-review evidence when it
   is available in the session context or repo tooling. First match each review
-  target to the active branch/PR head SHA. Treat blocking findings against the
-  current target as review feedback to address or explicitly defer; do not merge
-  or release solely on CI-green when relevant current-target findings are still
-  in-flight or unresolved. Detached auto-review worktrees remain external review
-  context and should not be treated as dirty active worktree state.
+  target to the active branch/PR head SHA, for example `git rev-parse HEAD` for
+  the active checkout or `gh pr view --json headRefOid` for a PR. Treat blocking
+  findings against that current target as review feedback to address or
+  explicitly defer; do not merge or release solely on CI-green when relevant
+  current-target findings are still in-flight or unresolved. Findings whose
+  branch/path points at a detached generated `auto-review-<hex>` worktree are
+  still current-target findings when their snapshot SHA matches the active
+  target. Detached generated auto-review findings whose snapshot SHA differs from
+  the active target are external proposal history until verified against current
+  `HEAD`. Detached auto-review worktrees remain external review context and
+  should not be treated as dirty active worktree state.
 - **Accidental Local Default-Branch Merge Recovery**: If implementation work is
   accidentally merged into a protected/default/shared branch locally, preserve
   the commit or branch if needed, restore the local protected branch to the

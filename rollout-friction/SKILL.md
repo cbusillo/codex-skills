@@ -15,6 +15,9 @@ resources:
   - path: scripts/cluster_rollout_episodes.py
     kind: script
     description: Cluster friction episodes and emit compact trajectory skeletons for human or model review.
+  - path: scripts/classify_auto_review_ledger.py
+    kind: script
+    description: Classify Every Code auto-review ledger entries against the active checkout so stale detached proposal findings are not treated as current blockers.
   - path: scripts/extract_rollout_memory.py
     kind: script
     description: Legacy broad extraction of destination-aware durable-memory candidates from local rollout/session traces.
@@ -75,6 +78,20 @@ commands:
         ".local/rollout-friction/<run-id>/episodes.jsonl",
       ]
     purpose: Cluster episodes and produce compact redacted trajectory skeletons for targeted review.
+  - name: classify-auto-review-ledger
+    source: skill
+    resource_path: scripts/classify_auto_review_ledger.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "rollout-friction/scripts/classify_auto_review_ledger.py",
+        ".local/rollout-friction/<run-id>/auto-review-ledger.txt",
+        "--repo",
+        ".",
+        "--json",
+      ]
+    purpose: Distinguish current-target auto-review findings from stale detached auto-review proposal diagnostics.
   - name: rollout-local-scout
     source: skill
     resource_path: scripts/lm_studio_scout.py
@@ -234,7 +251,18 @@ rollout files, session traces, runout files, or agent workflow friction.
    redacted by default; pass `--trusted-originals` only for approved local-only
    review where path/email/id shapes are useful. Treat hit counts as triage, not
    as proof that thousands of durable lessons exist.
-5. If a local LLM is useful, give it trajectory skeletons or redacted analyzer
+5. When session context includes an Every Code auto-review ledger or repeated
+   warnings about generated detached `auto-review-<hex>` worktrees, save the ledger text to an
+   ignored local file and run `classify_auto_review_ledger.py` against the active
+   repo. Default JSON redacts raw local finding locations and titles into stable
+   ids; use `--trusted-local-details` only for approved local-only diagnosis.
+   Treat `current_target` findings as review evidence to address or explicitly
+   defer even if the review ran in a detached generated worktree. Treat
+   `detached_auto_review` findings as external proposal history by default only
+   when the snapshot does not match the active target; verify against active
+   `HEAD` before letting them block the current task. Do not read, delete, or
+   modify detached auto-review worktrees as part of this classification.
+6. If a local LLM is useful, give it trajectory skeletons or redacted analyzer
    output, not broad memory-candidate batches. Use it only as a private bounded
    scout. When the
    optional `local-llm` skill is available, first resolve the endpoint locality
@@ -256,19 +284,19 @@ rollout files, session traces, runout files, or agent workflow friction.
      for another.
      Ask for missing classes or false-positive patterns, then verify every
      suggestion yourself against maintained sources before acting.
-6. Classify each cluster or high-cost episode as one of:
+7. Classify each cluster or high-cost episode as one of:
    - `promote-to-skill`
    - `fix-script-or-helper`
    - `fix-harness`
    - `move-to-local-config`
    - `investigate-repo-workflow`
    - `ignore-noise`
-7. Verify any durable recommendation against maintained sources before proposing
+8. Verify any durable recommendation against maintained sources before proposing
    it. Examples: local code, skill files, repo docs, GitHub state, harness code,
    official docs, or config schemas.
-8. Present a concise proposal with the cluster, evidence summary, likely cause,
+9. Present a concise proposal with the cluster, evidence summary, likely cause,
    recommended destination, and exact changes that would need approval.
-9. Ask for explicit human approval before making any changes.
+10. Ask for explicit human approval before making any changes.
 
 ## Memory Extraction Workflow
 
