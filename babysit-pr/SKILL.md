@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Babysit a GitHub pull request after creation by continuously polling review comments, CI checks/workflow runs, and mergeability state until the PR is merged/closed or user help is required. Diagnose failures, retry likely flaky failures up to 3 times, auto-fix/push branch-related issues when appropriate, and keep watching open PRs so fresh review feedback is surfaced promptly. Use when the user asks to monitor a PR, watch CI, handle review comments, or keep an eye on failures and feedback on an open PR.
+description: Babysit a GitHub pull request by continuously polling review comments, CI checks/workflow runs, and mergeability state until the PR is merged/closed or user help is required. Diagnose failures, retry likely flaky failures up to 3 times, auto-fix/push branch-related issues when appropriate, and keep watching open PRs so fresh review feedback is surfaced promptly. Use when the user asks to monitor a PR, watch CI, handle review comments, keep an eye on failures/feedback, or when PR diagnosis, update/rebase/rerun work, safe-to-exit checks, or merge confirmation turns into ongoing CI/review/merge follow-through.
 resources:
   - path: scripts/gh_pr_watch.py
     kind: script
@@ -69,6 +69,28 @@ When `.github/github.json` exists, use it as repo workflow metadata for gates,
 important workflows, post-merge signals, cleanup policy, and any repo-specific
 merge/release policy. Do not infer release intent from package metadata or PR
 titles unless the repo metadata or docs say to do so.
+
+## Trigger And Handoff Cues
+
+Invoke this skill even when the user does not say "watch", "monitor", or
+"babysit" if a PR task has become active follow-through on CI, review feedback,
+mergeability, or merged/closed state.
+
+Common handoff points:
+
+- After investigating a failing PR when checks are still pending, need rerun, or
+  will restart after a fix, rebase, or branch update.
+- After pushing review fixes, resolving merge conflicts, updating/rebasing the
+  PR branch, or rerunning checks while the PR remains open.
+- When the user asks whether a PR merged, whether fresh checks finished, whether
+  it is safe to exit after PR work, or to "see what happens" after a PR action.
+- Any workflow where the next useful step is repeated PR-state polling until the
+  PR is green, failed, blocked, merged, or closed.
+
+Use `--once` for a closeout/readiness snapshot of an already merged or closed PR.
+Use `--watch` when the PR remains open and the task needs continued CI/review
+follow-through. Do not take over one-shot PR metadata lookups when no continued
+polling or lifecycle decision is needed.
 
 ## Inputs
 

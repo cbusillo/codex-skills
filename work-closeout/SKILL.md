@@ -79,6 +79,10 @@ Leave the user with a truthful closeout answer:
 4. If GitHub state matters for closeout, use `github` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
    security/quality signals, and safe branch/worktree cleanup.
+   When an open PR still needs ongoing CI, review, mergeability, or
+   merged/closed follow-through, transfer that loop to `babysit-pr` before
+   declaring the work parked or safe to exit. For an already merged or closed PR,
+   a `babysit-pr --once` snapshot can be closeout evidence.
 5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project planning state. Use legacy `plan` only for explicit
    local/offline plan files that already exist or that the user asks to keep.
