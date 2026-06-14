@@ -85,6 +85,28 @@ $helper pr view <number> --repo OWNER/REPO \
   --json number,title,url,comments,reviews,statusCheckRollup
 ```
 
+## Automation Command Diagnosis
+
+Before concluding that a GitHub bot, App, or automation command was ignored or
+failed, inspect the full lifecycle around the command rather than only compact
+timeline events.
+
+- Identify the command, actor, timestamp, expected side effect, and target
+  issue, PR, branch, check, label, deployment, or release.
+- Fetch issue/PR comments and reactions; a thumbs-up or bot reply may mean the
+  command was acknowledged or queued even when no timeline event says so.
+- Inspect issue/PR bodies for automation-owned status blocks, repeated banners,
+  hidden markers, or generated progress text.
+- Check labels, reviews, check runs, merge queue state, deployments, release
+  state, and branch/ref mutations before deciding the command had no effect.
+- Compare relevant refs, SHAs, labels, statuses, or other state before and after
+  the command timestamp when the expected result is a state mutation.
+- Report the lifecycle precisely: not acknowledged, acknowledged/queued, in
+  progress/stuck, completed, or completed with an unexpected result.
+- Use fallback actions only after verifying the target is safe to mutate; for
+  example, update a same-repo PR branch manually only after confirming that the
+  branch is the intended automation target.
+
 ## PR And Issue Workflow
 
 Default to PR-backed implementation work.
@@ -97,6 +119,9 @@ Default to PR-backed implementation work.
   product/design/ops discussion, was discovered out of scope, or spans multiple
   PRs.
 - Search existing open and recently closed issues before creating a new issue.
+- When picking up an existing issue, read its comments before acting on the
+  title or body. Comments are often the newest source of scope, constraints,
+  decisions, or direction changes.
 - Link PRs with `Refs #123` by default when an external reporter, QA, customer,
   or shared environment validation is involved. Use `Closes #123` or
   `Fixes #123` only when auto-close is clearly intended and local/CI evidence

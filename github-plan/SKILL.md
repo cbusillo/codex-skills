@@ -204,8 +204,10 @@ state. Child issues should each have one scoped finish line and one next action.
 
 ## Default Session Ritual
 
-1. Orient from the active issue: finish line, current status, next action, and
-   blockers.
+1. Orient from the active issue: finish line, current status, next action,
+   blockers, and timeline comments. Before acting on an issue body or title,
+   read its comments because they may redirect scope, add constraints, or
+   supersede the original description.
 2. Pick one next action and start work.
 3. When a new idea appears, run a Plan Direction Checkpoint. Classify it as do
    now, acceptance criterion, related issue, sub-issue, blocker, or later. Do
