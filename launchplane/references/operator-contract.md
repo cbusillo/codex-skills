@@ -11,6 +11,13 @@ Launchplane Operator.
   workflow requires non-browser execution.
 - **Targeting**: Use the deployed Launchplane service API or CLI paths. Do not
   fall back to direct provider mutation.
+- **Runtime Authority**: Checked-in config, workflow defaults, checked-in
+  examples, and archived workstation files are not authoritative for real
+  product, tenant, repository, branch, domain, lane, provider-target,
+  runtime-environment, authz, operator, route, or health-check values. If a live
+  value is missing from Launchplane records or explicit scoped operator input,
+  fail closed and ask for the service/operator source instead of inferring it
+  from repo-local files.
 - **Verification**: Always perform a `dry-run` and inspect redacted evidence
   before applying changes.
 - **Reason**: Apply operations require a concrete non-empty reason.
@@ -76,8 +83,10 @@ runtime key-safety evaluation. It must not carry plaintext secret values.
 approval-capable operator surface that already has a private value source. The
 terminal helper may submit that route only from a private local payload file and
 must never accept plaintext secret values as CLI arguments, stdin, chat, issue
-text, PR text, or committed examples. Local-operator apply requires a prior
-matching dry-run and a stable idempotency key.
+text, PR text, or committed examples. The payload file is explicit private
+operator input, not checked-in repo config or copied provider topology.
+Local-operator apply requires a prior matching dry-run and a stable idempotency
+key.
 
 `POST /v1/work-graph/merge-train/controller/run-once` accepts repository,
 base-branch, and mutate mode. Mutating helper calls require an idempotency key;

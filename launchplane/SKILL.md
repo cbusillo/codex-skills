@@ -111,6 +111,23 @@ Use `docs-lookup` first when a task is discovering the source of truth or access
 path for external/private infrastructure and it is not already clear that
 Launchplane manages that resource.
 
+## Runtime Authority Boundary
+
+Checked-in files are not runtime authority for Launchplane-managed state. Code
+may own schemas, validators, generic behavior, helper routing, fake examples,
+and fail-closed defaults. Launchplane service records or explicit scoped
+operator input own real product, tenant, repository, branch, domain, lane,
+provider-target, runtime-environment, authz, operator, route, health-check, and
+other mutable runtime values.
+
+This applies even when values are not secrets. Non-secret topology can still
+steer production behavior. Treat repo metadata, workflow variables, checked-in
+examples, and archived workstation files as hints for which Launchplane helper,
+service record, or operator surface to use; never use them as evidence of the
+current live value. If the needed live value is only visible in checked-in or
+workstation files, stop and obtain Launchplane context or explicit operator
+input instead of inferring it.
+
 When a repo has `.github/github.json`, inspect its `launchplane` block before
 looking in sibling repos, archived workstation files, or workflow variables. The
 repo block is public-safe routing metadata only: it may name helper paths,
@@ -120,7 +137,9 @@ contain tokens, secret values, cookies, concrete Launchplane service URLs,
 private credential paths, provider payloads, product/runtime endpoints, or
 plaintext runtime configuration. Treat Launchplane-managed product, app,
 preview, deploy, provider, lane, tenant, and health-check coordinates as service
-records, not checked-in repo metadata.
+records, not checked-in repo metadata; if repo metadata and Launchplane service
+state disagree, service/operator state wins and the metadata is stale routing
+context to fix deliberately.
 
 ## Core Goal
 
@@ -184,6 +203,11 @@ Mutate runtime environments, managed secrets, and product config.
   public, non-authoritative sample data. For shared/prod, use the deployed
   Launchplane service, operator UI, or the bounded write-action helper/API with
   the correct service URL and scoped credentials.
+- **No Checked-In Topology Inference**: Do not infer real products, tenants,
+  domains, lanes, provider targets, runtime environments, route batches, authz,
+  repository bindings, branch bindings, or operator identity from checked-in
+  config or workflow defaults. Those files may identify the Launchplane surface
+  to query; they do not answer what live topology is now.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.

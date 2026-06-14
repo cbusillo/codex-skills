@@ -105,14 +105,22 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --idempotency-key example-product-config-apply-123
 ```
 
-The payload file is private operator input. Do not commit it, paste it, log it,
-or summarize its raw contents. Local-operator apply still requires a prior
-matching dry-run recorded by Launchplane.
+The payload file is explicit private operator input. Do not commit it, paste it,
+log it, or summarize its raw contents. It must live outside the active
+repository or worktree so checked-in config and examples cannot quietly become
+write payloads. Local-operator apply still requires a prior matching dry-run
+recorded by Launchplane.
 
 Unsupported secret source shapes must fail closed in caller guidance. Do not
 translate committed secret references, provider env lookups, stdin/stdout
 transport, arbitrary secret ids, or "reuse current value" requests into a
 product-config request.
+
+Unsupported runtime-authority shapes must also fail closed. Do not translate
+checked-in product maps, workflow defaults, copied provider route payloads,
+repository bindings, branch bindings, tenant/domain lists, lanes, provider target
+ids, authz grants, or operator identities into product-config requests unless
+they came from Launchplane records or explicit scoped operator input.
 
 ## Merge Train Controller
 

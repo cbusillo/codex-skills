@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -64,6 +65,36 @@ ATTENTION_CONTROLLER_ACTIONS = {
     "wait_for_root_checks",
     "idle",
 }
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def active_repo_root() -> Path:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        root = result.stdout.strip()
+        if root:
+            return Path(root).resolve(strict=True)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return Path.cwd().resolve(strict=True)
+
+
+def absolute_path_without_symlink_resolution(path: Path) -> Path:
+    if path.is_absolute():
+        return Path(os.path.abspath(path))
+    return Path(os.path.abspath(Path.cwd() / path))
 
 
 def utc_now() -> str:
@@ -377,6 +408,16 @@ def read_payload_file(path: str) -> dict[str, object]:
     if path == "-":
         raise ValueError("stdin_payload_unsupported")
     payload_path = Path(path).expanduser()
+    try:
+        absolute_payload_path = absolute_path_without_symlink_resolution(payload_path)
+        resolved_payload_path = payload_path.resolve(strict=True)
+        repo_root = active_repo_root()
+    except OSError:
+        raise ValueError("invalid_payload_path") from None
+    if _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(
+        resolved_payload_path, repo_root
+    ):
+        raise ValueError("repo_local_payload_unsupported")
     raw = json.loads(payload_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("invalid_payload")
