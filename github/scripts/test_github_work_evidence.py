@@ -39,6 +39,8 @@ def args(**overrides: object) -> argparse.Namespace:
         "collection_limit_items": None,
         "release_collection_limit": None,
         "workflow_collection_limit": None,
+        "include_derived_context": False,
+        "context_repo_limit": None,
         "include_bots": False,
         "include_external_activity": False,
     }
@@ -64,6 +66,7 @@ def test_resolve_evidence_settings_ignores_audience_config() -> None:
     assert settings["report_recipient"] == "GitHub evidence"
     assert settings["people_index"].endswith(".local/github-work-evidence.no-people.yaml")
     assert settings["mode"] == "standup"
+    assert settings["include_derived_context"] is False
     assert settings["evidence_ignored_config_keys"] == [
         "layout",
         "output_path",
@@ -100,6 +103,10 @@ def test_evidence_payload_removes_audience_fields_and_preserves_facts() -> None:
             ]
         },
         "priority_sections": [{"name": "Plan"}],
+        "derived_context": {
+            "schema_version": 1,
+            "repositories": [{"repo": "example-org/example-repo", "description": "Agent harness."}],
+        },
         "releases": [{"name": "v1"}],
         "workflows": [{"name": "CI", "conclusion": "success"}],
         "limitations": ["Read-only evidence."],
@@ -112,6 +119,7 @@ def test_evidence_payload_removes_audience_fields_and_preserves_facts() -> None:
     assert evidence["scope"]["repositories"] == ["example-org/example-repo"]
     assert evidence["summary"] == {"recently_completed": 2}
     assert evidence["buckets"]["recently_completed"][0]["title"] == "Done"
+    assert evidence["derived_context"]["repositories"][0]["description"] == "Agent harness."
     assert "handoff" not in evidence["buckets"]["recently_completed"][0]
     assert evidence["source_notes"] == [
         "Read-only evidence.",
@@ -121,6 +129,16 @@ def test_evidence_payload_removes_audience_fields_and_preserves_facts() -> None:
     assert "recipient_profile" not in evidence
     assert "layout" not in evidence
     assert "summary_level" not in evidence
+
+
+def test_resolve_evidence_settings_can_request_derived_context() -> None:
+    settings = github_work_evidence.resolve_evidence_settings(
+        args(repo=["example-org/example-repo"], include_derived_context=True, context_repo_limit=3),
+        {},
+    )
+
+    assert settings["include_derived_context"] is True
+    assert settings["context_repo_limit"] == 3
 
 
 def test_evidence_payload_strips_handoff_recursively() -> None:

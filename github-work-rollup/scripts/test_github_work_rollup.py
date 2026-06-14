@@ -414,6 +414,24 @@ def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest
     assert not any("README context" in limitation for limitation in payload["limitations"])
 
 
+def test_select_context_repos_prefers_urgent_repo_over_noisy_repo() -> None:
+    repos = ["example-org/noisy", "example-org/urgent"]
+    items = [
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/noisy", "bucket": "open_backlog"},
+        {"repo": "example-org/urgent", "bucket": "needs_attention", "priority": 3},
+    ]
+
+    selected = github_work_rollup.select_context_repos(repos, items, 1)
+
+    assert selected == ["example-org/urgent"]
+
+
 def test_bucket_items_orders_attention_before_noise() -> None:
     settings = {"summary_level": "standard", "limit_items": 50, "noise_filters": {"labels": ["dependencies"]}}
     rows = [

@@ -731,7 +731,7 @@ def collect_derived_context(settings: dict[str, Any], repos: list[str], items: l
 
 
 def select_context_repos(repos: list[str], items: list[dict[str, Any]], limit: int) -> list[str]:
-    scores = {repo: 0 for repo in repos}
+    scores = {repo: {"top": 0, "total": 0, "count": 0} for repo in repos}
     for item in items:
         repo = item.get("repo")
         if not isinstance(repo, str) or repo not in scores:
@@ -743,9 +743,14 @@ def select_context_repos(repos: list[str], items: list[dict[str, Any]], limit: i
         if bucket == "recently_completed":
             score += 3
         score += int(item.get("priority") or 0)
-        scores[repo] = scores.get(repo, 0) + score
-    ranked = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
-    return [repo for repo, _score in ranked[:limit]]
+        scores[repo]["top"] = max(scores[repo]["top"], score)
+        scores[repo]["total"] += score
+        scores[repo]["count"] += 1
+    ranked = sorted(
+        scores.items(),
+        key=lambda pair: (-pair[1]["top"], -pair[1]["total"], -pair[1]["count"], pair[0]),
+    )
+    return [repo for repo, _scores in ranked[:limit]]
 
 
 def collect_repo_context(repo: str, settings: dict[str, Any]) -> dict[str, Any]:
