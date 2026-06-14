@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "pytest>=8.0.0",
+#     "PyYAML>=6.0.0",
 # ]
 # ///
 from __future__ import annotations
@@ -41,6 +42,29 @@ def evidence() -> dict[str, object]:
     }
 
 
+def evidence_with_derived_context() -> dict[str, object]:
+    payload = evidence()
+    payload["derived_context"] = {
+        "schema_version": 1,
+        "repositories": [
+            {
+                "repo": "example-org/example-repo",
+                "description": "Harness for agent workflows.",
+                "claims": [
+                    {
+                        "kind": "standing_context",
+                        "text": "Harness for agent workflows.",
+                        "confidence": "high",
+                        "standing_context": True,
+                    }
+                ],
+            }
+        ],
+        "notes": ["Derived context is explanatory support, not a manual source of truth."],
+    }
+    return payload
+
+
 def save_json(path: Path, payload: object) -> None:
     synthesize_work_brief.save_text(path, json.dumps(payload))
 
@@ -51,11 +75,13 @@ def read_text(path: Path) -> str:
 
 def args_for(tmp_path: Path, **overrides: Any) -> argparse.Namespace:
     evidence_path = tmp_path / "evidence.json"
-    save_json(evidence_path, evidence())
+    evidence_payload = overrides.pop("evidence_payload", evidence())
+    save_json(evidence_path, evidence_payload)
     values: dict[str, Any] = {
         "evidence": evidence_path,
         "plan_context": [],
         "audience": "manager",
+        "brief_style": "standard",
         "report_recipient": "Justin",
         "brief_output": tmp_path / "brief.md",
         "prompt_output": tmp_path / "prompt.txt",
@@ -118,12 +144,16 @@ def test_synthesizes_with_exact_contract_and_verifies(tmp_path: Path) -> None:
 
     assert summary["ok"] is True
     assert summary["verified"] is True
+    assert summary["brief_style"] == "standard"
+    assert summary["derived_context_present"] is False
     assert read_text(tmp_path / "brief.md").startswith("example-org/example-repo#42")
     prompt = read_text(tmp_path / "prompt.txt")
     assert "recipient: Justin" in prompt
+    assert "brief style: standard" in prompt
     assert "Plan context: no plan signal was provided." in prompt
     assert "Source limitations to reflect in the brief:" in prompt
     assert "Workflow collection reached a cap" in prompt
+    assert "Every listed limitation must be reflected" in prompt
     assert "example-org/example-repo" in prompt
     lm_call = runner.calls[0]
     command = lm_call["command"]
@@ -133,6 +163,31 @@ def test_synthesizes_with_exact_contract_and_verifies(tmp_path: Path) -> None:
     assert lm_call["kwargs"]["input"] == prompt
     verify_call = runner.calls[1]
     assert verify_call["command"][:3] == ["uv", "run", str(synthesize_work_brief.VERIFY_PATH)]
+
+
+def test_executive_defaults_to_conversation_style(tmp_path: Path) -> None:
+    args = args_for(tmp_path, audience="executive", brief_style=None)
+
+    summary = synthesize_work_brief.synthesize(args, runner=FakeRunner())
+    prompt = read_text(tmp_path / "prompt.txt")
+
+    assert summary["brief_style"] == "conversation"
+    assert "brief style: conversation" in prompt
+    assert "human conversation brief" in prompt
+
+
+def test_prompt_surfaces_derived_context(tmp_path: Path) -> None:
+    args = args_for(tmp_path, evidence_payload=evidence_with_derived_context(), audience="executive", brief_style="conversation")
+
+    summary = synthesize_work_brief.synthesize(args, runner=FakeRunner())
+    prompt = read_text(tmp_path / "prompt.txt")
+
+    assert summary["derived_context_present"] is True
+    assert "Derived context for human meaning:" in prompt
+    assert "not as a new manual source of truth" in prompt
+    assert "Harness for agent workflows." in prompt
+    evidence_block = prompt.split("Evidence JSON:", 1)[1]
+    assert "derived_context" not in evidence_block
 
 
 def test_passes_lifecycle_overrides_to_local_llm(tmp_path: Path) -> None:
@@ -197,6 +252,40 @@ def test_rejects_oversized_prompt_without_explicit_truncation(tmp_path: Path) ->
         assert "exceeding --max-input-chars" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected oversized prompt failure")
+
+
+def test_default_prompt_limit_respects_configured_context(tmp_path: Path) -> None:
+    payload = evidence()
+    payload["buckets"] = {"ready_for_review": [{"repo": "example-org/example-repo", "number": i} for i in range(200)]}
+    args = args_for(
+        tmp_path,
+        evidence_payload=payload,
+        context_length=8192,
+        max_tokens=1500,
+        max_input_chars=None,
+    )
+    runner = FakeRunner()
+    expected_limit = synthesize_work_brief.resolve_max_input_chars(
+        args, system_prompt=read_text(synthesize_work_brief.CONTRACT_PATH)
+    )
+
+    try:
+        synthesize_work_brief.synthesize(args, runner=runner)
+    except synthesize_work_brief.SynthesisError as exc:
+        assert "exceeding --max-input-chars" in str(exc)
+        assert str(expected_limit) in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected context-capped prompt failure")
+
+    assert runner.calls == []
+
+
+def test_explicit_prompt_limit_overrides_context_default(tmp_path: Path) -> None:
+    args = args_for(tmp_path, context_length=4096, max_tokens=1500, max_input_chars=50_000)
+
+    summary = synthesize_work_brief.synthesize(args, runner=FakeRunner())
+
+    assert summary["ok"] is True
 
 
 def test_no_verify_skips_verifier(tmp_path: Path) -> None:

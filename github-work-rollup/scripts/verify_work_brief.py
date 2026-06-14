@@ -130,6 +130,17 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
         qualified_refs.add(f"{repo}#{number_text}")
         short_ref_candidates.add(f"{repo.rsplit('/', 1)[-1]}#{number_text}")
 
+    def is_issue_or_pr_record(value: dict[str, Any]) -> bool:
+        url = value.get("url") or value.get("html_url")
+        if isinstance(url, str) and GITHUB_ITEM_URL_RE.search(url):
+            return True
+        typename = value.get("__typename") or value.get("type") or value.get("kind")
+        if isinstance(typename, str) and typename.lower() in {"issue", "pullrequest", "pull_request", "pr"}:
+            return True
+        return any(key in value for key in ("state", "title", "labels")) and any(
+            key in value for key in ("pullRequest", "reviewDecision", "isPullRequest", "author")
+        )
+
     def visit(value: Any, repo_hint: str | None = None) -> None:
         nonlocal source_notes
         if isinstance(value, dict):
@@ -140,9 +151,9 @@ def build_evidence_index(evidence: Any) -> EvidenceIndex:
                 record_repo(raw_repo)
             raw_number = value.get("number")
             if isinstance(raw_number, int):
-                if next_repo:
+                if next_repo and is_issue_or_pr_record(value):
                     record_ref(next_repo, raw_number)
-                else:
+                elif not next_repo and is_issue_or_pr_record(value):
                     repo_unknown_bare_refs.add(str(raw_number))
             for key, item in value.items():
                 if key in {"source_notes", "limitations"} and isinstance(item, list):
@@ -256,8 +267,6 @@ def missing_source_notes(index: EvidenceIndex, brief: str) -> list[str]:
     normalized_brief = normalize_text(brief)
     if FALSE_CAVEAT_RE.search(normalized_brief):
         return ["brief contradicts evidence source limitations"]
-    if not any(marker in normalized_brief for marker in CAVEAT_MARKERS):
-        return ["brief must include a source limitation or confidence caveat"]
     missing_notes = [note for note in index.source_notes if not source_note_is_reflected(note, normalized_brief)]
     if missing_notes:
         return ["brief must reflect source note: " + missing_notes[0]]
@@ -274,7 +283,7 @@ def source_note_is_reflected(note: str, normalized_brief: str) -> bool:
         return True
     keywords = source_note_keywords(normalized_note)
     if not keywords:
-        return True
+        return not normalized_note
     required = min(len(keywords), 3)
     return sum(1 for keyword in keywords if keyword in normalized_brief) >= required
 
@@ -308,7 +317,9 @@ def grouped_source_note_is_reflected(normalized_note: str, normalized_brief: str
 
 def source_note_phrases(normalized_note: str) -> list[str]:
     words = normalized_note.split()
-    return [" ".join(words[index : index + 4]) for index in range(max(len(words) - 3, 0))]
+    if len(words) < 4:
+        return [normalized_note] if normalized_note else []
+    return [" ".join(words[index : index + 4]) for index in range(len(words) - 3)]
 
 
 def source_note_keywords(normalized_note: str) -> list[str]:

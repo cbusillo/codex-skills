@@ -115,6 +115,9 @@ Supported config fields:
   before window filtering
 - `workflow_collection_limit`: safety ceiling for workflow run rows collected per
   repo before window filtering
+- `include_derived_context`: collect bounded repository metadata and README
+  excerpts as provenance-backed context for local LLM synthesis
+- `context_repo_limit`: maximum repositories to enrich with derived context
 - `include_external_activity`
 - `include_bots`
 - `noise_filters`
@@ -171,7 +174,9 @@ Layouts:
   minutes, target one page on normal windows and no more than two pages on heavy
   windows, adapt daily/weekly/custom wording to the requested window, start with
   outcomes and meaning, mention Every Code and skills impact where relevant, and
-  keep GitHub counts as supporting evidence.
+  keep GitHub counts as supporting evidence. The deterministic executive
+  renderer is a fallback; for Justin-style owner conversation briefs, prefer JSON
+  evidence plus direct local LLM synthesis with derived context.
 
 `summary_level` controls verbosity inside the selected layout. It is not an
 audience selector. `mode` controls what data is collected; `layout` controls who
@@ -216,7 +221,8 @@ reports.
      --format markdown
    ```
 
-   For a planning or executive brief, choose the audience layout explicitly:
+   For a deterministic planning or fallback executive brief, choose the audience
+   layout explicitly:
 
    ```bash
    uv run scripts/github_work_rollup.py \
@@ -230,12 +236,8 @@ reports.
    ```
 
    Use `operator` for the concrete queue, `manager` for planning, and
-   `executive` for an owner/leadership conversation overview with a polished,
-   outcome-first lead. Executive output should target one page on normal windows
-   and two pages on heavy windows. It should explain what changed, why it
-   matters, how Every Code and skills are affected, risks or decisions, and
-   compact supporting signal. It should not enumerate PRs and issues except when
-   a link is useful for action or verification.
+   `executive` as a deterministic fallback when local LLM synthesis is not
+   available.
 
 3. If routine local defaults are needed, pass the private config explicitly or
    let the helper read `.local/github-work-rollup.yaml` when it exists:
@@ -250,15 +252,9 @@ reports.
    includes collection metadata, auth/API preflight status, rollup buckets, and
    limitations.
 5. Synthesize a concise judgment-oriented report. Follow the synthesis and
-   grounding rules in `references/prompt-contract.md`. When drafting a
-   manager, executive, or other narrative brief from JSON evidence, verify the
-   brief before presenting it:
-
-   ```bash
-   uv run scripts/verify_work_brief.py \
-     --evidence evidence.json \
-     --brief brief.md
-   ```
+   grounding rules in `references/prompt-contract.md`. For owner/executive
+   conversation briefs, including Justin-style reports, collect JSON evidence
+   with derived context and then use the direct local LLM synthesizer:
 
    To avoid ordinary agent system-prompt contamination, use the direct local LLM
    synthesizer when a polished manager or executive brief should be written by a
@@ -267,6 +263,7 @@ reports.
    ```bash
    uv run scripts/github_work_rollup.py \
      --config .local/github-work-rollup.yaml \
+     --include-derived-context \
      --layout executive \
      --format json \
      --output .local/github-work-rollup/evidence.json
@@ -274,25 +271,18 @@ reports.
    uv run scripts/synthesize_work_brief.py \
      --evidence .local/github-work-rollup/evidence.json \
      --audience executive \
+     --brief-style conversation \
      --report-recipient "Example leader" \
      --brief-output .local/github-work-rollup/brief.md \
      --warmup
    ```
 
    The synthesizer reads `references/prompt-contract.md` as the exact system
-   prompt, sends the evidence JSON as the user prompt, uses the `local-llm`
-   model role `work_brief_writer` by default, and runs `verify_work_brief.py`
-   unless `--no-verify` is explicitly supplied for debugging.
-
-   Emphasize:
-   - needs attention
-   - blocked or waiting work
-   - ready for review
-   - ready for merge decision
-   - in progress
-   - stale or needs reconciliation
-   - recently completed
-   - configured priority sections such as skill updates
+   prompt, sends the evidence JSON and derived context as the user prompt, uses
+   the `local-llm` model role `work_brief_writer` by default, and runs
+   `verify_work_brief.py` unless `--no-verify` is explicitly supplied for
+   debugging. Conversation briefs should explain what the work gives the reader
+   to talk about with the team, then keep GitHub links and counts as receipts.
 6. Include links, issue/PR numbers, run IDs, and numeric identifiers only when
    the reader should inspect, comment, approve, unblock, or follow up.
 7. If the rollup identifies action, recommend the owning skill instead of acting:
