@@ -197,6 +197,19 @@ policy:
               "--delete-branch",
             ]
           purpose: Performs the approved merge through the REST helper with normalized defaults and optional branch cleanup.
+    - id: prefer-gh-pr-checks-helper
+      match:
+        argv_prefix: ["gh", "pr", "checks"]
+      action: require_preferred
+      message: Raw `gh pr checks` can start ad hoc polling and may use the active local GitHub account. Use the PR helper for point-in-time check state, or `babysit-pr` when the task needs ongoing CI/review follow-through.
+      preferred:
+        - kind: script
+          path: scripts/gh-pr.py
+          example_argv: ["scripts/gh-pr.py", "checks", "<pr>"]
+          purpose: Reads PR check runs and commit statuses through the configured helper path.
+        - kind: skill
+          name: babysit-pr
+          purpose: Watches an open PR until CI/review/mergeability follow-through reaches a terminal or user-help state.
     - id: prefer-gh-issue-create-helper
       match:
         argv_prefix: ["gh", "issue", "create"]
@@ -289,10 +302,23 @@ Use PRs for all non-trivial code changes.
 
 Use the bundled `gh-*` and `github-*` helper scripts first for GitHub work. The
 machine-readable `policy.command_policies` frontmatter owns the common raw `gh`
-write-to-helper mapping; this prose keeps the judgment around branch discipline,
-merge method, formatting, verification, and exceptions. Reach for raw `gh` only
-when no helper covers the operation, and route those calls through
+write/check-to-helper mapping; this prose keeps the judgment around branch
+discipline, merge method, formatting, verification, and exceptions. Reach for raw
+`gh` only when no helper covers the operation, and route those calls through
 `scripts/gh-with-env-token`.
+
+Helper-first ritual for PR work:
+
+- Use `scripts/gh-pr.py view/checks/create/edit/comment/merge` for PR reads,
+  writes, check snapshots, and approved merges.
+- Use `github-ci-diagnose.py` for CI failure diagnosis, and switch to
+  `babysit-pr` when the task becomes repeated PR CI/review/mergeability
+  follow-through.
+- Use a normal merge commit by default via
+  `scripts/gh-pr.py merge <pr> --method merge`; avoid squash or rebase unless the
+  user requests it, repo policy requires it, or you have explicit confirmation.
+- Use raw `gh` only for unsupported surfaces or fallback diagnostics, and say why
+  the helper path did not fit.
 
 Do not infer Python from a `scripts/` path. `scripts/gh-issue`,
 `scripts/gh-comment`, and `scripts/gh-with-env-token` are executable shell
