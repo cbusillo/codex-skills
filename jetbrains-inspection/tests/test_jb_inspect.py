@@ -572,6 +572,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
+        self.assertEqual(calls[0][2]["session_id"], "s1")
 
     def test_open_via_running_ide_ignores_other_ide_products(self):
         original_discover = jb_inspect.discover_identities

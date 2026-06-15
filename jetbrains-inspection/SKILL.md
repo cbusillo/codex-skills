@@ -104,9 +104,12 @@ lifecycle auto-open, the helper adds the matching trusted root to the selected
 JetBrains product's Trusted Locations config, ensures project opening is set to
 new-window/no-prompt, launches the selected IDE hidden if no matching plugin is
 already running, then asks the running inspection plugin to schedule the exact
-worktree open. The helper polls until the exact route appears before it
-inspects; a lifecycle open response alone is not proof that the IDE finished
-opening the project.
+worktree open with the IDE's current `session_id`. Current plugin builds use
+that session-verified lifecycle request to mark the path trusted inside the
+running IDE immediately before `ProjectManagerEx.openProject`, which avoids
+stale on-disk Trusted Locations state in already-running IDEs. The helper polls
+until the exact route appears before it inspects; a lifecycle open response alone
+is not proof that the IDE finished opening the project.
 Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`:
 
 ```json
