@@ -362,6 +362,16 @@ def test_launchplane_write_action_helper_contract() -> None:
         "idempotency_key_required" in normalized_helper,
         "Write-action helper must require idempotency keys for mutating calls",
     )
+    require(
+        "ambiguous_service_url" in normalized_helper
+        and "missing_service_url" in normalized_helper
+        and "missing_operator_token" in normalized_helper,
+        "Write-action helper must distinguish missing URL, missing token, and ambiguous public URL states",
+    )
+    require(
+        "launchplane_public_url" in normalized_helper,
+        "Write-action helper must detect LAUNCHPLANE_PUBLIC_URL as a diagnostic near-miss",
+    )
 
     no_context = subprocess.run(
         [
@@ -390,6 +400,106 @@ def test_launchplane_write_action_helper_contract() -> None:
     require(
         "missing_operator_config" in json.dumps(payload),
         "Write-action helper must explain missing operator config compactly",
+    )
+
+    missing_url = subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "--env-config",
+            str(ROOT / ".missing-launchplane-operator.env"),
+            "merge-train-controller-run-once",
+            "--repo",
+            "example/repo",
+            "--base-branch",
+            "main",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("LAUNCHPLANE_")
+            },
+            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
+        },
+    )
+    require(missing_url.returncode == 2, "Write-action helper must fail closed without service URL")
+    missing_url_payload = json.loads(missing_url.stdout)
+    require(
+        missing_url_payload["summary"]["configuration_state"] == "missing_service_url",
+        "Write-action helper must distinguish a missing service URL from a missing credential",
+    )
+
+    missing_token = subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "--env-config",
+            str(ROOT / ".missing-launchplane-operator.env"),
+            "--url",
+            "https://launchplane.example.invalid",
+            "merge-train-controller-run-once",
+            "--repo",
+            "example/repo",
+            "--base-branch",
+            "main",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("LAUNCHPLANE_")
+        },
+    )
+    require(missing_token.returncode == 2, "Write-action helper must fail closed without token")
+    missing_token_payload = json.loads(missing_token.stdout)
+    require(
+        missing_token_payload["summary"]["configuration_state"] == "missing_operator_token",
+        "Write-action helper must distinguish a missing token from missing operator config",
+    )
+
+    public_url_hint = subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "--env-config",
+            str(ROOT / ".missing-launchplane-operator.env"),
+            "operator-config-diagnostic",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("LAUNCHPLANE_")
+            },
+            "LAUNCHPLANE_PUBLIC_URL": "https://public-launchplane.example.invalid",
+            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
+        },
+    )
+    require(public_url_hint.returncode == 0, "Write-action diagnostic must tolerate public URL near-miss")
+    public_url_payload = json.loads(public_url_hint.stdout)
+    rendered_public_hint = json.dumps(public_url_payload)
+    require(
+        public_url_payload["status"] == "incomplete"
+        and public_url_payload["summary"]["classification"] == "ambiguous_service_url",
+        "Write-action diagnostic must classify LAUNCHPLANE_PUBLIC_URL without operator URL as ambiguous",
+    )
+    require(
+        public_url_payload["summary"]["public_url_hint_present"] is True,
+        "Write-action diagnostic must report a public URL hint without using it as authority",
+    )
+    require(
+        "public-launchplane.example.invalid" not in rendered_public_hint
+        and "secret-token-never-render" not in rendered_public_hint,
+        "Write-action diagnostic must not render public URL hint or token values",
     )
 
     repo_payload = ROOT / ".tmp-launchplane-repo-payload.json"
@@ -527,6 +637,11 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper diagnostic must report private .env presence",
     )
     require(
+        diagnostic_payload["status"] == "available"
+        and diagnostic_payload["summary"]["classification"] == "ready",
+        "Write-action helper diagnostic must report ready only when URL and token are present",
+    )
+    require(
         diagnostic_payload["summary"]["token_source"] == "private_env",
         "Write-action helper diagnostic must report token source without value",
     )
@@ -643,7 +758,10 @@ def test_launchplane_write_action_helper_contract() -> None:
         {
             "status": "rejected",
             "trace_id": "launchplane_req_denied",
-            "error": {"code": "authorization_denied", "message": "Denied."},
+            "error": {
+                "code": "authorization_denied",
+                "message": "Denied for Bearer secret-token-never-render at https://private-launchplane.example.invalid",
+            },
         }
     ).encode()
     http_error = urllib.error.HTTPError(
@@ -662,6 +780,34 @@ def test_launchplane_write_action_helper_contract() -> None:
     require(
         denied_payload["summary"]["error_code"] == "authorization_denied",
         "Write-action denied summary must expose safe error code",
+    )
+    require(
+        "authz reconciliation" in denied_payload["summary"]["recommendation"],
+        "Write-action denied recommendation must route to authz reconciliation instead of credential discovery",
+    )
+    rendered_denied = json.dumps(denied_payload)
+    require(
+        "secret-token-never-render" not in rendered_denied
+        and "private-launchplane.example.invalid" not in rendered_denied,
+        "Write-action denied summary must not render provider error message details",
+    )
+
+    unauthorized_error = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/example",
+        401,
+        "Unauthorized",
+        hdrs=Message(),
+        fp=io.BytesIO(b"{}"),
+    )
+    unauthorized_payload = module.summarize_http_error(
+        operation="product-config-preflight",
+        request={"product": "example-product", "context": "example-testing"},
+        exc=unauthorized_error,
+    )
+    require(
+        unauthorized_payload["status"] == "unauthorized"
+        and unauthorized_payload["summary"]["error_code"] == "unauthorized",
+        "Write-action 401 without error body must summarize as unauthorized, not provider unavailable",
     )
 
 

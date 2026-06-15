@@ -39,16 +39,22 @@ subject, and label values. When no explicit JSON config is supplied, the helper
 may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
-`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`.
+`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`. The helper may also notice
+`LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the operator URL is
+missing, but it does not use that variable as write authority.
 
 For public-safe diagnostics, use:
 
 ```sh
 uv run launchplane/scripts/launchplane-write-action.py operator-config-diagnostic
+uv run launchplane/scripts/launchplane-write-action.py --url <operator-url> operator-config-diagnostic
 ```
 
 The diagnostic reports source presence, token presence, and which source won. It
 does not print token values, subjects, labels, URLs, headers, or request bodies.
+Global options such as `--url` must appear before the subcommand. A diagnostic
+with `status: "incomplete"` may still have a local token source; read the
+`classification` field before describing the failure.
 
 ## Exit Behavior
 
@@ -62,6 +68,28 @@ does not print token values, subjects, labels, URLs, headers, or request bodies.
 Missing Launchplane config is still non-fatal for skills that only need context;
 it is a fail-closed result for this helper because every command is an explicit
 write-capable operation.
+
+Configuration and error states are distinct:
+
+- `ready`: operator URL and token sources are present. This is not proof that a
+  token is authorized for every action.
+- `ambiguous_service_url`: token exists and `LAUNCHPLANE_PUBLIC_URL` is present,
+  but no operator URL source is configured. Obtain the correct operator URL and
+  pass it with `--url` before the subcommand, or configure
+  `LAUNCHPLANE_OPERATOR_URL`.
+- `missing_service_url`: token exists but no write-capable service URL source is
+  configured.
+- `missing_operator_token`: service URL exists but the local operator token is
+  missing.
+- `missing_operator_config`: both service URL and token are absent.
+- `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
+- `denied`: Launchplane accepted the credential but denied the specific action,
+  usually HTTP 403 or `authorization_denied`. For higher-authority runtime
+  records, check the Launchplane authz reconciliation or GitHub Actions OIDC
+  path before manual route probes.
+- `stale`: retry requires refreshed dry-run or intent evidence.
+- `unavailable`: service/network/response failure; do not switch to provider
+  mutation.
 
 ## Product Config
 
@@ -121,6 +149,12 @@ checked-in product maps, workflow defaults, copied provider route payloads,
 repository bindings, branch bindings, tenant/domain lists, lanes, provider target
 ids, authz grants, or operator identities into product-config requests unless
 they came from Launchplane records or explicit scoped operator input.
+
+If a denied or unsupported operation concerns authz grants, private health
+endpoint records, provider targets, route records, or operator/workflow grants,
+look for the Launchplane-owned reconciliation surface instead of widening the
+local helper. In Launchplane repositories this may be a deploy workflow or
+authz-grant reconciliation script run through GitHub Actions OIDC.
 
 ## Merge Train Controller
 

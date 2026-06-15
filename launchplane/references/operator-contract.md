@@ -50,6 +50,10 @@ Environment variable names:
 
 - `LAUNCHPLANE_OPERATOR_URL`: Launchplane service base URL for write-capable
   operator requests.
+- `LAUNCHPLANE_PUBLIC_URL`: Not a write-authority source. Diagnostics may
+  report it as a possible near-miss when `LAUNCHPLANE_OPERATOR_URL` is absent,
+  but write-capable helpers must use `--url`, `LAUNCHPLANE_OPERATOR_URL`, or a
+  private JSON `service_url`.
 - `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`: operator bearer token. Never print or
   copy this value.
 - `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`: optional operator subject header value.
@@ -61,6 +65,11 @@ service URL example only. Real token values stay in the operator's private
 environment or secret manager. Missing private config is a normal unavailable
 state for terminal execution; explicit write actions must fail closed instead of
 falling back to direct provider mutation or read-only context credentials.
+
+Run `scripts/launchplane-write-action.py operator-config-diagnostic` before
+declaring terminal operator access unavailable. The diagnostic reports only
+source presence and redacted classification; it does not prove that the token is
+authorized for every action.
 
 Do not use `.github/github.override.json` for secrets. That file is suitable for
 repo metadata overrides only, not Launchplane operator credentials.
@@ -92,6 +101,14 @@ key.
 base-branch, and mutate mode. Mutating helper calls require an idempotency key;
 dry-run calls may omit it. Stop and report controller attention states instead
 of calling phase-specific endpoints by default.
+
+Local bearer-token denial is not the same as missing credentials. For new or
+higher-authority runtime records, including authz grants, private health
+endpoint records, provider targets, route records, and operator/workflow grants,
+look for the Launchplane authz reconciliation path first. In Launchplane repos
+this may be a deploy workflow or authz-grant reconciliation script running under
+GitHub Actions OIDC. Do not open-code denied routes or infer grants from
+checked-in examples.
 
 ## Safety & Redaction
 

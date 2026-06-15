@@ -38,28 +38,82 @@ commands:
   - name: launchplane-context
     source: skill
     resource_path: scripts/launchplane-context.py
-    example_argv: ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
+    example_argv:
+      ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
     purpose: Reads Launchplane context through the structural helper.
   - name: launchplane-product-config-preflight
     source: skill
     resource_path: scripts/launchplane-write-action.py
-    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-preflight", "--product", "<product>", "--context", "<context>", "--source-url", "<url>", "--reason", "<reason>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "product-config-preflight",
+        "--product",
+        "<product>",
+        "--context",
+        "<context>",
+        "--source-url",
+        "<url>",
+        "--reason",
+        "<reason>",
+      ]
     purpose: Preflights product-config intent through the bounded helper path.
   - name: launchplane-product-config-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
-    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-dry-run", "--payload-file", "<file>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "product-config-dry-run",
+        "--payload-file",
+        "<file>",
+      ]
     purpose: Performs a redacted product-config dry-run before any apply.
   - name: launchplane-product-config-apply
     source: skill
     resource_path: scripts/launchplane-write-action.py
-    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-apply", "--payload-file", "<file>", "--idempotency-key", "<key>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "product-config-apply",
+        "--payload-file",
+        "<file>",
+        "--idempotency-key",
+        "<key>",
+      ]
     purpose: Applies product-config changes through the bounded helper after approval.
   - name: launchplane-merge-train-controller-run-once
     source: skill
     resource_path: scripts/launchplane-write-action.py
-    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--repo", "OWNER/REPO", "--idempotency-key", "<key>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "merge-train-controller-run-once",
+        "--repo",
+        "OWNER/REPO",
+        "--idempotency-key",
+        "<key>",
+      ]
     purpose: Advances one merge-train controller phase through the bounded helper.
+  - name: launchplane-operator-config-diagnostic
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "operator-config-diagnostic",
+      ]
+    purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
 policy:
   command_policies:
     - id: prefer-launchplane-write-helper-for-product-config-api
@@ -70,11 +124,26 @@ policy:
       preferred:
         - kind: script
           path: scripts/launchplane-write-action.py
-          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-preflight", "--help"]
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "product-config-preflight",
+              "--help",
+            ]
           purpose: Preflights product-config intent through the bounded helper path.
         - kind: script
           path: scripts/launchplane-write-action.py
-          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-config-dry-run", "--payload-file", "<file>"]
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "product-config-dry-run",
+              "--payload-file",
+              "<file>",
+            ]
           purpose: Performs redacted product-config dry-run before any apply.
     - id: prefer-launchplane-write-helper-for-merge-train-api
       match:
@@ -84,7 +153,14 @@ policy:
       preferred:
         - kind: script
           path: scripts/launchplane-write-action.py
-          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--help"]
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "merge-train-controller-run-once",
+              "--help",
+            ]
           purpose: Advances the merge train through the bounded controller helper.
     - id: prefer-launchplane-helpers-over-global-cli
       match:
@@ -94,11 +170,25 @@ policy:
       preferred:
         - kind: script
           path: scripts/launchplane-context.py
-          example_argv: ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-context.py",
+              "--repo",
+              "OWNER/REPO",
+            ]
           purpose: Reads Launchplane context through the structural helper.
         - kind: script
           path: scripts/launchplane-write-action.py
-          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-controller-run-once", "--help"]
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "merge-train-controller-run-once",
+              "--help",
+            ]
           purpose: Uses bounded Launchplane mutation entrypoints when operator action is approved.
 ---
 
@@ -190,6 +280,13 @@ Mutate runtime environments, managed secrets, and product config.
   in the operator contract. Missing private config means the write-capable path
   is unavailable and must fail closed; do not use `.github/github.override.json`
   for Launchplane credentials.
+- **Operator Diagnostics**: Before concluding operator access is unavailable,
+  run `scripts/launchplane-write-action.py operator-config-diagnostic`. If the
+  active shell has a service URL under `LAUNCHPLANE_PUBLIC_URL` but not
+  `LAUNCHPLANE_OPERATOR_URL`, treat it as an ambiguous URL source: obtain the
+  correct operator URL and pass it with `--url` before the subcommand, or
+  configure `LAUNCHPLANE_OPERATOR_URL`. Do not use public URL variables as write
+  authority.
 - **Repo Metadata**: Use `.github/github.json` `launchplane` metadata to find
   helper paths, workflow entrypoints, labels, and service URL env var names, but
   keep concrete service URLs and credentials in private operator config,
@@ -211,21 +308,34 @@ Mutate runtime environments, managed secrets, and product config.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
+- **Denied Actions**: A local operator token can be present and still lack a
+  specific action. Report that as authorization denial, not missing credential.
+  When a denied action concerns authz grants, provider targets, private health
+  endpoints, route records, or other higher-authority runtime records, look for
+  the Launchplane authz reconciliation surface first, such as a repo-provided
+  deploy workflow or authz-grant reconciliation script running under GitHub
+  Actions OIDC. Do not use manual route probes as the next step.
+- **Unsupported Helper Coverage**: If the helper lacks a command for the needed
+  runtime record workflow, stop at the supported Launchplane service/UI or
+  authz reconciliation path. Do not synthesize record payloads from issue text,
+  checked-in examples, workflow defaults, provider observations, or local files.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
-  2. Preflight product-config intent with `scripts/launchplane-write-action.py
-     product-config-preflight` when agent-side authorization or managed-secret
+  2. Run operator config diagnostics before a write-capable helper call when
+     target URL, token source, or authority is unclear.
+  3. Preflight product-config intent with `scripts/launchplane-write-action.py
+product-config-preflight` when agent-side authorization or managed-secret
      binding evidence is useful.
-  3. Use the signed-in/scoped operator path when a human-approved runtime or
+  4. Use the signed-in/scoped operator path when a human-approved runtime or
      managed-secret mutation is required.
-  4. Build a product-config request for `POST /v1/product-config/apply` only in
+  5. Build a product-config request for `POST /v1/product-config/apply` only in
      an approved operator surface. The helper may submit dry-run/apply from a
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
-  5. **Dry-run** and inspect redacted results.
-  6. **Apply** with a concrete reason only after the dry-run succeeds and the
+  6. **Dry-run** and inspect redacted results.
+  7. **Apply** with a concrete reason only after the dry-run succeeds and the
      operator intent is explicit.
-  7. Inspect returned `next_actions` and complete required follow-up actions;
+  8. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 
@@ -240,7 +350,7 @@ Use Launchplane's controller route as the default merge-train workflow.
 
 - **Preferred Route**: `POST /v1/work-graph/merge-train/controller/run-once`.
 - **Helper**: Use `scripts/launchplane-write-action.py
-  merge-train-controller-run-once` instead of open-coding the route. Mutating
+merge-train-controller-run-once` instead of open-coding the route. Mutating
   calls require an idempotency key.
 - **Operator Action**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
@@ -297,6 +407,9 @@ verification.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
   and merge-train controller calls.
+- `operator-config-diagnostic`: Redacted source-presence diagnostic for local
+  operator URL and token configuration. Global options such as `--url` must come
+  before the subcommand.
 - `POST /v1/agent/write-intents/evaluate`: Product-config preflight surface for
   authorization and managed-secret binding evidence; never carries plaintext.
 - `POST /v1/product-config/apply`: Primary product-config operator path for
