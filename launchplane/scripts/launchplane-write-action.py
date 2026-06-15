@@ -27,6 +27,7 @@ DEFAULT_ENV_PATH = Path("~/.config/launchplane/local-operator.env").expanduser()
 WRITE_CONFIG_REQUIRED = "Launchplane operator config is required for this write action."
 LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_OPERATOR_URL",
+    "LAUNCHPLANE_PUBLIC_URL",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
     "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
@@ -125,10 +126,17 @@ def base_payload(*, status: str, operation: str, request: dict[str, object]) -> 
     }
 
 
-def no_context_payload(*, operation: str, request: dict[str, object]) -> dict[str, object]:
+def no_context_payload(
+    *,
+    operation: str,
+    request: dict[str, object],
+    code: str = "missing_operator_config",
+    message: str = WRITE_CONFIG_REQUIRED,
+    recommendation: str = "Configure Launchplane operator access before retrying.",
+) -> dict[str, object]:
     payload = base_payload(status="no_context", operation=operation, request=request)
-    payload["summary"] = {"recommendation": "Configure Launchplane operator access before retrying."}
-    payload["warnings"] = [warning("missing_operator_config", WRITE_CONFIG_REQUIRED)]
+    payload["summary"] = {"configuration_state": code, "recommendation": recommendation}
+    payload["warnings"] = [warning(code, message)]
     return payload
 
 
@@ -218,7 +226,58 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
         "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
         "subject": (os.environ.get(subject_env) or env_config.get(subject_env) or "").strip(),
         "token_label": (os.environ.get(token_label_env) or env_config.get(token_label_env) or "").strip(),
+        "public_url_hint_sources": ",".join(public_url_hint_sources(env_config)),
     }
+
+
+def public_url_hint_sources(env_config: dict[str, str]) -> list[str]:
+    sources: list[str] = []
+    if os.environ.get("LAUNCHPLANE_PUBLIC_URL"):
+        sources.append("environment")
+    if env_config.get("LAUNCHPLANE_PUBLIC_URL"):
+        sources.append("private_env")
+    return sources
+
+
+def classify_operator_config(
+    *, service_url_present: bool, token_present: bool, public_url_hint_present: bool
+) -> str:
+    if service_url_present and token_present:
+        return "ready"
+    if not service_url_present and token_present and public_url_hint_present:
+        return "ambiguous_service_url"
+    if not service_url_present and token_present:
+        return "missing_service_url"
+    if service_url_present and not token_present:
+        return "missing_operator_token"
+    return "missing_operator_config"
+
+
+def operator_config_recommendation(classification: str) -> str:
+    recommendations = {
+        "ready": "Operator config sources are present; proceed only through supported helper commands.",
+        "ambiguous_service_url": (
+            "LAUNCHPLANE_PUBLIC_URL is present but not used as the operator URL; obtain "
+            "the correct operator URL and pass --url before the subcommand, or configure "
+            "LAUNCHPLANE_OPERATOR_URL."
+        ),
+        "missing_service_url": "Configure LAUNCHPLANE_OPERATOR_URL or pass --url before the subcommand.",
+        "missing_operator_token": "Configure the local operator token source before retrying.",
+        "missing_operator_config": "Configure Launchplane operator URL and token sources before retrying.",
+    }
+    return recommendations.get(classification, recommendations["missing_operator_config"])
+
+
+def operator_config_message(classification: str) -> str:
+    messages = {
+        "ambiguous_service_url": (
+            "A public Launchplane URL source is present, but no operator URL source is configured."
+        ),
+        "missing_service_url": "Launchplane operator service URL is missing.",
+        "missing_operator_token": "Launchplane local operator token is missing.",
+        "missing_operator_config": WRITE_CONFIG_REQUIRED,
+    }
+    return messages.get(classification, WRITE_CONFIG_REQUIRED)
 
 
 def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
@@ -246,15 +305,27 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
         )
     )
     service_url_sources = [source for source, present in service_url_candidates if present]
+    public_hint_sources = public_url_hint_sources(env_config)
+    token_present = bool(os.environ.get(token_env) or env_config.get(token_env))
+    classification = classify_operator_config(
+        service_url_present=bool(service_url_sources),
+        token_present=token_present,
+        public_url_hint_present=bool(public_hint_sources),
+    )
     return {
+        "classification": classification,
+        "ready": classification == "ready",
         "json_config_present": (Path(args.config).expanduser() if args.config else DEFAULT_CONFIG_PATH).exists(),
         "private_env_present": (Path(args.env_config).expanduser() if args.env_config else DEFAULT_ENV_PATH).exists(),
         "service_url_sources": service_url_sources,
         "service_url_source": service_url_sources[0] if service_url_sources else "missing",
-        "token_present": bool(os.environ.get(token_env) or env_config.get(token_env)),
+        "public_url_hint_sources": public_hint_sources,
+        "public_url_hint_present": bool(public_hint_sources),
+        "token_present": token_present,
         "token_source": "environment" if os.environ.get(token_env) else "private_env" if env_config.get(token_env) else "missing",
         "subject_present": bool(os.environ.get(subject_env) or env_config.get(subject_env)),
         "token_label_present": bool(os.environ.get(token_label_env) or env_config.get(token_label_env)),
+        "recommendation": operator_config_recommendation(classification),
     }
 
 
@@ -342,6 +413,19 @@ def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> st
     return "unavailable"
 
 
+def http_error_recommendation(status: str) -> str:
+    recommendations = {
+        "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
+        "denied": (
+            "Credential was accepted but this action was denied; check the intended "
+            "Launchplane authz reconciliation or GitHub Actions OIDC path before probing routes manually."
+        ),
+        "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
+        "unavailable": "Launchplane service was unavailable or returned an invalid error envelope; retry later with trace evidence.",
+    }
+    return recommendations.get(status, "Stop and surface the compact Launchplane error.")
+
+
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -392,13 +476,13 @@ def summarize_http_error(
     payload["summary"] = {
         "http_status": exc.code,
         "trace_id": str(provider_payload.get("trace_id") or ""),
-        "error_code": str(error.get("code") or "provider_unavailable"),
-        "recommendation": "Stop and surface the compact Launchplane error.",
+        "error_code": str(error.get("code") or status),
+        "recommendation": http_error_recommendation(status),
     }
     payload["warnings"] = [
         warning(
-            str(error.get("code") or "provider_unavailable"),
-            str(error.get("message") or "Launchplane write action was rejected."),
+            str(error.get("code") or status),
+            "Launchplane write action was rejected; inspect the trace in an approved operator surface.",
         )
     ]
     return payload
@@ -503,7 +587,20 @@ def execute_post(
         )
         return 2
     if not settings["service_url"] or not settings["token"]:
-        emit(no_context_payload(operation=operation, request=request))
+        classification = classify_operator_config(
+            service_url_present=bool(settings["service_url"]),
+            token_present=bool(settings["token"]),
+            public_url_hint_present=bool(settings["public_url_hint_sources"]),
+        )
+        emit(
+            no_context_payload(
+                operation=operation,
+                request=request,
+                code=classification,
+                message=operator_config_message(classification),
+                recommendation=operator_config_recommendation(classification),
+            )
+        )
         return 2
     try:
         provider_payload = request_launchplane(
@@ -610,7 +707,8 @@ def main(argv: list[str]) -> int:
                     )
                 )
                 return 2
-            payload = base_payload(status="available", operation=args.command, request=request)
+            status = "available" if diagnostic.get("ready") is True else "incomplete"
+            payload = base_payload(status=status, operation=args.command, request=request)
             payload["summary"] = diagnostic
             emit(payload)
             return 0
