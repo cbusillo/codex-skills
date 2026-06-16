@@ -794,6 +794,21 @@ skills:
       - script_helper
       - skill_authoring
     checks:
+      - check_id: command-policy-github-routing-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: command_policy
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-command-policy-github-routing.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake Responses API scenario verifies Launchplane context exposes
+            GitHub/GitHub Plan delegation and structured planning command-policy
+            metadata instead of relying on Launchplane prose alone.
       - check_id: exec-harness-performance-collector
         kind: performance_probe
         mode: script

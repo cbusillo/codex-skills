@@ -193,6 +193,14 @@ When a skill owns a fragile or preferred command workflow, put the machine-reada
 mapping in `policy.command_policies` instead of relying only on prose. Keep prose
 for judgment, sequencing, and exceptions.
 
+Command policies are structured skill metadata: they live in `SKILL.md`
+frontmatter so the skill catalog, validators, harness scenarios, and future
+runtime integrations can read the same source. They are not, by themselves, a
+runtime command-blocker guarantee. If a command must be prevented regardless of
+which skill is active, Every Code or Codex Lab must load that policy into the
+command execution layer; this repo should keep the policy catalog and behavior
+fixtures accurate enough for that integration.
+
 Use command policies for common raw-command-to-helper cases, especially when raw
 commands are fragile around auth, multiline Markdown, quoting, retries, cleanup,
 or normalized output.

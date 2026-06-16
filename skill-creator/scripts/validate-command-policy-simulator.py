@@ -63,6 +63,30 @@ def iter_policies() -> list[tuple[int, str, int, dict[str, Any]]]:
     return policies
 
 
+def policy_catalog() -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for skill_order, skill, index, policy in iter_policies():
+        matcher = policy.get("match")
+        if not isinstance(matcher, dict):
+            continue
+        preferred = policy.get("preferred")
+        if not isinstance(preferred, list):
+            preferred = []
+        catalog.append(
+            {
+                "skill": skill,
+                "skill_order": skill_order,
+                "policy_index": index,
+                "id": str(policy.get("id") or f"policy-{index}"),
+                "action": policy.get("action"),
+                "match": matcher,
+                "preferred": preferred,
+                "message": policy.get("message"),
+            }
+        )
+    return catalog
+
+
 def match_policy(
     skill_order: int,
     skill: str,
@@ -122,10 +146,23 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["gh", "pr", "create", "--title", "demo"], None, "github", "prefer-gh-pr-create-helper"),
     (["gh", "pr", "edit", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-edit-helper"),
     (["gh", "pr", "comment", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-comment-helper"),
+    (["gh", "pr", "review", "123", "--comment"], None, "github", "prefer-gh-pr-review-wrapper"),
+    (["gh", "pr", "close", "123"], None, "github", "prefer-gh-pr-state-wrapper"),
+    (["gh", "pr", "reopen", "123"], None, "github", "prefer-gh-pr-reopen-wrapper"),
+    (["gh", "pr", "ready", "123"], None, "github", "prefer-gh-pr-ready-wrapper"),
+    (["gh", "pr", "update-branch", "123"], None, "github", "prefer-gh-pr-update-branch-wrapper"),
     (["gh", "pr", "merge", "123"], None, "github", "prefer-gh-pr-merge-helper"),
+    (["gh", "pr", "checks", "123"], None, "github", "prefer-gh-pr-checks-helper"),
+    (["gh", "run", "rerun", "123", "--failed"], None, "github", "prefer-gh-run-rerun-wrapper"),
+    (["gh", "api", "repos/owner/repo/issues", "--method", "PATCH"], None, "github", "prefer-gh-api-wrapper"),
     (["gh", "issue", "create"], None, "github", "prefer-gh-issue-create-helper"),
+    (["gh", "issue", "comment", "123"], None, "github", "prefer-gh-issue-comment-helper"),
     (["gh", "issue", "edit", "123"], None, "github", "prefer-gh-issue-edit-helper"),
     (["gh", "issue", "close", "123"], None, "github", "prefer-gh-issue-close-helper"),
+    (["gh", "release", "create", "v1.2.3"], None, "github", "prefer-gh-release-wrapper"),
+    (["gh", "workflow", "run", "validate.yml"], None, "github", "prefer-gh-workflow-wrapper"),
+    (["git", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper"),
+    (["git", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
     (["gh", "issue", "list", "--label", "plan"], None, "github-plan", "prefer-gh-plan-index-for-issue-list"),
     (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan", "prefer-gh-plan-search-for-issue-search"),
     (["gh", "project", "item-list", "1"], None, "github-plan", "prefer-gh-plan-helper-for-project-commands"),
@@ -213,6 +250,22 @@ def validate_expectations() -> list[str]:
     return errors
 
 
+def print_catalog(json_output: bool) -> None:
+    catalog = policy_catalog()
+    if json_output:
+        print(json.dumps(catalog, indent=2, sort_keys=True))
+        return
+    for entry in catalog:
+        matcher = entry["match"]
+        if "argv_exact" in matcher:
+            match_text = "argv_exact=" + shlex.join([str(token) for token in matcher["argv_exact"]])
+        elif "argv_prefix" in matcher:
+            match_text = "argv_prefix=" + shlex.join([str(token) for token in matcher["argv_prefix"]])
+        else:
+            match_text = "shell_regex=" + str(matcher.get("shell_regex", ""))
+        print(f"{entry['skill']}\t{entry['id']}\t{entry['action']}\t{match_text}")
+
+
 def self_test() -> None:
     global iter_policies
     original_iter = iter_policies
@@ -271,11 +324,16 @@ def main() -> int:
     parser.add_argument("command", nargs="*", help="Command tokens to simulate")
     parser.add_argument("--shell", help="Shell string to use for shell_regex matching")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--catalog", action="store_true", help="Print all structured command policies")
     parser.add_argument("--self-test", action="store_true", help="Run precedence self tests")
     args = parser.parse_args()
 
     if args.self_test:
         self_test()
+        return 0
+
+    if args.catalog:
+        print_catalog(args.json)
         return 0
 
     if args.command:

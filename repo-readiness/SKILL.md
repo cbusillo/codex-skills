@@ -91,6 +91,10 @@ findings/status matter.
    practical gate for the repo and change.
 6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
+   Use `github-plan` for planning issue indexes, Project state, blocker graphs,
+   and planning GraphQL operations. Use the GitHub skills' structured
+   command-policy metadata as the helper catalog; this skill decides what
+   evidence is needed, not which raw `gh` command to run.
    If an open PR still needs repeated CI/review/mergeability polling after a
    branch update, check rerun, rebase, review-fix push, or "safe to exit" check,
    route that follow-through to `babysit-pr`; keep this skill focused on the

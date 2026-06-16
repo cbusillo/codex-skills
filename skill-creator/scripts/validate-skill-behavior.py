@@ -1056,6 +1056,40 @@ def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
         "if the readiness handoff is missing, stale, tied to a different commit/pr" in normalized_closeout,
         "work-closeout must reject stale or missing readiness handoffs",
     )
+    require(
+        "use `github-plan` for planning issue indexes, project state, blocker graphs, and planning graphql operations" in normalized_readiness,
+        "repo-readiness must delegate planning GitHub surfaces to github-plan",
+    )
+    require(
+        "this skill decides what evidence is needed, not which raw `gh` command to run" in normalized_readiness,
+        "repo-readiness must separate readiness judgment from raw GitHub command choice",
+    )
+    require(
+        "use `github-plan` for planning issue indexes, project state, blocker graphs, and planning issue closure" in normalized_closeout,
+        "work-closeout must delegate planning GitHub surfaces to github-plan",
+    )
+    require(
+        "the github skills own helper-backed github writes and planning mutations" in normalized_closeout,
+        "work-closeout must separate closeout judgment from GitHub write mechanics",
+    )
+
+
+def test_launchplane_delegates_github_surfaces() -> None:
+    launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
+    normalized = " ".join(launchplane.split())
+
+    require(
+        "when launchplane work turns into github issue, pr, actions, review, comment, commit, or push work" in normalized,
+        "launchplane must identify GitHub lifecycle work as a delegated surface",
+    )
+    require(
+        "delegate that surface to `github` or `github-plan` before running commands" in normalized,
+        "launchplane must delegate GitHub command ownership to GitHub skills",
+    )
+    require(
+        "launchplane owns runtime/operator authority; the github skills own helper-backed github identity" in normalized,
+        "launchplane must separate runtime authority from GitHub identity policy",
+    )
 
 
 def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
@@ -1343,6 +1377,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
+        test_launchplane_delegates_github_surfaces,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_work_closeout_requires_issue_aware_safe_exit,
         test_infra_ops_owns_live_infra_actions,
