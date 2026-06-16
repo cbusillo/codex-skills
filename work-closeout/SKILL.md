@@ -48,6 +48,7 @@ Leave the user with a truthful closeout answer:
    `cold`, `aggressive`, or any unrecognized value are report-only unless the
    user explicitly asks for that cleanup. Never run a cleanup command whose
    effect is unclear; record the not-run reason instead.
+
 3. Inspect local state:
 
    ```bash
@@ -79,6 +80,9 @@ Leave the user with a truthful closeout answer:
 4. If GitHub state matters for closeout, use `github` for PR,
    Actions, labels, merge state, post-merge verification, GitHub
    security/quality signals, and safe branch/worktree cleanup.
+   Use `github-plan` for planning issue indexes, Project state, blocker graphs,
+   and planning issue closure. This skill owns closeout judgment and hygiene;
+   the GitHub skills own helper-backed GitHub writes and planning mutations.
    When an open PR still needs ongoing CI, review, mergeability, or
    merged/closed follow-through, transfer that loop to `babysit-pr` before
    declaring the work parked or safe to exit. For an already merged or closed PR,

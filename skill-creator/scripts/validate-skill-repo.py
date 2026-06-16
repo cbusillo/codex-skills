@@ -274,6 +274,7 @@ def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
 
     errors: list[str] = []
     skill_md = skill_dir / "SKILL.md"
+    active_skill_names = {path.name for path in active_skill_dirs()}
     for policy_index, command_policy in enumerate(command_policies):
         if not isinstance(command_policy, dict):
             continue
@@ -283,10 +284,25 @@ def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
         for preferred_index, entry in enumerate(preferred):
             if not isinstance(entry, dict):
                 continue
+            if entry.get("kind") == "skill":
+                name = entry.get("name")
+                if isinstance(name, str) and name not in active_skill_names:
+                    errors.append(
+                        f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].name points to missing skill {name}"
+                    )
+                continue
             raw = entry.get("path")
             if not isinstance(raw, str) or not raw.strip():
                 continue
-            if not (skill_dir / raw).exists():
+            candidate = (skill_dir / raw).resolve()
+            try:
+                candidate.relative_to(ROOT)
+            except ValueError:
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].path points outside skill repo {raw}"
+                )
+                continue
+            if not candidate.exists():
                 errors.append(
                     f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].path points to missing {raw}"
                 )
@@ -321,15 +337,15 @@ def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]
         preferred = command_policy.get("preferred")
         if not isinstance(preferred, list):
             continue
-        preferred_skill_paths = [
-            entry.get("path")
-            for entry in preferred
-            if isinstance(entry, dict)
-            and entry.get("kind") == "script"
-            and isinstance(entry.get("path"), str)
-            and not Path(entry["path"]).is_absolute()
-            and ".." not in Path(entry["path"]).parts
-        ]
+        preferred_skill_paths: list[str] = []
+        for entry in preferred:
+            if not isinstance(entry, dict) or entry.get("kind") != "script":
+                continue
+            raw_path = entry.get("path")
+            if not isinstance(raw_path, str):
+                continue
+            if not Path(raw_path).is_absolute() and ".." not in Path(raw_path).parts:
+                preferred_skill_paths.append(raw_path)
         if preferred_skill_paths and not any(path in command_resource_paths for path in preferred_skill_paths):
             errors.append(
                 f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}] preferred script path(s) "

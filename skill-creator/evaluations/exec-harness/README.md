@@ -1,7 +1,8 @@
 # Exec Harness Scenarios
 
-These public-safe fixtures exercise observable skill context shape with the
-Every Code exec harness and fake Responses API. They do not spend model tokens.
+These public-safe fixtures exercise observable skill context shape and selected
+fake-GitHub workflows with the Every Code exec harness and fake Responses API.
+They do not spend model tokens.
 
 Files prefixed with `local-llm-` are the exception: they use the local LM Studio
 provider embedded in each scenario's `config_toml`, spend only trusted local
@@ -23,3 +24,10 @@ and performance checks are recorded in
 The scenario assertions inspect captured provider requests under
 `expect.responses`. Keep fixtures synthetic, avoid private paths or secrets, and
 record not-run evidence when the harness is unavailable.
+
+For command-policy scenarios, assert both sides of the contract when practical:
+the provider request should contain the relevant structured
+`policy.command_policies` entries, and the captured command should use the
+helper-backed path. These scenarios are regression coverage for the skill
+catalog and routing context; they are not a substitute for Codex Lab runtime
+command-blocker enforcement.

@@ -254,6 +254,12 @@ If an operational finding changes the plan, update the owning GitHub plan issue
 or PR before treating the new path as canonical. Prefer explicit blocker,
 sub-issue, or related-issue edges over burying direction changes in chat.
 
+When Launchplane work turns into GitHub issue, PR, Actions, review, comment,
+commit, or push work, delegate that surface to `github` or `github-plan` before
+running commands. Launchplane owns runtime/operator authority; the GitHub skills
+own helper-backed GitHub identity, body handling, planning state, and PR
+lifecycle behavior.
+
 ## Situational Awareness (Context)
 
 Use the context helper to identify product mapping, deploy evidence, and

@@ -135,6 +135,14 @@ Recommended high-value scenarios for this repo:
   operations route through `github-plan` instead of raw `gh` commands.
 - GitHub execution boundary: issue/PR create, edit, close, and merge operations
   route through the `github` helper scripts.
+- GitHub command-policy ownership: `git commit`, `git push`, PR review/state,
+  Actions reruns, workflow/release mutations, and raw `gh api` write-like
+  surfaces expose the structured command policy and choose bot/helper-backed
+  paths instead of the active local account.
+- Cross-skill GitHub routing: Launchplane, readiness, closeout, or babysitting
+  tasks that need GitHub issue/PR/Actions work still surface the GitHub or
+  GitHub Plan helper path. This guards against policies disappearing merely
+  because a sibling skill is the primary task skill.
 - Helper invocation shape: PEP 723/Python helpers use `uv run`; installed shell
   helpers may be called directly when documented.
 - Readiness to closeout: "are we done?" performs readiness evidence first, then
@@ -157,9 +165,7 @@ Recommended high-value scenarios for this repo:
   },
   "gh": {
     "repo": "cbusillo/codex-skills",
-    "issues": [
-      {"number": 100, "title": "Existing plan", "state": "OPEN"}
-    ]
+    "issues": [{ "number": 100, "title": "Existing plan", "state": "OPEN" }]
   },
   "expect": {
     "returncode": 0,
