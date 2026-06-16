@@ -54,6 +54,8 @@ EXAMPLE_MARKERS = (
 )
 PYTHON_INTERPRETER_NAMES = {"python", "python3"}
 SHELL_INTERPRETER_NAMES = {"bash", "dash", "ksh", "sh", "zsh"}
+COMMAND_POLICY_PORTABLE_IDENTITY_RE = re.compile(r"\bshiny-code-bot\b", re.IGNORECASE)
+COMMAND_POLICY_TEXT_FIELDS = {"message"}
 
 
 def load_quick_validate() -> Any:
@@ -441,6 +443,42 @@ def validate_script_example_argv(
     return []
 
 
+def validate_command_policy_portability(skill_dir: Path) -> list[str]:
+    frontmatter = read_frontmatter(skill_dir / "SKILL.md")
+    policy = frontmatter.get("policy")
+    if not isinstance(policy, dict):
+        return []
+    command_policies = policy.get("command_policies")
+    if not isinstance(command_policies, list):
+        return []
+
+    errors: list[str] = []
+    skill_md = skill_dir / "SKILL.md"
+    for policy_index, command_policy in enumerate(command_policies):
+        if not isinstance(command_policy, dict):
+            continue
+        for field in COMMAND_POLICY_TEXT_FIELDS:
+            value = command_policy.get(field)
+            if isinstance(value, str) and COMMAND_POLICY_PORTABLE_IDENTITY_RE.search(value):
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].{field} "
+                    "uses installation-specific identity shiny-code-bot; use portable role language"
+                )
+        preferred = command_policy.get("preferred")
+        if not isinstance(preferred, list):
+            continue
+        for preferred_index, entry in enumerate(preferred):
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get("purpose")
+            if isinstance(value, str) and COMMAND_POLICY_PORTABLE_IDENTITY_RE.search(value):
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: policy.command_policies[{policy_index}].preferred[{preferred_index}].purpose "
+                    "uses installation-specific identity shiny-code-bot; use portable role language"
+                )
+    return errors
+
+
 def has_shell_shebang(path: Path) -> bool:
     try:
         first_line = path.read_text(errors="ignore").splitlines()[0]
@@ -616,6 +654,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors.extend(validate_markdown_links(skill_dir))
     errors.extend(validate_skill_command_policy_paths(skill_dir))
     errors.extend(validate_skill_command_policy_command_coverage(skill_dir))
+    errors.extend(validate_command_policy_portability(skill_dir))
     errors.extend(validate_command_example_invocations(skill_dir))
     errors.extend(validate_openai_yaml(skill_dir))
     errors.extend(validate_python_script_metadata(skill_dir))

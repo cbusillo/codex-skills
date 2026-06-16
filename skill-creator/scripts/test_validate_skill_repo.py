@@ -346,6 +346,38 @@ def test_pep723_helper_examples_reject_python() -> None:
         raise AssertionError(f"PEP 723 Python examples should fail: {errors}")
 
 
+def test_command_policy_portability_rejects_installation_identity() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        put_text(
+            skill_dir / "SKILL.md",
+            """
+---
+name: demo-skill
+description: Use for demo work.
+policy:
+  command_policies:
+    - id: prefer-helper
+      match:
+        argv_prefix: ["demo"]
+      action: require_preferred
+      message: Use shiny-code-bot for this installation.
+      preferred:
+        - kind: skill
+          name: github
+          purpose: Route through shiny-code-bot.
+---
+""".lstrip(),
+        )
+        errors = module.validate_command_policy_portability(skill_dir)
+    if len(errors) != 2 or not all("installation-specific identity" in error for error in errors):
+        raise AssertionError(f"installation identity should fail portability: {errors}")
+
+
 def test_pep723_metadata_rejects_invalid_toml() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
@@ -472,6 +504,7 @@ def main() -> int:
     test_shell_helper_examples_reject_python_and_uv()
     test_shell_helper_examples_allow_direct_invocation()
     test_pep723_helper_examples_reject_python()
+    test_command_policy_portability_rejects_installation_identity()
     test_pep723_metadata_rejects_invalid_toml()
     test_pep723_metadata_rejects_multiple_blocks()
     test_pep723_helper_examples_allow_uv_and_direct_invocation()

@@ -31,21 +31,41 @@ resources:
   - path: references/exec_harness.md
     kind: reference
     description: How to run Every Code exec-harness scenarios for skill behavior validation.
+  - path: references/command-policy-contract.md
+    kind: reference
+    description: Contract for portable command-policy metadata, runtime enforcement boundaries, and simulator/harness expectations.
 commands:
   - name: init-skill
     source: skill
     resource_path: scripts/init_skill.py
-    example_argv: ["uv", "run", "scripts/init_skill.py", "<skill-name>", "--path", "<output-directory>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/init_skill.py",
+        "<skill-name>",
+        "--path",
+        "<output-directory>",
+      ]
     purpose: Scaffolds a new skill directory from the maintained template.
   - name: quick-validate-skill
     source: skill
     resource_path: scripts/quick_validate.py
-    example_argv: ["uv", "run", "scripts/quick_validate.py", "<path-to-skill-folder>"]
+    example_argv:
+      ["uv", "run", "scripts/quick_validate.py", "<path-to-skill-folder>"]
     purpose: Performs focused validation for one skill folder.
   - name: generate-openai-yaml
     source: skill
     resource_path: scripts/generate_openai_yaml.py
-    example_argv: ["uv", "run", "scripts/generate_openai_yaml.py", "<path-to-skill-folder>", "--interface", "short_description=<text>"]
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/generate_openai_yaml.py",
+        "<path-to-skill-folder>",
+        "--interface",
+        "short_description=<text>",
+      ]
     purpose: Generates or refreshes UI metadata for a skill.
   - name: validate-skill-behavior
     source: skill
@@ -61,7 +81,13 @@ commands:
     source: skill
     resource_path: scripts/collect_exec_harness_performance.py
     example_argv:
-      ["uv", "run", "scripts/collect_exec_harness_performance.py", "--latest", "10"]
+      [
+        "uv",
+        "run",
+        "scripts/collect_exec_harness_performance.py",
+        "--latest",
+        "10",
+      ]
     purpose: Emits public-safe advisory performance metrics from local exec-harness artifacts.
 ---
 
@@ -107,7 +133,7 @@ Think of Codex as exploring a path: a narrow bridge with cliffs needs specific g
 
 ### Protect Validation Integrity
 
-You may use subagents during iteration to validate whether a skill works on realistic tasks or whether a suspected problem is real. This is most useful when you want an independent pass on the skill's behavior, outputs, or failure modes after a revision.  Only do this when it is possible to start new subagents.
+You may use subagents during iteration to validate whether a skill works on realistic tasks or whether a suspected problem is real. This is most useful when you want an independent pass on the skill's behavior, outputs, or failure modes after a revision. Only do this when it is possible to start new subagents.
 
 When using subagents for validation, treat that as an evaluation surface. The goal is to learn whether the skill generalizes, not whether another agent can reconstruct the answer from leaked context.
 
@@ -201,6 +227,10 @@ which skill is active, Every Code or Codex Lab must load that policy into the
 command execution layer; this repo should keep the policy catalog and behavior
 fixtures accurate enough for that integration.
 
+Use `references/command-policy-contract.md` as the source of truth for the
+frontmatter/runtime boundary, matcher precedence, path resolution, and
+exec-harness limits.
+
 Use command policies for common raw-command-to-helper cases, especially when raw
 commands are fragile around auth, multiline Markdown, quoting, retries, cleanup,
 or normalized output.
@@ -233,7 +263,8 @@ policy:
       preferred:
         - kind: script
           path: scripts/helper.py
-          example_argv: ["uv", "run", "scripts/helper.py", "subcommand", "<target>"]
+          example_argv:
+            ["uv", "run", "scripts/helper.py", "subcommand", "<target>"]
           purpose: Runs the workflow through the maintained helper.
 ```
 
