@@ -1,48 +1,55 @@
 # GitHub CLI / API Notes For `babysit-pr`
 
+The watcher routes GitHub CLI calls through
+`github/scripts/gh-with-env-token` by default. Read-only calls may fall back to
+active local `gh` with a warning when bot auth is unavailable; write-like calls
+such as Actions reruns fail closed unless active-auth fallback is explicitly
+allowed for a one-off.
+
 ## Primary commands used
 
 ### PR metadata
 
-- `gh pr view --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner`
+- `github/scripts/gh-with-env-token pr view --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner`
 
 Used to resolve PR number, URL, branch, head SHA, and closed/merged state.
 
 ### PR checks summary
 
-- `gh pr checks --json name,state,bucket,link,workflow,event,startedAt,completedAt`
+- `github/scripts/gh-with-env-token pr checks --json name,state,bucket,link,workflow,event,startedAt,completedAt`
 
 Used to compute pending/failed/passed counts and whether the current CI round is terminal.
 
 ### Workflow runs for head SHA
 
-- `gh api repos/{owner}/{repo}/actions/runs -X GET -f head_sha=<sha> -f per_page=100`
+- `github/scripts/gh-with-env-token api repos/{owner}/{repo}/actions/runs --method GET -f head_sha=<sha> -f per_page=100`
 
 Used to discover failed workflow runs and rerunnable run IDs.
 
 ### Failed log inspection
 
-- `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
-- `gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs -X GET -f per_page=100`
-- `gh api repos/{owner}/{repo}/actions/jobs/{job_id}/logs > /tmp/pr-watch-gh-job-{job_id}-logs.zip`
-- `gh run view <run-id> --log-failed`
+- `github/scripts/gh-with-env-token run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
+- `github/scripts/gh-with-env-token api repos/{owner}/{repo}/actions/runs/{run_id}/jobs --method GET -f per_page=100`
+- `github/scripts/gh-with-env-token api repos/{owner}/{repo}/actions/jobs/{job_id}/logs > /tmp/pr-watch-gh-job-{job_id}-logs.zip`
+- `github/scripts/gh-with-env-token run view <run-id> --log-failed`
 
 Used by Codex to classify branch-related vs flaky/unrelated failures. Prefer the direct job log endpoint as soon as a job has failed because `gh run view --log-failed` may not produce failed-job logs until the overall workflow run completes.
 
 ### Retry failed jobs only
 
-- `gh run rerun <run-id> --failed`
+- `github/scripts/gh-with-env-token run rerun <run-id> --failed`
 
-Reruns only failed jobs (and dependencies) for a workflow run.
+Reruns only failed jobs (and dependencies) for a workflow run. This is a
+GitHub write and must be owned by `shiny-code-bot`.
 
 ## Review-related endpoints
 
 - Issue comments on PR:
-  - `gh api repos/{owner}/{repo}/issues/<pr_number>/comments?per_page=100`
+  - `github/scripts/gh-with-env-token api repos/{owner}/{repo}/issues/<pr_number>/comments?per_page=100 --method GET`
 - Inline PR review comments:
-  - `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments?per_page=100`
+  - `github/scripts/gh-with-env-token api repos/{owner}/{repo}/pulls/<pr_number>/comments?per_page=100 --method GET`
 - Review submissions:
-  - `gh api repos/{owner}/{repo}/pulls/<pr_number>/reviews?per_page=100`
+  - `github/scripts/gh-with-env-token api repos/{owner}/{repo}/pulls/<pr_number>/reviews?per_page=100 --method GET`
 
 ## JSON fields consumed by the watcher
 

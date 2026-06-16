@@ -13,6 +13,7 @@ else
 	env_file=
 fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
+expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}
 print_auth_account=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
@@ -39,6 +40,184 @@ elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$GITHUB_TOKEN
 fi
 
+allows_active_auth_fallback() {
+	case "${GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK:-}" in
+	1 | true | TRUE | yes | YES)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+is_write_command() {
+	while [ "$#" -gt 0 ]; do
+		case "${1:-}" in
+		-R | --repo | --hostname)
+			shift 2 || return 1
+			;;
+		--repo=* | --hostname=*)
+			shift
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			shift
+			;;
+		*)
+			break
+			;;
+		esac
+	done
+
+	case "${1:-}" in
+	api)
+		shift
+		while [ "$#" -gt 0 ]; do
+			case "$1" in
+			--method | -X)
+				case "${2:-}" in
+				GET | get | HEAD | head)
+					return 1
+					;;
+				*)
+					return 0
+					;;
+				esac
+				;;
+			--method=* | -X*)
+				method=${1#*=}
+				if [ "$method" = "$1" ]; then
+					method=${1#-X}
+				fi
+				case "$method" in
+				GET | get | HEAD | head)
+					return 1
+					;;
+				*)
+					return 0
+					;;
+				esac
+				;;
+			-f | -F | --field | --raw-field | --input)
+				return 0
+				;;
+			--field=* | --raw-field=* | --input=*)
+				return 0
+				;;
+			esac
+			shift
+		done
+		return 1
+		;;
+	issue)
+		case "${2:-}" in
+		create | edit | close | comment | delete | develop | transfer | pin | unpin | lock | unlock | reopen)
+			return 0
+			;;
+		esac
+		;;
+	pr)
+		case "${2:-}" in
+		assign | close | comment | convert-to-draft | create | edit | label | lock | merge | ready | reopen | request-review | review | unlock | update-branch)
+			return 0
+			;;
+		esac
+		;;
+	run)
+		case "${2:-}" in
+		approve | cancel | delete | rerun)
+			return 0
+			;;
+		esac
+		;;
+	workflow)
+		case "${2:-}" in
+		disable | enable | run)
+			return 0
+			;;
+		esac
+		;;
+	release)
+		case "${2:-}" in
+		create | upload | edit | delete | delete-asset)
+			return 0
+			;;
+		esac
+		;;
+	repo)
+		case "${2:-}" in
+		create | edit | delete | archive | unarchive | fork | deploy-key | autolink | sync)
+			return 0
+			;;
+		esac
+		;;
+	project)
+		case "${2:-}" in
+		create | edit | delete | close | reopen | item-add | item-archive | item-create | item-delete | item-edit)
+			return 0
+			;;
+		esac
+		;;
+	label)
+		case "${2:-}" in
+		create | edit | delete | clone)
+			return 0
+			;;
+		esac
+		;;
+	secret | variable)
+		case "${2:-}" in
+		set | delete)
+			return 0
+			;;
+		esac
+		;;
+	gist)
+		case "${2:-}" in
+		create | edit | delete)
+			return 0
+			;;
+		esac
+		;;
+	*)
+		;;
+	esac
+	return 1
+}
+
+current_login() {
+	"$gh_command" api user --jq .login 2>/dev/null || true
+}
+
+verify_bot_login_for_write() {
+	if ! is_write_command "$@"; then
+		return 0
+	fi
+	login=$(current_login)
+	if [ "$login" = "$expected_login" ]; then
+		return 0
+	fi
+	echo "error: GitHub write would run as '${login:-unknown}', expected '$expected_login'" >&2
+	echo "hint: configure CODEX_GITHUB_TOKEN for $expected_login before writing to GitHub" >&2
+	return 1
+}
+
+require_bot_for_write() {
+	reason=$1
+	shift
+	if ! is_write_command "$@" || allows_active_auth_fallback; then
+		return 1
+	fi
+	cat "$stderr_file" >&2 || true
+	echo "error: $reason; refusing to run GitHub write with active local gh auth" >&2
+	echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot, or set GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 for an explicitly approved one-off" >&2
+	return 0
+}
+
 is_rate_limited() {
 	grep -Eiq 'rate limit|rate_limit|API rate limit|secondary rate' "$1"
 }
@@ -48,6 +227,9 @@ is_auth_failed() {
 }
 
 retry_with_active_auth() {
+	if require_bot_for_write "automation gh token failed" "$@"; then
+		return 1
+	fi
 	cat "$stderr_file" >&2
 	echo "warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
@@ -63,6 +245,9 @@ print_account() {
 }
 
 if [ -z "${GH_TOKEN:-}" ]; then
+	if require_bot_for_write "no automation gh token found" "$@"; then
+		exit 1
+	fi
 	echo "warning: no automation gh token found; using active gh auth; GitHub writes may appear as the active account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		echo "gh auth status (active gh auth):" >&2
@@ -77,6 +262,8 @@ export GH_TOKEN
 if [ "$print_auth_account" -eq 1 ]; then
 	print_account "automation token"
 fi
+
+verify_bot_login_for_write "$@"
 
 status=0
 "$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?

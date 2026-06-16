@@ -16,6 +16,10 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
+GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
+
 FAILED_RUN_CONCLUSIONS = {
     "failure",
     "timed_out",
@@ -109,7 +113,7 @@ def _format_gh_error(cmd, err):
 
 
 def gh_text(args, repo=None):
-    cmd = ["gh"]
+    cmd = [GH_COMMAND]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's
     # API calls use explicit endpoints (e.g. repos/{owner}/{repo}/...), so the
     # repo flag is unnecessary there.

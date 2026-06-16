@@ -47,6 +47,34 @@ def sample_checks(**overrides):
     return checks
 
 
+def test_gh_text_uses_wrapper_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+
+    def fake_run(cmd, check, capture_output, text):
+        calls.append(cmd)
+
+        class Result:
+            stdout = "ok\n"
+
+        return Result()
+
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", fake_run)
+
+    assert gh_pr_watch.gh_text(["run", "view", "99"], repo="openai/codex") == "ok\n"
+
+    assert calls == [
+        [
+            str(gh_pr_watch.DEFAULT_GH),
+            "-R",
+            "openai/codex",
+            "run",
+            "view",
+            "99",
+        ]
+    ]
+
+
 def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     call_order = []
     pr = sample_pr()

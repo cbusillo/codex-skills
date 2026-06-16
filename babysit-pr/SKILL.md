@@ -102,17 +102,27 @@ Accept any of the following:
 
 ## Core Workflow
 
-1. When the user asks to "monitor"/"watch"/"babysit" a PR, start with the watcher's continuous mode (`--watch`) unless you are intentionally doing a one-shot diagnostic snapshot.
+1. When the user asks to "monitor"/"watch"/"babysit" a PR, start with the
+   watcher's continuous mode (`--watch`) unless you are intentionally doing a
+   one-shot diagnostic snapshot.
 2. Run the watcher script to snapshot PR/review/CI state (or consume each streamed snapshot from `--watch`).
 3. Inspect the `actions` list in the JSON response.
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
-5. If the failure is likely caused by the current branch, patch code locally, commit, and push. Do not patch random flaky tests, CI infrastructure, dependency outages, runner issues, or other failures that are unrelated to the branch.
+5. If the failure is likely caused by the current branch, patch code locally,
+   commit with `github/scripts/git-commit-as-bot`, and push with
+   `github/scripts/git-push-as-bot`. Do not patch random flaky tests, CI
+   infrastructure, dependency outages, runner issues, or other failures that are
+   unrelated to the branch.
 6. If `process_review_comment` is present, inspect surfaced review items and decide whether to address them.
-7. If a review item is actionable and correct, patch code locally, commit, push, and then mark the associated review thread/comment as resolved once the fix is on GitHub.
+7. If a review item is actionable and correct, patch code locally, commit with
+   the bot commit helper, push with the bot push helper, and then mark the
+   associated review thread/comment as resolved once the fix is on GitHub.
 8. Do not post replies to human-authored review comments/threads unless the user explicitly confirms the exact response. If a human review item is non-actionable, already addressed, or not valid, surface the item and recommended response to the user instead of replying on GitHub.
 9. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
 10. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
-11. On every loop, look for newly surfaced review feedback before acting on CI failures or mergeability state, then verify mergeability / merge-conflict status (for example via `gh pr view`) alongside CI.
+11. On every loop, look for newly surfaced review feedback before acting on CI
+    failures or mergeability state, then verify mergeability / merge-conflict
+    status alongside CI.
 12. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
 13. If you had been using `--watch` before pausing to patch/commit/push, relaunch `--watch` yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
 14. Repeat polling until `stop_pr_closed` appears or a user-help-required blocker is reached. A green + review-clean + mergeable PR is a progress milestone, not a reason to stop the watcher while the PR is still open.
@@ -146,12 +156,15 @@ uv run scripts/gh_pr_watch.py --pr <number-or-url> --once
 
 ## CI Failure Classification
 
-Use `gh` commands to inspect failed runs before deciding to rerun.
+Use `github/scripts/gh-with-env-token` commands to inspect failed runs before
+deciding to rerun. The watcher itself routes through that wrapper by default,
+including `--retry-failed-now` reruns.
 
-- `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
-- `gh api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100`
-- `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/pr-watch-gh-job-<job-id>-logs.zip`
-- `gh run view <run-id> --log-failed` as a fallback after the overall workflow run is complete
+- `github/scripts/gh-with-env-token run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
+- `github/scripts/gh-with-env-token api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100`
+- `github/scripts/gh-with-env-token api repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/pr-watch-gh-job-<job-id>-logs.zip`
+- `github/scripts/gh-with-env-token run view <run-id> --log-failed` as a
+  fallback after the overall workflow run is complete.
 
 `gh run view --log-failed` is workflow-run scoped and may not expose failed-job logs until the overall run finishes. For faster diagnosis, poll the run's jobs first and, as soon as a specific job has failed, fetch that job's logs directly from the Actions job logs endpoint. The watcher includes a `failed_jobs` list with each failed job's `job_id` and `logs_endpoint` when GitHub exposes one.
 
@@ -187,8 +200,9 @@ when their snapshot SHA matches the current PR head.
 When you agree with a comment and it is actionable:
 
 1. Patch code locally.
-2. Commit with a normal repo-appropriate fix subject.
-3. Push to the PR head branch.
+2. Commit with `github/scripts/git-commit-as-bot` and a normal repo-appropriate
+   fix subject.
+3. Push to the PR head branch with `github/scripts/git-push-as-bot`.
 4. After the push succeeds, mark the associated GitHub review thread/comment as resolved.
 5. Resume watching on the new SHA immediately (do not stop after reporting the push).
 6. If monitoring was running in `--watch` mode, restart `--watch` immediately after the push in the same turn; do not wait for the user to ask again.
@@ -206,8 +220,10 @@ If a code review comment/thread is already marked as resolved in GitHub, treat i
   branch and use the `github` workflow to update or replace the PR.
 - Avoid destructive git commands.
 - Do not switch branches unless necessary to recover context.
-- Before editing, check for unrelated uncommitted changes. If present, stop and ask the user.
-- After each successful fix, commit and `git push`, then re-run the watcher.
+- Before editing, check for unrelated uncommitted changes. If present, stop and
+  ask the user.
+- After each successful fix, commit with `github/scripts/git-commit-as-bot` and
+  push with `github/scripts/git-push-as-bot`, then re-run the watcher.
 - If you interrupted a live `--watch` session to make the fix, restart `--watch` immediately after the push in the same turn.
 - Do not run multiple concurrent `--watch` processes for the same PR/state file; keep one watcher session active and reuse it until it stops or you intentionally restart it.
 - A push is not a terminal outcome; continue the monitoring loop unless a strict stop condition is met.

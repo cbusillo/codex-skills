@@ -1,0 +1,80 @@
+#!/bin/sh
+set -eu
+
+git_bin=${GIT_PUSH_AS_BOT_GIT:-git}
+
+if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
+	env_file=$CODEX_SKILLS_ENV_FILE
+elif [ -n "${CODE_HOME:-}" ]; then
+	env_file=$CODE_HOME/local.env
+elif [ -n "${CODEX_HOME:-}" ]; then
+	env_file=$CODEX_HOME/local.env
+elif [ -n "${HOME:-}" ]; then
+	env_file=$HOME/.code/local.env
+else
+	env_file=
+fi
+
+if [ -f "$env_file" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$env_file"
+	set +a
+fi
+
+if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$CODEX_GITHUB_TOKEN
+elif [ -n "${GH_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$GH_TOKEN
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+	GIT_PUSH_AS_BOT_TOKEN=$GITHUB_TOKEN
+else
+	echo "error: no bot GitHub token found; refusing to push as active local git user" >&2
+	echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot" >&2
+	exit 1
+fi
+
+origin_url=$("$git_bin" remote get-url origin)
+case "$origin_url" in
+git@github.com:*)
+	repo=${origin_url#git@github.com:}
+	;;
+ssh://git@github.com/*)
+	repo=${origin_url#ssh://git@github.com/}
+	;;
+https://github.com/*)
+	repo=${origin_url#https://github.com/}
+	;;
+https://*@github.com/*)
+	repo=${origin_url#https://*@github.com/}
+	;;
+*)
+	echo "error: origin remote is not a github.com URL supported by git-push-as-bot: $origin_url" >&2
+	exit 1
+	;;
+esac
+
+repo=${repo%.git}
+https_url="https://github.com/$repo.git"
+askpass=$(mktemp "${TMPDIR:-/tmp}/git-push-as-bot.XXXXXX")
+
+cleanup() {
+	"$git_bin" remote set-url origin "$origin_url" >/dev/null 2>&1 || true
+	rm -f "$askpass"
+}
+trap cleanup EXIT INT HUP TERM
+
+cat >"$askpass" <<'EOF'
+#!/bin/sh
+case "$1" in
+*Username*) printf '%s\n' x-access-token ;;
+*) printf '%s\n' "$GIT_PUSH_AS_BOT_TOKEN" ;;
+esac
+EOF
+chmod 700 "$askpass"
+
+"$git_bin" remote set-url origin "$https_url"
+GIT_ASKPASS=$askpass \
+	GIT_TERMINAL_PROMPT=0 \
+	GIT_PUSH_AS_BOT_TOKEN=$GIT_PUSH_AS_BOT_TOKEN \
+	"$git_bin" push "$@"

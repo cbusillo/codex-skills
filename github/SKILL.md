@@ -15,7 +15,13 @@ resources:
     description: Safe stdin-backed comment helper for issues and pull requests.
   - path: scripts/gh-with-env-token
     kind: script
-    description: GitHub CLI wrapper that selects configured automation auth before falling back to active local auth.
+    description: GitHub CLI wrapper that selects configured automation auth and refuses write fallback to active local auth unless explicitly allowed.
+  - path: scripts/git-commit-as-bot
+    kind: script
+    description: Commit with shiny-code-bot author and committer identity.
+  - path: scripts/git-push-as-bot
+    kind: script
+    description: Push GitHub branches with the configured shiny-code-bot token.
   - path: scripts/github-ci-diagnose.py
     kind: script
     description: Diagnose failing PR checks and summarize relevant CI log excerpts.
@@ -109,6 +115,26 @@ commands:
         "completed",
       ]
     purpose: Closes GitHub issues by reading an optional close comment from stdin; pass the comment with shell redirection or a quoted heredoc.
+  - name: github-comment
+    source: skill
+    resource_path: scripts/gh-comment
+    example_argv: ["scripts/gh-comment", "pr", "<pr>"]
+    purpose: Posts issue or PR comments through configured automation auth using stdin-backed Markdown.
+  - name: github-gh-with-env-token
+    source: skill
+    resource_path: scripts/gh-with-env-token
+    example_argv: ["scripts/gh-with-env-token", "api", "user", "--jq", ".login"]
+    purpose: Routes unsupported gh commands through configured automation auth and fails closed for write-like commands if bot auth is unavailable.
+  - name: github-git-commit-as-bot
+    source: skill
+    resource_path: scripts/git-commit-as-bot
+    example_argv: ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+    purpose: Commits with shiny-code-bot as author and committer while preserving normal git commit flags.
+  - name: github-git-push-as-bot
+    source: skill
+    resource_path: scripts/git-push-as-bot
+    example_argv: ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+    purpose: Pushes GitHub branches using the configured shiny-code-bot token while restoring the normal remote URL afterward.
   - name: github-ci-diagnose
     source: skill
     resource_path: scripts/github-ci-diagnose.py
@@ -179,6 +205,57 @@ policy:
           path: scripts/gh-comment
           example_argv: ["scripts/gh-comment", "pr", "<pr>"]
           purpose: Reads comment Markdown from stdin and posts it safely.
+    - id: prefer-gh-pr-review-wrapper
+      match:
+        argv_prefix: ["gh", "pr", "review"]
+      action: require_preferred
+      message: Raw `gh pr review` uses the active local GitHub account. Use the automation-token wrapper so review submissions are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv:
+            ["scripts/gh-with-env-token", "pr", "review", "<pr>", "--body-file", "<file>"]
+          purpose: Posts PR reviews through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-gh-pr-state-wrapper
+      match:
+        argv_prefix: ["gh", "pr", "close"]
+      action: require_preferred
+      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "pr", "close", "<pr>"]
+          purpose: Mutates PR state through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-gh-pr-reopen-wrapper
+      match:
+        argv_prefix: ["gh", "pr", "reopen"]
+      action: require_preferred
+      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "pr", "reopen", "<pr>"]
+          purpose: Reopens PRs through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-gh-pr-ready-wrapper
+      match:
+        argv_prefix: ["gh", "pr", "ready"]
+      action: require_preferred
+      message: Raw PR readiness mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "pr", "ready", "<pr>"]
+          purpose: Marks PRs ready through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-gh-pr-update-branch-wrapper
+      match:
+        argv_prefix: ["gh", "pr", "update-branch"]
+      action: require_preferred
+      message: Raw PR branch updates use the active local GitHub account. Use the automation-token wrapper so branch updates are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "pr", "update-branch", "<pr>"]
+          purpose: Updates PR branches through the configured automation token and fails closed for writes if bot auth is unavailable.
     - id: prefer-gh-pr-merge-helper
       match:
         argv_prefix: ["gh", "pr", "merge"]
@@ -210,6 +287,38 @@ policy:
         - kind: skill
           name: babysit-pr
           purpose: Watches an open PR until CI/review/mergeability follow-through reaches a terminal or user-help state.
+    - id: prefer-gh-run-rerun-wrapper
+      match:
+        argv_prefix: ["gh", "run", "rerun"]
+      action: require_preferred
+      message: Raw `gh run rerun` uses the active local GitHub account. Use `babysit-pr` or the automation-token wrapper so Actions reruns are owned by shiny-code-bot.
+      preferred:
+        - kind: skill
+          name: babysit-pr
+          purpose: Reruns failed PR jobs through the watcher when retry policy recommends it.
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "run", "rerun", "<run-id>", "--failed"]
+          purpose: Reruns Actions through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-gh-api-wrapper
+      match:
+        shell_regex: "\\bgh\\s+api\\s+(?!graphql\\b)"
+      action: require_preferred
+      message: Raw `gh api` uses the active local GitHub account. Route API calls through `scripts/gh-with-env-token`; write-like API calls must be owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv:
+            [
+              "scripts/gh-with-env-token",
+              "api",
+              "repos/OWNER/REPO/actions/runs",
+              "--method",
+              "GET",
+              "-f",
+              "per_page=100",
+            ]
+          purpose: Runs GitHub API calls through configured automation auth; read calls may fall back with warning, write calls fail closed by default.
     - id: prefer-gh-issue-create-helper
       match:
         argv_prefix: ["gh", "issue", "create"]
@@ -227,6 +336,16 @@ policy:
               "OWNER/REPO",
             ]
           purpose: Creates issues by reading Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
+    - id: prefer-gh-issue-comment-helper
+      match:
+        argv_prefix: ["gh", "issue", "comment"]
+      action: require_preferred
+      message: Raw `gh issue comment` uses the active local GitHub account and is fragile for multiline Markdown. Use the safe comment helper.
+      preferred:
+        - kind: script
+          path: scripts/gh-comment
+          example_argv: ["scripts/gh-comment", "issue", "<issue>"]
+          purpose: Reads comment Markdown from stdin and posts through the configured automation token.
     - id: prefer-gh-issue-edit-helper
       match:
         argv_prefix: ["gh", "issue", "edit"]
@@ -263,6 +382,46 @@ policy:
               "completed",
             ]
           purpose: Closes ordinary non-plan issues by reading an optional close comment from stdin; use `< comment.md` or a quoted heredoc for the comment.
+    - id: prefer-gh-release-wrapper
+      match:
+        argv_prefix: ["gh", "release"]
+      action: require_preferred
+      message: Raw `gh release` may create or mutate GitHub state as the active local account. Use the automation-token wrapper for release reads and writes.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "release", "view", "<tag>"]
+          purpose: Routes release operations through configured automation auth; release writes fail closed if bot auth is unavailable.
+    - id: prefer-gh-workflow-wrapper
+      match:
+        argv_prefix: ["gh", "workflow"]
+      action: require_preferred
+      message: Raw `gh workflow` may trigger or mutate workflows as the active local account. Use the automation-token wrapper.
+      preferred:
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv: ["scripts/gh-with-env-token", "workflow", "run", "<workflow>"]
+          purpose: Routes workflow operations through configured automation auth; workflow writes fail closed if bot auth is unavailable.
+    - id: prefer-bot-commit-helper
+      match:
+        argv_prefix: ["git", "commit"]
+      action: require_preferred
+      message: Raw `git commit` uses the local human Git identity. Use the bot commit helper so agent-authored commits are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/git-commit-as-bot
+          example_argv: ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+          purpose: Commits with shiny-code-bot as author and committer while preserving normal git commit flags.
+    - id: prefer-bot-push-helper
+      match:
+        argv_prefix: ["git", "push"]
+      action: require_preferred
+      message: Raw `git push` uses the local human Git credential or SSH key. Use the bot push helper so push events and resulting Actions runs are owned by shiny-code-bot.
+      preferred:
+        - kind: script
+          path: scripts/git-push-as-bot
+          example_argv: ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+          purpose: Pushes to GitHub using the configured shiny-code-bot token while restoring the normal remote URL afterward.
 ---
 
 # GitHub Expert
@@ -300,7 +459,7 @@ current behavior, configuration, or operational policy.
 
 Use PRs for all non-trivial code changes.
 
-Use the bundled `gh-*` and `github-*` helper scripts first for GitHub work. The
+Use the bundled `gh-*`, `git-*`, and `github-*` helper scripts first for GitHub work. The
 machine-readable `policy.command_policies` frontmatter owns the common raw `gh`
 write/check-to-helper mapping; this prose keeps the judgment around branch
 discipline, merge method, formatting, verification, and exceptions. Reach for raw
@@ -311,6 +470,10 @@ Helper-first ritual for PR work:
 
 - Use `scripts/gh-pr.py view/checks/create/edit/comment/merge` for PR reads,
   writes, check snapshots, and approved merges.
+- Use `scripts/git-commit-as-bot` for commits made by Code or spawned agents so
+  the commit author and committer are `shiny-code-bot`.
+- Use `scripts/git-push-as-bot` for pushes made by Code or spawned agents so
+  GitHub push events and Actions runs are attributed to `shiny-code-bot`.
 - Use `github-ci-diagnose.py` for CI failure diagnosis, and switch to
   `babysit-pr` when the task becomes repeated PR CI/review/mergeability
   follow-through.
@@ -413,12 +576,22 @@ invocation rules.
   steps. Avoid absolute local paths; use repo-relative paths or GitHub links.
   Mention related issues or PRs when useful, and avoid self-references to the PR
   being edited.
+- **Bot Ownership**: Work performed by Code or spawned agents should be owned by
+  `shiny-code-bot` in GitHub. Use `scripts/git-commit-as-bot` for commits,
+  `scripts/git-push-as-bot` for pushes, helper-backed PR/issue/comment/merge
+  flows for GitHub writes, and `scripts/gh-with-env-token` for unsupported raw
+  `gh` surfaces such as API, review, workflow, release, and Actions commands. Do
+  not let write actions fall back to the active human `gh` account unless the
+  user explicitly approves that one-off and you set
+  `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command.
 - **Authentication**: The helpers own token selection, fallback behavior,
-  consistent warnings, and parseable output. If no automation token is
-  configured, `scripts/gh-with-env-token` uses the active local `gh` account and
-  warns on stderr. Use `scripts/gh-with-env-token --print-auth-account ...` when
-  the acting account should be visible; it writes the account receipt to stderr
-  so JSON stdout remains parseable.
+  consistent warnings, and parseable output. `scripts/gh-with-env-token` loads
+  automation auth and fails closed for write-like GitHub commands when bot auth
+  is unavailable or rejected. Read-only commands may still fall back to active
+  local `gh` with a warning. Use
+  `scripts/gh-with-env-token --print-auth-account ...` when the acting account
+  should be visible; it writes the account receipt to stderr so JSON stdout
+  remains parseable.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 - **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix
