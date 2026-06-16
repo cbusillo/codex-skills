@@ -61,6 +61,12 @@ body handling, centralized auth and retry behavior, and one maintained place to
 improve workflows. For raw PR, run, or review commands that do not yet have a
 dedicated helper, route through `gh-with-env-token`.
 
+Agent-authored commits and pushes should use `github/scripts/git-commit-as-bot`
+and `github/scripts/git-push-as-bot` so GitHub attribution remains
+`shiny-code-bot`. Write-like `gh-with-env-token` commands verify the
+authenticated login before running and fail closed instead of silently using the
+active human account.
+
 Raw `gh pr create`, `gh pr edit`, and `gh pr comment` author writes as the
 active local `gh` account. Normal PR write flows should use the PR helper so the
 configured automation token is used first:

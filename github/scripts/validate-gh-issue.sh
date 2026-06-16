@@ -37,6 +37,12 @@ set -euo pipefail
 if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
 	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
 	printf 'github.com\n  ✓ Logged in to github.com account code-bot (%s)\n' "${GH_TOKEN:-}" >&2
+elif [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'shiny-code-bot\n'
+	else
+		printf 'cbusillo\n'
+	fi
 elif [[ "${1:-}" == "rate-limited-command" ]]; then
 	if [[ -n "${GH_TOKEN:-}" ]]; then
 		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
@@ -55,6 +61,24 @@ elif [[ "${1:-}" == "active-command" ]]; then
 		printf 'expected active auth without token env vars\n' >&2
 		exit 1
 	fi
+	printf 'active-success\n'
+elif [[ "${1:-}" == "pr" && "${2:-}" == "comment" ]]; then
+	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'bot:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
+		exit 1
+	fi
+	printf 'active:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+	printf 'active-success\n'
+elif [[ "${1:-}" == "-R" && "${3:-}" == "run" && "${4:-}" == "rerun" ]]; then
+	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'bot:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
+		exit 1
+	fi
+	printf 'active:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 	printf 'active-success\n'
 elif [[ "${1:-}" == "issue" ]]; then
 	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
@@ -141,6 +165,45 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 
 grep -qx 'codex-token' "$env_log"
 
+cat >"$tmpdir/record-git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+if [[ "$1" == "commit" ]]; then
+	printf 'author=%s <%s> committer=%s <%s>\n' \
+		"${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
+		"${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" \
+		>>"$GH_ISSUE_ENV_LOG"
+elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
+	printf 'git@github.com:owner/repo.git\n'
+elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
+	printf 'remote=%s\n' "$4" >>"$GH_ISSUE_ENV_LOG"
+elif [[ "$1" == "push" ]]; then
+	printf 'askpass=%s prompt=%s token=%s\n' \
+		"${GIT_ASKPASS:-}" "${GIT_TERMINAL_PROMPT:-}" \
+		"${GIT_PUSH_AS_BOT_TOKEN:-}" >>"$GH_ISSUE_ENV_LOG"
+fi
+EOF
+chmod +x "$tmpdir/record-git"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-commit-as-bot" -m "bot commit" >/dev/null
+
+grep -q 'author=shiny-code-bot <chris@shinycomputers.com> committer=shiny-code-bot <chris@shinycomputers.com>' "$env_log"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" \
+	GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
+
+grep -q '^remote=https://github.com/owner/repo.git$' "$env_log"
+grep -q '^askpass=.* prompt=0 token=codex-token$' "$env_log"
+grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
+
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_TOKEN=exhausted-token CODEX_GITHUB_TOKEN=codex-token \
@@ -162,6 +225,44 @@ grep -q 'warning: automation gh token failed; retrying with active gh auth; GitH
 grep -q 'gh auth status (automation token):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" -R owner/repo run rerun 123 --failed \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: write commands must not fall back to active gh auth by default" >&2
+	exit 1
+fi
+
+grep -q 'refusing to run GitHub write with active local gh auth' "$stderr_log"
+if grep -q '^active:-R owner/repo run rerun' "$log"; then
+	echo "error: run rerun should not fall back to active gh auth" >&2
+	exit 1
+fi
+
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" pr comment 1 --body-file body.md \
+	>"$stdout_log" 2>"$stderr_log"
+
+grep -q 'retrying with active gh auth' "$stderr_log"
+grep -qx 'active-success' "$stdout_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" api repos/owner/repo/issues -f title=test \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: api writes must not fall back to active gh auth without a bot token" >&2
+	exit 1
+fi
+
+grep -q 'no automation gh token found; refusing to run GitHub write with active local gh auth' "$stderr_log"
+
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
@@ -180,6 +281,7 @@ grep -q 'warning: no automation gh token found; using active gh auth; GitHub wri
 grep -q 'gh auth status (active gh auth):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
+: >"$log"
 if PATH="$tmpdir:$PATH" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_GH="$tmpdir/rate-limited-gh" \
 	"$repo_root/github/scripts/gh-issue" create "Rate limited" --repo owner/repo >"$stdout_log" 2>"$stderr_log" <<'EOF'; then
@@ -201,6 +303,7 @@ cp "$repo_root/github/scripts/gh-with-env-token" "$tmpdir/github/scripts/gh-with
 : >"$log"
 PATH="$tmpdir:$PATH" GH_ISSUE_TEST_LOG="$log" GH_TOKEN=bot-token \
 	GH_ISSUE_ENV_LOG="$env_log" GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
 	"$tmpdir/github/scripts/gh-issue" create "Rate limited" --repo owner/repo >"$stdout_log" 2>"$stderr_log" <<'EOF'
 ## Body
 EOF
@@ -224,10 +327,12 @@ EOF
 chmod +x "$tmpdir/record-edit-gh"
 
 : >"$log"
+# shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Updated body with `literal markdown`.\n' | GH_ISSUE_GH="$tmpdir/record-edit-gh" GH_ISSUE_TEST_LOG="$log" \
 	"$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
 	>"$stdout_log" 2>"$stderr_log"
 
+# shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Updated body with `literal markdown`.\n' >"$tmpdir/expected-edit-body"
 cmp "$tmpdir/expected-edit-body" "$log"
 grep -qx 'edited' "$stdout_log"

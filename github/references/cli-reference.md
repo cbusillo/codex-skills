@@ -159,11 +159,18 @@ special local cases where a different `gh` executable should be used.
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
 `$CODEX_HOME/local.env` and then `~/.code/local.env`, then prefers
-`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. If no
-automation token is configured, it warns and uses the active local `gh` account.
-If the automation token is invalid or rate-limited, it retries with the active
-local `gh` account. Set `CODEX_SKILLS_ENV_FILE` only in tests or special local
-cases where a different env file should be used.
+`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. Read-only
+commands may fall back to active local `gh` with a warning when automation auth
+is unavailable. Write-like commands fail closed unless the authenticated login
+matches `shiny-code-bot`; set
+`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
+one-off human-owned write. Set `CODEX_SKILLS_ENV_FILE` only in tests or special
+local cases where a different env file should be used.
+
+For commits and pushes performed by Code or spawned agents, use
+`scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,
+committer, push events, and resulting Actions runs stay owned by
+`shiny-code-bot`.
 
 Planning helpers are bot-first by default. If the bot token hits a GraphQL/API
 rate limit, helpers may retry with the active `gh` account and report the actor
