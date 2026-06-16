@@ -18,10 +18,10 @@ resources:
     description: GitHub CLI wrapper that selects configured automation auth and refuses write fallback to active local auth unless explicitly allowed.
   - path: scripts/git-commit-as-bot
     kind: script
-    description: Commit with shiny-code-bot author and committer identity.
+    description: Commit with the configured automation author and committer identity.
   - path: scripts/git-push-as-bot
     kind: script
-    description: Push GitHub branches with the configured shiny-code-bot token.
+    description: Push GitHub branches with the configured automation token.
   - path: scripts/github-ci-diagnose.py
     kind: script
     description: Diagnose failing PR checks and summarize relevant CI log excerpts.
@@ -129,12 +129,12 @@ commands:
     source: skill
     resource_path: scripts/git-commit-as-bot
     example_argv: ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
-    purpose: Commits with shiny-code-bot as author and committer while preserving normal git commit flags.
+    purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
   - name: github-git-push-as-bot
     source: skill
     resource_path: scripts/git-push-as-bot
     example_argv: ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
-    purpose: Pushes GitHub branches using the configured shiny-code-bot token while restoring the normal remote URL afterward.
+    purpose: Pushes GitHub branches using the configured automation token while restoring the normal remote URL afterward.
   - name: github-ci-diagnose
     source: skill
     resource_path: scripts/github-ci-diagnose.py
@@ -209,18 +209,25 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "review"]
       action: require_preferred
-      message: Raw `gh pr review` uses the active local GitHub account. Use the automation-token wrapper so review submissions are owned by shiny-code-bot.
+      message: Raw `gh pr review` uses the active local GitHub account. Use the automation-token wrapper so review submissions are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
           example_argv:
-            ["scripts/gh-with-env-token", "pr", "review", "<pr>", "--body-file", "<file>"]
+            [
+              "scripts/gh-with-env-token",
+              "pr",
+              "review",
+              "<pr>",
+              "--body-file",
+              "<file>",
+            ]
           purpose: Posts PR reviews through the configured automation token and fails closed for writes if bot auth is unavailable.
     - id: prefer-gh-pr-state-wrapper
       match:
         argv_prefix: ["gh", "pr", "close"]
       action: require_preferred
-      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
@@ -230,7 +237,7 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "reopen"]
       action: require_preferred
-      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      message: Raw PR state mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
@@ -240,7 +247,7 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "ready"]
       action: require_preferred
-      message: Raw PR readiness mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by shiny-code-bot.
+      message: Raw PR readiness mutations use the active local GitHub account. Use the automation-token wrapper so PR state changes are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
@@ -250,11 +257,12 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "update-branch"]
       action: require_preferred
-      message: Raw PR branch updates use the active local GitHub account. Use the automation-token wrapper so branch updates are owned by shiny-code-bot.
+      message: Raw PR branch updates use the active local GitHub account. Use the automation-token wrapper so branch updates are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
-          example_argv: ["scripts/gh-with-env-token", "pr", "update-branch", "<pr>"]
+          example_argv:
+            ["scripts/gh-with-env-token", "pr", "update-branch", "<pr>"]
           purpose: Updates PR branches through the configured automation token and fails closed for writes if bot auth is unavailable.
     - id: prefer-gh-pr-merge-helper
       match:
@@ -291,20 +299,27 @@ policy:
       match:
         argv_prefix: ["gh", "run", "rerun"]
       action: require_preferred
-      message: Raw `gh run rerun` uses the active local GitHub account. Use `babysit-pr` or the automation-token wrapper so Actions reruns are owned by shiny-code-bot.
+      message: Raw `gh run rerun` uses the active local GitHub account. Use `babysit-pr` or the automation-token wrapper so Actions reruns are owned by the configured automation identity.
       preferred:
         - kind: skill
           name: babysit-pr
           purpose: Reruns failed PR jobs through the watcher when retry policy recommends it.
         - kind: script
           path: scripts/gh-with-env-token
-          example_argv: ["scripts/gh-with-env-token", "run", "rerun", "<run-id>", "--failed"]
+          example_argv:
+            [
+              "scripts/gh-with-env-token",
+              "run",
+              "rerun",
+              "<run-id>",
+              "--failed",
+            ]
           purpose: Reruns Actions through the configured automation token and fails closed for writes if bot auth is unavailable.
     - id: prefer-gh-api-wrapper
       match:
         shell_regex: "\\bgh\\s+api\\s+(?!graphql\\b)"
       action: require_preferred
-      message: Raw `gh api` uses the active local GitHub account. Route API calls through `scripts/gh-with-env-token`; write-like API calls must be owned by shiny-code-bot.
+      message: Raw `gh api` uses the active local GitHub account. Route API calls through `scripts/gh-with-env-token`; write-like API calls must be owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
@@ -390,7 +405,8 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
-          example_argv: ["scripts/gh-with-env-token", "release", "view", "<tag>"]
+          example_argv:
+            ["scripts/gh-with-env-token", "release", "view", "<tag>"]
           purpose: Routes release operations through configured automation auth; release writes fail closed if bot auth is unavailable.
     - id: prefer-gh-workflow-wrapper
       match:
@@ -400,28 +416,31 @@ policy:
       preferred:
         - kind: script
           path: scripts/gh-with-env-token
-          example_argv: ["scripts/gh-with-env-token", "workflow", "run", "<workflow>"]
+          example_argv:
+            ["scripts/gh-with-env-token", "workflow", "run", "<workflow>"]
           purpose: Routes workflow operations through configured automation auth; workflow writes fail closed if bot auth is unavailable.
     - id: prefer-bot-commit-helper
       match:
         argv_prefix: ["git", "commit"]
       action: require_preferred
-      message: Raw `git commit` uses the local human Git identity. Use the bot commit helper so agent-authored commits are owned by shiny-code-bot.
+      message: Raw `git commit` uses the local human Git identity. Use the bot commit helper so agent-authored commits are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/git-commit-as-bot
-          example_argv: ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
-          purpose: Commits with shiny-code-bot as author and committer while preserving normal git commit flags.
+          example_argv:
+            ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+          purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
     - id: prefer-bot-push-helper
       match:
         argv_prefix: ["git", "push"]
       action: require_preferred
-      message: Raw `git push` uses the local human Git credential or SSH key. Use the bot push helper so push events and resulting Actions runs are owned by shiny-code-bot.
+      message: Raw `git push` uses the local human Git credential or SSH key. Use the bot push helper so push events and resulting Actions runs are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/git-push-as-bot
-          example_argv: ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
-          purpose: Pushes to GitHub using the configured shiny-code-bot token while restoring the normal remote URL afterward.
+          example_argv:
+            ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+          purpose: Pushes to GitHub using the configured automation token while restoring the normal remote URL afterward.
 ---
 
 # GitHub Expert

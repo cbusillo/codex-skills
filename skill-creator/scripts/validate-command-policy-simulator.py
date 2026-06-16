@@ -142,6 +142,15 @@ def launchplane_apply_shell() -> str:
     return " ".join(("curl", "https://launchplane.example.invalid/v1/product-config/" + "apply"))
 
 
+def launchplane_merge_train_shell() -> str:
+    return " ".join(
+        (
+            "curl",
+            "https://launchplane.example.invalid/v1/work-graph/merge-train/controller/run-once",
+        )
+    )
+
+
 EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["gh", "pr", "create", "--title", "demo"], None, "github", "prefer-gh-pr-create-helper"),
     (["gh", "pr", "edit", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-edit-helper"),
@@ -163,16 +172,19 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["gh", "workflow", "run", "validate.yml"], None, "github", "prefer-gh-workflow-wrapper"),
     (["git", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper"),
     (["git", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
+    (["git", "push", "--force", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
     (["gh", "issue", "list", "--label", "plan"], None, "github-plan", "prefer-gh-plan-index-for-issue-list"),
     (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan", "prefer-gh-plan-search-for-issue-search"),
     (["gh", "project", "item-list", "1"], None, "github-plan", "prefer-gh-plan-helper-for-project-commands"),
     (["gh", "api", "graphql"], graphql_shell(), "github-plan", "prefer-gh-plan-helper-for-planning-graphql"),
     (["curl", "inspection"], inspection_shell(), "jetbrains-inspection", "prefer-jb-inspect-for-plugin-http"),
     (["curl", "launchplane-apply"], launchplane_apply_shell(), "launchplane", "prefer-launchplane-write-helper-for-product-config-api"),
+    (["curl", "launchplane-merge-train"], launchplane_merge_train_shell(), "launchplane", "prefer-launchplane-write-helper-for-merge-train-api"),
     (["launchplane", "merge-train", "run-once"], None, "launchplane", "prefer-launchplane-helpers-over-global-cli"),
 )
 
 NEGATIVE_EXPECTATIONS: tuple[tuple[list[str], str | None], ...] = (
+    (["git", "reset", "--hard"], None),
     (["gh", "issue", "view", "123"], None),
     (["gh", "api", "graphql"], "gh api graphql -f query='{ viewer { login } }'"),
     (["curl", "https://example.invalid/health"], None),

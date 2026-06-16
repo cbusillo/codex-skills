@@ -36,7 +36,7 @@
           "delegate that surface to `github` or `github-plan` before",
           "Launchplane owns runtime/operator authority; the GitHub skills",
           "github-plan-index",
-          "gh issue list ...`: use - script"
+          "`gh issue list ...`: use - script"
         ]
       }
     ],
