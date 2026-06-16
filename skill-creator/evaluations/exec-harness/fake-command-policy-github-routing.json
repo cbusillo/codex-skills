@@ -1,0 +1,47 @@
+{
+  "name": "fake-command-policy-github-routing",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $launchplane. I am doing Launchplane-adjacent GitHub planning work. Check the skill context and then reply with exactly: ok",
+  "files": {
+    "README.md": "# Command policy GitHub routing fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "pull_requests": [
+      {
+        "number": 901,
+        "title": "Command policy routing fixture",
+        "state": "OPEN",
+        "url": "https://github.com/cbusillo/codex-skills/pull/901",
+        "headRefName": "task/command-policy-routing",
+        "headRefOid": "1111111111111111111111111111111111111111"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-command-policy-github-routing-1"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "# Launchplane",
+          "delegate that surface to `github` or `github-plan` before",
+          "Launchplane owns runtime/operator authority; the GitHub skills",
+          "github-plan-index",
+          "gh issue list ...`: use - script"
+        ]
+      }
+    ],
+    "responses_request_count": 1
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}
