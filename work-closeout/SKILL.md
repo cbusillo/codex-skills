@@ -1,6 +1,6 @@
 ---
 name: work-closeout
-description: Use when the user asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries.
+description: Use when the user asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries. Safe-to-exit and closeout final answers must include a Love Gate section with explicit `Love:` and `Do not love:` entries before the safe-to-exit verdict.
 metadata:
   short-description: Close out workstreams cleanly
 ---
@@ -14,7 +14,11 @@ question is whether checks pass or a PR can ship.
 When the user asks whether work is done, ready to hand off, or safe to exit,
 compose the skills in order: use `repo-readiness` first for gates and evidence,
 then use this skill for final hygiene, cleanup, and parking state. Do not force
-a single skill when both readiness and closeout are required.
+a single skill when both readiness and closeout are required. This skill owns
+the final safe-to-exit answer, and that final answer must include both
+`Love Gate` and `Safe to exit`. Do not reduce Love Gate to `passed`, `ready`,
+or a generic approval sentence; write the two entries explicitly as `Love:` and
+`Do not love:`.
 
 ## Core Goal
 
@@ -145,6 +149,9 @@ boilerplate that does not help the next session resume.
 Treat "safe to exit" as strict hygiene, not merely context preservation. Safe
 to exit means work is ready and hygiene is complete, or unfinished work is
 intentionally parked with durable state.
+
+Any final answer to a safe-to-exit, wrap-up, closeout, pause, or handoff prompt
+is incomplete unless it includes a `Love Gate` section.
 
 Safe to exit: yes
 
@@ -314,7 +321,7 @@ Treat these as external review context, not the active workstream.
 - If the user asks about a review result or review worktree specifically, switch
   context deliberately and inspect that worktree as the task target.
 
-## The Love Gate
+## Required Love Gate
 
 Before finalizing the closeout, perform a "Love Gate" check. This is an
 emotional and qualitative alignment step where the agent evaluates the session's
@@ -327,8 +334,10 @@ standards.
 - **Identify what you do not love**: Are there any compromises, technical debt,
   missing edge cases, or "smells" that remain? Be honest about shortcuts taken
   due to context limits or task complexity.
-- **Report findings**: Include a brief "Love Gate" section in your closeout
-  summary.
+- **Report findings**: Always include a brief "Love Gate" section in closeout
+  and safe-to-exit final answers. The section must include two explicit labels:
+  `Love:` for what you love about the result, and `Do not love:` for concerns,
+  compromises, or "nothing material" when no meaningful concern remains.
 
 This gate ensures that the session ends not just with technical passing, but
 with a shared understanding of the work's quality and "soul."
@@ -345,7 +354,8 @@ Use a compact closeout report:
   fits the active plan.
 - Checks: gates, inspections, docs, metadata, CI/Actions, and GitHub
   security/quality signals that passed, failed, were pending, or were not run.
-- Love Gate: what you love about the results, and anything you do not love.
+- Love Gate: include `Love:` and `Do not love:` entries. Use `Do not love:
+  nothing material` when no meaningful concern remains.
 - Cleanup: artifacts, plans, handoffs, branches, or worktrees removed or left
   intentionally.
 - State: dirty files, PR status, CI status, or plan status when relevant.
