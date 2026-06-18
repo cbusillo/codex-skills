@@ -44,6 +44,7 @@ READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
+UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
 ROLLOUT_FILE_ENVS = (
     "JB_INSPECT_ROLLOUT_FILE",
     "CODE_ROLLOUT_FILE",
@@ -86,49 +87,49 @@ def main() -> int:
     try:
         if args.command == "list":
             result = command_list(args)
-            return emit(result, args.json, 0)
+            return emit(result, args.json, 0, command=args.command)
         if args.command == "route":
             context = build_context(args)
             result = command_route(args, context)
-            return emit(result, args.json, 0)
+            return emit(result, args.json, 0, command=args.command)
         if args.command == "trigger":
             context = build_context(args)
             result = command_trigger(args, context)
-            return emit(result, args.json, 0)
+            return emit(result, args.json, 0, command=args.command)
         if args.command == "wait":
             context = build_context(args)
             result = command_wait(args, context)
-            return emit(result, args.json, classify_wait_exit(result))
+            return emit(result, args.json, classify_wait_exit(result), command=args.command)
         if args.command == "status":
             context = build_context(args)
             result = command_status(args, context)
-            return emit(result, args.json, classify_status_exit(result))
+            return emit(result, args.json, classify_status_exit(result), command=args.command)
         if args.command == "problems":
             context = build_context(args)
             result = command_problems(args, context)
-            return emit(result, args.json, classify_problems_exit(result))
+            return emit(result, args.json, classify_problems_exit(result), command=args.command)
         if args.command == "claim":
             context = build_context(args)
             result = command_claim(args, context)
-            return emit(result, args.json, 0)
+            return emit(result, args.json, 0, command=args.command)
         if args.command == "prepare":
             context = build_context(args)
             result = command_prepare(args, context)
-            return emit(result, args.json, classify_prepare_exit(result))
+            return emit(result, args.json, classify_prepare_exit(result), command=args.command)
         if args.command == "closeout":
             context = build_context(args)
             result = command_closeout(args, context)
-            return emit(result, args.json, classify_closeout_exit(result))
+            return emit(result, args.json, classify_closeout_exit(result), command=args.command)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
-            return emit(result, args.json, 0)
+            return emit(result, args.json, 0, command=args.command)
         if args.command == "run":
             context = build_context(args)
             result = command_run(args, context)
-            return emit(result, args.json, classify_run_exit(result))
+            return emit(result, args.json, classify_run_exit(result), command=args.command)
     except InspectError as error:
         payload = error_payload(error, args)
-        return emit(payload, getattr(args, "json", False), error.exit_code)
+        return emit(payload, getattr(args, "json", False), error.exit_code, command=getattr(args, "command", None))
     return 2
 
 
@@ -1290,6 +1291,8 @@ def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
 def log_unknown_verdict(payload: dict[str, Any]) -> None:
     if payload.get("verdict") != "UNKNOWN":
         return
+    if not should_log_unknown_verdict(payload):
+        return
     log_path = unknown_log_path()
     if log_path is None:
         return
@@ -1302,6 +1305,33 @@ def log_unknown_verdict(payload: dict[str, Any]) -> None:
         payload["unknown_log_error"] = str(error)
         return
     payload["unknown_log_path"] = str(log_path)
+
+
+def should_log_unknown_verdict(payload: dict[str, Any]) -> bool:
+    command = str(payload.get("command") or "")
+    has_failure_evidence = any(
+        payload.get(key)
+        for key in (
+            "error_reason",
+            "capture_incomplete",
+            "results_may_be_stale",
+            "timed_out",
+            "session_drift",
+            "ambiguous",
+            "unavailable",
+            "indexing",
+            "is_scanning",
+            "inspection_in_progress",
+            "cleanup_failed",
+            "cleanup_skipped",
+            "capture_diagnostic",
+            "route_diagnostic",
+            "blocked_diagnostic",
+        )
+    )
+    if command and command not in UNKNOWN_LOG_ASSESSMENT_COMMANDS and not has_failure_evidence:
+        return False
+    return True
 
 
 def unknown_log_path() -> Path | None:
@@ -1473,7 +1503,9 @@ def classify_status_exit(result: dict[str, Any]) -> int:
     return verdict_exit_code(result, {"GREEN", "RED"})
 
 
-def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
+def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str | None = None) -> int:
+    if command is not None:
+        payload.setdefault("command", command)
     apply_verdict(payload)
     log_unknown_verdict(payload)
     payload = public_payload(payload)

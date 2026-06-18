@@ -1843,6 +1843,50 @@ class UnknownVerdictLogTest(unittest.TestCase):
             body = json.loads(output.getvalue())
             self.assertNotIn("unknown_log_path", body)
 
+    def test_emit_does_not_log_informational_command_unknowns(self):
+        cases = [
+            ("list", {"status": "ok", "projects": []}),
+            ("route", {"status": "resolved", "route": {}}),
+            ("trigger", {"status": "triggered"}),
+            ("claim", {"status": "claimed"}),
+            ("prepare", {"status": "prepared"}),
+            ("cleanup-leases", {"status": "ok", "removed": []}),
+        ]
+        for command, payload in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                log_path = Path(tmp) / "unknown.jsonl"
+
+                output = io.StringIO()
+                with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                    with redirect_stdout(output):
+                        exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0, command=command)
+
+                self.assertEqual(exit_code, 0)
+                self.assertFalse(log_path.exists())
+                body = json.loads(output.getvalue())
+                self.assertEqual(body["command"], command)
+                self.assertEqual(body["verdict"], "UNKNOWN")
+                self.assertNotIn("unknown_log_path", body)
+
+    def test_emit_logs_error_unknown_even_when_command_is_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            payload = {
+                "command": "route",
+                "status": "error",
+                "error_reason": "ide_open_failed",
+                "verdict": "UNKNOWN",
+                "verdict_reason": "ide_open_failed",
+            }
+
+            with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                exit_code = jb_inspect.emit(payload, json_only=True, exit_code=1)
+
+            self.assertEqual(exit_code, 1)
+            records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["verdict_reason"], "ide_open_failed")
+
     def test_unknown_log_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "unknown.jsonl"
