@@ -78,7 +78,11 @@ Configuration and error states are distinct:
   pass it with `--url` before the subcommand, or configure
   `LAUNCHPLANE_OPERATOR_URL`.
 - `missing_service_url`: token exists but no write-capable service URL source is
-  configured.
+  configured. Fix local operator routing by configuring
+  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or supplying
+  a private JSON `service_url`, then rerun `operator-config-diagnostic`. This is
+  local operator setup, not PR readiness, merge-train admission, or scheduler
+  state.
 - `missing_operator_token`: service URL exists but the local operator token is
   missing.
 - `missing_operator_config`: both service URL and token are absent.

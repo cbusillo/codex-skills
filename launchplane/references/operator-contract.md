@@ -71,6 +71,16 @@ declaring terminal operator access unavailable. The diagnostic reports only
 source presence and redacted classification; it does not prove that the token is
 authorized for every action.
 
+Treat read-only Launchplane context and local operator readiness as separate
+checks. `launchplane-context.py` can be unavailable while terminal operator
+execution is configured, and a write-action diagnostic can be incomplete even
+when the only missing piece is the local operator service URL. A
+`missing_service_url` classification means token material was found but no
+write-capable Launchplane service URL source was found; configure
+`LAUNCHPLANE_OPERATOR_URL`, pass `--url`, or supply a private JSON `service_url`
+before retrying. It is not evidence that a PR is unready, that merge-train
+admission failed, or that scheduler pickup is disabled.
+
 Do not use `.github/github.override.json` for secrets. That file is suitable for
 repo metadata overrides only, not Launchplane operator credentials.
 
