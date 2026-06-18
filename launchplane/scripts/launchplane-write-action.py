@@ -261,7 +261,12 @@ def operator_config_recommendation(classification: str) -> str:
             "the correct operator URL and pass --url before the subcommand, or configure "
             "LAUNCHPLANE_OPERATOR_URL."
         ),
-        "missing_service_url": "Configure LAUNCHPLANE_OPERATOR_URL or pass --url before the subcommand.",
+        "missing_service_url": (
+            "Local operator token material is present, but no write-capable "
+            "Launchplane service URL source was found. Configure "
+            "LAUNCHPLANE_OPERATOR_URL or pass --url before the subcommand, then "
+            "rerun operator-config-diagnostic."
+        ),
         "missing_operator_token": "Configure the local operator token source before retrying.",
         "missing_operator_config": "Configure Launchplane operator URL and token sources before retrying.",
     }

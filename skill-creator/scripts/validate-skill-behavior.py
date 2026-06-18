@@ -432,6 +432,11 @@ def test_launchplane_write_action_helper_contract() -> None:
         missing_url_payload["summary"]["configuration_state"] == "missing_service_url",
         "Write-action helper must distinguish a missing service URL from a missing credential",
     )
+    require(
+        "local operator token material is present"
+        in str(missing_url_payload["summary"].get("recommendation", "")).lower(),
+        "Write-action helper must explain missing_service_url as local operator routing setup",
+    )
 
     missing_token = subprocess.run(
         [

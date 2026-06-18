@@ -287,12 +287,19 @@ Mutate runtime environments, managed secrets, and product config.
   is unavailable and must fail closed; do not use `.github/github.override.json`
   for Launchplane credentials.
 - **Operator Diagnostics**: Before concluding operator access is unavailable,
-  run `scripts/launchplane-write-action.py operator-config-diagnostic`. If the
-  active shell has a service URL under `LAUNCHPLANE_PUBLIC_URL` but not
+  run `scripts/launchplane-write-action.py operator-config-diagnostic`. Treat
+  `launchplane-context` availability and local operator readiness as separate
+  checks: context can be unavailable while the write helper is usable, and the
+  write helper can be blocked only by missing local operator config. If the
+  diagnostic reports `missing_service_url`, token material was found but no
+  write-capable Launchplane service URL source was found; configure
+  `LAUNCHPLANE_OPERATOR_URL` in the private local operator env file or pass
+  `--url` before the subcommand, then rerun the diagnostic. If the active shell
+  has a service URL under `LAUNCHPLANE_PUBLIC_URL` but not
   `LAUNCHPLANE_OPERATOR_URL`, treat it as an ambiguous URL source: obtain the
-  correct operator URL and pass it with `--url` before the subcommand, or
-  configure `LAUNCHPLANE_OPERATOR_URL`. Do not use public URL variables as write
-  authority.
+  correct operator URL and pass it with `--url` before the subcommand, or copy
+  the sanctioned value into private operator config. Do not use public URL
+  variables as write authority.
 - **Repo Metadata**: Use `.github/github.json` `launchplane` metadata to find
   helper paths, workflow entrypoints, labels, and service URL env var names, but
   keep concrete service URLs and credentials in private operator config,
@@ -329,19 +336,22 @@ Mutate runtime environments, managed secrets, and product config.
   1. Inspect Context to identify the target and change needed.
   2. Run operator config diagnostics before a write-capable helper call when
      target URL, token source, or authority is unclear.
-  3. Preflight product-config intent with `scripts/launchplane-write-action.py
+  3. If diagnostics report `missing_service_url`, fix local operator routing
+     first. This is a workstation setup problem, not PR readiness, merge-train
+     admission, or scheduler state.
+  4. Preflight product-config intent with `scripts/launchplane-write-action.py
 product-config-preflight` when agent-side authorization or managed-secret
      binding evidence is useful.
-  4. Use the signed-in/scoped operator path when a human-approved runtime or
+  5. Use the signed-in/scoped operator path when a human-approved runtime or
      managed-secret mutation is required.
-  5. Build a product-config request for `POST /v1/product-config/apply` only in
+  6. Build a product-config request for `POST /v1/product-config/apply` only in
      an approved operator surface. The helper may submit dry-run/apply from a
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
-  6. **Dry-run** and inspect redacted results.
-  7. **Apply** with a concrete reason only after the dry-run succeeds and the
+  7. **Dry-run** and inspect redacted results.
+  8. **Apply** with a concrete reason only after the dry-run succeeds and the
      operator intent is explicit.
-  8. Inspect returned `next_actions` and complete required follow-up actions;
+  9. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 
