@@ -30,11 +30,14 @@ records a rolling buffer of the past several hours of work to
    because memories are disabled; otherwise, do not mention the existence of this
    skill (this skill is only supposed to be used when memories are enabled in
    Codex).
-2. Ensure Chronicle is running on the user's computer. You can check this by
-   checking the pidfile at `$TMPDIR/codex_chronicle/chronicle-started.pid` is
-   valid (i.e., exists and process is running). If the pidfile is invalid, do
-   not use this skill. This applies EVEN IF there are seemingly-fresh videos in
-   the `screen_recording` folder; the user may have just recently disabled
+2. Ensure Chronicle is running on the user's computer. Read the PID from
+   `$TMPDIR/codex_chronicle/chronicle-started.pid`, verify that the process is
+   running, and confirm the executable is `codex_chronicle` when host-visible
+   process inspection is available. Do not trust sandbox-limited process checks
+   as proof that Chronicle is running. If the pidfile is missing, stale, points
+   at the wrong executable, or cannot be verified from the host, do not use this
+   skill. This applies EVEN IF there are seemingly-fresh videos in the
+   `screen_recording` folder; the user may have just recently disabled
    Chronicle. Regardless, the takeaway is that recordings cannot be fresh when
    Chronicle isn't running; therefore, you shouldn't treat the videos as fresh.
    If Chronicle is unavailable, proceed with other relevant context sources and

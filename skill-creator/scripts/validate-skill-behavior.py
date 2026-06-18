@@ -108,6 +108,12 @@ def test_chronicle_stays_quiet_when_unavailable() -> None:
         "this skill must be used whenever you need to resolve ambiguity" not in normalized,
         "Chronicle must not regain broad mandatory ambiguity-trigger wording",
     )
+    require(
+        "confirm the executable is `codex_chronicle`" in normalized
+        and "do not trust sandbox-limited process checks" in normalized
+        and "cannot be verified from the host" in normalized,
+        "Chronicle must require host-visible process identity verification before use",
+    )
 
 
 def test_launchplane_product_config_uses_operator_api_first() -> None:
