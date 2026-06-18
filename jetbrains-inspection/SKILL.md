@@ -192,6 +192,12 @@ IDE and must clean it up afterward when it owns the open.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
   "no problems found"; report the verdict reason and next action, because the
   IDE, plugin, helper, route, or environment needs attention first.
+  The helper appends each `UNKNOWN` verdict to
+  `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/unknown-verdicts.jsonl`
+  so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
+  disable logging, set it to a path to override the log file, or set
+  `JB_INSPECT_ROLLOUT_FILE` to include the current rollout/session transcript in
+  the record.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.

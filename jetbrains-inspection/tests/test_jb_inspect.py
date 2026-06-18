@@ -1774,5 +1774,86 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(body["exit_code"], 3)
 
 
+class UnknownVerdictLogTest(unittest.TestCase):
+    def test_emit_logs_unknown_verdict_with_rollout_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            rollout_path = Path(tmp) / "rollout-123.jsonl"
+            payload = {
+                "command": "closeout",
+                "status": "capture_incomplete",
+                "capture_incomplete_reason": "non_empty_unmapped_tree",
+                "verdict": "UNKNOWN",
+                "verdict_reason": "non_empty_unmapped_tree",
+                "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+                "verdict_next_action": "Treat this as a plugin/helper bug.",
+                "context": {
+                    "repo_path": "/repo",
+                    "worktree_root": "/repo-wt",
+                    "scope": "changed_files",
+                },
+                "route": {
+                    "project_name": "repo-wt",
+                    "project_key": "path:/repo-wt",
+                    "base_path": "/repo-wt",
+                    "ide": {"name": "IntelliJ IDEA"},
+                },
+                "capture_diagnostic": {"exit_reason": "non_empty_unmapped_tree"},
+                "authorization": "secret-token",
+            }
+
+            output = io.StringIO()
+            with patch.dict(os.environ, {
+                jb_inspect.UNKNOWN_LOG_ENV: str(log_path),
+                "JB_INSPECT_ROLLOUT_FILE": str(rollout_path),
+            }, clear=False):
+                with redirect_stdout(output):
+                    exit_code = jb_inspect.emit(payload, json_only=False, exit_code=1)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn(f"UNKNOWN_LOG: {log_path.resolve()}", output.getvalue())
+            records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record["verdict"], "UNKNOWN")
+            self.assertEqual(record["verdict_reason"], "non_empty_unmapped_tree")
+            self.assertEqual(record["rollout_file"], str(rollout_path))
+            self.assertEqual(record["repo_path"], "/repo")
+            self.assertEqual(record["ide"], "IntelliJ IDEA")
+            self.assertEqual(record["capture_diagnostic"]["exit_reason"], "non_empty_unmapped_tree")
+            self.assertNotIn("secret-token", log_path.read_text(encoding="utf-8"))
+
+    def test_emit_does_not_log_green_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            payload = {
+                "status": "results_available",
+                "total_problems": 0,
+                "problems_shown": 0,
+                "problems": [],
+            }
+
+            output = io.StringIO()
+            with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                with redirect_stdout(output):
+                    exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0)
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(log_path.exists())
+            body = json.loads(output.getvalue())
+            self.assertNotIn("unknown_log_path", body)
+
+    def test_unknown_log_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            payload = {"status": "no_results", "verdict": "UNKNOWN", "verdict_reason": "no_results"}
+
+            with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: "0"}, clear=False):
+                jb_inspect.log_unknown_verdict(payload)
+
+            self.assertFalse(log_path.exists())
+            self.assertNotIn("unknown_log_path", payload)
+
+
 if __name__ == "__main__":
     unittest.main()

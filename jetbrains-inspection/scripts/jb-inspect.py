@@ -43,6 +43,14 @@ DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
+UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
+ROLLOUT_FILE_ENVS = (
+    "JB_INSPECT_ROLLOUT_FILE",
+    "CODE_ROLLOUT_FILE",
+    "CODEX_ROLLOUT_FILE",
+    "CODE_SESSION_FILE",
+    "CODEX_SESSION_FILE",
+)
 VERDICT_SOURCE_KEYS = (
     "inspection_verdict",
     "inspection_verdict_reason",
@@ -1279,6 +1287,119 @@ def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def log_unknown_verdict(payload: dict[str, Any]) -> None:
+    if payload.get("verdict") != "UNKNOWN":
+        return
+    log_path = unknown_log_path()
+    if log_path is None:
+        return
+    record = unknown_log_record(payload)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as error:
+        payload["unknown_log_error"] = str(error)
+        return
+    payload["unknown_log_path"] = str(log_path)
+
+
+def unknown_log_path() -> Path | None:
+    configured = os.environ.get(UNKNOWN_LOG_ENV)
+    if configured is not None:
+        value = configured.strip()
+        if value.lower() in {"", "0", "false", "no", "off"}:
+            return None
+        return Path(value).expanduser().resolve()
+    return Path(code_home()) / "jetbrains-inspection" / "unknown-verdicts.jsonl"
+
+
+def code_home() -> Path:
+    return Path(os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or str(Path.home() / ".code")).expanduser()
+
+
+def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
+    public = public_payload(payload)
+    context = public.get("context") if isinstance(public.get("context"), dict) else {}
+    route = public.get("route") if isinstance(public.get("route"), dict) else {}
+    wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
+    cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
+    record: dict[str, Any] = {
+        "timestamp": utc_timestamp(),
+        "command": public.get("command"),
+        "verdict": public.get("verdict"),
+        "verdict_reason": public.get("verdict_reason"),
+        "verdict_message": public.get("verdict_message"),
+        "verdict_next_action": public.get("verdict_next_action"),
+        "status": public.get("status"),
+        "repo_path": context.get("repo_path") or public.get("repo_path"),
+        "worktree_root": context.get("worktree_root") or public.get("worktree_root"),
+        "scope": context.get("scope") or public.get("scope"),
+        "ide": route.get("ide", {}).get("name") if isinstance(route.get("ide"), dict) else public.get("ide"),
+        "project_name": route.get("project_name"),
+        "project_key": route.get("project_key"),
+        "base_path": route.get("base_path"),
+        "total_problems": public.get("total_problems"),
+        "problems_shown": public.get("problems_shown"),
+        "capture_incomplete_reason": public.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason"),
+        "snapshot_change_kind": public.get("snapshot_change_kind"),
+        "cleanup_status": cleanup.get("status"),
+        "cleanup_reason": cleanup.get("reason"),
+    }
+    rollout_file = discover_rollout_file()
+    if rollout_file:
+        record["rollout_file"] = rollout_file
+    for key in ("capture_diagnostic", "route_diagnostic", "blocked_diagnostic"):
+        if key in public:
+            record[key] = public[key]
+    return {key: value for key, value in record.items() if value not in (None, {}, [])}
+
+
+def utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def discover_rollout_file() -> str | None:
+    for env_name in ROLLOUT_FILE_ENVS:
+        value = os.environ.get(env_name)
+        if value:
+            return str(Path(value).expanduser())
+    candidates: list[Path] = []
+    home = Path(code_home())
+    for root in (home / "sessions", home / "rollouts"):
+        if root.exists():
+            candidates.extend(root.rglob("rollout-*.jsonl"))
+    for catalog in (home / "sessions" / "index" / "catalog.jsonl", home / "rollouts" / "index" / "catalog.jsonl"):
+        candidates.extend(rollout_candidates_from_catalog(catalog))
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda path: path.stat().st_mtime if path.exists() else 0)
+    return str(newest)
+
+
+def rollout_candidates_from_catalog(catalog: Path) -> list[Path]:
+    if not catalog.exists():
+        return []
+    candidates: list[Path] = []
+    try:
+        with catalog.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("path", "file", "rollout_file", "session_file"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and "rollout-" in value:
+                        path = Path(value).expanduser()
+                        candidates.append(path if path.is_absolute() else (catalog.parent / path).resolve())
+    except OSError:
+        return []
+    return candidates
+
+
 def verdict_exit_code(payload: dict[str, Any], success_verdicts: set[str]) -> int:
     verdict = payload.get("verdict")
     if verdict not in {"GREEN", "RED", "UNKNOWN"}:
@@ -1354,6 +1475,7 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
     apply_verdict(payload)
+    log_unknown_verdict(payload)
     payload = public_payload(payload)
     if json_only:
         # codeql[py/clear-text-logging-sensitive-data]
@@ -1385,6 +1507,10 @@ def print_human(payload: dict[str, Any]) -> None:
         }))
         if payload.get("verdict_next_action"):
             print(safe_text("NEXT_ACTION: {action}", {"action": payload.get("verdict_next_action")}))
+    if payload.get("unknown_log_path"):
+        print(safe_text("UNKNOWN_LOG: {path}", {"path": payload.get("unknown_log_path")}))
+    if payload.get("unknown_log_error"):
+        print(safe_text("UNKNOWN_LOG_ERROR: {error}", {"error": payload.get("unknown_log_error")}))
     if payload.get("zero_project_hint"):
         print(safe_text("PROJECT_OPEN_HINT: {hint}", {"hint": payload.get("zero_project_hint")}))
     if status == "error":
