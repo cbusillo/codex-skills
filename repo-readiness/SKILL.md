@@ -14,7 +14,10 @@ relevant focused skills or tools instead of duplicating their details.
 When the user asks whether work is done, ready to hand off, or safe to exit,
 use this skill first for gates and evidence, then use `work-closeout` for final
 hygiene, artifact cleanup, and durable parking state. Do not force a single
-skill when both readiness and closeout are required.
+skill when both readiness and closeout are required. A safe-to-exit, wrap-up,
+pause, or handoff prompt must not end with a readiness-only final answer; the
+final answer must come from `work-closeout` and include both `Love Gate` and
+`Safe to exit`.
 
 ## Core Goal
 
@@ -108,8 +111,9 @@ findings/status matter.
 8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.
 9. Report readiness concisely. If the user asked for handoff, wrap-up, or
-   safe-to-exit, continue into `work-closeout` after the readiness answer is
-   established.
+   safe-to-exit, treat any readiness report as interim evidence and continue
+   into `work-closeout` after the readiness answer is established. The closeout
+   answer owns the final safe-to-exit verdict and must include `Love Gate`.
 
 ## Readiness To Closeout Handoff
 
@@ -127,7 +131,8 @@ fields in chat, a PR comment, or the owning issue when durable state is needed:
 
 This handoff is evidence for `work-closeout`; it is not cleanup. Do not delete
 artifacts, remove worktrees, close planning issues, or claim safe-to-exit from
-this skill alone.
+this skill alone. If the user asked whether they can exit or stop, the final
+response belongs to `work-closeout`, not this readiness handoff.
 
 Both this skill and `work-closeout` read `.github/github.json` with the same
 schema expectations: `qualityGate`, `docs`, `metadataFreshness`, `cleanup`,

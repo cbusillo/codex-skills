@@ -1079,6 +1079,54 @@ def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
     )
 
 
+def test_safe_exit_requires_love_gate_closeout() -> None:
+    readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
+    closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
+    normalized_readiness = " ".join(readiness_text.split())
+    normalized_closeout = " ".join(closeout_text.split())
+
+    require(
+        "must not end with a readiness-only final answer" in normalized_readiness
+        and "final answer must come from `work-closeout`" in normalized_readiness,
+        "repo-readiness must route safe-to-exit prompts to work-closeout for the final answer",
+    )
+    require(
+        "the closeout answer owns the final safe-to-exit verdict and must include `love gate`" in normalized_readiness,
+        "repo-readiness must preserve Love Gate in safe-to-exit handoff guidance",
+    )
+    require(
+        "this skill owns the final safe-to-exit answer" in normalized_closeout
+        and "must include both `love gate` and `safe to exit`" in normalized_closeout,
+        "work-closeout must own final safe-to-exit output and require Love Gate",
+    )
+    require(
+        "safe-to-exit and closeout final answers must include a love gate section" in normalized_closeout
+        and "explicit `love:` and `do not love:` entries" in normalized_closeout,
+        "work-closeout frontmatter must expose the required Love Gate output shape",
+    )
+    require(
+        "do not reduce love gate to `passed`, `ready`, or a generic approval sentence" in normalized_closeout,
+        "work-closeout must prevent pass/fail-only Love Gate summaries",
+    )
+    require(
+        "any final answer to a safe-to-exit, wrap-up, closeout, pause, or handoff prompt" in normalized_closeout
+        and "is incomplete unless it includes a `love gate` section" in normalized_closeout,
+        "work-closeout must make Love Gate mandatory for closeout-style final answers",
+    )
+    require(
+        "required love gate" in normalized_closeout
+        and "always include a brief \"love gate\" section" in normalized_closeout,
+        "work-closeout must make the Love Gate visibly required",
+    )
+    require(
+        "must include two explicit labels" in normalized_closeout
+        and "`love:`" in normalized_closeout
+        and "`do not love:`" in normalized_closeout
+        and "nothing material" in normalized_closeout,
+        "work-closeout Love Gate must include explicit Love and Do not love entries",
+    )
+
+
 def test_launchplane_delegates_github_surfaces() -> None:
     launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
     normalized = " ".join(launchplane.split())
@@ -1382,6 +1430,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
+        test_safe_exit_requires_love_gate_closeout,
         test_launchplane_delegates_github_surfaces,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_work_closeout_requires_issue_aware_safe_exit,
