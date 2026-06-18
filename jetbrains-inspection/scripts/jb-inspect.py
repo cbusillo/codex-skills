@@ -173,6 +173,8 @@ def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
         return "timeout"
     if "wrong tree" in message or "exact current worktree" in message:
         return "worktree_route_mismatch"
+    if "no open jetbrains project matched" in message:
+        return "target_project_not_open"
     if "trusted" in message:
         return "untrusted_auto_open_root"
     if "launch" in message or "open" in message:
@@ -192,6 +194,7 @@ def hint_for_error_reason(reason: str) -> str | None:
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
         "worktree_route_mismatch": "Open the exact worktree in the IDE or use lifecycle closeout so the helper can claim the correct project.",
+        "target_project_not_open": "Use closeout/prepare to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
         "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
         "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
     }.get(reason)
@@ -941,7 +944,8 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             raise InspectError(
                 "No open JetBrains project matched this repo/worktree.",
                 3,
-                {"selector": selector_params(args, context)} | route_diagnostic_payload(args, context),
+                {"selector": selector_params(args, context), "error_reason": "target_project_not_open"}
+                | route_diagnostic_payload(args, context),
             )
         route = sorted(candidates, key=lambda item: route_sort_key(item, context), reverse=True)[0]
         ensure_worktree_safe(route, context, args)

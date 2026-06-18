@@ -1732,6 +1732,28 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["exit_code"], 3)
         self.assertIn("Open the repo", payload["hint"])
 
+    def test_inspect_error_payload_classifies_target_project_not_open(self):
+        error = jb_inspect.InspectError("No open JetBrains project matched this repo/worktree.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="route"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertEqual(payload["command"], "route")
+        self.assertIn("lifecycle-open", payload["hint"])
+
+    def test_structured_route_error_reason_overrides_open_wording(self):
+        error = jb_inspect.InspectError(
+            "No open JetBrains project matched this repo/worktree.",
+            3,
+            {"error_reason": "target_project_not_open"},
+        )
+
+        payload = jb_inspect.error_payload(error, Namespace(command="route"))
+
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertIn("lifecycle-open", payload["hint"])
+
     def test_inspect_error_payload_moves_structured_status_to_last_status(self):
         error = jb_inspect.InspectError(
             "Timed out waiting for JetBrains indexing/scanning to settle.",
