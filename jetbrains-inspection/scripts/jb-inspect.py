@@ -43,6 +43,12 @@ DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
+VERDICT_SOURCE_KEYS = (
+    "inspection_verdict",
+    "inspection_verdict_reason",
+    "inspection_verdict_message",
+    "inspection_verdict_next_action",
+)
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
 PROJECT_OPEN_BLOCKED_HINT = (
@@ -317,14 +323,22 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
         "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
     }, timeout=wait_http_timeout(timeout_ms))
-    return {"status": body.get("completion_reason") or body.get("status", "unknown"), "context": public_context(context), "route": body.get("route") or route, "wait": body}
+    result = {
+        "status": body.get("completion_reason") or body.get("status", "unknown"),
+        "context": public_context(context),
+        "route": body.get("route") or route,
+        "wait": body,
+    }
+    copy_verdict_evidence(result, body)
+    apply_verdict(result)
+    return result
 
 
 def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     body = call_endpoint(route, "status", route_params(args, context, route))
     status = status_label(body)
-    return {
+    result = {
         "status": status,
         "clean": classify_status_body_clean(body),
         "context": public_context(context),
@@ -342,6 +356,23 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
         "timed_out": body.get("timed_out", False),
         "raw": body,
     }
+    copy_verdict_evidence(result, body)
+    apply_verdict(result)
+    return result
+
+
+def copy_verdict_evidence(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key in (
+        "total_problems",
+        "problems_shown",
+        "cached_total_problems",
+        "cached_problems_shown",
+        "capture_incomplete_reason",
+        "capture_diagnostic",
+        *VERDICT_SOURCE_KEYS,
+    ):
+        if key in source:
+            target[key] = source[key]
 
 
 def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -404,6 +435,7 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
     summary["trigger"] = trigger
     summary["wait"] = wait
     summary["status"] = classify_run_status(wait, problems)
+    apply_verdict(summary)
     return summary
 
 
@@ -1059,9 +1091,11 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
     problems = body.get("problems") or []
     status = body.get("status", "unknown")
     results_may_be_stale = body.get("results_may_be_stale", False) or status == "stale_results"
+    total_problems = body.get("total_problems")
+    has_explicit_zero_result = isinstance(total_problems, int) and total_problems == 0
     summary: dict[str, Any] = {
         "status": status,
-        "clean": status == "results_available" and len(problems) == 0 and not body.get("capture_incomplete") and not results_may_be_stale,
+        "clean": status == "results_available" and has_explicit_zero_result and not body.get("capture_incomplete") and not results_may_be_stale,
         "context": public_context(context),
         "route": route,
         "capture_incomplete": body.get("capture_incomplete", False),
@@ -1071,8 +1105,6 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
     }
     if "total_problems" in body:
         summary["total_problems"] = body["total_problems"]
-    elif not results_may_be_stale:
-        summary["total_problems"] = len(problems)
     if "problems_shown" in body:
         summary["problems_shown"] = body["problems_shown"]
     elif not results_may_be_stale:
@@ -1089,9 +1121,11 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
         "results_timestamp_ms",
         "stale_reasons",
         "capture_diagnostic",
+        *VERDICT_SOURCE_KEYS,
     ):
         if key in body:
             summary[key] = body[key]
+    apply_verdict(summary)
     return summary
 
 
@@ -1102,15 +1136,158 @@ def classify_run_status(wait: dict[str, Any], problems: dict[str, Any]) -> str:
         return "capture_incomplete"
     if wait.get("results_may_be_stale") or problems.get("results_may_be_stale") or problems.get("status") == "stale_results":
         return "stale_results"
-    if problems.get("status") == "results_available" and (problems.get("problems") or []):
+    total = problems.get("total_problems")
+    if problems.get("status") == "results_available" and (
+        (problems.get("problems") or []) or (isinstance(total, int) and total > 0)
+    ):
         return "findings"
-    if problems.get("status") == "results_available":
+    if problems.get("status") == "results_available" and (isinstance(total, int) and total == 0 or problems.get("clean") is True):
         return "clean"
     return problems.get("status") or wait.get("completion_reason") or "unknown"
 
 
+def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
+    wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
+    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    if cleanup.get("status") in {"failed", "skipped"} or payload.get("cleanup_failed") or payload.get("cleanup_skipped"):
+        reason = unknown_reason(payload, wait, cleanup)
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": reason,
+            "verdict_message": "Inspection closeout did not complete cleanly after inspection.",
+            "verdict_next_action": next_action_for_unknown(reason, payload),
+        }
+
+    if payload.get("status") == "error":
+        reason = str(payload.get("error_reason") or "helper_error")
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": reason,
+            "verdict_message": "Inspection tooling failed before it could prove GREEN or RED.",
+            "verdict_next_action": next_action_for_unknown(reason, payload),
+        }
+
+    blocker_reason = blocking_unknown_reason(payload, wait)
+    if blocker_reason is not None:
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": blocker_reason,
+            "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+            "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
+        }
+
+    plugin_verdict = payload.get("inspection_verdict")
+    if plugin_verdict in {"GREEN", "RED", "UNKNOWN"}:
+        return {
+            "verdict": str(plugin_verdict),
+            "verdict_reason": str(payload.get("inspection_verdict_reason") or "plugin_verdict"),
+            "verdict_message": str(payload.get("inspection_verdict_message") or "Inspection plugin provided the verdict."),
+            "verdict_next_action": str(payload.get("inspection_verdict_next_action") or "Follow the inspection plugin verdict."),
+        }
+
+    problems = payload.get("problems") or []
+    total = payload.get("total_problems")
+    has_current_findings = (problems or (isinstance(total, int) and total > 0)) and not payload.get("capture_incomplete") and not payload.get("results_may_be_stale")
+    if payload.get("status") == "findings" or has_current_findings:
+        return {
+            "verdict": "RED",
+            "verdict_reason": "actionable_findings",
+            "verdict_message": "Inspection worked and returned actionable findings.",
+            "verdict_next_action": "Fix the reported findings, then rerun inspection.",
+        }
+
+    has_explicit_zero_result = isinstance(total, int) and total == 0
+    if (
+        (payload.get("status") == "results_available" and (has_explicit_zero_result or payload.get("clean") is True))
+        or payload.get("status") == "clean"
+        or payload.get("clean") is True
+    ):
+        return {
+            "verdict": "GREEN",
+            "verdict_reason": "no_matching_findings" if payload.get("status") == "results_available" else "clean_confirmed",
+            "verdict_message": "Inspection worked and found no actionable findings for the selected scope/filter.",
+            "verdict_next_action": "No inspection action required for this scope/filter.",
+        }
+
+    reason = unknown_reason(payload, wait, cleanup)
+    return {
+        "verdict": "UNKNOWN",
+        "verdict_reason": reason,
+        "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+        "verdict_next_action": next_action_for_unknown(reason, payload),
+    }
+
+
+def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> str | None:
+    if payload.get("session_drift") or wait.get("session_drift"):
+        return "session_drift"
+    if payload.get("ambiguous"):
+        return "ambiguous_route"
+    if payload.get("unavailable"):
+        return "inspection_api_unavailable"
+    if payload.get("results_may_be_stale") or wait.get("results_may_be_stale") or payload.get("status") == "stale_results":
+        return "stale_results"
+    if payload.get("capture_incomplete") or wait.get("capture_incomplete") or payload.get("status") == "capture_incomplete":
+        return str(payload.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason") or "capture_incomplete")
+    if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
+        return "timeout"
+    if payload.get("indexing") or payload.get("is_scanning") or payload.get("inspection_in_progress") or payload.get("status") in {"indexing", "running"}:
+        return "inspection_still_running"
+    return None
+
+
+def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[str, Any]) -> str:
+    if cleanup.get("status") in {"failed", "skipped"} or payload.get("cleanup_failed") or payload.get("cleanup_skipped"):
+        return f"cleanup_{cleanup.get('status') or 'failed'}"
+    blocker_reason = blocking_unknown_reason(payload, wait)
+    if blocker_reason is not None:
+        return blocker_reason
+    if payload.get("status") == "no_results" or wait.get("completion_reason") == "no_results":
+        return "no_results"
+    return str(payload.get("status") or wait.get("completion_reason") or "unknown")
+
+
+def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
+    diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    if reason in {"non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error"}:
+        return "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
+    if reason in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results"}:
+        return "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
+    if reason == "current_run_psi_churn":
+        return "Save documents and rerun inspection after the IDE finishes updating PSI state."
+    if reason == "stale_results":
+        return "Rerun inspection; stale cached findings must not be treated as current."
+    if reason == "timeout":
+        return "Wait for indexing/scanning to settle or rerun with a larger timeout."
+    if reason == "inspection_still_running":
+        return "Wait for indexing/scanning to finish, then rerun inspection."
+    if reason == "inspection_api_unavailable":
+        return "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
+    if reason == "ambiguous_route":
+        return "Pass project_key, project_path, or worktree_path so the helper can inspect the exact project."
+    if reason == "session_drift":
+        return "Resolve the route again and rerun; the IDE/plugin session changed."
+    if reason.startswith("cleanup_"):
+        return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun closeout after cleanup succeeds."
+    if diagnostic.get("observed_non_empty_inspection_tree") is True:
+        return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
+    return "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+
+
+def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
+    payload.update(verdict_for_payload(payload))
+    return payload
+
+
+def verdict_exit_code(payload: dict[str, Any], success_verdicts: set[str]) -> int:
+    verdict = payload.get("verdict")
+    if verdict not in {"GREEN", "RED", "UNKNOWN"}:
+        verdict = verdict_for_payload(payload).get("verdict")
+    return 0 if verdict in success_verdicts else 1
+
+
 def classify_run_exit(result: dict[str, Any]) -> int:
-    return 0 if result.get("status") == "clean" else 1
+    return verdict_exit_code(result, {"GREEN"})
 
 
 def classify_prepare_exit(result: dict[str, Any]) -> int:
@@ -1124,18 +1301,11 @@ def classify_closeout_exit(result: dict[str, Any]) -> int:
 
 
 def classify_wait_exit(result: dict[str, Any]) -> int:
-    wait = result.get("wait", {})
-    if wait.get("timed_out") or wait.get("capture_incomplete") or wait.get("results_may_be_stale"):
-        return 1
-    return 0
+    return verdict_exit_code(result, {"GREEN", "RED"})
 
 
 def classify_problems_exit(result: dict[str, Any]) -> int:
-    if result.get("status") != "results_available":
-        return 1
-    if result.get("capture_incomplete") or result.get("results_may_be_stale"):
-        return 1
-    return 1 if result.get("problems") else 0
+    return verdict_exit_code(result, {"GREEN"})
 
 
 def classify_status_body_clean(body: dict[str, Any]) -> bool:
@@ -1147,8 +1317,8 @@ def classify_status_body_clean(body: dict[str, Any]) -> bool:
         return False
     status = str(body.get("status") or body.get("completion_reason") or "").lower()
     if status:
-        return status in READY_STATUS_VALUES
-    return body.get("clean_inspection") is True or body.get("has_inspection_results") is True
+        return status == "clean"
+    return body.get("clean_inspection") is True
 
 
 def status_label(body: dict[str, Any]) -> str:
@@ -1179,23 +1349,11 @@ def status_label(body: dict[str, Any]) -> str:
 
 
 def classify_status_exit(result: dict[str, Any]) -> int:
-    if (
-        result.get("session_drift")
-        or result.get("ambiguous")
-        or result.get("unavailable")
-        or result.get("capture_incomplete")
-        or result.get("results_may_be_stale")
-        or result.get("timed_out")
-        or result.get("is_scanning")
-        or result.get("indexing")
-        or result.get("inspection_in_progress")
-    ):
-        return 1
-    status = str(result.get("status") or "").lower()
-    return 0 if status in USABLE_STATUS_VALUES else 1
+    return verdict_exit_code(result, {"GREEN", "RED"})
 
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
+    apply_verdict(payload)
     payload = public_payload(payload)
     if json_only:
         # codeql[py/clear-text-logging-sensitive-data]
@@ -1206,6 +1364,7 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int) -> int:
 
 
 def print_human(payload: dict[str, Any]) -> None:
+    apply_verdict(payload)
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
         print(safe_text("ROUTE: {ide_name} project={project_name} project_key={project_key} base_path={base_path}", {
@@ -1217,6 +1376,15 @@ def print_human(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    verdict = payload.get("verdict")
+    if verdict:
+        print(safe_text("VERDICT: {verdict} reason={reason} message={message}", {
+            "verdict": verdict,
+            "reason": payload.get("verdict_reason"),
+            "message": payload.get("verdict_message"),
+        }))
+        if payload.get("verdict_next_action"):
+            print(safe_text("NEXT_ACTION: {action}", {"action": payload.get("verdict_next_action")}))
     if payload.get("zero_project_hint"):
         print(safe_text("PROJECT_OPEN_HINT: {hint}", {"hint": payload.get("zero_project_hint")}))
     if status == "error":

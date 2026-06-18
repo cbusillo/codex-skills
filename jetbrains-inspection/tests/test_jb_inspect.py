@@ -923,6 +923,16 @@ class ClassificationTest(unittest.TestCase):
         result = {"status": "results_available", "problems": [{"description": "x"}]}
         self.assertEqual(jb_inspect.classify_problems_exit(result), 1)
 
+    def test_run_status_uses_total_when_current_page_is_empty(self):
+        problems = {"status": "results_available", "total_problems": 5, "problems": []}
+
+        self.assertEqual(jb_inspect.classify_run_status({}, problems), "findings")
+
+    def test_wait_no_results_exits_nonzero(self):
+        result = {"status": "no_results", "wait": {"completion_reason": "no_results"}}
+
+        self.assertEqual(jb_inspect.classify_wait_exit(result), 1)
+
     def test_status_with_clean_result_exits_zero(self):
         body = {"clean_inspection": True, "is_scanning": False}
         result = {
@@ -931,13 +941,14 @@ class ClassificationTest(unittest.TestCase):
         }
         self.assertEqual(jb_inspect.classify_status_exit(result), 0)
 
-    def test_status_with_results_is_informational(self):
+    def test_status_with_results_without_verdict_is_unknown(self):
         body = {"has_inspection_results": True, "is_scanning": False}
         result = {
             "status": jb_inspect.status_label(body),
             "clean": jb_inspect.classify_status_body_clean(body),
         }
-        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+        self.assertFalse(result["clean"])
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
     def test_status_session_drift_exits_nonzero(self):
         body = {"session_drift": True, "clean_inspection": True}
@@ -975,12 +986,47 @@ class ClassificationTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(jb_inspect.status_label(body), expected)
 
-    def test_status_explicit_ready_values_exit_zero(self):
-        for status in ("clean", "results_available"):
-            with self.subTest(status=status):
-                body = {"status": status}
-                result = {"status": status, "clean": jb_inspect.classify_status_body_clean(body)}
-                self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+    def test_status_clean_exits_zero(self):
+        body = {"status": "clean"}
+        result = {"status": "clean", "clean": jb_inspect.classify_status_body_clean(body)}
+
+        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_status_results_available_without_proof_exits_nonzero(self):
+        body = {"status": "results_available"}
+        result = {"status": "results_available", "clean": jb_inspect.classify_status_body_clean(body)}
+
+        self.assertEqual(jb_inspect.classify_status_exit(result), 1)
+
+    def test_status_results_available_with_zero_count_exits_zero(self):
+        body = {"status": "results_available", "total_problems": 0}
+        result = {
+            "status": "results_available",
+            "clean": jb_inspect.classify_status_body_clean(body),
+            "total_problems": 0,
+        }
+
+        self.assertEqual(jb_inspect.classify_status_exit(result), 0)
+
+    def test_run_wait_blocker_overrides_plugin_green_verdict(self):
+        problems = {
+            "status": "results_available",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+        }
+        wait = {"timed_out": True}
+
+        summary = jb_inspect.summarize_problems({}, {}, problems)
+        summary["wait"] = wait
+        summary["status"] = jb_inspect.classify_run_status(wait, problems)
+        jb_inspect.apply_verdict(summary)
+
+        self.assertEqual(summary["status"], "timed_out")
+        self.assertEqual(summary["verdict"], "UNKNOWN")
+        self.assertEqual(summary["verdict_reason"], "timeout")
+        self.assertEqual(jb_inspect.classify_run_exit(summary), 1)
 
     def test_status_findings_is_usable_but_not_clean(self):
         body = {"status": "findings"}
@@ -1042,6 +1088,53 @@ class ClassificationTest(unittest.TestCase):
         ):
             with self.subTest(flag=flag):
                 self.assertIs(result[flag], True)
+
+    def test_status_command_preserves_plugin_verdict(self):
+        def fake_resolve_route(args, context):
+            return {"port": 63343, "project_key": "path:/tmp/example"}
+
+        def fake_call_endpoint(route, endpoint, params, timeout=None):
+            return {
+                "has_inspection_results": True,
+                "total_problems": 2,
+                "inspection_verdict": "RED",
+                "inspection_verdict_reason": "actionable_findings",
+                "inspection_verdict_message": "Plugin found problems.",
+                "inspection_verdict_next_action": "Fix them.",
+            }
+
+        original_resolve_route = jb_inspect.resolve_route
+        original_call_endpoint = jb_inspect.call_endpoint
+        jb_inspect.resolve_route = fake_resolve_route
+        jb_inspect.call_endpoint = fake_call_endpoint
+        try:
+            result = jb_inspect.command_status(
+                Namespace(
+                    project_key=None,
+                    session_id=None,
+                    project_path=None,
+                    worktree_path=None,
+                    cwd=None,
+                    project=None,
+                    ide=None,
+                ),
+                {},
+            )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+            jb_inspect.call_endpoint = original_call_endpoint
+
+        self.assertEqual(result["status"], "results_available")
+        self.assertFalse(result["clean"])
+        self.assertEqual(result["verdict"], "RED")
+        self.assertEqual(result["verdict_reason"], "actionable_findings")
+
+    def test_status_results_available_without_zero_count_is_unknown(self):
+        payload = {"status": "results_available", "clean": False, "problems": []}
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
 
     def test_status_usable_values_with_blocker_flags_exit_nonzero(self):
         blocker_flags = (
@@ -1159,6 +1252,22 @@ class EndpointUtilityTest(unittest.TestCase):
         self.assertEqual(summary["cached_total_problems"], 1)
         self.assertEqual(summary["cached_problems_shown"], 1)
         self.assertEqual(summary["problems"], [{"description": "Cached finding"}])
+        self.assertEqual(jb_inspect.classify_problems_exit(summary), 1)
+
+    def test_summarize_problems_uses_total_for_empty_page_findings(self):
+        body = {
+            "status": "results_available",
+            "total_problems": 5,
+            "problems_shown": 0,
+            "problems": [],
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body)
+
+        self.assertFalse(summary["clean"])
+        self.assertEqual(summary["total_problems"], 5)
+        self.assertEqual(summary["verdict"], "RED")
+        self.assertEqual(summary["verdict_reason"], "actionable_findings")
         self.assertEqual(jb_inspect.classify_problems_exit(summary), 1)
 
     def test_command_problems_preserves_requested_include_stale(self):
@@ -1287,6 +1396,89 @@ class EndpointUtilityTest(unittest.TestCase):
 
 
 class HumanOutputTest(unittest.TestCase):
+    def test_verdict_for_clean_payload_is_green(self):
+        payload = {"status": "clean", "clean": True, "total_problems": 0, "problems": []}
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "GREEN")
+        self.assertEqual(verdict["verdict_reason"], "clean_confirmed")
+
+    def test_verdict_for_current_zero_matching_results_is_green(self):
+        payload = {"status": "results_available", "clean": True, "total_problems": 0, "problems": []}
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "GREEN")
+        self.assertEqual(verdict["verdict_reason"], "no_matching_findings")
+
+    def test_verdict_prefers_plugin_provided_contract(self):
+        payload = {
+            "status": "results_available",
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": "plugin_specific_reason",
+            "inspection_verdict_message": "Plugin supplied message.",
+            "inspection_verdict_next_action": "Plugin supplied action.",
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "plugin_specific_reason")
+        self.assertEqual(verdict["verdict_next_action"], "Plugin supplied action.")
+
+    def test_verdict_for_findings_payload_is_red(self):
+        payload = {"status": "findings", "clean": False, "total_problems": 1, "problems": [{"description": "Broken"}]}
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "RED")
+        self.assertEqual(verdict["verdict_reason"], "actionable_findings")
+
+    def test_verdict_for_capture_incomplete_payload_is_unknown_with_guidance(self):
+        payload = {
+            "status": "capture_incomplete",
+            "clean": False,
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "non_empty_unmapped_tree",
+            "total_problems": 0,
+            "problems": [],
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "non_empty_unmapped_tree")
+        self.assertIn("plugin/helper bug", verdict["verdict_next_action"])
+
+    def test_cleanup_failure_overrides_plugin_green_verdict(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "cleanup": {"status": "failed", "reason": "route_missing"},
+            "cleanup_failed": True,
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "cleanup_failed")
+
+    def test_cleanup_skipped_overrides_clean_verdict(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "cleanup": {"status": "skipped", "reason": "missing_close_token"},
+            "cleanup_skipped": True,
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "cleanup_skipped")
+
     def test_print_human_is_concise_by_default(self):
         payload = {
             "status": "findings",
@@ -1310,6 +1502,8 @@ class HumanOutputTest(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("ROUTE: WebStorm", text)
         self.assertIn("STATUS: findings", text)
+        self.assertIn("VERDICT: RED", text)
+        self.assertIn("NEXT_ACTION: Fix the reported findings", text)
         self.assertIn("SUMMARY: clean=False total_problems=1 problems_shown=1", text)
         self.assertIn("src/app.ts:12 Example finding", text)
         self.assertNotIn('"raw"', text)
@@ -1335,6 +1529,8 @@ class HumanOutputTest(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("ROUTE: IntelliJ IDEA", text)
         self.assertIn("STATUS: unknown", text)
+        self.assertIn("VERDICT: UNKNOWN", text)
+        self.assertIn("NEXT_ACTION:", text)
         self.assertIn("FLAGS: capture_incomplete", text)
         self.assertNotIn('"raw"', text)
 
@@ -1360,6 +1556,7 @@ class HumanOutputTest(unittest.TestCase):
 
         text = output.getvalue()
         self.assertIn("CAPTURE_DIAGNOSTIC:", text)
+        self.assertIn("VERDICT: UNKNOWN", text)
         self.assertIn("exit_reason=deadline", text)
         self.assertIn("view_ready_ok=False", text)
         self.assertIn("successful_extraction_count=3", text)
@@ -1385,6 +1582,7 @@ class HumanOutputTest(unittest.TestCase):
 
         text = output.getvalue()
         self.assertIn("STATUS: error", text)
+        self.assertIn("VERDICT: UNKNOWN", text)
         self.assertIn("ERROR: reason=inspection_api_unavailable", text)
         self.assertIn("message=No JetBrains inspection plugin instances discovered.", text)
         self.assertIn("command=closeout", text)

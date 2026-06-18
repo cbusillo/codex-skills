@@ -185,10 +185,16 @@ IDE and must clean it up afterward when it owns the open.
 
 ## Result Policy
 
-- `clean`: inspection passed for the selected scope.
-- findings: fix real findings in touched code before calling work ready.
-- Red-lane proof requires at least one current actionable finding in the helper
-  response, such as `total_problems > 0` with a non-empty `problems` list.
+- `GREEN`: inspection worked and found no actionable findings for the selected
+  scope/filter.
+- `RED`: inspection worked and returned actionable current findings. Fix real
+  findings in touched code before calling work ready.
+- `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
+  "no problems found"; report the verdict reason and next action, because the
+  IDE, plugin, helper, route, or environment needs attention first.
+- Red-lane proof requires current actionable findings in the helper response,
+  such as `total_problems > 0`; a paginated current page may have an empty
+  `problems` list even when matching findings exist.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
