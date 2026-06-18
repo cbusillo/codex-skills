@@ -187,6 +187,11 @@ IDE and must clean it up afterward when it owns the open.
 
 - `clean`: inspection passed for the selected scope.
 - findings: fix real findings in touched code before calling work ready.
+- Red-lane proof requires at least one current actionable finding in the helper
+  response, such as `total_problems > 0` with a non-empty `problems` list.
+  A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
+  zero returned problems proves only that the plugin could not prove clean; it
+  is not proof that agents can see and act on the IDE's red state.
 - readiness closeouts should use `closeout`, not plain `status`. If lifecycle
   cleanup is skipped or fails for a helper-opened project, the closeout is not
   clean; report both the inspection result and cleanup reason.
