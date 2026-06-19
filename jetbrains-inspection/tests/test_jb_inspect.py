@@ -31,6 +31,40 @@ def write_json(path: Path, payload: dict) -> None:
         json.dump(payload, handle)
 
 
+class ParserCommandAliasTest(unittest.TestCase):
+    def test_command_aliases_parse_and_canonicalize(self):
+        parser = jb_inspect.build_parser()
+        aliases = {
+            "list-projects": "list",
+            "resolve-route": "route",
+            "prepare-worktree": "prepare",
+            "open-worktree": "prepare",
+            "inspect": "run",
+            "inspect-closeout": "closeout",
+            "get-status": "status",
+            "get-problems": "problems",
+            "start-inspection": "trigger",
+            "wait-for-inspection": "wait",
+            "claim-worktree": "claim",
+            "cleanup-helper-leases": "cleanup-leases",
+        }
+
+        for alias, canonical in aliases.items():
+            with self.subTest(alias=alias):
+                args = parser.parse_args([alias])
+                self.assertEqual(jb_inspect.canonical_command(args.command), canonical)
+
+    def test_inspect_alias_has_lifecycle_and_scope_options(self):
+        parser = jb_inspect.build_parser()
+
+        args = parser.parse_args(["inspect", "--repo", "/tmp/repo", "--scope", "changed_files", "--no-open"])
+
+        self.assertEqual(jb_inspect.canonical_command(args.command), "run")
+        self.assertEqual(args.repo, "/tmp/repo")
+        self.assertEqual(args.scope, "changed_files")
+        self.assertFalse(args.open)
+
+
 class BuildContextTest(unittest.TestCase):
     def test_reads_github_config_for_jetbrains_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1740,7 +1774,24 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error_reason"], "target_project_not_open")
         self.assertEqual(payload["command"], "route")
-        self.assertIn("lifecycle-open", payload["hint"])
+        self.assertIn("inspect/prepare-worktree", payload["hint"])
+
+    def test_inspect_error_payload_reports_input_alias_command(self):
+        error = jb_inspect.InspectError("No open JetBrains project matched this repo/worktree.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="route", command_input="resolve-route"))
+
+        self.assertEqual(payload["command"], "resolve-route")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+
+    def test_inspect_error_payload_classifies_no_open_lifecycle_miss(self):
+        error = jb_inspect.InspectError("Exact worktree is not open in a JetBrains IDE.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="run", command_input="inspect"))
+
+        self.assertEqual(payload["command"], "inspect")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertIn("inspect/prepare-worktree", payload["hint"])
 
     def test_structured_route_error_reason_overrides_open_wording(self):
         error = jb_inspect.InspectError(
@@ -1752,7 +1803,7 @@ class HumanOutputTest(unittest.TestCase):
         payload = jb_inspect.error_payload(error, Namespace(command="route"))
 
         self.assertEqual(payload["error_reason"], "target_project_not_open")
-        self.assertIn("lifecycle-open", payload["hint"])
+        self.assertIn("inspect/prepare-worktree", payload["hint"])
 
     def test_inspect_error_payload_moves_structured_status_to_last_status(self):
         error = jb_inspect.InspectError(

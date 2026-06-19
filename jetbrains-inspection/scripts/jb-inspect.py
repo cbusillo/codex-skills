@@ -45,6 +45,20 @@ USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
+COMMAND_ALIASES = {
+    "list-projects": "list",
+    "resolve-route": "route",
+    "prepare-worktree": "prepare",
+    "open-worktree": "prepare",
+    "inspect": "run",
+    "inspect-closeout": "closeout",
+    "get-status": "status",
+    "get-problems": "problems",
+    "start-inspection": "trigger",
+    "wait-for-inspection": "wait",
+    "claim-worktree": "claim",
+    "cleanup-helper-leases": "cleanup-leases",
+}
 ROLLOUT_FILE_ENVS = (
     "JB_INSPECT_ROLLOUT_FILE",
     "CODE_ROLLOUT_FILE",
@@ -84,52 +98,54 @@ class HttpResult:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    args.command_input = args.command
+    args.command = canonical_command(args.command)
     try:
         if args.command == "list":
             result = command_list(args)
-            return emit(result, args.json, 0, command=args.command)
+            return emit(result, args.json, 0, command=args.command_input)
         if args.command == "route":
             context = build_context(args)
             result = command_route(args, context)
-            return emit(result, args.json, 0, command=args.command)
+            return emit(result, args.json, 0, command=args.command_input)
         if args.command == "trigger":
             context = build_context(args)
             result = command_trigger(args, context)
-            return emit(result, args.json, 0, command=args.command)
+            return emit(result, args.json, 0, command=args.command_input)
         if args.command == "wait":
             context = build_context(args)
             result = command_wait(args, context)
-            return emit(result, args.json, classify_wait_exit(result), command=args.command)
+            return emit(result, args.json, classify_wait_exit(result), command=args.command_input)
         if args.command == "status":
             context = build_context(args)
             result = command_status(args, context)
-            return emit(result, args.json, classify_status_exit(result), command=args.command)
+            return emit(result, args.json, classify_status_exit(result), command=args.command_input)
         if args.command == "problems":
             context = build_context(args)
             result = command_problems(args, context)
-            return emit(result, args.json, classify_problems_exit(result), command=args.command)
+            return emit(result, args.json, classify_problems_exit(result), command=args.command_input)
         if args.command == "claim":
             context = build_context(args)
             result = command_claim(args, context)
-            return emit(result, args.json, 0, command=args.command)
+            return emit(result, args.json, 0, command=args.command_input)
         if args.command == "prepare":
             context = build_context(args)
             result = command_prepare(args, context)
-            return emit(result, args.json, classify_prepare_exit(result), command=args.command)
+            return emit(result, args.json, classify_prepare_exit(result), command=args.command_input)
         if args.command == "closeout":
             context = build_context(args)
             result = command_closeout(args, context)
-            return emit(result, args.json, classify_closeout_exit(result), command=args.command)
+            return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
-            return emit(result, args.json, 0, command=args.command)
+            return emit(result, args.json, 0, command=args.command_input)
         if args.command == "run":
             context = build_context(args)
             result = command_run(args, context)
-            return emit(result, args.json, classify_run_exit(result), command=args.command)
+            return emit(result, args.json, classify_run_exit(result), command=args.command_input)
     except InspectError as error:
         payload = error_payload(error, args)
-        return emit(payload, getattr(args, "json", False), error.exit_code, command=getattr(args, "command", None))
+        return emit(payload, getattr(args, "json", False), error.exit_code, command=getattr(args, "command_input", getattr(args, "command", None)))
     return 2
 
 
@@ -147,7 +163,7 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
     payload.setdefault("error_message", message)
     payload.setdefault("error_reason", infer_error_reason(error, payload))
     payload.setdefault("exit_code", error.exit_code)
-    command = getattr(args, "command", None)
+    command = getattr(args, "command_input", None) or getattr(args, "command", None)
     if command:
         payload.setdefault("command", command)
     if "hint" not in payload:
@@ -155,6 +171,10 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
         if hint:
             payload["hint"] = hint
     return payload
+
+
+def canonical_command(command: str) -> str:
+    return COMMAND_ALIASES.get(command, command)
 
 
 def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
@@ -173,6 +193,8 @@ def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
         return "timeout"
     if "wrong tree" in message or "exact current worktree" in message:
         return "worktree_route_mismatch"
+    if "exact worktree is not open" in message:
+        return "target_project_not_open"
     if "no open jetbrains project matched" in message:
         return "target_project_not_open"
     if "trusted" in message:
@@ -194,7 +216,7 @@ def hint_for_error_reason(reason: str) -> str | None:
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
         "worktree_route_mismatch": "Open the exact worktree in the IDE or use lifecycle closeout so the helper can claim the correct project.",
-        "target_project_not_open": "Use closeout/prepare to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
+        "target_project_not_open": "Use inspect/prepare-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
         "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
         "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
     }.get(reason)
@@ -205,33 +227,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON only.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    add_common(subparsers.add_parser("list", help="List discovered IDE projects."), include_scope=False)
-    add_common(subparsers.add_parser("route", help="Resolve the target IDE/project route."), include_scope=False)
-    add_common(subparsers.add_parser("trigger", help="Trigger an inspection."), include_scope=True)
-    add_common(subparsers.add_parser("wait", help="Wait for a triggered inspection."), include_scope=False)
-    add_common(subparsers.add_parser("status", help="Fetch current inspection status."), include_scope=False)
-    add_common(subparsers.add_parser("problems", help="Fetch inspection problems."), include_scope=False)
-    add_common(subparsers.add_parser("claim", help="Create a cheap local lifecycle lease without opening an IDE."), include_scope=False)
-    add_common(subparsers.add_parser("prepare", help="Open and claim the exact worktree when needed."), include_scope=False)
-    add_common(subparsers.add_parser("closeout", help="Prepare, inspect, and clean up helper-opened projects."), include_scope=True)
-    subparsers.add_parser("cleanup-leases", help="Remove stale local helper leases.")
-    add_common(subparsers.add_parser("run", help="Resolve, trigger, wait, and fetch problems."), include_scope=True)
+    command_specs = {
+        "list": ("List discovered IDE projects without inspecting.", False, ["list-projects"]),
+        "route": ("Resolve an already-open IDE/project route; does not open projects by default.", False, ["resolve-route"]),
+        "trigger": ("Start an inspection run without waiting for results.", True, ["start-inspection"]),
+        "wait": ("Wait for a previously triggered inspection.", False, ["wait-for-inspection"]),
+        "status": ("Read current route-pinned inspection status.", False, ["get-status"]),
+        "problems": ("Fetch current inspection problem details.", False, ["get-problems"]),
+        "claim": ("Claim an already-open exact worktree without opening an IDE.", False, ["claim-worktree"]),
+        "prepare": ("Open and claim the exact worktree; does not inspect.", False, ["prepare-worktree", "open-worktree"]),
+        "closeout": ("Readiness inspection: open if needed, inspect, and clean up helper-opened projects.", True, ["inspect-closeout"]),
+        "run": ("Inspect now: open if needed, trigger, wait, fetch problems, and clean up helper-opened projects.", True, ["inspect"]),
+    }
+    for name, (help_text, include_scope, aliases) in command_specs.items():
+        add_common(subparsers.add_parser(name, help="Legacy alias."), include_scope=include_scope)
+        for alias in aliases:
+            add_common(subparsers.add_parser(alias, help=help_text), include_scope=include_scope)
+    subparsers.add_parser("cleanup-leases", help="Legacy alias.")
+    subparsers.add_parser("cleanup-helper-leases", help="Remove stale local helper lifecycle leases.")
 
-    for name in ("wait", "run", "closeout"):
+    for name in ("wait", "wait-for-inspection", "run", "inspect", "closeout", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
-    for name in ("prepare", "run", "closeout"):
+    for name in ("prepare", "prepare-worktree", "open-worktree", "run", "inspect", "closeout", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--no-open", dest="open", action="store_false", help="Do not open the IDE if the exact worktree is not already open.")
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
-        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after closeout.")
+        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect/closeout.")
     subparsers.choices["cleanup-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
     subparsers.choices["cleanup-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
+    subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
+    subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     subparsers.choices["problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
-    for name in ("problems", "run", "closeout"):
+    subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
+    for name in ("problems", "get-problems", "run", "inspect", "closeout", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
         subparsers.choices[name].add_argument("--problem-type", default="all")
         subparsers.choices[name].add_argument("--file-pattern", default="all")
@@ -1312,7 +1344,7 @@ def log_unknown_verdict(payload: dict[str, Any]) -> None:
 
 
 def should_log_unknown_verdict(payload: dict[str, Any]) -> bool:
-    command = str(payload.get("command") or "")
+    command = canonical_command(str(payload.get("command") or ""))
     has_failure_evidence = any(
         payload.get(key)
         for key in (

@@ -11,30 +11,40 @@ resources:
     kind: reference
     description: Regression tests for JetBrains inspection helper routing and lifecycle behavior.
 commands:
-  - name: jetbrains-inspection-list
+  - name: jetbrains-inspection-list-projects
     source: skill
     resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "list"]
-    purpose: Lists discovered IDE projects and plugin routes.
-  - name: jetbrains-inspection-route
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "list-projects"]
+    purpose: Lists discovered IDE projects and plugin routes without opening or inspecting.
+  - name: jetbrains-inspection-resolve-route
     source: skill
     resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "route", "--repo", "$PWD"]
-    purpose: Resolves the target IDE and project route for a repository.
-  - name: jetbrains-inspection-closeout
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "resolve-route", "--repo", "$PWD"]
+    purpose: Resolves an already-open target IDE/project route without opening or inspecting.
+  - name: jetbrains-inspection-prepare-worktree
     source: skill
     resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "closeout", "--repo", "$PWD", "--scope", "changed_files"]
-    purpose: Runs the readiness inspection flow with route safety, lifecycle cleanup, and stale-result checks.
-  - name: jetbrains-inspection-status
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "prepare-worktree", "--repo", "$PWD"]
+    purpose: Opens and claims the exact worktree without running inspections.
+  - name: jetbrains-inspection-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "status", "--repo", "$PWD"]
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect", "--repo", "$PWD", "--scope", "changed_files"]
+    purpose: Opens the exact worktree if needed, inspects it, fetches problems, and cleans up helper-opened projects.
+  - name: jetbrains-inspection-inspect-closeout
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect-closeout", "--repo", "$PWD", "--scope", "changed_files"]
+    purpose: Runs the readiness/hand-off inspection flow with route safety, lifecycle cleanup, and stale-result checks.
+  - name: jetbrains-inspection-get-status
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-status", "--repo", "$PWD"]
     purpose: Reads route-pinned inspection status through the helper.
-  - name: jetbrains-inspection-problems
+  - name: jetbrains-inspection-get-problems
     source: skill
     resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "problems", "--repo", "$PWD", "--severity", "error"]
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-problems", "--repo", "$PWD", "--severity", "error"]
     purpose: Fetches current inspection problems through the helper.
 policy:
   command_policies:
@@ -46,11 +56,11 @@ policy:
       preferred:
         - kind: script
           path: scripts/jb-inspect.py
-          example_argv: ["uv", "run", "scripts/jb-inspect.py", "closeout", "--repo", "$PWD", "--scope", "changed_files"]
+          example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect-closeout", "--repo", "$PWD", "--scope", "changed_files"]
           purpose: Runs the readiness inspection flow with route safety, lifecycle cleanup, and stale-result checks.
         - kind: script
           path: scripts/jb-inspect.py
-          example_argv: ["uv", "run", "scripts/jb-inspect.py", "status", "--repo", "$PWD"]
+          example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-status", "--repo", "$PWD"]
           purpose: Reads route-pinned plugin status through the helper.
 ---
 
@@ -66,7 +76,7 @@ Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
 In the common user-skill install, that path is:
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py closeout --repo "$PWD" --scope changed_files
+uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py inspect --repo "$PWD" --scope changed_files
 ```
 
 If this skill was loaded from a repo-local or temporary path, use that loaded
@@ -76,26 +86,40 @@ Useful commands:
 
 ```bash
 HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
-uv run "$HELPER" list
-uv run "$HELPER" route --repo "$PWD"
-uv run "$HELPER" closeout --repo "$PWD" --scope changed_files
-uv run "$HELPER" run --repo "$PWD" --scope changed_files
-uv run "$HELPER" status --repo "$PWD"
-uv run "$HELPER" problems --repo "$PWD" --severity error
+uv run "$HELPER" list-projects
+uv run "$HELPER" resolve-route --repo "$PWD"
+uv run "$HELPER" prepare-worktree --repo "$PWD"
+uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
+uv run "$HELPER" inspect-closeout --repo "$PWD" --scope changed_files
+uv run "$HELPER" get-status --repo "$PWD"
+uv run "$HELPER" get-problems --repo "$PWD" --severity error
 ```
 
-`closeout` is the readiness/hand-off command and must be used before saying a
-change is ready, safe to push, safe to merge, or safe to exit. It creates a local lease,
-serializes helper-owned IDE opens, opens the exact current worktree only when no
-exact route exists, waits for indexing/scanning to settle, runs the same
-inspection loop, and calls the plugin lifecycle close endpoint only for projects
-the helper opened. Projects that were already open before `closeout` must remain
-open. Lifecycle opens use macOS background activation by default to reduce focus
-stealing; when the target IDE is not already running, the helper launches the app
-hidden first and then asks the plugin to open the exact worktree. Use
-`--foreground-open` only when debugging IDE launch behavior.
-Lifecycle closeouts are serialized by a bounded local lock. If another closeout
-is already opening, inspecting, or cleaning up a project, wait for it or increase
+Command model:
+
+- `list-projects`: discover plugin-visible projects only.
+- `resolve-route`: probe for an already-open exact route; it does not open or inspect.
+- `prepare-worktree`: open and claim the exact worktree; it does not inspect.
+- `inspect`: open if needed, inspect, fetch problems, and clean up helper-opened projects.
+- `inspect-closeout`: readiness/hand-off inspection; use before saying a change
+  is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- `get-status` and `get-problems`: route-pinned diagnostics for already-routable projects.
+
+The legacy command names remain supported: `list`, `route`, `prepare`, `run`,
+`closeout`, `status`, and `problems`. Prefer the self-descriptive names above in
+new instructions and reports.
+
+`inspect` and `inspect-closeout` create a local lease, serialize helper-owned IDE
+opens, open the exact current worktree only when no exact route exists, wait for
+indexing/scanning to settle, run the inspection loop, and call the plugin
+lifecycle close endpoint only for projects the helper opened. Projects that were
+already open before inspection must remain open. Lifecycle opens use macOS
+background activation by default to reduce focus stealing; when the target IDE is
+not already running, the helper launches the app hidden first and then asks the
+plugin to open the exact worktree. Use `--foreground-open` only when debugging
+IDE launch behavior.
+Lifecycle inspections are serialized by a bounded local lock. If another helper
+inspection is already opening, inspecting, or cleaning up a project, wait for it or increase
 `--lifecycle-lock-timeout-ms`; do not start parallel auto-open closeouts and
 expect independent IDE windows to race safely.
 
@@ -120,9 +144,9 @@ Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-i
 }
 ```
 
-If an exact worktree is not already open and is outside those roots, `closeout`
-must fail before opening the IDE. Do not use random temp directories for agent
-inspection worktrees.
+If an exact worktree is not already open and is outside those roots, `inspect`,
+`inspect-closeout`, and `prepare-worktree` must fail before opening the IDE. Do
+not use random temp directories for agent inspection worktrees.
 
 If multiple JetBrains products are installed, repo config or CLI arguments must
 select the intended IDE so the helper updates the right Trusted Locations file.
@@ -130,14 +154,14 @@ If a first-time open still stalls after trusted-location and project-opening
 policy seeding, treat it as a blocker: check for unsupported IDE config layout,
 settings sync overwriting the config, a missing inspection plugin, or a product
 that accepted the scheduled open but never registered the worktree. Real-session
-smokes have validated unattended closeout on IntelliJ IDEA, PyCharm, and
+smokes have validated unattended lifecycle inspection on IntelliJ IDEA, PyCharm, and
 WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
 
-`run` is retained as an iterative/backward-compatible inspection loop: prepare
-the exact worktree when needed, trigger, wait, fetch problems, and clean up any
-project it opened. Prefer `closeout` in final validation notes so cleanup status
-is explicit. Use `--include-stale` only when explicitly diagnosing cached stale
-findings; stale results still exit non-zero and are not clean.
+`run` and `closeout` are retained as backward-compatible names for inspection
+flows. Prefer `inspect` for ordinary iteration and `inspect-closeout` for final
+readiness notes so cleanup status is explicit. Use `--include-stale` only when
+explicitly diagnosing cached stale findings; stale results still exit non-zero
+and are not clean.
 
 ## When To Run
 
@@ -180,8 +204,8 @@ when Code is operating in a linked worktree. If routing resolves to another
 worktree, treat that as a blocker unless the user explicitly approves it.
 
 For closeout/readiness, require an exact worktree route. A containing main
-checkout is not enough; `closeout` may open the linked worktree in the preferred
-IDE and must clean it up afterward when it owns the open.
+checkout is not enough; `inspect-closeout` may open the linked worktree in the
+preferred IDE and must clean it up afterward when it owns the open.
 
 ## Result Policy
 
@@ -204,10 +228,10 @@ IDE and must clean it up afterward when it owns the open.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness closeouts should use `closeout`, not plain `status`. If lifecycle
+- readiness closeouts should use `inspect-closeout`, not plain `get-status`. If lifecycle
   cleanup is skipped or fails for a helper-opened project, the closeout is not
   clean; report both the inspection result and cleanup reason.
-- `status` is informational and exits zero only when the helper can retrieve a
+- `get-status` is informational and exits zero only when the helper can retrieve a
   route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
 - `stale_results`, `capture_incomplete`, timeout, indexing, session drift,
