@@ -105,10 +105,6 @@ Command model:
   is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
 - `get-status` and `get-problems`: route-pinned diagnostics for already-routable projects.
 
-The legacy command names remain supported: `list`, `route`, `prepare`, `run`,
-`closeout`, `status`, and `problems`. Prefer the self-descriptive names above in
-new instructions and reports.
-
 `inspect` and `inspect-closeout` create a local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
 indexing/scanning to settle, run the inspection loop, and call the plugin
@@ -120,7 +116,7 @@ plugin to open the exact worktree. Use `--foreground-open` only when debugging
 IDE launch behavior.
 Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it or increase
-`--lifecycle-lock-timeout-ms`; do not start parallel auto-open closeouts and
+`--lifecycle-lock-timeout-ms`; do not start parallel auto-open inspections and
 expect independent IDE windows to race safely.
 
 Auto-open is allowed only for worktrees under globally trusted roots. Before a
@@ -157,11 +153,10 @@ that accepted the scheduled open but never registered the worktree. Real-session
 smokes have validated unattended lifecycle inspection on IntelliJ IDEA, PyCharm, and
 WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
 
-`run` and `closeout` are retained as backward-compatible names for inspection
-flows. Prefer `inspect` for ordinary iteration and `inspect-closeout` for final
-readiness notes so cleanup status is explicit. Use `--include-stale` only when
-explicitly diagnosing cached stale findings; stale results still exit non-zero
-and are not clean.
+Use `inspect` for ordinary iteration and `inspect-closeout` for final readiness
+notes so cleanup status is explicit. Use `--include-stale` only when explicitly
+diagnosing cached stale findings; stale results still exit non-zero and are not
+clean.
 
 ## When To Run
 
@@ -203,7 +198,7 @@ Inspect the worktree being edited. Do not silently inspect the main worktree
 when Code is operating in a linked worktree. If routing resolves to another
 worktree, treat that as a blocker unless the user explicitly approves it.
 
-For closeout/readiness, require an exact worktree route. A containing main
+For readiness inspection, require an exact worktree route. A containing main
 checkout is not enough; `inspect-closeout` may open the linked worktree in the
 preferred IDE and must clean it up afterward when it owns the open.
 
@@ -228,8 +223,8 @@ preferred IDE and must clean it up afterward when it owns the open.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness closeouts should use `inspect-closeout`, not plain `get-status`. If lifecycle
-  cleanup is skipped or fails for a helper-opened project, the closeout is not
+- readiness inspections should use `inspect-closeout`, not plain `get-status`. If lifecycle
+  cleanup is skipped or fails for a helper-opened project, the inspection is not
   clean; report both the inspection result and cleanup reason.
 - `get-status` is informational and exits zero only when the helper can retrieve a
   route-pinned status that is not stale, inconclusive, unavailable, ambiguous,

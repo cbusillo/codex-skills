@@ -45,6 +45,20 @@ USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
+PREFERRED_COMMANDS = {
+    "list": "list-projects",
+    "route": "resolve-route",
+    "trigger": "start-inspection",
+    "wait": "wait-for-inspection",
+    "status": "get-status",
+    "problems": "get-problems",
+    "claim": "claim-worktree",
+    "prepare": "prepare-worktree",
+    "open-worktree": "prepare-worktree",
+    "closeout": "inspect-closeout",
+    "run": "inspect",
+    "cleanup-leases": "cleanup-helper-leases",
+}
 COMMAND_ALIASES = {
     "list-projects": "list",
     "resolve-route": "route",
@@ -97,8 +111,7 @@ class HttpResult:
 
 def main() -> int:
     parser = build_parser()
-    args = parser.parse_args()
-    args.command_input = args.command
+    args = parse_cli_args(parser)
     args.command = canonical_command(args.command)
     try:
         if args.command == "list":
@@ -165,7 +178,7 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
     payload.setdefault("exit_code", error.exit_code)
     command = getattr(args, "command_input", None) or getattr(args, "command", None)
     if command:
-        payload.setdefault("command", command)
+        payload.setdefault("command", preferred_command(str(command)))
     if "hint" not in payload:
         hint = hint_for_error_reason(str(payload.get("error_reason") or ""))
         if hint:
@@ -175,6 +188,30 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
 
 def canonical_command(command: str) -> str:
     return COMMAND_ALIASES.get(command, command)
+
+
+def preferred_command(command: str) -> str:
+    return PREFERRED_COMMANDS.get(command, command)
+
+
+def normalize_command_argv(argv: list[str]) -> list[str]:
+    normalized = list(argv)
+    for index, token in enumerate(normalized):
+        if token == "--":
+            break
+        if token.startswith("-"):
+            continue
+        normalized[index] = preferred_command(token)
+        break
+    return normalized
+
+
+def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    normalized_argv = normalize_command_argv(raw_argv)
+    args = parser.parse_args(normalized_argv)
+    args.command_input = args.command
+    return args
 
 
 def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
@@ -215,8 +252,8 @@ def hint_for_error_reason(reason: str) -> str | None:
         "invalid_api_response": "Check the installed inspection plugin version and IDE logs; the helper could not parse the API response.",
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
-        "worktree_route_mismatch": "Open the exact worktree in the IDE or use lifecycle closeout so the helper can claim the correct project.",
-        "target_project_not_open": "Use inspect/prepare-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
+        "worktree_route_mismatch": "Open the exact worktree in the IDE or use inspect-closeout so the helper can claim the correct project.",
+        "target_project_not_open": "Use inspect or prepare-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
         "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
         "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
     }.get(reason)
@@ -228,42 +265,36 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     command_specs = {
-        "list": ("List discovered IDE projects without inspecting.", False, ["list-projects"]),
-        "route": ("Resolve an already-open IDE/project route; does not open projects by default.", False, ["resolve-route"]),
-        "trigger": ("Start an inspection run without waiting for results.", True, ["start-inspection"]),
-        "wait": ("Wait for a previously triggered inspection.", False, ["wait-for-inspection"]),
-        "status": ("Read current route-pinned inspection status.", False, ["get-status"]),
-        "problems": ("Fetch current inspection problem details.", False, ["get-problems"]),
-        "claim": ("Claim an already-open exact worktree without opening an IDE.", False, ["claim-worktree"]),
-        "prepare": ("Open and claim the exact worktree; does not inspect.", False, ["prepare-worktree", "open-worktree"]),
-        "closeout": ("Readiness inspection: open if needed, inspect, and clean up helper-opened projects.", True, ["inspect-closeout"]),
-        "run": ("Inspect now: open if needed, trigger, wait, fetch problems, and clean up helper-opened projects.", True, ["inspect"]),
+        "list-projects": ("List discovered IDE projects without inspecting.", False),
+        "resolve-route": ("Resolve an already-open IDE/project route; does not open projects by default.", False),
+        "start-inspection": ("Start an inspection run without waiting for results.", True),
+        "wait-for-inspection": ("Wait for a previously triggered inspection.", False),
+        "get-status": ("Read current route-pinned inspection status.", False),
+        "get-problems": ("Fetch current inspection problem details.", False),
+        "claim-worktree": ("Claim an already-open exact worktree without opening an IDE.", False),
+        "prepare-worktree": ("Open and claim the exact worktree; does not inspect.", False),
+        "inspect-closeout": ("Readiness inspection: open if needed, inspect, and clean up helper-opened projects.", True),
+        "inspect": ("Inspect now: open if needed, trigger, wait, fetch problems, and clean up helper-opened projects.", True),
     }
-    for name, (help_text, include_scope, aliases) in command_specs.items():
-        add_common(subparsers.add_parser(name, help="Legacy alias."), include_scope=include_scope)
-        for alias in aliases:
-            add_common(subparsers.add_parser(alias, help=help_text), include_scope=include_scope)
-    subparsers.add_parser("cleanup-leases", help="Legacy alias.")
+    for name, (help_text, include_scope) in command_specs.items():
+        add_common(subparsers.add_parser(name, help=help_text), include_scope=include_scope)
     subparsers.add_parser("cleanup-helper-leases", help="Remove stale local helper lifecycle leases.")
 
-    for name in ("wait", "wait-for-inspection", "run", "inspect", "closeout", "inspect-closeout"):
+    for name in ("wait-for-inspection", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
-    for name in ("prepare", "prepare-worktree", "open-worktree", "run", "inspect", "closeout", "inspect-closeout"):
+    for name in ("prepare-worktree", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--no-open", dest="open", action="store_false", help="Do not open the IDE if the exact worktree is not already open.")
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
-        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect/closeout.")
-    subparsers.choices["cleanup-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
-    subparsers.choices["cleanup-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
+        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
     subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
     subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
-    subparsers.choices["problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
     subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
-    for name in ("problems", "get-problems", "run", "inspect", "closeout", "inspect-closeout"):
+    for name in ("get-problems", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
         subparsers.choices[name].add_argument("--problem-type", default="all")
         subparsers.choices[name].add_argument("--file-pattern", default="all")
@@ -284,7 +315,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--repo", default=".", help="Repo/worktree path to inspect. Defaults to cwd.")
     command.add_argument("--port", type=int, help="Use a specific IDE built-in server port.")
     command.add_argument("--ide", help="Preferred IDE selector, e.g. PyCharm, IntelliJ, WebStorm.")
-    command.add_argument("--project-key", help="Stable project key returned by route/list.")
+    command.add_argument("--project-key", help="Stable project key returned by resolve-route or list-projects.")
     command.add_argument("--project-path", help="Project root/path selector.")
     command.add_argument("--worktree-path", help="Worktree path selector.")
     command.add_argument("--cwd", help="Cwd selector passed to the route API.")
@@ -652,7 +683,7 @@ def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) 
         diagnostic["next_action"] = f"Open the worktree in {target_ide} with the inspection plugin installed and up to date for that IDE, or update repo config/--ide to one of the discovered JetBrains products."
     elif matching_identities and not matching_projects:
         diagnostic["reason"] = "target_ide_running_without_target_project"
-        diagnostic["next_action"] = "Open the exact worktree in the configured IDE, check for a pending Trust Project, safe-mode, or open-project prompt, verify that IDE has the inspection plugin installed and up to date, or allow lifecycle closeout to open it under a trusted root."
+        diagnostic["next_action"] = "Open the exact worktree in the configured IDE, check for a pending Trust Project, safe-mode, or open-project prompt, verify that IDE has the inspection plugin installed and up to date, or allow inspect-closeout to open it under a trusted root."
     elif not identities:
         diagnostic["reason"] = "no_plugin_instances_discovered"
         diagnostic["next_action"] = "Launch the configured JetBrains IDE with the inspection plugin installed; if an IDE was launched hidden/background, also check whether it is blocked before plugin registration by a Trust Project, safe-mode, or open-project prompt."
@@ -835,7 +866,7 @@ def claim_lifecycle(
     project_instance_id = route.get("project_instance_id")
     if not project_instance_id:
         raise InspectError(
-            "Inspection plugin route does not include project_instance_id; install the updated plugin before lifecycle closeout.",
+            "Inspection plugin route does not include project_instance_id; install the updated plugin before inspect-closeout.",
             3,
             {"route": route},
         )
@@ -1199,7 +1230,7 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
         return {
             "verdict": "UNKNOWN",
             "verdict_reason": reason,
-            "verdict_message": "Inspection closeout did not complete cleanly after inspection.",
+            "verdict_message": "Readiness inspection did not complete cleanly after inspection.",
             "verdict_next_action": next_action_for_unknown(reason, payload),
         }
 
@@ -1313,7 +1344,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "session_drift":
         return "Resolve the route again and rerun; the IDE/plugin session changed."
     if reason.startswith("cleanup_"):
-        return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun closeout after cleanup succeeds."
+        return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
         return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
     return "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
@@ -1386,13 +1417,14 @@ def code_home() -> Path:
 
 def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     public = public_payload(payload)
+    command = public.get("command")
     context = public.get("context") if isinstance(public.get("context"), dict) else {}
     route = public.get("route") if isinstance(public.get("route"), dict) else {}
     wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
     cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
     record: dict[str, Any] = {
         "timestamp": utc_timestamp(),
-        "command": public.get("command"),
+        "command": preferred_command(str(command)) if command else None,
         "verdict": public.get("verdict"),
         "verdict_reason": public.get("verdict_reason"),
         "verdict_message": public.get("verdict_message"),
@@ -1541,7 +1573,9 @@ def classify_status_exit(result: dict[str, Any]) -> int:
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str | None = None) -> int:
     if command is not None:
-        payload.setdefault("command", command)
+        payload["command"] = preferred_command(command)
+    elif payload.get("command"):
+        payload["command"] = preferred_command(str(payload["command"]))
     apply_verdict(payload)
     log_unknown_verdict(payload)
     payload = public_payload(payload)
@@ -2227,7 +2261,7 @@ class lifecycle_lock:
                             {
                                 "lock_path": str(path),
                                 "timeout_ms": self.timeout_ms,
-                                "hint": "Another prepare/closeout is running. Wait for it to finish, increase --lifecycle-lock-timeout-ms, or run lifecycle closeouts sequentially.",
+                                "hint": "Another lifecycle inspection is running. Wait for it to finish, increase --lifecycle-lock-timeout-ms, or run lifecycle inspections sequentially.",
                             },
                         ) from error
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
@@ -2418,7 +2452,7 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
         raise InspectError(f"Cannot verify exact worktree route: {error}", 3, {"route": route, "context": public_context(context)}) from error
     if route_path != worktree_path:
         raise InspectError(
-            "Lifecycle closeout requires the exact current worktree to be open in the IDE.",
+            "Lifecycle inspection requires the exact current worktree to be open in the IDE.",
             3,
             {"route_base_path": str(route_path), "worktree_root": str(worktree_path)},
         )
