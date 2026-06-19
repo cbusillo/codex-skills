@@ -31,6 +31,75 @@ def write_json(path: Path, payload: dict) -> None:
         json.dump(payload, handle)
 
 
+class ParserCommandAliasTest(unittest.TestCase):
+    def test_preferred_commands_parse_and_canonicalize(self):
+        parser = jb_inspect.build_parser()
+        commands = {
+            "list-projects": "list",
+            "resolve-route": "route",
+            "prepare-worktree": "prepare",
+            "inspect": "run",
+            "inspect-closeout": "closeout",
+            "get-status": "status",
+            "get-problems": "problems",
+            "start-inspection": "trigger",
+            "wait-for-inspection": "wait",
+            "claim-worktree": "claim",
+            "cleanup-helper-leases": "cleanup-leases",
+        }
+
+        for command, canonical in commands.items():
+            with self.subTest(command=command):
+                args = parser.parse_args([command])
+                self.assertEqual(jb_inspect.canonical_command(args.command), canonical)
+
+    def test_compatibility_commands_parse_as_preferred_commands(self):
+        parser = jb_inspect.build_parser()
+        commands = {
+            "list": ("list-projects", "list"),
+            "route": ("resolve-route", "route"),
+            "prepare": ("prepare-worktree", "prepare"),
+            "open-worktree": ("prepare-worktree", "prepare"),
+            "run": ("inspect", "run"),
+            "closeout": ("inspect-closeout", "closeout"),
+            "status": ("get-status", "status"),
+            "problems": ("get-problems", "problems"),
+            "trigger": ("start-inspection", "trigger"),
+            "wait": ("wait-for-inspection", "wait"),
+            "claim": ("claim-worktree", "claim"),
+            "cleanup-leases": ("cleanup-helper-leases", "cleanup-leases"),
+        }
+
+        for command, (preferred, canonical) in commands.items():
+            with self.subTest(command=command):
+                args = jb_inspect.parse_cli_args(parser, [command])
+                self.assertEqual(args.command, preferred)
+                self.assertEqual(args.command_input, preferred)
+                self.assertEqual(jb_inspect.canonical_command(args.command), canonical)
+
+    def test_help_lists_only_preferred_commands(self):
+        parser = jb_inspect.build_parser()
+
+        help_text = parser.format_help()
+
+        for command in ("list-projects", "resolve-route", "prepare-worktree", "inspect", "inspect-closeout", "get-status", "get-problems"):
+            self.assertIn(command, help_text)
+        self.assertNotIn("Legacy alias", help_text)
+        choices = parser._subparsers._group_actions[0].choices
+        for command in ("list", "route", "prepare", "run", "closeout", "status", "problems", "trigger", "wait", "claim", "cleanup-leases"):
+            self.assertNotIn(command, choices)
+
+    def test_inspect_alias_has_lifecycle_and_scope_options(self):
+        parser = jb_inspect.build_parser()
+
+        args = parser.parse_args(["inspect", "--repo", "/tmp/repo", "--scope", "changed_files", "--no-open"])
+
+        self.assertEqual(jb_inspect.canonical_command(args.command), "run")
+        self.assertEqual(args.repo, "/tmp/repo")
+        self.assertEqual(args.scope, "changed_files")
+        self.assertFalse(args.open)
+
+
 class BuildContextTest(unittest.TestCase):
     def test_reads_github_config_for_jetbrains_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1728,9 +1797,48 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error_reason"], "inspection_api_unavailable")
         self.assertEqual(payload["error_message"], "No JetBrains inspection plugin instances discovered.")
-        self.assertEqual(payload["command"], "closeout")
+        self.assertEqual(payload["command"], "inspect-closeout")
         self.assertEqual(payload["exit_code"], 3)
         self.assertIn("Open the repo", payload["hint"])
+
+    def test_inspect_error_payload_classifies_target_project_not_open(self):
+        error = jb_inspect.InspectError("No open JetBrains project matched this repo/worktree.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="resolve-route"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertEqual(payload["command"], "resolve-route")
+        self.assertIn("inspect or prepare-worktree", payload["hint"])
+
+    def test_inspect_error_payload_reports_input_alias_command(self):
+        error = jb_inspect.InspectError("No open JetBrains project matched this repo/worktree.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="route", command_input="resolve-route"))
+
+        self.assertEqual(payload["command"], "resolve-route")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+
+    def test_inspect_error_payload_classifies_no_open_lifecycle_miss(self):
+        error = jb_inspect.InspectError("Exact worktree is not open in a JetBrains IDE.", 3)
+
+        payload = jb_inspect.error_payload(error, Namespace(command="run", command_input="inspect"))
+
+        self.assertEqual(payload["command"], "inspect")
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertIn("inspect or prepare-worktree", payload["hint"])
+
+    def test_structured_route_error_reason_overrides_open_wording(self):
+        error = jb_inspect.InspectError(
+            "No open JetBrains project matched this repo/worktree.",
+            3,
+            {"error_reason": "target_project_not_open"},
+        )
+
+        payload = jb_inspect.error_payload(error, Namespace(command="resolve-route"))
+
+        self.assertEqual(payload["error_reason"], "target_project_not_open")
+        self.assertIn("inspect or prepare-worktree", payload["hint"])
 
     def test_inspect_error_payload_moves_structured_status_to_last_status(self):
         error = jb_inspect.InspectError(
@@ -1739,7 +1847,7 @@ class HumanOutputTest(unittest.TestCase):
             {"status": {"status": "indexing", "indexing": True}},
         )
 
-        payload = jb_inspect.error_payload(error, Namespace(command="closeout"))
+        payload = jb_inspect.error_payload(error, Namespace(command="inspect-closeout"))
 
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["last_status"], {"status": "indexing", "indexing": True})
@@ -1749,7 +1857,7 @@ class HumanOutputTest(unittest.TestCase):
     def test_inspect_error_payload_turns_scalar_status_into_reason(self):
         error = jb_inspect.InspectError("Lifecycle lock timed out.", 3, {"status": "timeout"})
 
-        payload = jb_inspect.error_payload(error, Namespace(command="closeout"))
+        payload = jb_inspect.error_payload(error, Namespace(command="inspect-closeout"))
 
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["reason"], "timeout")
@@ -1759,7 +1867,7 @@ class HumanOutputTest(unittest.TestCase):
     def test_json_error_payload_is_structured(self):
         payload = jb_inspect.error_payload(
             jb_inspect.InspectError("Inspection API returned invalid JSON: boom", 3),
-            Namespace(command="problems"),
+            Namespace(command="get-problems"),
         )
         output = io.StringIO()
 
@@ -1770,7 +1878,7 @@ class HumanOutputTest(unittest.TestCase):
         body = json.loads(output.getvalue())
         self.assertEqual(body["status"], "error")
         self.assertEqual(body["error_reason"], "invalid_api_response")
-        self.assertEqual(body["command"], "problems")
+        self.assertEqual(body["command"], "get-problems")
         self.assertEqual(body["exit_code"], 3)
 
 
@@ -1780,7 +1888,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
             log_path = Path(tmp) / "unknown.jsonl"
             rollout_path = Path(tmp) / "rollout-123.jsonl"
             payload = {
-                "command": "closeout",
+                "command": "inspect-closeout",
                 "status": "capture_incomplete",
                 "capture_incomplete_reason": "non_empty_unmapped_tree",
                 "verdict": "UNKNOWN",
@@ -1842,6 +1950,68 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertFalse(log_path.exists())
             body = json.loads(output.getvalue())
             self.assertNotIn("unknown_log_path", body)
+
+    def test_emit_does_not_log_informational_command_unknowns(self):
+        cases = [
+            ("list-projects", {"status": "ok", "projects": []}),
+            ("resolve-route", {"status": "resolved", "route": {}}),
+            ("start-inspection", {"status": "triggered"}),
+            ("claim-worktree", {"status": "claimed"}),
+            ("prepare-worktree", {"status": "prepared"}),
+            ("cleanup-helper-leases", {"status": "ok", "removed": []}),
+        ]
+        for command, payload in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                log_path = Path(tmp) / "unknown.jsonl"
+
+                output = io.StringIO()
+                with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                    with redirect_stdout(output):
+                        exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0, command=command)
+
+                self.assertEqual(exit_code, 0)
+                self.assertFalse(log_path.exists())
+                body = json.loads(output.getvalue())
+                self.assertEqual(body["command"], command)
+                self.assertEqual(body["verdict"], "UNKNOWN")
+                self.assertNotIn("unknown_log_path", body)
+
+    def test_emit_logs_error_unknown_even_when_command_is_resolve_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            payload = {
+                "command": "resolve-route",
+                "status": "error",
+                "error_reason": "ide_open_failed",
+                "verdict": "UNKNOWN",
+                "verdict_reason": "ide_open_failed",
+            }
+
+            with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                exit_code = jb_inspect.emit(payload, json_only=True, exit_code=1)
+
+            self.assertEqual(exit_code, 1)
+            records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["verdict_reason"], "ide_open_failed")
+
+    def test_unknown_log_records_preferred_command_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "unknown.jsonl"
+            payload = {
+                "command": "route",
+                "status": "error",
+                "error_reason": "ide_open_failed",
+                "verdict": "UNKNOWN",
+                "verdict_reason": "ide_open_failed",
+            }
+
+            with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                jb_inspect.log_unknown_verdict(payload)
+
+            records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["command"], "resolve-route")
 
     def test_unknown_log_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
