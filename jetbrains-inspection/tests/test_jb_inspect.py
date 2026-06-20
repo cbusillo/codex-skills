@@ -132,6 +132,20 @@ class BuildContextTest(unittest.TestCase):
             self.assertEqual(context["project_path"], str((root / "packages" / "app").resolve()))
             self.assertTrue(context["main_worktree"].endswith("Developer/example-main"))
 
+    def test_nested_idea_project_remains_requested_project_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            nested = root / "test-fixtures" / "inspection-red-lane-webstorm"
+            (nested / ".idea").mkdir(parents=True)
+
+            args = Namespace(repo=str(nested), ide=None, scope=None)
+            context = jb_inspect.build_context(args)
+
+            self.assertEqual(context["repo_path"], str(nested.resolve()))
+            self.assertEqual(context["project_path"], str(nested.resolve()))
+            self.assertEqual(context["worktree_root"], str(root.resolve()))
+
 
 class WorktreeSafetyTest(unittest.TestCase):
     def test_rejects_route_outside_current_worktree(self):
@@ -183,6 +197,15 @@ class WorktreeSafetyTest(unittest.TestCase):
 
         self.assertEqual(routes[0], child)
 
+    def test_route_sort_key_prefers_exact_nested_project_for_equal_scores(self):
+        context = {"worktree_root": "/tmp/repo", "exact_route_path": "/tmp/repo/packages/app"}
+        parent = {"score": 930, "base_path": "/tmp/repo"}
+        child = {"score": 930, "base_path": "/tmp/repo/packages/app"}
+
+        routes = sorted([parent, child], key=lambda route: jb_inspect.route_sort_key(route, context), reverse=True)
+
+        self.assertEqual(routes[0], child)
+
     def test_route_sort_key_prefers_deeper_containing_project_for_equal_scores(self):
         context = {"worktree_root": "/tmp/repo/packages/app/src/main"}
         parent = {"score": 930, "base_path": "/tmp/repo"}
@@ -191,6 +214,12 @@ class WorktreeSafetyTest(unittest.TestCase):
         routes = sorted([parent, child], key=lambda route: jb_inspect.route_sort_key(route, context), reverse=True)
 
         self.assertEqual(routes[0], child)
+
+    def test_flat_project_matches_exact_nested_project(self):
+        project = {"base_path": "/tmp/repo/packages/app"}
+        context = {"worktree_root": "/tmp/repo", "project_path": "/tmp/repo/packages/app", "exact_route_path": "/tmp/repo/packages/app"}
+
+        self.assertTrue(jb_inspect.flat_project_matches_context(project, context))
 
 
 class LifecycleTest(unittest.TestCase):
@@ -1339,6 +1368,22 @@ class EndpointUtilityTest(unittest.TestCase):
         self.assertEqual(summary["verdict_reason"], "actionable_findings")
         self.assertEqual(jb_inspect.classify_problems_exit(summary), 1)
 
+    def test_summarize_problems_proof_failure_overrides_plugin_green_verdict(self):
+        body = {
+            "status": "results_available",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+            "proof_failures": ["resolved_project_path does not match requested_path"],
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body)
+
+        self.assertEqual(summary["verdict"], "UNKNOWN")
+        self.assertEqual(summary["verdict_reason"], "inspection_proof_failed")
+        self.assertEqual(summary["proof_failures"], ["resolved_project_path does not match requested_path"])
+
     def test_command_problems_preserves_requested_include_stale(self):
         calls = []
 
@@ -1534,6 +1579,24 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(verdict["verdict"], "UNKNOWN")
         self.assertEqual(verdict["verdict_reason"], "cleanup_failed")
+
+    def test_proof_failure_overrides_plugin_green_verdict(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+            "proof_failures": [
+                "resolved_project_path does not match requested_path",
+                "scope_file_count is zero for changed_files",
+            ],
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "inspection_proof_failed")
 
     def test_cleanup_skipped_overrides_clean_verdict(self):
         payload = {
