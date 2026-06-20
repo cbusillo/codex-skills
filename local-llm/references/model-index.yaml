@@ -38,7 +38,35 @@ curated_models:
     tested:
       date: 2026-06-01
       hardware: Apple M4 Max, 128 GB RAM
-      notes: Usable after increasing max_tokens; not the default.
+      notes: >-
+        Usable after increasing max_tokens; replaced by
+        qwen/qwen3.6-35b-a3b in the 2026-06-20 local promotion pass.
+  qwen/qwen3.6-35b-a3b:
+    provider_family: qwen
+    runtime: lm_studio
+    locality: local_or_trusted_lan
+    roles:
+      - deep_second_opinion
+      - dense_trace_review
+    strengths:
+      - current Qwen deep candidate
+      - strong rollout-friction review after increasing output budget
+      - >-
+        smaller and faster locally than Mistral Medium 3.5 in the promotion
+        bakeoff
+    weaknesses:
+      - >-
+        returns no assistant content on tiny output budgets because reasoning
+        consumes the budget
+      - needs larger max_tokens than quick scout models
+    recommended_min_output_tokens: 5000
+    tested:
+      date: 2026-06-20
+      hardware: Apple M4 Max, 128 GB RAM
+      notes: >-
+        Failed tiny smoke and 1800-token rollout runs with no assistant content,
+        then produced a clean rollout-friction review at 5000 max_tokens in
+        79.45s. Promoted as deep candidate, not quick scout.
   qwen3-coder-next:
     provider_family: qwen
     runtime: lm_studio
@@ -98,22 +126,37 @@ curated_models:
       - OpenAI-compatible server works with the bundled local chat helper
       - promising large-MoE local second opinion for private workflows
     weaknesses:
-      - requires separate DS4 runtime, build, model directory, and server lifecycle
+      - >-
+        requires separate DS4 runtime, build, model directory, and server
+        lifecycle
       - cold-load cost was about two minutes in one CLI rollout-style run
-      - CLI expects the DS4 checkout as cwd unless model and shader paths are handled by a wrapper
-      - leaked analysis-style content on the first real rollout-friction bake-off and hit the output budget before finishing the requested report
-      - removed locally after the bake-off because it did not beat the simpler LM Studio stack
+      - >-
+        CLI expects the DS4 checkout as cwd unless model and shader paths are
+        handled by a wrapper
+      - >-
+        leaked analysis-style content on the first real rollout-friction
+        bake-off and hit the output budget before finishing the requested report
+      - >-
+        removed locally after the bake-off because it did not beat the simpler
+        LM Studio stack
     recommended_min_output_tokens: 800
     tested:
       date: 2026-06-15
       hardware: Apple M4 Max, 128 GB RAM
-      notes: Tested with antirez/ds4 d881f2a and DeepSeek V4 Flash q2-imatrix GGUF. It passed a small structured JSON smoke test and the OpenAI-compatible server path, but qwen3-coder-64b beat it on the 2026-06-15 real rollout-friction bake-off because DS4 spent the answer budget on analysis-style preamble. Removed locally after the bake-off; do not reinstall unless DS4 gains a reliable final-answer mode or a future model materially changes the tradeoff.
+      notes: >-
+        Tested with antirez/ds4 d881f2a and DeepSeek V4 Flash q2-imatrix GGUF.
+        It passed a small structured JSON smoke test and the OpenAI-compatible
+        server path, but qwen3-coder-64b beat it on the 2026-06-15 real
+        rollout-friction bake-off because DS4 spent the answer budget on
+        analysis-style preamble. Removed locally after the bake-off; do not
+        reinstall unless DS4 gains a reliable final-answer mode or a future
+        model materially changes the tradeoff.
 model_roles:
   rollout_scout:
     description: Advisory review of redacted rollout-friction analyzer reports.
     primary: qwen3-coder-64b
     fast: qwen3-coder-next
-    deep: qwen_qwen3.5-122b-a10b
+    deep: qwen/qwen3.6-35b-a3b
     small: devstral-small-2-24b-instruct-2512
     temperature: 0.2
     max_tokens: 900
@@ -121,7 +164,8 @@ model_roles:
     load_policy: jit_chat
     ttl_seconds: 300
   rollout_memory_review:
-    description: Trusted-local review of broad rollout-memory extraction batches.
+    description: >-
+      Trusted-local review of broad rollout-memory extraction batches.
     primary: qwen3-coder-64b
     fallback: qwen3-coder-next
     temperature: 0.1
@@ -132,7 +176,8 @@ model_roles:
       context_length: 131072
       flash_attention: true
   work_brief_writer:
-    description: Trusted-local synthesis of GitHub work briefs from evidence JSON.
+    description: >-
+      Trusted-local synthesis of GitHub work briefs from evidence JSON.
     primary: qwen3-coder-64b
     fallback: qwen3-coder-next
     temperature: 0.2
@@ -144,10 +189,10 @@ model_roles:
       flash_attention: true
   deep_second_opinion:
     description: Deliberate second pass when quality matters more than latency.
-    primary: qwen_qwen3.5-122b-a10b
+    primary: qwen/qwen3.6-35b-a3b
     fallback: qwen3-coder-64b
     temperature: 0.1
-    max_tokens: 2400
+    max_tokens: 5000
     timeout_seconds: 420
   smoke_test:
     description: Short endpoint and model health check.
