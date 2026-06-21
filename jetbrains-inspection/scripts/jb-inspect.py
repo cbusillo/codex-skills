@@ -85,6 +85,7 @@ VERDICT_SOURCE_KEYS = (
     "inspection_verdict_reason",
     "inspection_verdict_message",
     "inspection_verdict_next_action",
+    "proof_failures",
 )
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
@@ -338,6 +339,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     repo_path = repo_arg if repo_arg.is_absolute() else Path.cwd() / repo_arg
     repo_path = repo_path.resolve()
     worktree_root = git_root(repo_path) or repo_path
+    explicit_project_path = repo_path if repo_path != worktree_root and (repo_path / ".idea").is_dir() else None
     main_worktree = git_common_worktree(worktree_root)
     config = read_repo_config(worktree_root)
     jetbrains = config.get("jetbrains", {}) if isinstance(config.get("jetbrains"), dict) else {}
@@ -359,7 +361,8 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "repo_path": str(repo_path),
         "worktree_root": str(worktree_root),
         "main_worktree": str(main_worktree) if main_worktree else None,
-        "project_path": str(configured_project_path or worktree_root),
+        "project_path": str(configured_project_path or explicit_project_path or worktree_root),
+        "exact_route_path": str(configured_project_path or explicit_project_path or worktree_root),
         "ide": ide,
         "scope": scope,
         "worktree_strategy": worktree_strategy,
@@ -746,7 +749,7 @@ def flat_project_matches_context(project: dict[str, Any], context: dict[str, Any
         context,
     ):
         return False
-    target = context.get("worktree_root") or context.get("project_path")
+    target = context.get("exact_route_path") or context.get("project_path") or context.get("worktree_root")
     base_path = project.get("base_path")
     if not target or not base_path:
         return False
@@ -1250,6 +1253,14 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_reason": blocker_reason,
             "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
             "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
+        }
+
+    if payload.get("proof_failures"):
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": "inspection_proof_failed",
+            "verdict_message": "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
+            "verdict_next_action": next_action_for_unknown("inspection_proof_failed", payload),
         }
 
     plugin_verdict = payload.get("inspection_verdict")
@@ -2425,10 +2436,10 @@ def ensure_worktree_safe(route: dict[str, Any], context: dict[str, Any], args: a
 
 def route_sort_key(route: dict[str, Any], context: dict[str, Any]) -> tuple[int, int, int]:
     route_base = route.get("base_path")
-    worktree_root = context.get("worktree_root")
+    exact_route_path = context.get("exact_route_path") or context.get("worktree_root")
     try:
         route_path = Path(str(route_base)).resolve() if route_base else None
-        worktree_path = Path(str(worktree_root)).resolve() if worktree_root else None
+        worktree_path = Path(str(exact_route_path)).resolve() if exact_route_path else None
     except OSError:
         route_path = None
         worktree_path = None
@@ -2442,12 +2453,12 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
     if args.no_worktree_check:
         return
     route_base = route.get("base_path")
-    worktree_root = context.get("worktree_root")
-    if not route_base or not worktree_root:
+    exact_route_path = context.get("exact_route_path") or context.get("worktree_root")
+    if not route_base or not exact_route_path:
         raise InspectError("Cannot verify exact worktree route; route or worktree path is missing.", 3, {"route": route, "context": public_context(context)})
     try:
         route_path = Path(route_base).resolve()
-        worktree_path = Path(worktree_root).resolve()
+        worktree_path = Path(exact_route_path).resolve()
     except OSError as error:
         raise InspectError(f"Cannot verify exact worktree route: {error}", 3, {"route": route, "context": public_context(context)}) from error
     if route_path != worktree_path:
