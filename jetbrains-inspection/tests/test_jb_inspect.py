@@ -2039,6 +2039,24 @@ class UnknownVerdictLogTest(unittest.TestCase):
                 self.assertEqual(body["verdict"], "UNKNOWN")
                 self.assertNotIn("unknown_log_path", body)
 
+    def test_emit_does_not_log_informational_status_without_command(self):
+        cases = ["ok", "prepared", "resolved", "triggered", "claimed"]
+        for status in cases:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                log_path = Path(tmp) / "unknown.jsonl"
+
+                output = io.StringIO()
+                with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
+                    with redirect_stdout(output):
+                        exit_code = jb_inspect.emit({"status": status}, json_only=True, exit_code=0)
+
+                self.assertEqual(exit_code, 0)
+                self.assertFalse(log_path.exists())
+                body = json.loads(output.getvalue())
+                self.assertEqual(body["status"], status)
+                self.assertEqual(body["verdict"], "UNKNOWN")
+                self.assertNotIn("unknown_log_path", body)
+
     def test_emit_logs_error_unknown_even_when_command_is_resolve_route(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "unknown.jsonl"

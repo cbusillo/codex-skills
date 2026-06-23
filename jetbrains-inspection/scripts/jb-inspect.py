@@ -45,6 +45,7 @@ USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
+UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
 PREFERRED_COMMANDS = {
     "list": "list-projects",
     "route": "resolve-route",
@@ -1407,6 +1408,8 @@ def should_log_unknown_verdict(payload: dict[str, Any]) -> bool:
             "blocked_diagnostic",
         )
     )
+    if payload.get("status") in UNKNOWN_LOG_INFORMATIONAL_STATUSES and not has_failure_evidence:
+        return False
     if command and command not in UNKNOWN_LOG_ASSESSMENT_COMMANDS and not has_failure_evidence:
         return False
     return True
