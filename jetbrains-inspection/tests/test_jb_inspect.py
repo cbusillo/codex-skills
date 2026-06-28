@@ -123,7 +123,7 @@ class BuildContextTest(unittest.TestCase):
             )
             (root / "packages" / "app").mkdir(parents=True)
 
-            args = Namespace(repo=str(root), ide=None, scope=None)
+            args = Namespace(repo=str(root), ide=None, ide_app=None, scope=None)
             context = jb_inspect.build_context(args)
 
             self.assertEqual(context["ide"], "IntelliJ IDEA")
@@ -139,12 +139,41 @@ class BuildContextTest(unittest.TestCase):
             nested = root / "test-fixtures" / "inspection-red-lane-webstorm"
             (nested / ".idea").mkdir(parents=True)
 
-            args = Namespace(repo=str(nested), ide=None, scope=None)
+            args = Namespace(repo=str(nested), ide=None, ide_app=None, scope=None)
             context = jb_inspect.build_context(args)
 
             self.assertEqual(context["repo_path"], str(nested.resolve()))
             self.assertEqual(context["project_path"], str(nested.resolve()))
             self.assertEqual(context["worktree_root"], str(root.resolve()))
+            self.assertEqual(context["lifecycle_target_path"], str(nested.resolve()))
+
+    def test_nested_gradle_project_remains_requested_project_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".github").mkdir()
+            write_json(root / ".github" / "github.json", {"jetbrains": {"openProjectPath": "."}})
+            nested = root / "harness" / "workspace" / "project"
+            nested.mkdir(parents=True)
+            (nested / "settings.gradle").write_text("pluginManagement { repositories { gradlePluginPortal() } }\n", encoding="utf-8")
+
+            args = Namespace(repo=str(nested), ide=None, ide_app=None, scope=None)
+            context = jb_inspect.build_context(args)
+
+            self.assertEqual(context["repo_path"], str(nested.resolve()))
+            self.assertEqual(context["project_path"], str(nested.resolve()))
+            self.assertEqual(context["worktree_root"], str(root.resolve()))
+            self.assertEqual(context["lifecycle_target_path"], str(nested.resolve()))
+
+    def test_ide_app_overrides_launch_app_without_changing_identity_selector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            args = Namespace(repo=str(root), ide="WebStorm", ide_app="WebStorm 2026.2 EAP", scope=None)
+            context = jb_inspect.build_context(args)
+
+            self.assertEqual(context["ide"], "WebStorm")
+            self.assertEqual(context["ide_app"], "WebStorm 2026.2 EAP")
 
 
 class WorktreeSafetyTest(unittest.TestCase):
@@ -459,6 +488,30 @@ class LifecycleTest(unittest.TestCase):
 
         run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/worktree"], check=False, capture_output=True, text=True)
 
+    def test_open_in_ide_uses_explicit_app_for_macos_launch(self):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.open_in_ide(
+                {"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP", "worktree_root": "/tmp/worktree"},
+                background=True,
+            )
+
+        run.assert_called_once_with(["open", "-g", "-a", "WebStorm 2026.2 EAP", "/tmp/worktree"], check=False, capture_output=True, text=True)
+
+    def test_open_in_ide_uses_lifecycle_target_for_nested_project(self):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.open_in_ide(
+                {
+                    "ide": "IntelliJ IDEA",
+                    "worktree_root": "/tmp/harness-parent",
+                    "lifecycle_target_path": "/tmp/harness-parent/workspace/project",
+                },
+                background=True,
+            )
+
+        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/harness-parent/workspace/project"], check=False, capture_output=True, text=True)
+
     def test_open_in_ide_reports_failed_macos_open(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run", return_value=completed):
@@ -475,6 +528,13 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
         run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], check=False, capture_output=True, text=True)
+
+    def test_bootstrap_ide_app_uses_explicit_app_for_hidden_launch(self):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.bootstrap_ide_app({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"}, background=True)
+
+        run.assert_called_once_with(["open", "-g", "-j", "-a", "WebStorm 2026.2 EAP"], check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
@@ -539,6 +599,38 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["reason"], "session_drift")
         self.assertTrue(result["cleanup_failed"])
 
+    def test_cleanup_skipped_surfaces_successful_close_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            original_private_http = jb_inspect.private_http_get_body
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                lease = jb_inspect.create_local_lease({"worktree_root": "/tmp/repo"}, "prepared")
+                lease.update(
+                    {
+                        "opened_by_helper": True,
+                        "project_instance_id": "session:1",
+                        "project_key": "path:/tmp/repo",
+                    }
+                )
+
+                def fake_private_http(port, endpoint, params):
+                    return {"status": "skipped", "reason": "not_claimed"}
+
+                jb_inspect.private_http_get_body = fake_private_http
+                result = jb_inspect.cleanup_lifecycle(lease, {"port": 63342, "project_key": "path:/tmp/repo"}, "token")
+            finally:
+                jb_inspect.private_http_get_body = original_private_http
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "not_claimed")
+        self.assertTrue(result["cleanup_skipped"])
+        self.assertFalse(result["cleanup_failed"])
+
     def test_cleanup_reason_prefers_error_reason_over_status(self):
         error = jb_inspect.InspectError(
             "Timed out waiting for lifecycle close.",
@@ -583,6 +675,25 @@ class LifecycleTest(unittest.TestCase):
             worktree.mkdir(parents=True)
             with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(root)]):
                 jb_inspect.ensure_trusted_auto_open_root({"worktree_root": str(worktree)})
+
+    def test_trusted_auto_open_uses_lifecycle_target_for_nested_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trusted = root / "trusted-harness-runs"
+            nested_project = trusted / "run" / "workspace" / "project"
+            parent_repo = root / "code-prealign-new-skills"
+            nested_project.mkdir(parents=True)
+            parent_repo.mkdir()
+
+            context = {
+                "worktree_root": str(parent_repo),
+                "project_path": str(nested_project),
+                "exact_route_path": str(nested_project),
+                "lifecycle_target_path": str(nested_project),
+            }
+
+            with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
+                jb_inspect.ensure_trusted_auto_open_root(context)
 
     def test_trusted_auto_open_rejects_untrusted_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -671,6 +782,35 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
         self.assertEqual(calls[0][2]["session_id"], "s1")
+
+    def test_open_via_running_ide_sends_lifecycle_target_path(self):
+        calls = []
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "IntelliJ IDEA", "session_id": "s1"}]
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            calls.append((port, endpoint, params))
+            return jb_inspect.HttpResult(200, {"status": "opened"}, "url")
+
+        jb_inspect.http_get = fake_http_get
+        try:
+            result = jb_inspect.open_via_running_ide(
+                Namespace(port=None),
+                {
+                    "ide": "IntelliJ IDEA",
+                    "worktree_root": "/tmp/harness-parent",
+                    "project_path": "/tmp/harness-parent/workspace/project",
+                    "lifecycle_target_path": "/tmp/harness-parent/workspace/project",
+                },
+            )
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
+
+        self.assertTrue(result)
+        self.assertEqual(calls[0][1], "lifecycle/open")
+        self.assertEqual(calls[0][2]["worktree_path"], "/tmp/harness-parent/workspace/project")
 
     def test_open_via_running_ide_ignores_other_ide_products(self):
         original_discover = jb_inspect.discover_identities
@@ -803,6 +943,96 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("PyCharm", diagnostic["next_action"])
         self.assertIn("plugin installed and up to date", diagnostic["next_action"])
 
+    def test_discover_identities_merges_registry_and_port_scan(self):
+        original_registry = jb_inspect.registry_identities
+        original_ports = jb_inspect.configured_ports
+        original_identity = jb_inspect.identity_for_port
+        jb_inspect.registry_identities = lambda: [
+            {
+                "port": 63342,
+                "ide_name": "WebStorm",
+                "session_id": "webstorm-session",
+                "open_projects": [{"base_path": "/repo/webstorm"}],
+            }
+        ]
+        jb_inspect.configured_ports = lambda: [63342, 63345]
+
+        def fake_identity_for_port(port):
+            if port == 63342:
+                return {"port": 63342, "ide_name": "WebStorm", "session_id": "webstorm-session"}
+            return {"port": 63345, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"}
+
+        jb_inspect.identity_for_port = fake_identity_for_port
+        try:
+            identities = jb_inspect.discover_identities(None)
+        finally:
+            jb_inspect.registry_identities = original_registry
+            jb_inspect.configured_ports = original_ports
+            jb_inspect.identity_for_port = original_identity
+
+        sessions = {identity["session_id"] for identity in identities}
+        self.assertEqual(sessions, {"webstorm-session", "idea-session"})
+        self.assertEqual(len(identities), 2)
+        webstorm = next(identity for identity in identities if identity["session_id"] == "webstorm-session")
+        self.assertEqual(webstorm["open_projects"], [{"base_path": "/repo/webstorm"}])
+
+    def test_discover_identities_with_explicit_port_does_not_scan_registry(self):
+        original_registry = jb_inspect.registry_identities
+        original_ports = jb_inspect.configured_ports
+        original_identity = jb_inspect.identity_for_port
+        calls = []
+        jb_inspect.registry_identities = lambda: (_ for _ in ()).throw(AssertionError("registry should not be read"))
+        jb_inspect.configured_ports = lambda: (_ for _ in ()).throw(AssertionError("ports should not be scanned"))
+
+        def fake_identity_for_port(port):
+            calls.append(port)
+            return {"port": port, "ide_name": "IntelliJ IDEA", "session_id": "idea-session"}
+
+        jb_inspect.identity_for_port = fake_identity_for_port
+        try:
+            identities = jb_inspect.discover_identities(63345)
+        finally:
+            jb_inspect.registry_identities = original_registry
+            jb_inspect.configured_ports = original_ports
+            jb_inspect.identity_for_port = original_identity
+
+        self.assertEqual(calls, [63345])
+        self.assertEqual(identities[0]["session_id"], "idea-session")
+
+    def test_identity_for_port_rejects_mismatched_reported_port(self):
+        original_http_get = jb_inspect.http_get
+        jb_inspect.http_get = lambda port, endpoint, params: jb_inspect.HttpResult(
+            200,
+            {"port": 63342, "ide_name": "WebStorm", "session_id": "webstorm-session"},
+            "url",
+        )
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.identity_for_port(63345)
+        finally:
+            jb_inspect.http_get = original_http_get
+
+        self.assertEqual(raised.exception.payload["error_reason"], "identity_port_mismatch")
+        self.assertEqual(raised.exception.payload["requested_port"], 63345)
+        self.assertEqual(raised.exception.payload["reported_port"], 63342)
+
+    def test_identity_for_port_rejects_invalid_reported_port(self):
+        original_http_get = jb_inspect.http_get
+        jb_inspect.http_get = lambda port, endpoint, params: jb_inspect.HttpResult(
+            200,
+            {"port": "not-a-port", "ide_name": "WebStorm", "session_id": "webstorm-session"},
+            "url",
+        )
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.identity_for_port(63345)
+        finally:
+            jb_inspect.http_get = original_http_get
+
+        self.assertEqual(raised.exception.payload["error_reason"], "invalid_identity_port")
+        self.assertEqual(raised.exception.payload["requested_port"], 63345)
+        self.assertEqual(raised.exception.payload["reported_port"], "not-a-port")
+
     def test_route_diagnostic_merges_registry_and_port_scan(self):
         original_registry = jb_inspect.registry_identities
         original_ports = jb_inspect.configured_ports
@@ -856,6 +1086,101 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("safe-mode", diagnostic["next_action"])
         self.assertIn("open-project", diagnostic["next_action"])
 
+    def test_resolve_route_port_scan_finds_target_when_registry_has_other_ide(self):
+        original_registry = jb_inspect.registry_identities
+        original_ports = jb_inspect.configured_ports
+        original_identity = jb_inspect.identity_for_port
+        original_http_get = jb_inspect.http_get
+        target = "/Users/me/Developer/project/worktrees/feature-odoo"
+        calls = []
+        jb_inspect.registry_identities = lambda: [
+            {
+                "port": 63342,
+                "ide_name": "WebStorm 2026.1.3",
+                "ide_product_code": "WS",
+                "session_id": "webstorm-session",
+                "open_projects": [
+                    {
+                        "project_key": "path:/Users/me/Developer/project",
+                        "base_path": "/Users/me/Developer/project",
+                    }
+                ],
+            }
+        ]
+        jb_inspect.configured_ports = lambda: [63342, 63345]
+
+        def fake_identity_for_port(port):
+            if port == 63342:
+                return {
+                    "port": 63342,
+                    "ide_name": "WebStorm 2026.1.3",
+                    "ide_product_code": "WS",
+                    "session_id": "webstorm-session",
+                    "open_projects": [],
+                }
+            return {
+                "port": 63345,
+                "ide_name": "IntelliJ IDEA 2026.2 EAP",
+                "ide_product_code": "IU",
+                "session_id": "idea-session",
+                "open_projects": [],
+            }
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            calls.append((port, endpoint, params))
+            if endpoint != "route":
+                raise AssertionError(f"unexpected endpoint: {endpoint}")
+            if port == 63342:
+                return jb_inspect.HttpResult(200, {"status": "missing", "route": None}, "webstorm-route")
+            return jb_inspect.HttpResult(
+                200,
+                {
+                    "status": "resolved",
+                    "route": {
+                        "port": 63345,
+                        "project_key": f"path:{target}",
+                        "base_path": target,
+                        "session_id": "idea-session",
+                        "ide": {"name": "IntelliJ IDEA 2026.2 EAP"},
+                    },
+                },
+                "idea-route",
+            )
+
+        jb_inspect.identity_for_port = fake_identity_for_port
+        jb_inspect.http_get = fake_http_get
+        try:
+            route = jb_inspect.resolve_route(
+                Namespace(
+                    port=None,
+                    open=False,
+                    project_key=f"path:{target}",
+                    project_path=target,
+                    worktree_path=target,
+                    cwd=target,
+                    project=None,
+                    ide="IntelliJ IDEA",
+                    session_id="idea-session",
+                    no_worktree_check=False,
+                ),
+                {
+                    "ide": "IntelliJ IDEA",
+                    "worktree_root": target,
+                    "project_path": target,
+                    "exact_route_path": target,
+                    "worktree_strategy": "prefer-current",
+                },
+            )
+        finally:
+            jb_inspect.registry_identities = original_registry
+            jb_inspect.configured_ports = original_ports
+            jb_inspect.identity_for_port = original_identity
+            jb_inspect.http_get = original_http_get
+
+        self.assertEqual(route["port"], 63345)
+        self.assertEqual(route["base_path"], target)
+        self.assertIn((63345, "route"), [(port, endpoint) for port, endpoint, _ in calls])
+
     def test_route_diagnostic_for_no_instances_mentions_hidden_prompt_as_secondary_cause(self):
         original_discover = jb_inspect.discover_diagnostic_identities
         jb_inspect.discover_diagnostic_identities = lambda port: []
@@ -891,6 +1216,45 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(result, "running_ide")
         self.assertEqual(calls, ["running"])
+
+    def test_open_via_running_ide_returns_false_for_unavailable_explicit_port(self):
+        original_discover = jb_inspect.discover_open_identities
+
+        def fake_discover(args, context):
+            raise jb_inspect.InspectError("Inspection API unavailable on port 63345: connection refused", 3)
+
+        jb_inspect.discover_open_identities = fake_discover
+        try:
+            result = jb_inspect.open_via_running_ide(
+                Namespace(port=63345),
+                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
+            )
+        finally:
+            jb_inspect.discover_open_identities = original_discover
+
+        self.assertFalse(result)
+
+    def test_open_via_running_ide_reraises_explicit_port_identity_mismatch(self):
+        original_discover = jb_inspect.discover_open_identities
+
+        def fake_discover(args, context):
+            raise jb_inspect.InspectError(
+                "Inspection API identity on port 63345 reported port 63342.",
+                3,
+                {"error_reason": "identity_port_mismatch", "requested_port": 63345, "reported_port": 63342},
+            )
+
+        jb_inspect.discover_open_identities = fake_discover
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.open_via_running_ide(
+                    Namespace(port=63345),
+                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
+                )
+        finally:
+            jb_inspect.discover_open_identities = original_discover
+
+        self.assertEqual(raised.exception.payload["error_reason"], "identity_port_mismatch")
 
     def test_open_project_for_lifecycle_bootstraps_then_lifecycle_opens(self):
         calls = []
@@ -1455,6 +1819,36 @@ class EndpointUtilityTest(unittest.TestCase):
 
         self.assertEqual(body, {"ok": True})
         self.assertEqual(calls, [(63343, "status", {"project_key": "path:/tmp/example"}, 12.5)])
+
+    def test_http_get_uses_numeric_loopback_to_avoid_localhost_wildcard_collisions(self):
+        captured = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"status":"ok"}'
+
+        def fake_urlopen(request, timeout):
+            captured.append((request.full_url, timeout))
+            return FakeResponse()
+
+        original_urlopen = jb_inspect.urllib.request.urlopen
+        jb_inspect.urllib.request.urlopen = fake_urlopen
+        try:
+            result = jb_inspect.http_get(63345, "identity", {"project_key": "path:/tmp/example"})
+        finally:
+            jb_inspect.urllib.request.urlopen = original_urlopen
+
+        expected_prefix = "http://127.0.0.1:63345" + "/api" + "/inspection/identity?"
+        self.assertEqual(result.body, {"status": "ok"})
+        self.assertTrue(captured[0][0].startswith(expected_prefix))
 
     def test_status_command_passes_route_project_key_and_session_id(self):
         calls = []
