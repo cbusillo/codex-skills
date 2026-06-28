@@ -40,6 +40,7 @@ DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 DEFAULT_PREPARE_TIMEOUT_MS = 300_000
 DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
+LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
@@ -317,6 +318,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--repo", default=".", help="Repo/worktree path to inspect. Defaults to cwd.")
     command.add_argument("--port", type=int, help="Use a specific IDE built-in server port.")
     command.add_argument("--ide", help="Preferred IDE selector, e.g. PyCharm, IntelliJ, WebStorm.")
+    command.add_argument("--ide-app", help="Exact macOS application bundle name to launch, e.g. WebStorm 2026.2 EAP. Defaults to --ide.")
     command.add_argument("--project-key", help="Stable project key returned by resolve-route or list-projects.")
     command.add_argument("--project-path", help="Project root/path selector.")
     command.add_argument("--worktree-path", help="Worktree path selector.")
@@ -340,7 +342,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     repo_path = repo_arg if repo_arg.is_absolute() else Path.cwd() / repo_arg
     repo_path = repo_path.resolve()
     worktree_root = git_root(repo_path) or repo_path
-    explicit_project_path = repo_path if repo_path != worktree_root and (repo_path / ".idea").is_dir() else None
+    explicit_project_path = repo_path if repo_path != worktree_root and has_project_markers(repo_path) else None
     main_worktree = git_common_worktree(worktree_root)
     config = read_repo_config(worktree_root)
     jetbrains = config.get("jetbrains", {}) if isinstance(config.get("jetbrains"), dict) else {}
@@ -355,20 +357,41 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     configured_project_path = resolve_config_path(open_project_path, worktree_root) if open_project_path else None
 
     ide = args.ide or inspection.get("ide") or jetbrains.get("ide")
+    ide_app = getattr(args, "ide_app", None) or jetbrains.get("ideApp") or jetbrains.get("ide_app")
     scope = getattr(args, "scope", None) or first_scope(inspection.get("scopePreference")) or first_scope(jetbrains.get("scopePreference")) or "changed_files"
     worktree_strategy = jetbrains.get("worktreeStrategy") or jetbrains.get("worktree_strategy") or "prefer-current"
+
+    lifecycle_target_path = explicit_project_path or configured_project_path or worktree_root
 
     return {
         "repo_path": str(repo_path),
         "worktree_root": str(worktree_root),
         "main_worktree": str(main_worktree) if main_worktree else None,
-        "project_path": str(configured_project_path or explicit_project_path or worktree_root),
-        "exact_route_path": str(configured_project_path or explicit_project_path or worktree_root),
+        "project_path": str(lifecycle_target_path),
+        "exact_route_path": str(lifecycle_target_path),
+        "lifecycle_target_path": str(lifecycle_target_path),
         "ide": ide,
+        "ide_app": ide_app,
         "scope": scope,
         "worktree_strategy": worktree_strategy,
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
+
+
+def has_project_markers(path: Path) -> bool:
+    markers = (
+        ".idea",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "build.gradle",
+        "build.gradle.kts",
+        "pom.xml",
+        "package.json",
+        "pyproject.toml",
+        "Cargo.toml",
+        "go.mod",
+    )
+    return any((path / marker).exists() for marker in markers)
 
 
 def command_list(args: argparse.Namespace) -> dict[str, Any]:
@@ -609,7 +632,7 @@ def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any],
         "context": public_context(context),
         "ide": context.get("ide"),
         "worktree_root": context.get("worktree_root"),
-        "target_worktree": context.get("worktree_root"),
+        "target_worktree": lifecycle_target_path(context),
         "selected_trusted_root": selected_trusted_root_for_payload(context),
         "global_config": str(global_config_path()),
         "background_open": getattr(args, "background_open", False),
@@ -629,7 +652,8 @@ def project_open_blocked_diagnostic(args: argparse.Namespace, context: dict[str,
         "background_open": getattr(args, "background_open", False),
         "prepare_timeout_ms": timeout_ms,
         "requested_ide": context.get("ide"),
-        "target_worktree": context.get("worktree_root"),
+        "requested_ide_app": context.get("ide_app"),
+        "target_worktree": lifecycle_target_path(context),
         "selected_trusted_root": selected_trusted_root_for_payload(context),
     }
 
@@ -639,6 +663,10 @@ def selected_trusted_root_for_payload(context: dict[str, Any]) -> str | None:
         return str(trusted_root_for_worktree(context))
     except InspectError:
         return None
+
+
+def lifecycle_target_path(context: dict[str, Any]) -> str | None:
+    return context.get("lifecycle_target_path") or context.get("exact_route_path") or context.get("project_path") or context.get("worktree_root")
 
 
 def zero_project_hint() -> str:
@@ -672,7 +700,7 @@ def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) 
     ]
     diagnostic = {
         "requested_ide": target_ide,
-        "target_worktree": context.get("worktree_root"),
+        "target_worktree": lifecycle_target_path(context),
         "target_project_path": context.get("project_path"),
         "discovered_identity_count": len(identities),
         "matching_identity_count": len(matching_identities),
@@ -697,6 +725,10 @@ def route_diagnostic_payload(args: argparse.Namespace, context: dict[str, Any]) 
 def discover_diagnostic_identities(port: int | None) -> list[dict[str, Any]]:
     if port:
         return discover_identities(port)
+    return merged_registry_and_port_identities()
+
+
+def merged_registry_and_port_identities() -> list[dict[str, Any]]:
     identities_by_key: dict[str, dict[str, Any]] = {}
     for identity in registry_identities():
         identities_by_key[identity_key(identity)] = identity
@@ -705,8 +737,19 @@ def discover_diagnostic_identities(port: int | None) -> list[dict[str, Any]]:
             identity = identity_for_port(candidate_port)
         except InspectError:
             continue
-        identities_by_key[identity_key(identity)] = identity
+        key = identity_key(identity)
+        identities_by_key[key] = merge_identity(identities_by_key.get(key), identity)
     return list(identities_by_key.values())
+
+
+def merge_identity(existing: dict[str, Any] | None, live: dict[str, Any]) -> dict[str, Any]:
+    if not existing:
+        return live
+    merged = existing.copy()
+    for key, value in live.items():
+        if value not in (None, "", []):
+            merged[key] = value
+    return merged
 
 
 def identity_key(identity: dict[str, Any]) -> str:
@@ -777,7 +820,13 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
 
 
 def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> bool:
-    identities = discover_open_identities(args, context)
+    try:
+        identities = discover_open_identities(args, context)
+    except InspectError as error:
+        reason = infer_error_reason(error, error.payload)
+        if getattr(args, "port", None) and reason in {"inspection_api_unavailable", "timeout"}:
+            return False
+        raise
     matching = [identity for identity in identities if identity_matches_context(identity, context)]
     for identity in matching:
         port = identity.get("port")
@@ -788,7 +837,7 @@ def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> b
                 int(port),
                 "lifecycle/open",
                 {
-                    "worktree_path": context.get("worktree_root"),
+                    "worktree_path": lifecycle_target_path(context),
                     "project_path": context.get("project_path"),
                     "ide": context.get("ide"),
                     "session_id": identity.get("session_id"),
@@ -926,11 +975,19 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
 
 def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     port = route_port(route)
-    private_http_get_body(port, "lifecycle/close", params)
+    body = private_http_get_body(port, "lifecycle/close", params)
+    status = str(body.get("status") or "closed")
+    if status == "closed":
+        return {
+            "status": "closed",
+            "reason": body.get("reason"),
+            "cleanup_skipped": False,
+            "cleanup_failed": False,
+        }
     return {
-        "status": "closed",
-        "reason": None,
-        "cleanup_skipped": False,
+        "status": status,
+        "reason": body.get("reason") or status,
+        "cleanup_skipped": True,
         "cleanup_failed": False,
     }
 
@@ -957,7 +1014,7 @@ def route_port(route: dict[str, Any]) -> int:
 def private_http_get_body(port: int, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
     query = urllib.parse.urlencode(clean_params, doseq=True)
-    base_url = f"http://localhost:{port}/api/inspection/{endpoint}"
+    base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
     request_url = f"{base_url}?{query}" if query else base_url
     request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
     try:
@@ -1028,16 +1085,7 @@ def copy_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
 def discover_identities(port: int | None) -> list[dict[str, Any]]:
     if port:
         return [identity_for_port(port)]
-    identities = registry_identities()
-    if identities:
-        return identities
-    found = []
-    for candidate_port in configured_ports():
-        try:
-            found.append(identity_for_port(candidate_port))
-        except InspectError:
-            pass
-    return found
+    return merged_registry_and_port_identities()
 
 
 def registry_identities() -> list[dict[str, Any]]:
@@ -1064,6 +1112,20 @@ def registry_identities() -> list[dict[str, Any]]:
 def identity_for_port(port: int) -> dict[str, Any]:
     result = http_get(port, "identity", {})
     body = result.body
+    try:
+        reported_port = int(body.get("port") or 0)
+    except (TypeError, ValueError) as error:
+        raise InspectError(
+            f"Inspection API identity on port {port} reported invalid port {body.get('port')!r}.",
+            3,
+            {"error_reason": "invalid_identity_port", "requested_port": port, "reported_port": body.get("port")},
+        ) from error
+    if reported_port and reported_port != port:
+        raise InspectError(
+            f"Inspection API identity on port {port} reported port {reported_port}.",
+            3,
+            {"error_reason": "identity_port_mismatch", "requested_port": port, "reported_port": reported_port},
+        )
     if "port" not in body or not body.get("port"):
         body["port"] = port
     return body
@@ -1073,7 +1135,7 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
     query = urllib.parse.urlencode(clean_params, doseq=True)
     display_query = urllib.parse.urlencode(redact_payload(clean_params), doseq=True)
-    base_url = f"http://localhost:{port}/api/inspection/{endpoint}"
+    base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
     request_url = f"{base_url}?{query}" if query else base_url
     display_url = f"{base_url}?{display_query}" if display_query else base_url
     request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
@@ -1105,8 +1167,8 @@ def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
     return {
         "project_key": args.project_key,
         "project_path": args.project_path or context.get("project_path"),
-        "worktree_path": args.worktree_path or context.get("worktree_root"),
-        "cwd": args.cwd or context.get("worktree_root"),
+        "worktree_path": args.worktree_path or lifecycle_target_path(context),
+        "cwd": args.cwd or lifecycle_target_path(context),
         "project": args.project,
         "ide": args.ide or context.get("ide"),
         "session_id": args.session_id,
@@ -1117,9 +1179,9 @@ def route_params(args: argparse.Namespace, context: dict[str, Any], route: dict[
     params = {
         "project_key": args.project_key or route.get("project_key"),
         "session_id": args.session_id or route.get("session_id"),
-        "project_path": args.project_path,
-        "worktree_path": args.worktree_path,
-        "cwd": args.cwd,
+        "project_path": args.project_path or context.get("project_path"),
+        "worktree_path": args.worktree_path or lifecycle_target_path(context),
+        "cwd": args.cwd or lifecycle_target_path(context),
         "project": args.project,
         "ide": args.ide or context.get("ide"),
     }
@@ -1955,7 +2017,7 @@ def trusted_auto_open_root_count() -> int:
 
 
 def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
-    worktree = context.get("worktree_root")
+    worktree = lifecycle_target_path(context)
     roots = trusted_auto_open_roots()
     if not worktree:
         raise InspectError("Cannot auto-open IDE because the worktree path is unknown.", 3)
@@ -1965,6 +2027,7 @@ def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
             3,
             {
                 "worktree_root": worktree,
+                "lifecycle_target_path": lifecycle_target_path(context),
                 "global_config": str(global_config_path()),
                 "hint": "Add jetbrains.trustedAutoOpenRoots to the global inspection config, or open/trust the worktree manually once.",
             },
@@ -1981,7 +2044,8 @@ def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
         3,
         {
             "worktree_root": str(worktree_path),
-        "trusted_auto_open_root_count": len(trusted),
+            "lifecycle_target_path": lifecycle_target_path(context),
+            "trusted_auto_open_root_count": len(trusted),
             "global_config": str(global_config_path()),
             "hint": "Move the worktree under a trusted root, add a trusted root globally, or open/trust the project manually once.",
         },
@@ -1991,7 +2055,7 @@ def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
 def ensure_jetbrains_trusted_locations(context: dict[str, Any]) -> dict[str, Any]:
     if sys.platform != "darwin":
         return {"status": "skipped", "reason": "unsupported_platform"}
-    worktree = context.get("worktree_root")
+    worktree = lifecycle_target_path(context)
     if not worktree:
         raise InspectError("Cannot seed JetBrains trusted locations because the worktree path is unknown.", 3)
     trust_root = trusted_root_for_worktree(context)
@@ -2003,6 +2067,7 @@ def ensure_jetbrains_trusted_locations(context: dict[str, Any]) -> dict[str, Any
             {
                 "ide": context.get("ide"),
                 "worktree_root": str(Path(str(worktree)).expanduser().resolve()),
+                "lifecycle_target_path": lifecycle_target_path(context),
                 "hint": "Launch the target JetBrains IDE once, install the inspection plugin, or set jetbrains.ide to an installed app name.",
             },
         )
@@ -2023,7 +2088,7 @@ def ensure_jetbrains_trusted_locations(context: dict[str, Any]) -> dict[str, Any
 
 
 def trusted_root_for_worktree(context: dict[str, Any]) -> Path:
-    worktree_path = Path(str(context.get("worktree_root"))).expanduser().resolve()
+    worktree_path = Path(str(lifecycle_target_path(context))).expanduser().resolve()
     matches: list[Path] = []
     for root in trusted_auto_open_roots():
         root_path = Path(str(root)).expanduser().resolve()
@@ -2298,6 +2363,7 @@ def create_local_lease(context: dict[str, Any], state: str) -> dict[str, Any]:
         "state": state,
         "repo_path": context.get("repo_path"),
         "worktree_root": context.get("worktree_root"),
+        "lifecycle_target_path": lifecycle_target_path(context),
         "created_at_ms": now_ms(),
         "updated_at_ms": now_ms(),
         "pid": os.getpid(),
@@ -2473,14 +2539,14 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
 
 
 def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
-    ide = context.get("ide")
-    if not ide or sys.platform != "darwin":
+    ide_app = context.get("ide_app") or context.get("ide")
+    if not ide_app or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
-    target = context.get("worktree_root") or context.get("project_path")
+    target = lifecycle_target_path(context)
     command = ["open"]
     if background:
         command.append("-g")
-    command.extend(["-a", str(ide), str(target)])
+    command.extend(["-a", str(ide_app), str(target)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
@@ -2491,8 +2557,10 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
                 "returncode": completed.returncode,
                 "stdout": completed.stdout.strip(),
                 "stderr": completed.stderr.strip(),
-                "ide": ide,
+                "ide": context.get("ide"),
+                "ide_app": ide_app,
                 "worktree_root": context.get("worktree_root"),
+                "lifecycle_target_path": lifecycle_target_path(context),
                 "background_open": background,
                 "hint": "Check the configured JetBrains app name; macOS open -a requires the application bundle name, such as IntelliJ IDEA, PyCharm, or PyCharm CE.",
             },
@@ -2500,13 +2568,13 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
 
 
 def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
-    ide = context.get("ide")
-    if not ide or sys.platform != "darwin":
+    ide_app = context.get("ide_app") or context.get("ide")
+    if not ide_app or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
     command = ["open"]
     if background:
         command.extend(["-g", "-j"])
-    command.extend(["-a", str(ide)])
+    command.extend(["-a", str(ide_app)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
@@ -2517,7 +2585,8 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
                 "returncode": completed.returncode,
                 "stdout": completed.stdout.strip(),
                 "stderr": completed.stderr.strip(),
-                "ide": ide,
+                "ide": context.get("ide"),
+                "ide_app": ide_app,
                 "worktree_root": context.get("worktree_root"),
                 "background_open": background,
                 "hint": "Check the configured JetBrains app name; macOS open -a requires the application bundle name, such as IntelliJ IDEA, PyCharm, or PyCharm CE.",
