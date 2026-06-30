@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 if sys.platform != "win32":
     import fcntl
@@ -110,6 +113,89 @@ class HttpResult:
     status: int
     body: dict[str, Any]
     url: str
+
+
+@dataclass(frozen=True)
+class IdeProduct:
+    key: str
+    display_name: str
+    config_prefixes: tuple[str, ...]
+    product_codes: tuple[str, ...]
+    app_names: tuple[str, ...]
+    aliases: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IdeCandidate:
+    product_key: str
+    name: str
+    path: Path | None
+    version: tuple[int, ...]
+    channel: str
+    source: str
+
+
+@dataclass(frozen=True)
+class IdeSelection:
+    requested: str | None
+    product_key: str | None
+    product: str | None
+    mode: str
+    channel: str
+    version: tuple[int, ...]
+    app_name: str | None
+    app_path: Path | None
+    config_dir: Path | None
+    source: str
+    exact: bool
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "requested": self.requested,
+            "product_key": self.product_key,
+            "product": self.product,
+            "mode": self.mode,
+            "channel": self.channel,
+            "version": format_version(self.version),
+            "app_name": self.app_name,
+            "app_path": str(self.app_path) if self.app_path else None,
+            "config_dir": str(self.config_dir) if self.config_dir else None,
+            "source": self.source,
+            "exact": self.exact,
+        }
+
+
+IDE_PRODUCTS = {
+    "intellij": IdeProduct(
+        key="intellij",
+        display_name="IntelliJ IDEA",
+        config_prefixes=("IntelliJIdea", "IdeaIC"),
+        product_codes=("IU", "IC"),
+        app_names=("IntelliJ IDEA",),
+        aliases=("intellijidea", "intellij", "idea", "iu", "ic"),
+    ),
+    "pycharm": IdeProduct(
+        key="pycharm",
+        display_name="PyCharm",
+        config_prefixes=("PyCharm",),
+        product_codes=("PY", "PC"),
+        app_names=("PyCharm", "PyCharm CE"),
+        aliases=("pycharm", "pycharmce", "py", "pc"),
+    ),
+    "webstorm": IdeProduct(
+        key="webstorm",
+        display_name="WebStorm",
+        config_prefixes=("WebStorm",),
+        product_codes=("WS",),
+        app_names=("WebStorm",),
+        aliases=("webstorm", "ws"),
+    ),
+}
+IDE_PRODUCT_BY_ALIAS = {
+    alias: product
+    for product in IDE_PRODUCTS.values()
+    for alias in product.aliases
+}
 
 
 def main() -> int:
@@ -259,6 +345,9 @@ def hint_for_error_reason(reason: str) -> str | None:
         "target_project_not_open": "Use inspect or prepare-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
         "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
         "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
+        "ide_selection_required": "Add preferred JetBrains IDE metadata to .github/github.json, or pass --ide for this one run.",
+        "ide_config_ambiguous": "Add preferred JetBrains IDE metadata to .github/github.json so the helper updates the intended JetBrains config.",
+        "ide_config_missing": "Launch the selected JetBrains IDE once, or choose an installed IDE/version in .github/github.json.",
     }.get(reason)
 
 
@@ -319,6 +408,8 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--port", type=int, help="Use a specific IDE built-in server port.")
     command.add_argument("--ide", help="Preferred IDE selector, e.g. PyCharm, IntelliJ, WebStorm.")
     command.add_argument("--ide-app", help="Exact macOS application bundle name to launch, e.g. WebStorm 2026.2 EAP. Defaults to --ide.")
+    command.add_argument("--ide-channel", choices=("stable", "eap", "any"), help="IDE channel for product-level selection. Defaults to stable for product selectors.")
+    command.add_argument("--ide-version", help="Exact IDE version selector, e.g. 2026.2.")
     command.add_argument("--project-key", help="Stable project key returned by resolve-route or list-projects.")
     command.add_argument("--project-path", help="Project root/path selector.")
     command.add_argument("--worktree-path", help="Worktree path selector.")
@@ -358,12 +449,22 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
 
     ide = args.ide or inspection.get("ide") or jetbrains.get("ide")
     ide_app = getattr(args, "ide_app", None) or jetbrains.get("ideApp") or jetbrains.get("ide_app")
+    ide_channel = (
+        getattr(args, "ide_channel", None)
+        or jetbrains.get("ideChannel")
+        or jetbrains.get("ide_channel")
+    )
+    ide_version = (
+        getattr(args, "ide_version", None)
+        or jetbrains.get("ideVersion")
+        or jetbrains.get("ide_version")
+    )
     scope = getattr(args, "scope", None) or first_scope(inspection.get("scopePreference")) or first_scope(jetbrains.get("scopePreference")) or "changed_files"
     worktree_strategy = jetbrains.get("worktreeStrategy") or jetbrains.get("worktree_strategy") or "prefer-current"
 
     lifecycle_target_path = explicit_project_path or configured_project_path or worktree_root
 
-    return {
+    context = {
         "repo_path": str(repo_path),
         "worktree_root": str(worktree_root),
         "main_worktree": str(main_worktree) if main_worktree else None,
@@ -372,10 +473,259 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "lifecycle_target_path": str(lifecycle_target_path),
         "ide": ide,
         "ide_app": ide_app,
+        "ide_channel": ide_channel,
+        "ide_version": str(ide_version) if ide_version else None,
         "scope": scope,
         "worktree_strategy": worktree_strategy,
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
+    selection = resolve_ide_selection(context)
+    if selection:
+        context["ide_selection"] = selection.public()
+        if not context.get("ide") and selection.product:
+            context["ide"] = selection.product
+        if not context.get("ide_app") and selection.app_name:
+            context["ide_app"] = selection.app_name
+        if selection.config_dir:
+            context["ide_config_dir"] = str(selection.config_dir)
+        if selection.app_path:
+            context["ide_app_path"] = str(selection.app_path)
+    return context
+
+
+def resolve_ide_selection(context: dict[str, Any]) -> IdeSelection | None:
+    requested = clean_optional(context.get("ide"))
+    explicit_app = clean_optional(context.get("ide_app"))
+    channel = normalize_ide_channel(context.get("ide_channel"))
+    version = parse_version_tuple(clean_optional(context.get("ide_version")))
+    selector = explicit_app or requested
+    product = product_for_selector(selector) or product_for_selector(requested)
+    if not selector and not product and not channel and not version:
+        return None
+    exact = bool(explicit_app or version or channel == "eap" or selector_contains_exact_marker(selector))
+    app_candidates = discover_ide_app_candidates()
+    app = select_ide_candidate(app_candidates, product, explicit_app or selector, channel, version, exact)
+    selected_product = product or product_for_candidate(app)
+    config_candidates = discover_ide_config_candidates()
+    config_version = app.version if app and app.version else version
+    config_channel = channel if channel and channel != "eap" and not app else None
+    config = select_ide_candidate(config_candidates, selected_product, selector, config_channel, config_version, exact)
+    selected_product = selected_product or product_for_candidate(config)
+    app_name = explicit_app or (app.name if app else None) or (selected_product.display_name if selected_product and not exact else None) or (requested if not exact else None)
+    app_path = app.path if app else exact_app_path(explicit_app)
+    resolved_channel = (app.channel if app else None) or (config.channel if config else None) or channel or "unknown"
+    resolved_version = (app.version if app and app.version else ()) or (config.version if config and config.version else ()) or version
+    mode = "exact" if exact else ("product" if selected_product else "selector")
+    return IdeSelection(
+        requested=requested,
+        product_key=selected_product.key if selected_product else None,
+        product=selected_product.display_name if selected_product else requested,
+        mode=mode,
+        channel=resolved_channel,
+        version=resolved_version,
+        app_name=app_name,
+        app_path=app_path,
+        config_dir=config.path if config else None,
+        source="repo_or_cli",
+        exact=exact,
+    )
+
+
+def clean_optional(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_selector(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def normalize_ide_channel(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text in {"stable", "release", "current"}:
+        return "stable"
+    if text in {"eap", "preview", "early-access", "early_access"}:
+        return "eap"
+    if text == "any":
+        return "any"
+    return text
+
+
+def selector_contains_exact_marker(selector: str | None) -> bool:
+    if not selector:
+        return False
+    return bool(parse_version_tuple(selector)) or "eap" in selector.lower() or selector.endswith(".app") or os.sep in selector
+
+
+def product_for_selector(selector: str | None) -> IdeProduct | None:
+    normalized = normalize_selector(selector)
+    if not normalized:
+        return None
+    if normalized in IDE_PRODUCT_BY_ALIAS:
+        return IDE_PRODUCT_BY_ALIAS[normalized]
+    for product in IDE_PRODUCTS.values():
+        if any(normalized.startswith(normalize_selector(prefix)) for prefix in product.config_prefixes):
+            return product
+        long_aliases = [alias for alias in product.aliases if len(alias) > 2]
+        if any(alias in normalized for alias in long_aliases):
+            return product
+    return None
+
+
+def product_for_candidate(candidate: IdeCandidate | None) -> IdeProduct | None:
+    if not candidate:
+        return None
+    return IDE_PRODUCTS.get(candidate.product_key)
+
+
+def parse_version_tuple(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    match = re.search(r"(20\d{2})(?:[.\-](\d+))?(?:[.\-](\d+))?", value)
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.groups() if part is not None)
+
+
+def version_from_jetbrains_text(value: str | None) -> tuple[int, ...]:
+    parsed = parse_version_tuple(value)
+    if parsed:
+        return parsed
+    match = re.search(r"\b(?:IU|IC|PY|PC|WS)-(\d{3})\.", str(value or ""))
+    if not match:
+        return ()
+    build_major = int(match.group(1))
+    return (2000 + build_major // 10, build_major % 10)
+
+
+def format_version(version: tuple[int, ...]) -> str | None:
+    return ".".join(str(part) for part in version) if version else None
+
+
+def candidate_channel(name: str, bundle_id: str | None = None) -> str:
+    text = f"{name} {bundle_id or ''}".lower()
+    return "eap" if "eap" in text else "stable"
+
+
+def discover_ide_config_candidates() -> list[IdeCandidate]:
+    if sys.platform != "darwin":
+        return []
+    base = Path.home() / "Library" / "Application Support" / "JetBrains"
+    if not base.exists():
+        return []
+    candidates: list[IdeCandidate] = []
+    for path in base.iterdir():
+        if not path.is_dir() or not (path / "options").exists():
+            continue
+        product = product_for_selector(path.name)
+        if not product:
+            continue
+        candidates.append(
+            IdeCandidate(
+                product_key=product.key,
+                name=path.name,
+                path=path,
+                version=version_from_jetbrains_text(path.name),
+                channel=candidate_channel(path.name),
+                source="config",
+            )
+        )
+    return candidates
+
+
+def discover_ide_app_candidates() -> list[IdeCandidate]:
+    if sys.platform != "darwin":
+        return []
+    candidates: list[IdeCandidate] = []
+    for base in (Path("/Applications"), Path.home() / "Applications"):
+        if not base.exists():
+            continue
+        for path in base.glob("*.app"):
+            candidate = ide_app_candidate(path)
+            if candidate:
+                candidates.append(candidate)
+    return candidates
+
+
+def ide_app_candidate(path: Path) -> IdeCandidate | None:
+    app_name = path.stem
+    info_path = path / "Contents" / "Info.plist"
+    bundle_id = None
+    short_version = ""
+    if info_path.exists():
+        try:
+            with info_path.open("rb") as handle:
+                info = plistlib.load(handle)
+            app_name = str(info.get("CFBundleName") or info.get("CFBundleDisplayName") or app_name)
+            bundle_id = str(info.get("CFBundleIdentifier") or "")
+            short_version = str(info.get("CFBundleShortVersionString") or "")
+        except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
+            pass
+    product = product_for_selector(" ".join(part for part in (app_name, path.stem, bundle_id) if part))
+    if not product:
+        return None
+    display_name = path.stem if path.stem != app_name and "eap" in path.stem.lower() else app_name
+    return IdeCandidate(
+        product_key=product.key,
+        name=display_name,
+        path=path,
+        version=version_from_jetbrains_text(" ".join((path.stem, short_version))),
+        channel=candidate_channel(" ".join((path.stem, short_version)), bundle_id),
+        source="app",
+    )
+
+
+def select_ide_candidate(
+    candidates: list[IdeCandidate],
+    product: IdeProduct | None,
+    selector: str | None,
+    channel: str | None,
+    version: tuple[int, ...],
+    exact: bool,
+) -> IdeCandidate | None:
+    selected = candidates
+    if product:
+        selected = [candidate for candidate in selected if candidate.product_key == product.key]
+    if channel and channel != "any":
+        selected = [candidate for candidate in selected if candidate.channel == channel]
+    elif not exact:
+        stable = [candidate for candidate in selected if candidate.channel == "stable"]
+        if stable:
+            selected = stable
+    if version:
+        selected = [candidate for candidate in selected if versions_match(candidate.version, version)]
+    if selector and selector_contains_exact_marker(selector):
+        selector_norm = normalize_selector(selector)
+        exact_matches = [candidate for candidate in selected if selector_norm in normalize_selector(candidate.name) or (candidate.path and selector_norm in normalize_selector(str(candidate.path)))]
+        selected = exact_matches
+    if not selected:
+        return None
+    return sorted(selected, key=ide_candidate_sort_key, reverse=True)[0]
+
+
+def versions_match(candidate: tuple[int, ...], requested: tuple[int, ...]) -> bool:
+    if not candidate or not requested:
+        return True
+    size = min(len(candidate), len(requested))
+    return candidate[:size] == requested[:size]
+
+
+def ide_candidate_sort_key(candidate: IdeCandidate) -> tuple[int, tuple[int, ...], str]:
+    channel_score = 1 if candidate.channel == "stable" else 0
+    return (channel_score, candidate.version, candidate.name.lower())
+
+
+def exact_app_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if path.suffix == ".app" or path.is_absolute():
+        return path
+    return None
 
 
 def has_project_markers(path: Path) -> bool:
@@ -890,23 +1240,38 @@ def discover_open_identities(args: argparse.Namespace, context: dict[str, Any]) 
 
 
 def identity_matches_context(identity: dict[str, Any], context: dict[str, Any]) -> bool:
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    product_key = selection.get("product_key")
     ide = str(context.get("ide") or "").lower().replace(" ", "")
-    if not ide:
+    if not ide and not product_key:
         return True
     values = [
         str(identity.get("ide_name") or "").lower().replace(" ", ""),
         str(identity.get("ide_product_code") or "").lower().replace(" ", ""),
         str(identity.get("product_code") or "").lower().replace(" ", ""),
+        str(identity.get("ide_version") or "").lower().replace(" ", ""),
+        str(identity.get("version") or "").lower().replace(" ", ""),
+        str(identity.get("build_number") or "").lower().replace(" ", ""),
     ]
-    aliases = {
-        "intellijidea": ("intellijidea", "idea", "iu", "ic"),
-        "intellij": ("intellijidea", "idea", "iu", "ic"),
-        "idea": ("intellijidea", "idea", "iu", "ic"),
-        "pycharm": ("pycharm", "py", "pc"),
-        "pycharmce": ("pycharm", "py", "pc"),
-        "webstorm": ("webstorm", "ws"),
-    }
-    needles = aliases.get(ide, (ide,))
+    if product_key and product_key in IDE_PRODUCTS:
+        product = IDE_PRODUCTS[product_key]
+        needles = tuple(alias.replace(" ", "") for alias in product.aliases) + tuple(code.lower() for code in product.product_codes)
+    else:
+        product = product_for_selector(context.get("ide"))
+        needles = tuple(alias.replace(" ", "") for alias in product.aliases) + tuple(code.lower() for code in product.product_codes) if product else (ide,)
+    identity_text = " ".join(values)
+    selection_channel = selection.get("channel")
+    if selection.get("version"):
+        identity_version = version_from_jetbrains_text(identity_text)
+        requested_version = parse_version_tuple(str(selection.get("version")))
+        if requested_version and selection.get("exact") and not identity_version:
+            return False
+        if identity_version and requested_version and not versions_match(identity_version, requested_version):
+            return False
+    if selection_channel == "eap" and "eap" not in identity_text:
+        return False
+    if selection_channel == "stable" and "eap" in identity_text:
+        return False
     return any(needle in value for needle in needles for value in values)
 
 
@@ -1047,6 +1412,8 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
 
         candidates = []
         for identity in identities:
+            if not identity_matches_context(identity, context):
+                continue
             port = identity.get("port")
             if not port:
                 continue
@@ -1691,6 +2058,7 @@ def print_human(payload: dict[str, Any]) -> None:
         print(safe_text("UNKNOWN_LOG_ERROR: {error}", {"error": payload.get("unknown_log_error")}))
     if payload.get("zero_project_hint"):
         print(safe_text("PROJECT_OPEN_HINT: {hint}", {"hint": payload.get("zero_project_hint")}))
+    print_ide_selection(payload.get("ide_selection") or (payload.get("context") or {}).get("ide_selection"))
     if status == "error":
         print_error_details(payload)
     print_result_flags(payload)
@@ -1763,6 +2131,27 @@ def print_error_details(payload: dict[str, Any]) -> None:
     print_route_diagnostic(payload.get("route_diagnostic"))
     if payload.get("hint"):
         print(safe_text("HINT: {hint}", {"hint": payload.get("hint")}))
+    if payload.get("next_action"):
+        print(safe_text("NEXT_ACTION: {action}", {"action": payload.get("next_action")}))
+
+
+def print_ide_selection(selection: Any) -> None:
+    if not isinstance(selection, dict) or not selection:
+        return
+    print(
+        safe_text(
+            "IDE_SELECTION: requested={requested} product={product} mode={mode} channel={channel} version={version} app={app} config={config}",
+            {
+                "requested": selection.get("requested"),
+                "product": selection.get("product"),
+                "mode": selection.get("mode"),
+                "channel": selection.get("channel"),
+                "version": selection.get("version"),
+                "app": selection.get("app_path") or selection.get("app_name"),
+                "config": selection.get("config_dir"),
+            },
+        )
+    )
 
 
 def print_blocked_diagnostic(diagnostic: Any) -> None:
@@ -2105,32 +2494,47 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
         return [Path(override).expanduser().resolve()]
     if sys.platform != "darwin":
         return []
-    base = Path.home() / "Library" / "Application Support" / "JetBrains"
-    if not base.exists():
-        return []
-    ide = str(context.get("ide") or "").lower()
-    candidates = [path for path in base.iterdir() if path.is_dir() and (path / "options").exists()]
-    matches = [path for path in candidates if ide and ide_config_matches(path.name, ide)]
-    if matches:
-        return sorted(matches, key=lambda path: path.stat().st_mtime, reverse=True)[:1]
+    configured_dir = context.get("ide_config_dir")
+    if configured_dir:
+        path = Path(str(configured_dir)).expanduser().resolve()
+        return [path] if path.exists() else []
+    selection = resolve_ide_selection(context)
+    if selection and selection.config_dir:
+        return [selection.config_dir]
+    candidates = discover_ide_config_candidates()
+    candidate_paths = [candidate.path for candidate in candidates if candidate.path]
+    ide = str(context.get("ide") or "")
     if ide:
+        product = product_for_selector(ide)
+        channel = normalize_ide_channel(context.get("ide_channel"))
+        version = parse_version_tuple(clean_optional(context.get("ide_version")))
+        match = select_ide_candidate(candidates, product, ide, channel, version, bool(version or channel == "eap" or selector_contains_exact_marker(ide)))
+        if match and match.path:
+            return [match.path]
+        available = [candidate.name for candidate in sorted(candidates, key=lambda item: item.name)]
         raise InspectError(
             "Cannot seed JetBrains trusted locations because no installed IDE config matched the requested IDE.",
             3,
             {
                 "ide": context.get("ide"),
-                "available_config_dirs": [path.name for path in sorted(candidates)],
-                "hint": "Use the exact JetBrains app/config family name, such as IntelliJ IDEA, PyCharm, PyCharm CE, or WebStorm.",
+                "ide_selection": selection.public() if selection else None,
+                "available_config_dirs": available,
+                "error_reason": "ide_config_missing",
+                "next_action": "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
+                "hint": "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable, or exact metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
+                "matched_product": product.display_name if product else None,
             },
         )
-    if len(candidates) == 1:
-        return candidates
+    if len(candidate_paths) == 1:
+        return candidate_paths
     raise InspectError(
         "Cannot seed JetBrains trusted locations because multiple IDE config directories exist and no IDE was selected.",
         3,
         {
-            "available_config_dirs": [path.name for path in sorted(candidates)],
-            "hint": "Set jetbrains.ide in the repo config or pass --ide so the helper updates the intended JetBrains product.",
+            "available_config_dirs": [candidate.name for candidate in sorted(candidates, key=lambda item: item.name)],
+            "error_reason": "ide_selection_required",
+            "next_action": "Add preferred JetBrains IDE metadata to .github/github.json, for example jetbrains.ide = WebStorm, PyCharm, or IntelliJ IDEA. Use --ide only for a one-off run.",
+            "hint": "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
     )
 
@@ -2539,14 +2943,18 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
 
 
 def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
-    ide_app = context.get("ide_app") or context.get("ide")
-    if not ide_app or sys.platform != "darwin":
+    ide_app = resolved_ide_app_name(context)
+    ide_app_path = resolved_ide_app_path(context)
+    if not (ide_app or ide_app_path) or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
     target = lifecycle_target_path(context)
     command = ["open"]
     if background:
         command.append("-g")
-    command.extend(["-a", str(ide_app), str(target)])
+    if ide_app_path:
+        command.extend(["-a", str(ide_app_path), str(target)])
+    else:
+        command.extend(["-a", str(ide_app), str(target)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
@@ -2559,22 +2967,27 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
                 "stderr": completed.stderr.strip(),
                 "ide": context.get("ide"),
                 "ide_app": ide_app,
+                "ide_app_path": str(ide_app_path) if ide_app_path else None,
                 "worktree_root": context.get("worktree_root"),
                 "lifecycle_target_path": lifecycle_target_path(context),
                 "background_open": background,
-                "hint": "Check the configured JetBrains app name; macOS open -a requires the application bundle name, such as IntelliJ IDEA, PyCharm, or PyCharm CE.",
+                "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
             },
         )
 
 
 def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
-    ide_app = context.get("ide_app") or context.get("ide")
-    if not ide_app or sys.platform != "darwin":
+    ide_app = resolved_ide_app_name(context)
+    ide_app_path = resolved_ide_app_path(context)
+    if not (ide_app or ide_app_path) or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
     command = ["open"]
     if background:
         command.extend(["-g", "-j"])
-    command.extend(["-a", str(ide_app)])
+    if ide_app_path:
+        command.extend(["-a", str(ide_app_path)])
+    else:
+        command.extend(["-a", str(ide_app)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise InspectError(
@@ -2587,11 +3000,23 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
                 "stderr": completed.stderr.strip(),
                 "ide": context.get("ide"),
                 "ide_app": ide_app,
+                "ide_app_path": str(ide_app_path) if ide_app_path else None,
                 "worktree_root": context.get("worktree_root"),
                 "background_open": background,
-                "hint": "Check the configured JetBrains app name; macOS open -a requires the application bundle name, such as IntelliJ IDEA, PyCharm, or PyCharm CE.",
+                "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
             },
         )
+
+
+def resolved_ide_app_name(context: dict[str, Any]) -> str | None:
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    return clean_optional(selection.get("app_name")) or clean_optional(context.get("ide_app")) or clean_optional(context.get("ide"))
+
+
+def resolved_ide_app_path(context: dict[str, Any]) -> Path | None:
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    value = selection.get("app_path") or context.get("ide_app_path")
+    return Path(str(value)).expanduser() if value else None
 
 
 def parse_json(raw: bytes) -> dict[str, Any]:

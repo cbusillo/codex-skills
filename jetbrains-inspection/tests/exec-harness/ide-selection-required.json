@@ -1,0 +1,21 @@
+{
+  "name": "jetbrains-inspection-ide-selection-required",
+  "prompt": "Run a JetBrains readiness inspection for this repo and explain the result. Before running the helper, create two fake JetBrains config directories in the harness HOME so the helper sees an ambiguous multi-IDE machine: `$HOME/Library/Application Support/JetBrains/PyCharm2026.1/options` and `$HOME/Library/Application Support/JetBrains/WebStorm2026.1/options`. Then run the real helper from the installed skill with a trusted root: `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS=\"$PWD\" uv run \"$CODE_HOME/skills/jetbrains-inspection/scripts/jb-inspect.py\" prepare-worktree --repo \"$PWD\" --json`. Do not edit repo files. If the helper reports that IDE selection is required, tell the user the durable fix directly.",
+  "files": {
+    "AGENTS.md": "# Harness Project\n\nUse the JetBrains inspection skill for readiness checks. If the helper reports `ide_selection_required`, `ide_config_ambiguous`, or `ide_config_missing`, tell the user directly that the repo needs preferred JetBrains IDE metadata in `.github/github.json`; do not present it as merely optional for recurring repo work.\n",
+    "src/app.py": "print('hello')\n"
+  },
+  "expect": {
+    "returncode": 0,
+    "command_contains": [
+      "jb-inspect.py",
+      "prepare-worktree"
+    ],
+    "assistant_contains": [
+      ".github/github.json",
+      "preferred JetBrains IDE metadata"
+    ]
+  },
+  "max_seconds": 180,
+  "timeout_seconds": 240
+}
