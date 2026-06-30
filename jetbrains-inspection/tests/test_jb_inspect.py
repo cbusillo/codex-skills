@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,28 @@ SPEC.loader.exec_module(jb_inspect)
 def write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle)
+
+
+def make_config_dir(home: Path, name: str) -> Path:
+    path = home / "Library" / "Application Support" / "JetBrains" / name
+    (path / "options").mkdir(parents=True)
+    return path
+
+
+def make_app(base: Path, name: str, bundle_name: str, bundle_id: str, version: str) -> Path:
+    path = base / f"{name}.app"
+    contents = path / "Contents"
+    contents.mkdir(parents=True)
+    with (contents / "Info.plist").open("wb") as handle:
+        plistlib.dump(
+            {
+                "CFBundleName": bundle_name,
+                "CFBundleIdentifier": bundle_id,
+                "CFBundleShortVersionString": version,
+            },
+            handle,
+        )
+    return path
 
 
 class ParserCommandAliasTest(unittest.TestCase):
@@ -174,6 +197,93 @@ class BuildContextTest(unittest.TestCase):
 
             self.assertEqual(context["ide"], "WebStorm")
             self.assertEqual(context["ide_app"], "WebStorm 2026.2 EAP")
+
+    def test_product_level_ide_resolves_latest_stable_app_and_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            applications = Path(tmp) / "Applications"
+            applications.mkdir()
+            stable_config = make_config_dir(home, "WebStorm2026.1")
+            make_config_dir(home, "WebStorm2026.2")
+            stable_app = make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
+            make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
+
+            with patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home), \
+                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+                    jb_inspect.ide_app_candidate(stable_app),
+                    jb_inspect.ide_app_candidate(applications / "WebStorm 2026.2 EAP.app"),
+                ]):
+                selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm"})
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.channel, "stable")
+        self.assertEqual(selection.version, (2026, 1, 3))
+        self.assertEqual(selection.app_path, stable_app)
+        self.assertEqual(selection.config_dir, stable_config)
+
+    def test_exact_eap_selection_uses_eap_app_and_matching_config_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            applications = Path(tmp) / "Applications"
+            applications.mkdir()
+            eap_config = make_config_dir(home, "WebStorm2026.2")
+            make_config_dir(home, "WebStorm2026.1")
+            make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
+            eap_app = make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
+
+            with patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home), \
+                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+                    jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
+                    jb_inspect.ide_app_candidate(eap_app),
+                ]):
+                selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm", "ide_channel": "eap", "ide_version": "2026.2"})
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.channel, "eap")
+        self.assertEqual(selection.version[:2], (2026, 2))
+        self.assertEqual(selection.app_path, eap_app)
+        self.assertEqual(selection.config_dir, eap_config)
+
+    def test_exact_eap_selection_without_matching_app_does_not_fall_back_to_generic_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            applications = Path(tmp) / "Applications"
+            applications.mkdir()
+            eap_config = make_config_dir(home, "WebStorm2026.2")
+            make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
+
+            with patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home), \
+                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+                    jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
+                ]):
+                selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm", "ide_channel": "eap", "ide_version": "2026.2"})
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.config_dir, eap_config)
+        self.assertIsNone(selection.app_name)
+        self.assertIsNone(selection.app_path)
+
+    def test_exact_ide_app_without_matching_candidate_does_not_pair_with_stable_app_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            applications = Path(tmp) / "Applications"
+            applications.mkdir()
+            make_config_dir(home, "WebStorm2026.2")
+            make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
+
+            with patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home), \
+                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+                    jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
+                ]):
+                selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"})
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.app_name, "WebStorm 2026.2 EAP")
+        self.assertIsNone(selection.app_path)
 
 
 class WorktreeSafetyTest(unittest.TestCase):
@@ -498,6 +608,21 @@ class LifecycleTest(unittest.TestCase):
 
         run.assert_called_once_with(["open", "-g", "-a", "WebStorm 2026.2 EAP", "/tmp/worktree"], check=False, capture_output=True, text=True)
 
+    def test_open_in_ide_uses_resolved_app_path_when_available(self):
+        app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.open_in_ide(
+                {
+                    "ide": "WebStorm",
+                    "ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"},
+                    "worktree_root": "/tmp/worktree",
+                },
+                background=True,
+            )
+
+        run.assert_called_once_with(["open", "-g", "-a", str(app_path), "/tmp/worktree"], check=False, capture_output=True, text=True)
+
     def test_open_in_ide_uses_lifecycle_target_for_nested_project(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
@@ -535,6 +660,14 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.bootstrap_ide_app({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"}, background=True)
 
         run.assert_called_once_with(["open", "-g", "-j", "-a", "WebStorm 2026.2 EAP"], check=False, capture_output=True, text=True)
+
+    def test_bootstrap_ide_app_uses_resolved_app_path(self):
+        app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
+            jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"}}, background=True)
+
+        run.assert_called_once_with(["open", "-g", "-j", "-a", str(app_path)], check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
@@ -782,6 +915,48 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
         self.assertEqual(calls[0][2]["session_id"], "s1")
+
+    def test_identity_matches_exact_eap_version_from_identity_metadata(self):
+        context = {
+            "ide": "WebStorm",
+            "ide_selection": {
+                "product_key": "webstorm",
+                "exact": True,
+                "channel": "eap",
+                "version": "2026.2",
+            },
+        }
+        identity = {"ide_name": "WebStorm", "ide_product_code": "WS", "ide_version": "2026.2 EAP"}
+
+        self.assertTrue(jb_inspect.identity_matches_context(identity, context))
+
+    def test_identity_rejects_exact_eap_when_running_identity_is_stable(self):
+        context = {
+            "ide": "WebStorm",
+            "ide_selection": {
+                "product_key": "webstorm",
+                "exact": True,
+                "channel": "eap",
+                "version": "2026.2",
+            },
+        }
+        identity = {"ide_name": "WebStorm", "ide_product_code": "WS", "ide_version": "2026.2"}
+
+        self.assertFalse(jb_inspect.identity_matches_context(identity, context))
+
+    def test_identity_rejects_exact_version_mismatch(self):
+        context = {
+            "ide": "WebStorm",
+            "ide_selection": {
+                "product_key": "webstorm",
+                "exact": True,
+                "channel": "stable",
+                "version": "2026.1",
+            },
+        }
+        identity = {"ide_name": "WebStorm", "ide_product_code": "WS", "ide_version": "2026.2"}
+
+        self.assertFalse(jb_inspect.identity_matches_context(identity, context))
 
     def test_open_via_running_ide_sends_lifecycle_target_path(self):
         calls = []
@@ -1181,6 +1356,83 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(route["base_path"], target)
         self.assertIn((63345, "route"), [(port, endpoint) for port, endpoint, _ in calls])
 
+    def test_resolve_route_skips_wrong_channel_identity_for_exact_selection(self):
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        target = "/Users/me/Developer/project"
+        calls = []
+        jb_inspect.discover_identities = lambda port: [
+            {
+                "port": 63342,
+                "ide_name": "WebStorm",
+                "ide_product_code": "WS",
+                "ide_version": "2026.1",
+                "session_id": "stable-session",
+            },
+            {
+                "port": 63344,
+                "ide_name": "WebStorm",
+                "ide_product_code": "WS",
+                "ide_version": "2026.2 EAP",
+                "session_id": "eap-session",
+            },
+        ]
+
+        def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+            calls.append((port, endpoint, params))
+            if port == 63342:
+                raise AssertionError("stable IDE should not be queried for exact EAP selection")
+            return jb_inspect.HttpResult(
+                200,
+                {
+                    "status": "resolved",
+                    "route": {
+                        "port": 63344,
+                        "project_key": f"path:{target}",
+                        "base_path": target,
+                        "session_id": "eap-session",
+                        "ide": {"name": "WebStorm 2026.2 EAP"},
+                    },
+                },
+                "eap-route",
+            )
+
+        jb_inspect.http_get = fake_http_get
+        try:
+            route = jb_inspect.resolve_route(
+                Namespace(
+                    port=None,
+                    open=False,
+                    project_key=f"path:{target}",
+                    project_path=target,
+                    worktree_path=target,
+                    cwd=target,
+                    project=None,
+                    ide="WebStorm",
+                    session_id="eap-session",
+                    no_worktree_check=False,
+                ),
+                {
+                    "ide": "WebStorm",
+                    "ide_selection": {
+                        "product_key": "webstorm",
+                        "exact": True,
+                        "channel": "eap",
+                        "version": "2026.2",
+                    },
+                    "worktree_root": target,
+                    "project_path": target,
+                    "exact_route_path": target,
+                    "worktree_strategy": "prefer-current",
+                },
+            )
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
+
+        self.assertEqual(route["port"], 63344)
+        self.assertEqual([call[0] for call in calls], [63344])
+
     def test_route_diagnostic_for_no_instances_mentions_hidden_prompt_as_secondary_cause(self):
         original_discover = jb_inspect.discover_diagnostic_identities
         jb_inspect.discover_diagnostic_identities = lambda port: []
@@ -1353,6 +1605,8 @@ class LifecycleTest(unittest.TestCase):
                     jb_inspect.jetbrains_config_dirs({})
 
         self.assertIn("multiple IDE config directories", str(raised.exception))
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_selection_required")
+        self.assertIn("Add preferred JetBrains IDE metadata", raised.exception.payload["next_action"])
 
     def test_jetbrains_config_dirs_matches_requested_ide(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1368,6 +1622,28 @@ class LifecycleTest(unittest.TestCase):
                 result = jb_inspect.jetbrains_config_dirs({"ide": "IntelliJ IDEA"})
 
         self.assertEqual(result, [idea])
+
+    def test_jetbrains_config_dirs_prefers_latest_stable_for_product_selector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            stable = make_config_dir(home, "PyCharm2026.2")
+            make_config_dir(home, "PyCharm2026.1")
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
+                patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home):
+                os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
+                result = jb_inspect.jetbrains_config_dirs({"ide": "PyCharm"})
+
+        self.assertEqual(result, [stable])
+
+    def test_jetbrains_config_dirs_honors_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            override = Path(tmp) / "CustomConfig"
+            override.mkdir()
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": str(override)}, clear=False):
+                result = jb_inspect.jetbrains_config_dirs({"ide": "WebStorm"})
+
+        self.assertEqual(result, [override.resolve()])
 
 
 class ClassificationTest(unittest.TestCase):

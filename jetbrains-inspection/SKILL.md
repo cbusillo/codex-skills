@@ -144,8 +144,17 @@ If an exact worktree is not already open and is outside those roots, `inspect`,
 `inspect-closeout`, and `prepare-worktree` must fail before opening the IDE. Do
 not use random temp directories for agent inspection worktrees.
 
-If multiple JetBrains products are installed, repo config or CLI arguments must
-select the intended IDE so the helper updates the right Trusted Locations file.
+If multiple JetBrains products or stable/EAP installs are present, the repo must
+declare its preferred IDE in `.github/github.json` so lifecycle opens and
+Trusted Locations seeding target the same product/config. Product-level metadata
+such as `jetbrains.ide: "WebStorm"`, `"PyCharm"`, or `"IntelliJ IDEA"` means
+the latest installed stable/non-EAP app for that product. For a deliberate EAP
+or exact-version run, use explicit metadata or CLI fields such as
+`jetbrains.ideChannel: "eap"`, `jetbrains.ideVersion: "2026.2"`,
+`jetbrains.ideApp`, `--ide-channel`, `--ide-version`, or `--ide-app`.
+Treat `--ide`/`--ide-app` as a one-off unblocker; for recurring repo work,
+tell the user to add preferred IDE metadata rather than leaving the next agent to
+guess again.
 If a first-time open still stalls after trusted-location and project-opening
 policy seeding, treat it as a blocker: check for unsupported IDE config layout,
 settings sync overwriting the config, a missing inspection plugin, or a product
@@ -178,6 +187,9 @@ policy. The helper reads `.github/github.json` when present:
 - `qualityGate.inspection.scopePreference`
 - `qualityGate.inspection.ide`
 - `jetbrains.ide`
+- `jetbrains.ideChannel` / `jetbrains.ide_channel`
+- `jetbrains.ideVersion` / `jetbrains.ide_version`
+- `jetbrains.ideApp` / `jetbrains.ide_app`
 - `jetbrains.openProjectPath`
 - `jetbrains.mainWorktreePath`
 - `jetbrains.worktreeStrategy`
@@ -211,6 +223,10 @@ preferred IDE and must clean it up afterward when it owns the open.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
   "no problems found"; report the verdict reason and next action, because the
   IDE, plugin, helper, route, or environment needs attention first.
+  If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
+  `ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
+  metadata in `.github/github.json`; do not frame that as merely optional when
+  the same repo will be inspected again.
   The helper appends each `UNKNOWN` verdict to
   `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/unknown-verdicts.jsonl`
   so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
