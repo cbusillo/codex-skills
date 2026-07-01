@@ -1204,14 +1204,24 @@ def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]
     if open_via_running_ide(args, context):
         return "running_ide"
     bootstrap_ide_app(context, background=getattr(args, "background_open", False))
-    wait_for_matching_ide_identity(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
-    if open_via_running_ide(args, context):
+    timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
+    wait_for_matching_ide_identity(args, context, timeout_ms)
+    if wait_for_lifecycle_open(args, context, timeout_ms):
         return "bootstrapped_ide"
     raise InspectError(
         "Bootstrapped JetBrains IDE did not accept the lifecycle open request.",
         3,
-        auto_open_timeout_payload(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)),
+        auto_open_timeout_payload(args, context, timeout_ms),
     )
+
+
+def wait_for_lifecycle_open(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> bool:
+    deadline = now_ms() + timeout_ms
+    while now_ms() <= deadline:
+        if open_via_running_ide(args, context):
+            return True
+        time.sleep(1)
+    return False
 
 
 def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
@@ -1658,6 +1668,15 @@ def classify_run_status(wait: dict[str, Any], problems: dict[str, Any]) -> str:
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
     wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
     cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    blocker_reason = blocking_unknown_reason(payload, wait)
+    if blocker_reason is not None:
+        return {
+            "verdict": "UNKNOWN",
+            "verdict_reason": blocker_reason,
+            "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+            "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
+        }
+
     if cleanup.get("status") in {"failed", "skipped"} or payload.get("cleanup_failed") or payload.get("cleanup_skipped"):
         reason = unknown_reason(payload, wait, cleanup)
         return {
@@ -1674,15 +1693,6 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_reason": reason,
             "verdict_message": "Inspection tooling failed before it could prove GREEN or RED.",
             "verdict_next_action": next_action_for_unknown(reason, payload),
-        }
-
-    blocker_reason = blocking_unknown_reason(payload, wait)
-    if blocker_reason is not None:
-        return {
-            "verdict": "UNKNOWN",
-            "verdict_reason": blocker_reason,
-            "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
-            "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
         }
 
     if payload.get("proof_failures"):
