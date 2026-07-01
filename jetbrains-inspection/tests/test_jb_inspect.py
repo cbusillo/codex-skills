@@ -1513,6 +1513,8 @@ class LifecycleTest(unittest.TestCase):
         original_running = jb_inspect.open_via_running_ide
         original_bootstrap = jb_inspect.bootstrap_ide_app
         original_wait = jb_inspect.wait_for_matching_ide_identity
+        original_now = jb_inspect.now_ms
+        original_sleep = jb_inspect.time.sleep
 
         def fake_running(args, context):
             calls.append("running")
@@ -1521,23 +1523,74 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.open_via_running_ide = fake_running
         jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background))
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
+        jb_inspect.now_ms = lambda: 0
+        jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
         try:
             result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1234), {"ide": "IntelliJ IDEA"})
         finally:
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
             jb_inspect.wait_for_matching_ide_identity = original_wait
+            jb_inspect.now_ms = original_now
+            jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result, "bootstrapped_ide")
         self.assertEqual(calls, ["running", ("bootstrap", True), ("wait", 1234), "running"])
+
+    def test_open_project_for_lifecycle_retries_open_after_cold_bootstrap(self):
+        calls = []
+        original_running = jb_inspect.open_via_running_ide
+        original_bootstrap = jb_inspect.bootstrap_ide_app
+        original_wait = jb_inspect.wait_for_matching_ide_identity
+        original_now = jb_inspect.now_ms
+        original_sleep = jb_inspect.time.sleep
+        ticks = iter([0, 0, 100, 200, 300])
+
+        def fake_running(args, context):
+            calls.append("running")
+            return calls.count("running") == 4
+
+        jb_inspect.open_via_running_ide = fake_running
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background))
+        jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
+        jb_inspect.now_ms = lambda: next(ticks)
+        jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
+        try:
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1000), {"ide": "IntelliJ IDEA"})
+        finally:
+            jb_inspect.open_via_running_ide = original_running
+            jb_inspect.bootstrap_ide_app = original_bootstrap
+            jb_inspect.wait_for_matching_ide_identity = original_wait
+            jb_inspect.now_ms = original_now
+            jb_inspect.time.sleep = original_sleep
+
+        self.assertEqual(result, "bootstrapped_ide")
+        self.assertEqual(
+            calls,
+            [
+                "running",
+                ("bootstrap", True),
+                ("wait", 1000),
+                "running",
+                ("sleep", 1),
+                "running",
+                ("sleep", 1),
+                "running",
+            ],
+        )
 
     def test_open_project_for_lifecycle_errors_when_bootstrapped_ide_rejects_open(self):
         original_running = jb_inspect.open_via_running_ide
         original_bootstrap = jb_inspect.bootstrap_ide_app
         original_wait = jb_inspect.wait_for_matching_ide_identity
+        original_now = jb_inspect.now_ms
+        original_sleep = jb_inspect.time.sleep
+        ticks = iter([0, 0, 500, 1500])
         jb_inspect.open_via_running_ide = lambda args, context: False
         jb_inspect.bootstrap_ide_app = lambda context, background=True: None
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: {"port": 63342}
+        jb_inspect.now_ms = lambda: next(ticks)
+        jb_inspect.time.sleep = lambda seconds: None
         try:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.open_project_for_lifecycle(
@@ -1548,6 +1601,8 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
             jb_inspect.wait_for_matching_ide_identity = original_wait
+            jb_inspect.now_ms = original_now
+            jb_inspect.time.sleep = original_sleep
 
         self.assertIn("did not accept", str(raised.exception))
         self.assertEqual(raised.exception.payload["prepare_timeout_ms"], 1234)
@@ -2249,6 +2304,20 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(verdict["verdict"], "UNKNOWN")
         self.assertEqual(verdict["verdict_reason"], "cleanup_failed")
+
+    def test_timeout_overrides_cleanup_failure_reason(self):
+        payload = {
+            "status": "timed_out",
+            "cleanup": {"status": "failed", "reason": "close_failed"},
+            "cleanup_failed": True,
+            "wait": {"timed_out": True, "inspection_in_progress": True},
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "timeout")
+        self.assertIn("larger timeout", verdict["verdict_next_action"])
 
     def test_proof_failure_overrides_plugin_green_verdict(self):
         payload = {
