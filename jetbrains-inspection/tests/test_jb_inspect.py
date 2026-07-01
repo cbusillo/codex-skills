@@ -716,7 +716,8 @@ class LifecycleTest(unittest.TestCase):
                     }
                 )
 
-                def fake_private_http(port, endpoint, params):
+                def fake_private_http(port, endpoint, params, timeout=None):
+                    self.assertEqual(timeout, 35.0)
                     raise jb_inspect.InspectError("IDE session changed", 4, {"reason": "session_drift", "session_drift": True})
 
                 jb_inspect.private_http_get_body = fake_private_http
@@ -747,7 +748,8 @@ class LifecycleTest(unittest.TestCase):
                     }
                 )
 
-                def fake_private_http(port, endpoint, params):
+                def fake_private_http(port, endpoint, params, timeout=None):
+                    self.assertEqual(timeout, 35.0)
                     return {"status": "skipped", "reason": "not_claimed"}
 
                 jb_inspect.private_http_get_body = fake_private_http

@@ -1350,7 +1350,7 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
 
 def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     port = route_port(route)
-    body = private_http_get_body(port, "lifecycle/close", params)
+    body = private_http_get_body(port, "lifecycle/close", params, timeout=35.0)
     status = str(body.get("status") or "closed")
     if status == "closed":
         return {
@@ -1386,14 +1386,14 @@ def route_port(route: dict[str, Any]) -> int:
     return port
 
 
-def private_http_get_body(port: int, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+def private_http_get_body(port: int, endpoint: str, params: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
     query = urllib.parse.urlencode(clean_params, doseq=True)
     base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
     request_url = f"{base_url}?{query}" if query else base_url
     request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=max(DEFAULT_TIMEOUT_SECONDS, 10.0)) as response:
+        with urllib.request.urlopen(request, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)) as response:
             return parse_json(response.read())
     except urllib.error.HTTPError as error:
         body = parse_json(error.read())
