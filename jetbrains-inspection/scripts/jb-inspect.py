@@ -856,16 +856,22 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
+    result: dict[str, Any] = {}
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_on_route(args, context, prepared["route"])
         finally:
             if not getattr(args, "keep_warm", False):
-                cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_proof)
+                if should_defer_lifecycle_cleanup(result, lease):
+                    cleanup = defer_lifecycle_cleanup(lease, result)
+                else:
+                    cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_proof)
         result["prepared"] = public_payload(prepared)
         result["cleanup"] = cleanup
-        if cleanup.get("status") not in {"closed", "not_needed", "skipped"}:
+        if cleanup.get("status") == "deferred":
+            result["cleanup_deferred"] = True
+        elif cleanup.get("status") not in {"closed", "not_needed", "skipped"}:
             result["cleanup_failed"] = True
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
@@ -1156,17 +1162,39 @@ def flat_project_matches_context(project: dict[str, Any], context: dict[str, Any
 def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any], timeout_ms: int) -> None:
     deadline = now_ms() + timeout_ms
     last_status: dict[str, Any] | None = None
+    stable_ready_count = 0
     while now_ms() <= deadline:
         body = call_endpoint(route, "status", route_params(args, context, route))
         last_status = body
-        if not body.get("indexing") and not body.get("is_scanning"):
-            return
+        if route_status_ready(body):
+            stable_ready_count += 1
+            if stable_ready_count >= 2:
+                return
+        else:
+            stable_ready_count = 0
         time.sleep(max(DEFAULT_POLL_MS, 1_000) / 1000.0)
     raise InspectError(
         "Timed out waiting for JetBrains indexing/scanning to settle.",
         3,
-        {"status": "timeout", "last_status": last_status or {}, "route": route},
+        {
+            "status": "timeout",
+            "error_reason": "ide_not_ready_timeout",
+            "last_status": last_status or {},
+            "route": route,
+        }
+        | route_diagnostic_payload(args, context),
     )
+
+
+def route_status_ready(body: dict[str, Any]) -> bool:
+    if body.get("session_drift") or body.get("ambiguous") or body.get("unavailable"):
+        return False
+    if body.get("indexing") or body.get("is_scanning") or body.get("inspection_in_progress"):
+        return False
+    status = str(body.get("status") or body.get("completion_reason") or "").lower()
+    if status in {"indexing", "running", "timed_out", "session_drift", "ambiguous", "unavailable"}:
+        return False
+    return True
 
 
 def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> bool:
@@ -1442,11 +1470,22 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             time.sleep(4)
             continue
         if not candidates:
+            diagnostic_payload = route_diagnostic_payload(args, context)
+            diagnostic = diagnostic_payload.get("route_diagnostic")
+            if not isinstance(diagnostic, dict):
+                diagnostic = {}
+            matching_project_count = int(diagnostic.get("matching_project_count") or 0)
+            error_reason = "matching_project_route_unavailable" if matching_project_count else "target_project_not_open"
+            message = (
+                "Matching JetBrains project is visible but route resolution is unavailable."
+                if matching_project_count
+                else "No open JetBrains project matched this repo/worktree."
+            )
             raise InspectError(
-                "No open JetBrains project matched this repo/worktree.",
+                message,
                 3,
-                {"selector": selector_params(args, context), "error_reason": "target_project_not_open"}
-                | route_diagnostic_payload(args, context),
+                {"selector": selector_params(args, context), "error_reason": error_reason}
+                | diagnostic_payload,
             )
         route = sorted(candidates, key=lambda item: route_sort_key(item, context), reverse=True)[0]
         ensure_worktree_safe(route, context, args)
@@ -1597,6 +1636,15 @@ def problems_params(args: argparse.Namespace, context: dict[str, Any], route: di
         "limit": getattr(args, "limit", 100),
         "offset": getattr(args, "offset", 0),
     })
+    directory = getattr(args, "directory", None)
+    if directory:
+        params["dir"] = directory
+    files = getattr(args, "files", []) or []
+    if files:
+        params["files"] = "\n".join(files)
+    max_files = getattr(args, "max_files", None)
+    if max_files:
+        params["max_files"] = max_files
     if getattr(args, "include_stale", False):
         params["include_stale"] = "true"
     return params
@@ -1663,6 +1711,46 @@ def classify_run_status(wait: dict[str, Any], problems: dict[str, Any]) -> str:
     if problems.get("status") == "results_available" and (isinstance(total, int) and total == 0 or problems.get("clean") is True):
         return "clean"
     return problems.get("status") or wait.get("completion_reason") or "unknown"
+
+
+def should_defer_lifecycle_cleanup(result: dict[str, Any], lease: dict[str, Any]) -> bool:
+    if not lease.get("opened_by_helper"):
+        return False
+    if result.get("verdict") in {"GREEN", "RED"}:
+        return False
+    wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
+    return active_ide_churn(result) or active_ide_churn(wait)
+
+
+def active_ide_churn(payload: dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    status = str(payload.get("status") or payload.get("completion_reason") or "").lower()
+    proof_failures = payload.get("proof_failures") if isinstance(payload.get("proof_failures"), list) else []
+    return (
+        payload.get("timed_out") is True
+        and (
+            payload.get("indexing") is True
+            or payload.get("is_scanning") is True
+            or payload.get("inspection_in_progress") is True
+            or status in {"indexing", "running", "timed_out"}
+            or any(reason in {"indexing", "inspection_still_running", "timeout"} for reason in proof_failures)
+        )
+    )
+
+
+def defer_lifecycle_cleanup(lease: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    mark_lease_state(lease, "kept_warm_after_indexing_timeout")
+    return {
+        "status": "deferred",
+        "reason": "indexing_or_inspection_still_running",
+        "cleanup_deferred": True,
+        "lease_id": lease.get("lease_id"),
+        "project_key": lease.get("project_key"),
+        "project_instance_id": lease.get("project_instance_id"),
+        "next_action": "Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases if the warm project becomes stale.",
+        "verdict_reason": result.get("verdict_reason"),
+    }
 
 
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:

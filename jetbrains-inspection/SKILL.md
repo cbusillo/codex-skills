@@ -114,6 +114,11 @@ background activation by default to reduce focus stealing; when the target IDE i
 not already running, the helper launches the app hidden first and then asks the
 plugin to open the exact worktree. Use `--foreground-open` only when debugging
 IDE launch behavior.
+If a helper-opened project is still indexing or scanning when closeout times
+out, the helper may leave that project warm and report `cleanup.status=deferred`
+with `cleanup_deferred=true`. Treat that as `UNKNOWN`, rerun `inspect-closeout`
+after indexing settles, and use `cleanup-helper-leases` only if the warm lease
+becomes stale.
 Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it or increase
 `--lifecycle-lock-timeout-ms`; do not start parallel auto-open inspections and
@@ -242,6 +247,9 @@ preferred IDE and must clean it up afterward when it owns the open.
 - readiness inspections should use `inspect-closeout`, not plain `get-status`. If lifecycle
   cleanup is skipped or fails for a helper-opened project, the inspection is not
   clean; report both the inspection result and cleanup reason.
+  If cleanup is deferred because the IDE is still indexing/scanning, report the
+  `UNKNOWN` verdict and rerun after indexing settles before calling the work
+  inspection-clean.
 - `get-status` is informational and exits zero only when the helper can retrieve a
   route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.

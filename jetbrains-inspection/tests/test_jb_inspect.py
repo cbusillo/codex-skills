@@ -54,6 +54,23 @@ def make_app(base: Path, name: str, bundle_name: str, bundle_id: str, version: s
     return path
 
 
+def helper_args(**overrides):
+    values = {
+        "ide": None,
+        "project_key": None,
+        "project_path": None,
+        "worktree_path": None,
+        "cwd": None,
+        "project": None,
+        "session_id": None,
+        "port": None,
+        "open": False,
+        "no_worktree_check": False,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
 class ParserCommandAliasTest(unittest.TestCase):
     def test_preferred_commands_parse_and_canonicalize(self):
         parser = jb_inspect.build_parser()
@@ -477,6 +494,75 @@ class LifecycleTest(unittest.TestCase):
 
             self.assertEqual(result["status"], "not_needed")
             self.assertEqual(result["reason"], "project_preexisted")
+
+    def test_closeout_defers_cleanup_when_helper_opened_project_is_still_indexing(self):
+        cleanups = []
+        states = []
+        prepared = {
+            "status": "prepared",
+            "route": {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"},
+            "opened_by_helper": True,
+        }
+        lease = {
+            "opened_by_helper": True,
+            "lease_id": "lease-1",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+        }
+
+        def fake_run(args, context, route):
+            return {
+                "status": "timed_out",
+                "verdict": "UNKNOWN",
+                "verdict_reason": "timeout",
+                "wait": {"timed_out": True, "indexing": True, "inspection_in_progress": True},
+            }
+
+        original_prepare = jb_inspect.prepare_lifecycle_details
+        original_run = jb_inspect.run_inspection_on_route
+        original_cleanup = jb_inspect.cleanup_lifecycle
+        original_mark = jb_inspect.mark_lease_state
+        jb_inspect.prepare_lifecycle_details = lambda args, context: (prepared, lease, "proof-1")
+        jb_inspect.run_inspection_on_route = fake_run
+        jb_inspect.cleanup_lifecycle = lambda cleanup_lease, route, close_proof: cleanups.append((cleanup_lease, route, close_proof)) or {"status": "closed"}
+        jb_inspect.mark_lease_state = lambda state_lease, state: states.append((state_lease, state))
+        try:
+            result = jb_inspect.command_closeout(Namespace(keep_warm=False, lifecycle_lock_timeout_ms=0), {})
+        finally:
+            jb_inspect.prepare_lifecycle_details = original_prepare
+            jb_inspect.run_inspection_on_route = original_run
+            jb_inspect.cleanup_lifecycle = original_cleanup
+            jb_inspect.mark_lease_state = original_mark
+
+        self.assertEqual(cleanups, [])
+        self.assertEqual(result["cleanup"]["status"], "deferred")
+        self.assertTrue(result["cleanup_deferred"])
+        self.assertEqual(states, [(lease, "kept_warm_after_indexing_timeout")])
+
+    def test_problems_params_preserve_files_scope_selectors(self):
+        args = helper_args(
+            scope="files",
+            files=["src/App.kt", "src/AppTest.kt"],
+            directory=None,
+            max_files=25,
+            severity="all",
+            problem_type="all",
+            file_pattern="all",
+            limit=100,
+            offset=0,
+            include_stale=False,
+            project_key=None,
+            project_path=None,
+            worktree_path=None,
+            cwd=None,
+            project=None,
+            session_id=None,
+        )
+        params = jb_inspect.problems_params(args, {"scope": "files"}, {"project_key": "path:/tmp/repo"})
+
+        self.assertEqual(params["scope"], "files")
+        self.assertEqual(params["files"], "src/App.kt\nsrc/AppTest.kt")
+        self.assertEqual(params["max_files"], 25)
 
     def test_find_exact_route_returns_none_for_containing_project(self):
         original_resolve_route = jb_inspect.resolve_route
@@ -1263,6 +1349,41 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("safe-mode", diagnostic["next_action"])
         self.assertIn("open-project", diagnostic["next_action"])
 
+    def test_resolve_route_reports_matching_project_route_unavailable(self):
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        target = "/Users/me/Developer/project"
+        jb_inspect.discover_identities = lambda port: [
+            {
+                "port": 63342,
+                "ide_name": "IntelliJ IDEA 2026.1.3",
+                "ide_product_code": "IU",
+                "session_id": "idea-session",
+                "open_projects": [{"base_path": target, "project_key": f"path:{target}"}],
+            }
+        ]
+        jb_inspect.discover_diagnostic_identities = jb_inspect.discover_identities
+
+        def fake_http_get(port, endpoint, params, timeout=3.0):
+            self.assertEqual(endpoint, "route")
+            return jb_inspect.HttpResult(200, {"route": None}, "url")
+
+        jb_inspect.http_get = fake_http_get
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.resolve_route(
+                    helper_args(port=None, open=False, no_worktree_check=False),
+                    {"ide": "IntelliJ IDEA", "worktree_root": target, "project_path": target},
+                )
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
+
+        self.assertEqual(raised.exception.payload["error_reason"], "matching_project_route_unavailable")
+        self.assertEqual(raised.exception.payload["route_diagnostic"]["matching_project_count"], 1)
+
     def test_resolve_route_port_scan_finds_target_when_registry_has_other_ide(self):
         original_registry = jb_inspect.registry_identities
         original_ports = jb_inspect.configured_ports
@@ -1648,6 +1769,35 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(payload["blocked_diagnostic"]["target_worktree"], "/tmp/repo")
         self.assertEqual(payload["blocked_diagnostic"]["selected_trusted_root"], str(Path("/tmp").resolve()))
         self.assertEqual(payload["route_diagnostic"]["reason"], "target_ide_running_without_target_project")
+
+    def test_wait_until_route_ready_requires_consecutive_ready_statuses(self):
+        statuses = iter([
+            {"indexing": True},
+            {"indexing": False, "is_scanning": False},
+            {"indexing": True},
+            {"indexing": False, "is_scanning": False},
+            {"indexing": False, "is_scanning": False},
+        ])
+        calls = []
+        original_call = jb_inspect.call_endpoint
+        original_sleep = jb_inspect.time.sleep
+        original_now = jb_inspect.now_ms
+        jb_inspect.call_endpoint = lambda route, endpoint, params: calls.append(endpoint) or next(statuses)
+        jb_inspect.time.sleep = lambda seconds: None
+        jb_inspect.now_ms = lambda: 0
+        try:
+            jb_inspect.wait_until_route_ready(
+                helper_args(port=None),
+                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"port": 63342},
+                1_000,
+            )
+        finally:
+            jb_inspect.call_endpoint = original_call
+            jb_inspect.time.sleep = original_sleep
+            jb_inspect.now_ms = original_now
+
+        self.assertEqual(calls, ["status", "status", "status", "status", "status"])
 
     def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
