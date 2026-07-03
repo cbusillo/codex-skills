@@ -240,7 +240,7 @@ def main() -> int:
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
-            return emit(result, args.json, 0, command=args.command_input)
+            return emit(result, args.json, classify_cleanup_leases_exit(result), command=args.command_input)
         if args.command == "run":
             context = build_context(args)
             result = command_run(args, context)
@@ -906,6 +906,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
     lease = create_local_lease(context, state="preparing")
     exact_route = find_exact_route(args, context)
     opened_by_helper = False
+    reclaimed_lease: dict[str, Any] | None = None
     if exact_route is None:
         if not getattr(args, "open", False):
             raise InspectError(
@@ -920,6 +921,12 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     else:
         open_method = "preexisting"
+        reclaimed_lease = matching_deferred_lease(context, exact_route)
+        if reclaimed_lease is not None:
+            remove_lease(lease)
+            lease = reclaimed_lease
+            opened_by_helper = True
+            open_method = "reclaimed_deferred"
     ensure_exact_worktree(exact_route, context, args)
     wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
     claim_metadata, close_proof = claim_lifecycle(args, context, exact_route, lease)
@@ -1378,7 +1385,12 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
 
 def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     port = route_port(route)
-    body = private_http_get_body(port, "lifecycle/close", params, timeout=35.0)
+    try:
+        body = private_http_get_body(port, "lifecycle/close", params, timeout=35.0)
+    except InspectError as error:
+        body = error.payload if isinstance(error.payload, dict) else {}
+        if body.get("session_drift") or not body or "status" not in body:
+            raise
     status = str(body.get("status") or "closed")
     if status == "closed":
         return {
@@ -1392,6 +1404,8 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
         "reason": body.get("reason") or status,
         "cleanup_skipped": True,
         "cleanup_failed": False,
+        "message": body.get("message"),
+        "close_attempts": body.get("close_attempts"),
     }
 
 
@@ -1709,6 +1723,8 @@ def classify_run_status(wait: dict[str, Any], problems: dict[str, Any]) -> str:
     ):
         return "findings"
     if problems.get("status") == "results_available" and (isinstance(total, int) and total == 0 or problems.get("clean") is True):
+        return "clean"
+    if wait.get("completion_reason") == "clean" or wait.get("clean_inspection") is True or wait.get("inspection_verdict") == "GREEN":
         return "clean"
     return problems.get("status") or wait.get("completion_reason") or "unknown"
 
@@ -2058,6 +2074,10 @@ def classify_closeout_exit(result: dict[str, Any]) -> int:
     if result.get("cleanup_failed") or result.get("cleanup_skipped"):
         return 1
     return classify_run_exit(result)
+
+
+def classify_cleanup_leases_exit(result: dict[str, Any]) -> int:
+    return 1 if result.get("failed") else 0
 
 
 def classify_wait_exit(result: dict[str, Any]) -> int:
@@ -2913,18 +2933,68 @@ def public_lease(lease: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:
+def read_local_leases() -> list[tuple[Path, dict[str, Any]]]:
     directory = lease_dir()
-    removed: list[str] = []
-    stale: list[str] = []
     if not directory.exists():
-        return {"status": "ok", "removed": [], "stale": []}
-    cutoff = now_ms() - int(args.max_age_ms)
+        return []
+    leases: list[tuple[Path, dict[str, Any]]] = []
     for path in sorted(directory.glob("*.json")):
         try:
             lease = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        leases.append((path, lease))
+    return leases
+
+
+def matching_deferred_lease(context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = [
+        lease
+        for _, lease in read_local_leases()
+        if deferred_lease_matches_route(lease, context, route)
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: int(item.get("updated_at_ms") or 0), reverse=True)[0]
+
+
+def deferred_lease_matches_route(lease: dict[str, Any], context: dict[str, Any], route: dict[str, Any]) -> bool:
+    if not lease.get("opened_by_helper"):
+        return False
+    if lease.get("state") != "kept_warm_after_indexing_timeout":
+        return False
+    if lease.get("project_instance_id") and route.get("project_instance_id") and lease.get("project_instance_id") != route.get("project_instance_id"):
+        return False
+    if lease.get("session_id") and route.get("session_id") and lease.get("session_id") != route.get("session_id"):
+        return False
+    if lease.get("project_key") and route.get("project_key") and lease.get("project_key") != route.get("project_key"):
+        return False
+    lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    context_target = lifecycle_target_path(context)
+    route_base = route.get("base_path")
+    return paths_same(lease_target, context_target) and paths_same(route_base, context_target)
+
+
+def paths_same(left: Any, right: Any) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(str(left)).resolve() == Path(str(right)).resolve()
+    except OSError:
+        return str(left) == str(right)
+
+
+def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:
+    removed: list[str] = []
+    stale: list[str] = []
+    closed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    local_leases = read_local_leases()
+    if not local_leases:
+        return {"status": "ok", "removed": [], "stale": [], "closed": [], "failed": []}
+    cutoff = now_ms() - int(args.max_age_ms)
+    routes = discover_routes_for_cleanup(args)
+    for path, lease in local_leases:
         updated = int(lease.get("updated_at_ms") or lease.get("created_at_ms") or 0)
         pid = lease.get("pid")
         is_stale = updated < cutoff or (pid and not pid_alive(int(pid)))
@@ -2932,9 +3002,91 @@ def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:
             continue
         stale.append(str(path))
         if not args.dry_run:
-            path.unlink(missing_ok=True)
-            removed.append(str(path))
-    return {"status": "ok", "dry_run": args.dry_run, "stale": stale, "removed": removed}
+            cleanup_result = cleanup_stale_helper_lease(lease, routes)
+            if cleanup_result.get("status") == "closed":
+                closed.append(cleanup_result)
+                path.unlink(missing_ok=True)
+                removed.append(str(path))
+            elif cleanup_result.get("status") == "failed":
+                failed.append(cleanup_result)
+            elif cleanup_result.get("reason") in {"project_not_open", "project_preexisted"}:
+                path.unlink(missing_ok=True)
+                removed.append(str(path))
+    return {"status": "ok", "dry_run": args.dry_run, "stale": stale, "removed": removed, "closed": closed, "failed": failed}
+
+
+def discover_routes_for_cleanup(args: argparse.Namespace) -> list[dict[str, Any]]:
+    routes: list[dict[str, Any]] = []
+    try:
+        identities = discover_identities(getattr(args, "port", None))
+    except InspectError:
+        return routes
+    for identity in identities:
+        port = identity.get("port")
+        if not port:
+            continue
+        for project in identity.get("open_projects") or []:
+            if isinstance(project, dict):
+                route = project.copy()
+                route.setdefault("port", port)
+                route.setdefault("ide", {
+                    "name": identity.get("ide_name") or identity.get("name"),
+                    "product_code": identity.get("ide_product_code") or identity.get("product_code"),
+                    "version": identity.get("ide_version") or identity.get("version"),
+                    "plugin_version": identity.get("plugin_version"),
+                    "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
+                })
+                routes.append(route)
+    return routes
+
+
+def cleanup_stale_helper_lease(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any]:
+    if not lease.get("opened_by_helper"):
+        return {"status": "not_needed", "reason": "project_preexisted", "lease_id": lease.get("lease_id")}
+    route = matching_route_for_lease(lease, routes)
+    if route is None:
+        return {"status": "not_needed", "reason": "project_not_open", "lease_id": lease.get("lease_id")}
+    close_proof = reclaim_close_proof(lease, route)
+    if not close_proof:
+        return {"status": "skipped", "reason": "missing_close_token", "lease_id": lease.get("lease_id")}
+    result = cleanup_lifecycle(lease, route, str(close_proof))
+    result.setdefault("lease_id", lease.get("lease_id"))
+    return result
+
+
+def reclaim_close_proof(lease: dict[str, Any], route: dict[str, Any]) -> str | None:
+    project_instance_id = lease.get("project_instance_id") or route.get("project_instance_id")
+    if not project_instance_id:
+        return None
+    try:
+        claim = private_http_get_body(route_port(route), "lifecycle/claim", {
+            "project_key": lease.get("project_key") or route.get("project_key"),
+            "project_path": route.get("base_path"),
+            "worktree_path": route.get("base_path"),
+            "session_id": lease.get("session_id") or route.get("session_id"),
+            "project_instance_id": project_instance_id,
+            "lease_id": lease.get("lease_id"),
+        })
+    except InspectError:
+        return None
+    close_proof = claim.pop("close_" + "token", None)
+    return str(close_proof) if close_proof else None
+
+
+def matching_route_for_lease(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for route in routes:
+        if lease.get("project_instance_id") and route.get("project_instance_id") != lease.get("project_instance_id"):
+            continue
+        if lease.get("session_id") and route.get("session_id") and route.get("session_id") != lease.get("session_id"):
+            continue
+        if lease.get("project_key") and route.get("project_key") and route.get("project_key") != lease.get("project_key"):
+            continue
+        route_base = route.get("base_path") or route.get("project_file_path")
+        lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+        if route_base and lease_target and not paths_same(route_base, lease_target):
+            continue
+        return route
+    return None
 
 
 def configured_ports() -> list[int]:
@@ -3050,7 +3202,7 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
     if background:
         command.append("-g")
     if ide_app_path:
-        command.extend(["-a", str(ide_app_path), str(target)])
+        command.extend(["-n", "-a", str(ide_app_path), str(target)])
     else:
         command.extend(["-a", str(ide_app), str(target)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -3083,7 +3235,7 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
     if background:
         command.extend(["-g", "-j"])
     if ide_app_path:
-        command.extend(["-a", str(ide_app_path)])
+        command.extend(["-n", "-a", str(ide_app_path)])
     else:
         command.extend(["-a", str(ide_app)])
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
