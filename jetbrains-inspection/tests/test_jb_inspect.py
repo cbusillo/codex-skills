@@ -539,6 +539,237 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(result["cleanup_deferred"])
         self.assertEqual(states, [(lease, "kept_warm_after_indexing_timeout")])
 
+    def test_prepare_reclaims_deferred_helper_lease_for_exact_route(self):
+        removed = []
+        written = []
+        claimed = []
+        created = {
+            "lease_id": "new-lease",
+            "state": "preparing",
+            "lifecycle_target_path": "/tmp/worktree",
+        }
+        deferred = {
+            "lease_id": "old-lease",
+            "state": "kept_warm_after_indexing_timeout",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "worktree_root": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+            "updated_at_ms": 20,
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+
+        original_create = jb_inspect.create_local_lease
+        original_find = jb_inspect.find_exact_route
+        original_matching = jb_inspect.matching_deferred_lease
+        original_remove = jb_inspect.remove_lease
+        original_wait = jb_inspect.wait_until_route_ready
+        original_claim = jb_inspect.claim_lifecycle
+        original_write = jb_inspect.write_lease
+        jb_inspect.create_local_lease = lambda context, state: created.copy()
+        jb_inspect.find_exact_route = lambda args, context: route.copy()
+        jb_inspect.matching_deferred_lease = lambda context, exact_route: deferred.copy()
+        jb_inspect.remove_lease = lambda lease: removed.append(lease["lease_id"])
+        jb_inspect.wait_until_route_ready = lambda args, context, exact_route, timeout_ms: None
+
+        def fake_claim(args, context, exact_route, lease):
+            claimed.append(lease["lease_id"])
+            return {"status": "claimed", "lease_id": lease["lease_id"]}, "proof-1"
+
+        jb_inspect.claim_lifecycle = fake_claim
+        jb_inspect.write_lease = lambda lease: written.append(lease.copy())
+        try:
+            prepared, lease, close_proof = jb_inspect.prepare_lifecycle_details(
+                helper_args(open=True, prepare_timeout_ms=1),
+                {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+            )
+        finally:
+            jb_inspect.create_local_lease = original_create
+            jb_inspect.find_exact_route = original_find
+            jb_inspect.matching_deferred_lease = original_matching
+            jb_inspect.remove_lease = original_remove
+            jb_inspect.wait_until_route_ready = original_wait
+            jb_inspect.claim_lifecycle = original_claim
+            jb_inspect.write_lease = original_write
+
+        self.assertEqual(removed, ["new-lease"])
+        self.assertEqual(claimed, ["old-lease"])
+        self.assertTrue(lease["opened_by_helper"])
+        self.assertEqual(lease["open_method"], "reclaimed_deferred")
+        self.assertEqual(prepared["open_method"], "reclaimed_deferred")
+        self.assertTrue(prepared["opened_by_helper"])
+        self.assertEqual(close_proof, "proof-1")
+        self.assertEqual(written[-1]["lease_id"], "old-lease")
+
+    def test_deferred_lease_matching_requires_exact_project_session_and_path(self):
+        lease = {
+            "state": "kept_warm_after_indexing_timeout",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        context = {"worktree_root": "/tmp/worktree"}
+        route = {
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+
+        self.assertTrue(jb_inspect.deferred_lease_matches_route(lease, context, route))
+        self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"session_id": "other"}, context, route))
+        self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"project_instance_id": "session:2"}, context, route))
+        self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"lifecycle_target_path": "/tmp/other"}, context, route))
+
+    def test_cleanup_leases_closes_stale_helper_owned_matching_route(self):
+        removed = []
+        closed = []
+        claims = []
+        lease = {
+            "lease_id": "old-lease",
+            "state": "kept_warm_after_indexing_timeout",
+            "opened_by_helper": True,
+            "pid": 999999,
+            "lifecycle_target_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+
+        original_read = jb_inspect.read_local_leases
+        original_pid_alive = jb_inspect.pid_alive
+        original_routes = jb_inspect.discover_routes_for_cleanup
+        original_private = jb_inspect.private_http_get_body
+        original_cleanup = jb_inspect.cleanup_lifecycle
+        path = Path("/tmp/old-lease.json")
+        jb_inspect.read_local_leases = lambda: [(path, lease.copy())]
+        jb_inspect.pid_alive = lambda pid: False
+        jb_inspect.discover_routes_for_cleanup = lambda args: [route.copy()]
+        jb_inspect.private_http_get_body = lambda port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS: claims.append((endpoint, params["lease_id"])) or {"close_token": "proof-1"}
+        jb_inspect.cleanup_lifecycle = lambda cleanup_lease, cleanup_route, proof: closed.append((cleanup_lease["lease_id"], cleanup_route["project_instance_id"], proof)) or {"status": "closed"}
+        try:
+            with patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))):
+                result = jb_inspect.command_cleanup_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
+        finally:
+            jb_inspect.read_local_leases = original_read
+            jb_inspect.pid_alive = original_pid_alive
+            jb_inspect.discover_routes_for_cleanup = original_routes
+            jb_inspect.private_http_get_body = original_private
+            jb_inspect.cleanup_lifecycle = original_cleanup
+
+        self.assertEqual(claims, [("lifecycle/claim", "old-lease")])
+        self.assertEqual(closed, [("old-lease", "session:1", "proof-1")])
+        self.assertEqual(removed, [str(path)])
+        self.assertEqual(result["closed"][0]["lease_id"], "old-lease")
+
+    def test_cleanup_stale_helper_lease_skips_when_reclaim_fails(self):
+        lease = {
+            "lease_id": "old-lease",
+            "opened_by_helper": True,
+            "project_instance_id": "session:1",
+            "lifecycle_target_path": "/tmp/worktree",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_instance_id": "session:1",
+        }
+        original_private = jb_inspect.private_http_get_body
+        jb_inspect.private_http_get_body = lambda *args, **kwargs: (_ for _ in ()).throw(jb_inspect.InspectError("drift", 4))
+        try:
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
+        finally:
+            jb_inspect.private_http_get_body = original_private
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "missing_close_token")
+
+    def test_lifecycle_close_preserves_failed_close_attempt_diagnostics(self):
+        original_private = jb_inspect.private_http_get_body
+        jb_inspect.private_http_get_body = lambda port, endpoint, params, timeout=None: {
+            "status": "skipped",
+            "reason": "close_failed",
+            "message": "declined",
+            "close_attempts": [{"attempt": 1, "force_close_returned": False}],
+        }
+        try:
+            result = jb_inspect.call_lifecycle_close({"port": 1}, {"project_key": "path:/tmp/worktree"})
+        finally:
+            jb_inspect.private_http_get_body = original_private
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "close_failed")
+        self.assertEqual(result["message"], "declined")
+        self.assertEqual(result["close_attempts"], [{"attempt": 1, "force_close_returned": False}])
+
+    def test_lifecycle_close_preserves_http_conflict_payload(self):
+        payload = {
+            "status": "skipped",
+            "reason": "close_failed",
+            "message": "declined",
+            "close_attempts": [{"attempt": 1, "force_close_returned": False}],
+        }
+        original_private = jb_inspect.private_http_get_body
+        jb_inspect.private_http_get_body = lambda *args, **kwargs: (_ for _ in ()).throw(jb_inspect.InspectError("HTTP 409", 3, payload))
+        try:
+            result = jb_inspect.call_lifecycle_close({"port": 1}, {"project_key": "path:/tmp/worktree"})
+        finally:
+            jb_inspect.private_http_get_body = original_private
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "close_failed")
+        self.assertEqual(result["close_attempts"], [{"attempt": 1, "force_close_returned": False}])
+
+    def test_cleanup_leases_preserves_lease_when_close_fails(self):
+        removed = []
+        lease = {
+            "lease_id": "old-lease",
+            "state": "kept_warm_after_indexing_timeout",
+            "opened_by_helper": True,
+            "pid": 999999,
+            "lifecycle_target_path": "/tmp/worktree",
+            "project_instance_id": "session:1",
+        }
+        path = Path("/tmp/old-lease.json")
+
+        original_read = jb_inspect.read_local_leases
+        original_pid_alive = jb_inspect.pid_alive
+        original_routes = jb_inspect.discover_routes_for_cleanup
+        original_cleanup = jb_inspect.cleanup_stale_helper_lease
+        jb_inspect.read_local_leases = lambda: [(path, lease.copy())]
+        jb_inspect.pid_alive = lambda pid: False
+        jb_inspect.discover_routes_for_cleanup = lambda args: [{"port": 1, "base_path": "/tmp/worktree", "project_instance_id": "session:1"}]
+        jb_inspect.cleanup_stale_helper_lease = lambda cleanup_lease, routes: {"status": "failed", "reason": "close_failed", "lease_id": cleanup_lease["lease_id"]}
+        try:
+            with patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))):
+                result = jb_inspect.command_cleanup_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
+        finally:
+            jb_inspect.read_local_leases = original_read
+            jb_inspect.pid_alive = original_pid_alive
+            jb_inspect.discover_routes_for_cleanup = original_routes
+            jb_inspect.cleanup_stale_helper_lease = original_cleanup
+
+        self.assertEqual(removed, [])
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["failed"][0]["lease_id"], "old-lease")
+
     def test_problems_params_preserve_files_scope_selectors(self):
         args = helper_args(
             scope="files",
@@ -707,7 +938,7 @@ class LifecycleTest(unittest.TestCase):
                 background=True,
             )
 
-        run.assert_called_once_with(["open", "-g", "-a", str(app_path), "/tmp/worktree"], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-n", "-a", str(app_path), "/tmp/worktree"], check=False, capture_output=True, text=True)
 
     def test_open_in_ide_uses_lifecycle_target_for_nested_project(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
@@ -753,7 +984,7 @@ class LifecycleTest(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"}}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-j", "-a", str(app_path)], check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-j", "-n", "-a", str(app_path)], check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
@@ -1872,6 +2103,17 @@ class ClassificationTest(unittest.TestCase):
         problems = {"status": "results_available", "total_problems": 5, "problems": []}
 
         self.assertEqual(jb_inspect.classify_run_status({}, problems), "findings")
+
+    def test_run_status_preserves_clean_wait_when_problems_has_no_results(self):
+        wait = {"completion_reason": "clean", "clean_inspection": True, "inspection_verdict": "GREEN"}
+        problems = {"status": "no_results", "total_problems": 0, "problems": []}
+
+        self.assertEqual(jb_inspect.classify_run_status(wait, problems), "clean")
+
+    def test_cleanup_leases_failed_cleanup_exits_nonzero(self):
+        result = {"status": "ok", "failed": [{"status": "failed", "reason": "close_failed"}]}
+
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
 
     def test_wait_no_results_exits_nonzero(self):
         result = {"status": "no_results", "wait": {"completion_reason": "no_results"}}
