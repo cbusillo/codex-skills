@@ -46,6 +46,11 @@ commands:
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-problems", "--repo", "$PWD", "--severity", "error"]
     purpose: Fetches current inspection problems through the helper.
+  - name: jetbrains-inspection-summarize-outcomes
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "summarize-outcomes"]
+    purpose: Summarizes helper outcome JSONL logs by verdict, bucket, and retry without running an inspection.
 policy:
   command_policies:
     - id: prefer-jb-inspect-for-plugin-http
@@ -76,7 +81,8 @@ Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
 In the common user-skill install, that path is:
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py inspect --repo "$PWD" --scope changed_files
+HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
+uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
 ```
 
 If this skill was loaded from a repo-local or temporary path, use that loaded
@@ -93,17 +99,21 @@ uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
 uv run "$HELPER" inspect-closeout --repo "$PWD" --scope changed_files
 uv run "$HELPER" get-status --repo "$PWD"
 uv run "$HELPER" get-problems --repo "$PWD" --severity error
+uv run "$HELPER" summarize-outcomes
 ```
 
 Command model:
 
 - `list-projects`: discover plugin-visible projects only.
-- `resolve-route`: probe for an already-open exact route; it does not open or inspect.
+- `resolve-route`: probe for an already-open exact route; it does not open or
+  inspect.
 - `prepare-worktree`: open and claim the exact worktree; it does not inspect.
-- `inspect`: open if needed, inspect, fetch problems, and clean up helper-opened projects.
+- `inspect`: open if needed, inspect, fetch problems, and clean up
+  helper-opened projects.
 - `inspect-closeout`: readiness/hand-off inspection; use before saying a change
   is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
-- `get-status` and `get-problems`: route-pinned diagnostics for already-routable projects.
+- `get-status` and `get-problems`: route-pinned diagnostics for
+  already-routable projects.
 
 `inspect` and `inspect-closeout` create a local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
@@ -120,9 +130,9 @@ with `cleanup_deferred=true`. Treat that as `UNKNOWN`, rerun `inspect-closeout`
 after indexing settles, and use `cleanup-helper-leases` only if the warm lease
 becomes stale.
 Lifecycle inspections are serialized by a bounded local lock. If another helper
-inspection is already opening, inspecting, or cleaning up a project, wait for it or increase
-`--lifecycle-lock-timeout-ms`; do not start parallel auto-open inspections and
-expect independent IDE windows to race safely.
+inspection is already opening, inspecting, or cleaning up a project, wait for it
+or increase `--lifecycle-lock-timeout-ms`; do not start parallel auto-open
+inspections and expect independent IDE windows to race safely.
 
 Auto-open is allowed only for worktrees under globally trusted roots. Before a
 lifecycle auto-open, the helper adds the matching trusted root to the selected
@@ -157,6 +167,9 @@ the latest installed stable/non-EAP app for that product. For a deliberate EAP
 or exact-version run, use explicit metadata or CLI fields such as
 `jetbrains.ideChannel: "eap"`, `jetbrains.ideVersion: "2026.2"`,
 `jetbrains.ideApp`, `--ide-channel`, `--ide-version`, or `--ide-app`.
+Never infer EAP from the presence of an EAP install. EAP requires an explicit
+repo, CLI, exact app/version, or user-task signal; it is not a fallback when no
+stable IDE is discovered.
 Treat `--ide`/`--ide-app` as a one-off unblocker; for recurring repo work,
 tell the user to add preferred IDE metadata rather than leaving the next agent to
 guess again.
@@ -164,8 +177,8 @@ If a first-time open still stalls after trusted-location and project-opening
 policy seeding, treat it as a blocker: check for unsupported IDE config layout,
 settings sync overwriting the config, a missing inspection plugin, or a product
 that accepted the scheduled open but never registered the worktree. Real-session
-smokes have validated unattended lifecycle inspection on IntelliJ IDEA, PyCharm, and
-WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
+smokes have validated unattended lifecycle inspection on IntelliJ IDEA, PyCharm,
+and WebStorm 2026.1 with trusted worktrees under `$HOME/.code/working`.
 
 Use `inspect` for ordinary iteration and `inspect-closeout` for final readiness
 notes so cleanup status is explicit. Use `--include-stale` only when explicitly
@@ -180,8 +193,9 @@ clean.
   IDE warnings, static analysis, or inspection quality gates.
 - When normal tests pass but IDE-only analysis may catch framework/plugin issues.
 
-For docs-only or non-code edits, record a concise not-run reason when an
-inspection would be disproportionate.
+For docs-only or non-code edits where no runtime behavior changed, record a
+one-line not-run reason, such as `docs-only change, no code paths affected`,
+when an inspection would be disproportionate.
 
 ## Scope Selection
 
@@ -228,6 +242,10 @@ preferred IDE and must clean it up afterward when it owns the open.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
   "no problems found"; report the verdict reason and next action, because the
   IDE, plugin, helper, route, or environment needs attention first.
+  Prefer the helper's `agent_result` envelope for normal reporting. It contains
+  `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`; do not
+  inspect raw route, cleanup, wait, or capture diagnostics unless debugging the
+  helper itself.
   If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
   `ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
   metadata in `.github/github.json`; do not frame that as merely optional when
@@ -244,18 +262,19 @@ preferred IDE and must clean it up afterward when it owns the open.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness inspections should use `inspect-closeout`, not plain `get-status`. If lifecycle
-  cleanup is skipped or fails for a helper-opened project, the inspection is not
-  clean; report both the inspection result and cleanup reason.
+- readiness inspections should use `inspect-closeout`, not plain `get-status`.
+  If lifecycle cleanup is skipped or fails for a helper-opened project, the
+  inspection is not clean; report both the inspection result and cleanup reason.
   If cleanup is deferred because the IDE is still indexing/scanning, report the
   `UNKNOWN` verdict and rerun after indexing settles before calling the work
   inspection-clean.
-- `get-status` is informational and exits zero only when the helper can retrieve a
-  route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
+- `get-status` is informational and exits zero only when the helper can retrieve
+  a route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
 - `stale_results`, `capture_incomplete`, timeout, indexing, session drift,
-  ambiguous route, or unavailable IDE: not clean; retry, narrow scope, open the
-  project in the preferred IDE, or report the blocker.
+  ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
+  when `retry_policy.retry=true`; otherwise narrow scope, open the project in
+  the preferred IDE, or report the blocker. Do not invent retry loops.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
@@ -269,6 +288,9 @@ the scope first.
 
 ## Reporting
 
-Summarize the inspection route, scope, status, and actionable findings. Include
-file and line when available. If not run or inconclusive, state why and the next
-smallest useful action.
+Report the compact helper envelope: verdict (`GREEN`/`RED`/`UNKNOWN`), scope,
+one-line finding summary with file and line when available, and next action. Do
+not include raw diagnostic fields such as `capture_diagnostic` in normal
+reports; use them only when explicitly debugging an extractor or capture
+failure. If not run or inconclusive, state a one-line not-run or blocker reason
+and the next smallest useful action.
