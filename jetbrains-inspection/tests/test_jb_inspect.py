@@ -25,6 +25,7 @@ jb_inspect = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
+os.environ.setdefault(jb_inspect.OUTCOME_LOG_ENV, "0")
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -235,6 +236,8 @@ class BuildContextTest(unittest.TestCase):
 
         self.assertIsNotNone(selection)
         self.assertEqual(selection.channel, "stable")
+        self.assertFalse(selection.public()["is_eap"])
+        self.assertFalse(selection.public()["explicit_eap"])
         self.assertEqual(selection.version, (2026, 1, 3))
         self.assertEqual(selection.app_path, stable_app)
         self.assertEqual(selection.config_dir, stable_config)
@@ -259,9 +262,30 @@ class BuildContextTest(unittest.TestCase):
 
         self.assertIsNotNone(selection)
         self.assertEqual(selection.channel, "eap")
+        self.assertTrue(selection.public()["is_eap"])
+        self.assertTrue(selection.public()["explicit_eap"])
         self.assertEqual(selection.version[:2], (2026, 2))
         self.assertEqual(selection.app_path, eap_app)
         self.assertEqual(selection.config_dir, eap_config)
+
+    def test_product_level_ide_does_not_implicitly_fall_back_to_eap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            applications = Path(tmp) / "Applications"
+            applications.mkdir()
+            make_config_dir(home, "WebStorm2026.2")
+            eap_app = make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
+
+            with patch.object(jb_inspect.sys, "platform", "darwin"), \
+                patch.object(jb_inspect.Path, "home", return_value=home), \
+                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[jb_inspect.ide_app_candidate(eap_app)]):
+                selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm"})
+
+        self.assertIsNotNone(selection)
+        self.assertNotEqual(selection.channel, "eap")
+        self.assertFalse(selection.public()["is_eap"])
+        self.assertFalse(selection.public()["explicit_eap"])
+        self.assertIsNone(selection.app_path)
 
     def test_exact_eap_selection_without_matching_app_does_not_fall_back_to_generic_app(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2744,6 +2768,110 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "UNKNOWN")
         self.assertEqual(verdict["verdict_reason"], "cleanup_skipped")
 
+    def test_agent_result_for_retryable_timeout_unknown(self):
+        payload = {"status": "timed_out", "timed_out": True}
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "ide_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["retry_policy"]["max_attempts"], 1)
+        self.assertEqual(payload["agent_result"]["bucket"], "ide_not_ready")
+
+    def test_agent_result_for_tool_bug_unknown_does_not_retry(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "non_empty_unmapped_tree",
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("inconclusive", payload["agent_report"])
+
+    def test_agent_result_for_empty_model_capture_unknown_is_retryable(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "verdict_reason": "inspection_trigger_empty_model",
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["agent_result"]["bucket"], "capture_not_ready")
+
+    def test_agent_result_for_no_results_proof_failure_is_retryable(self):
+        payload = {
+            "status": "no_results",
+            "proof_failures": ["no_results"],
+            "wait": {"completion_reason": "no_results"},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "no_results")
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["agent_result"]["bucket"], "capture_not_ready")
+
+    def test_mixed_proof_failures_stay_tool_bug(self):
+        payload = {
+            "status": "no_results",
+            "proof_failures": [
+                "no_results",
+                "resolved_project_path does not match requested_path",
+            ],
+            "wait": {"completion_reason": "no_results"},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "inspection_proof_failed")
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+
+    def test_agent_result_for_unclassified_proof_failure_stays_tool_bug(self):
+        payload = {
+            "status": "unknown",
+            "proof_failures": ["unexpected_contradiction"],
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "inspection_proof_failed")
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+
+    def test_cleanup_failure_agent_result_preserves_inspection_result(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "inspection_result": {"verdict": "GREEN", "reason": "clean_confirmed"},
+            "cleanup": {"status": "failed", "reason": "route_missing"},
+            "cleanup_failed": True,
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "cleanup_not_clean")
+        self.assertEqual(payload["inspection_result"]["verdict"], "GREEN")
+        self.assertFalse(payload["retry_policy"]["retry"])
+
+    def test_red_exit_semantics_differ_between_run_and_wait(self):
+        payload = {"verdict": "RED", "verdict_reason": "actionable_findings"}
+
+        self.assertEqual(jb_inspect.classify_run_exit(payload), 1)
+        self.assertEqual(jb_inspect.classify_wait_exit(payload), 0)
+
     def test_print_human_is_concise_by_default(self):
         payload = {
             "status": "findings",
@@ -2768,6 +2896,7 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("ROUTE: WebStorm", text)
         self.assertIn("STATUS: findings", text)
         self.assertIn("VERDICT: RED", text)
+        self.assertIn("AGENT_RESULT: bucket=actionable_findings retry=False", text)
         self.assertIn("NEXT_ACTION: Fix the reported findings", text)
         self.assertIn("SUMMARY: clean=False total_problems=1 problems_shown=1", text)
         self.assertIn("src/app.ts:12 Example finding", text)
@@ -3120,6 +3249,8 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(len(records), 1)
             record = records[0]
             self.assertEqual(record["verdict"], "UNKNOWN")
+            self.assertEqual(record["bucket"], "tool_bug")
+            self.assertFalse(record["retry"])
             self.assertEqual(record["verdict_reason"], "non_empty_unmapped_tree")
             self.assertEqual(record["rollout_file"], str(rollout_path))
             self.assertEqual(record["repo_path"], "/repo")
@@ -3146,6 +3277,173 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertFalse(log_path.exists())
             body = json.loads(output.getvalue())
             self.assertNotIn("unknown_log_path", body)
+
+    def test_emit_logs_all_outcomes_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "outcomes.jsonl"
+            payload = {
+                "status": "results_available",
+                "total_problems": 0,
+                "problems_shown": 0,
+                "problems": [],
+                "context": {
+                    "scope": "changed_files",
+                    "ide_selection": {
+                        "product": "IntelliJ IDEA",
+                        "channel": "stable",
+                        "version": "2026.1",
+                        "explicit_eap": False,
+                    },
+                },
+                "agent_result": {
+                    "next_action": "No inspection action required for this scope/filter.",
+                    "agent_report": "JetBrains inspection passed for the selected scope.",
+                    "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0},
+                },
+            }
+
+            output = io.StringIO()
+            with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: str(outcome_path)}, clear=False):
+                with redirect_stdout(output):
+                    exit_code = jb_inspect.emit(payload, json_only=True, exit_code=0, command="inspect-closeout")
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(output.getvalue())
+            self.assertEqual(body["bucket"], "clean")
+            records = [json.loads(line) for line in outcome_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["verdict"], "GREEN")
+            self.assertEqual(records[0]["bucket"], "clean")
+            self.assertEqual(records[0]["command"], "inspect-closeout")
+            self.assertEqual(records[0]["ide_channel"], "stable")
+            self.assertFalse(records[0]["eap_explicit"])
+            self.assertEqual(records[0]["retry_wait_ms"], 0)
+            self.assertEqual(records[0]["next_action"], "No inspection action required for this scope/filter.")
+            self.assertEqual(records[0]["agent_report"], "JetBrains inspection passed for the selected scope.")
+
+    def test_summarize_outcome_log_counts_agent_buckets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "outcomes.jsonl"
+            outcome_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({
+                            "timestamp": "2026-07-04T00:00:00Z",
+                            "command": "inspect-closeout",
+                            "verdict": "UNKNOWN",
+                            "bucket": "ide_not_ready",
+                            "retry": True,
+                            "ide_channel": "stable",
+                            "cleanup_status": "deferred",
+                            "repo_path": "/secret/repo",
+                        }),
+                        "not-json",
+                        json.dumps({
+                            "timestamp": "2026-07-04T00:01:00Z",
+                            "command": "inspect-closeout",
+                            "verdict": "GREEN",
+                            "bucket": "clean",
+                            "retry": False,
+                            "ide_channel": "stable",
+                            "cleanup_status": "closed",
+                            "worktree_root": "/secret/worktree",
+                        }),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = jb_inspect.summarize_outcome_log(outcome_path, limit=1)
+
+            self.assertEqual(summary["status"], "ok")
+            self.assertEqual(summary["events"], 2)
+            self.assertEqual(summary["invalid_lines"], 1)
+            self.assertEqual(summary["summary"]["by_verdict"], {"GREEN": 1, "UNKNOWN": 1})
+            self.assertEqual(summary["summary"]["by_bucket"], {"clean": 1, "ide_not_ready": 1})
+            self.assertEqual(summary["summary"]["by_retry"], {"false": 1, "true": 1})
+            self.assertEqual(summary["summary"]["by_cleanup_status"], {"closed": 1, "deferred": 1})
+            self.assertEqual(summary["summary"]["retryable_unknowns"], 1)
+            self.assertEqual(len(summary["recent"]), 1)
+            self.assertEqual(summary["recent"][0]["bucket"], "clean")
+            self.assertNotIn("repo_path", summary["recent"][0])
+            self.assertNotIn("worktree_root", json.dumps(summary))
+
+    def test_summarize_outcome_log_missing_path_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = jb_inspect.summarize_outcome_log(Path(tmp) / "missing.jsonl")
+
+            self.assertEqual(summary["status"], "missing")
+            self.assertEqual(summary["events"], 0)
+            self.assertEqual(summary["summary"], jb_inspect.empty_outcome_summary())
+
+    def test_command_summarize_outcomes_respects_disabled_env(self):
+        with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: "0"}, clear=False):
+            summary = jb_inspect.command_summarize_outcomes(Namespace(log_path=None, limit=10))
+
+        self.assertEqual(summary["status"], "disabled")
+        self.assertEqual(summary["events"], 0)
+
+    def test_command_summarize_outcomes_reads_explicit_log_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "custom-outcomes.jsonl"
+            outcome_path.write_text(
+                json.dumps({"verdict": "GREEN", "bucket": "clean", "command": "inspect-closeout"}) + "\n",
+                encoding="utf-8",
+            )
+
+            summary = jb_inspect.command_summarize_outcomes(Namespace(log_path=str(outcome_path), limit=5))
+
+            self.assertEqual(summary["status"], "ok")
+            self.assertEqual(summary["events"], 1)
+            self.assertEqual(summary["summary"]["by_verdict"], {"GREEN": 1})
+
+    def test_summarize_outcomes_emit_does_not_attach_assessment_verdict_or_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "outcomes.jsonl"
+            summary = {"status": "ok", "events": 0, "invalid_lines": 0, "summary": jb_inspect.empty_outcome_summary(), "recent": []}
+            output = io.StringIO()
+
+            with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: str(outcome_path)}, clear=False):
+                with redirect_stdout(output):
+                    exit_code = jb_inspect.emit(summary, json_only=True, exit_code=0, command="summarize-outcomes", assess=False)
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(output.getvalue())
+            self.assertEqual(body["command"], "summarize-outcomes")
+            self.assertNotIn("verdict", body)
+            self.assertFalse(outcome_path.exists())
+
+    def test_outcome_log_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "outcomes.jsonl"
+            payload = {"status": "clean", "clean": True, "total_problems": 0, "problems": []}
+
+            with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: "0"}, clear=False):
+                jb_inspect.log_outcome(payload, 0)
+
+            self.assertFalse(outcome_path.exists())
+
+    def test_emit_does_not_log_informational_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_path = Path(tmp) / "outcomes.jsonl"
+            output = io.StringIO()
+
+            with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: str(outcome_path)}, clear=False):
+                with redirect_stdout(output):
+                    exit_code = jb_inspect.emit({"status": "resolved"}, json_only=True, exit_code=0, command="resolve-route")
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(outcome_path.exists())
+
+    def test_outcome_log_error_is_nonfatal(self):
+        payload = {"command": "inspect-closeout", "status": "clean", "clean": True}
+        jb_inspect.apply_verdict(payload)
+
+        with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: "/dev/null/outcomes.jsonl"}, clear=False):
+            jb_inspect.log_outcome(payload, 0)
+
+        self.assertIn("outcome_log_error", payload)
 
     def test_emit_does_not_log_informational_command_unknowns(self):
         cases = [
@@ -3202,7 +3500,8 @@ class UnknownVerdictLogTest(unittest.TestCase):
             }
 
             with patch.dict(os.environ, {jb_inspect.UNKNOWN_LOG_ENV: str(log_path)}, clear=False):
-                exit_code = jb_inspect.emit(payload, json_only=True, exit_code=1)
+                with redirect_stdout(io.StringIO()):
+                    exit_code = jb_inspect.emit(payload, json_only=True, exit_code=1)
 
             self.assertEqual(exit_code, 1)
             records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]

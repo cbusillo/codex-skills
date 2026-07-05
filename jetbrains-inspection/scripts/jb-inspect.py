@@ -48,8 +48,11 @@ READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
+OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
 UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
+UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
+UNKNOWN_RETRY_WAIT_MS = 30_000
 PREFERRED_COMMANDS = {
     "list": "list-projects",
     "route": "resolve-route",
@@ -63,6 +66,7 @@ PREFERRED_COMMANDS = {
     "closeout": "inspect-closeout",
     "run": "inspect",
     "cleanup-leases": "cleanup-helper-leases",
+    "summarize-outcomes": "summarize-outcomes",
 }
 COMMAND_ALIASES = {
     "list-projects": "list",
@@ -156,6 +160,8 @@ class IdeSelection:
             "product": self.product,
             "mode": self.mode,
             "channel": self.channel,
+            "is_eap": self.channel == "eap",
+            "explicit_eap": self.channel == "eap" and self.exact,
             "version": format_version(self.version),
             "app_name": self.app_name,
             "app_path": str(self.app_path) if self.app_path else None,
@@ -241,6 +247,9 @@ def main() -> int:
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
             return emit(result, args.json, classify_cleanup_leases_exit(result), command=args.command_input)
+        if args.command == "summarize-outcomes":
+            result = command_summarize_outcomes(args)
+            return emit(result, args.json, 0, command=args.command_input, assess=False)
         if args.command == "run":
             context = build_context(args)
             result = command_run(args, context)
@@ -371,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, (help_text, include_scope) in command_specs.items():
         add_common(subparsers.add_parser(name, help=help_text), include_scope=include_scope)
     subparsers.add_parser("cleanup-helper-leases", help="Remove stale local helper lifecycle leases.")
+    subparsers.add_parser("summarize-outcomes", help="Summarize helper outcome JSONL logs without inspecting.")
 
     for name in ("wait-for-inspection", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
@@ -385,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
     subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
     subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
+    subparsers.choices["summarize-outcomes"].add_argument("--log", dest="log_path", help="Outcome JSONL log path. Defaults to JB_INSPECT_OUTCOME_LOG or the standard Code log path.")
+    subparsers.choices["summarize-outcomes"].add_argument("--limit", type=int, default=10, help="Maximum number of recent events to include.")
     subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
     for name in ("get-problems", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
@@ -694,8 +706,7 @@ def select_ide_candidate(
         selected = [candidate for candidate in selected if candidate.channel == channel]
     elif not exact:
         stable = [candidate for candidate in selected if candidate.channel == "stable"]
-        if stable:
-            selected = stable
+        selected = stable
     if version:
         selected = [candidate for candidate in selected if versions_match(candidate.version, version)]
     if selector and selector_contains_exact_marker(selector):
@@ -861,6 +872,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_on_route(args, context, prepared["route"])
+            result["inspection_result"] = compact_inspection_result(result)
         finally:
             if not getattr(args, "keep_warm", False):
                 if should_defer_lifecycle_cleanup(result, lease):
@@ -875,7 +887,19 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
             result["cleanup_failed"] = True
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
+        apply_verdict(result)
     return result
+
+
+def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "verdict": result.get("verdict"),
+        "reason": result.get("verdict_reason"),
+        "message": result.get("verdict_message"),
+        "status": result.get("status"),
+        "total_problems": result.get("total_problems"),
+        "problems_shown": result.get("problems_shown"),
+    }
 
 
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
@@ -1799,12 +1823,13 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_next_action": next_action_for_unknown(reason, payload),
         }
 
-    if payload.get("proof_failures"):
+    proof_failure_reason = proof_failure_unknown_reason(payload)
+    if proof_failure_reason is not None:
         return {
             "verdict": "UNKNOWN",
-            "verdict_reason": "inspection_proof_failed",
+            "verdict_reason": proof_failure_reason,
             "verdict_message": "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
-            "verdict_next_action": next_action_for_unknown("inspection_proof_failed", payload),
+            "verdict_next_action": next_action_for_unknown(proof_failure_reason, payload),
         }
 
     plugin_verdict = payload.get("inspection_verdict")
@@ -1867,6 +1892,31 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
     return None
 
 
+def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
+    failures = payload.get("proof_failures")
+    if not isinstance(failures, list) or not failures:
+        return None
+    normalized_failures = [normalize_reason(str(reason)) for reason in failures]
+    retryable_reasons = (
+        "no_results",
+        "view_not_ready",
+        "view_updating_unreadable",
+        "unreadable_tree",
+        "capture_incomplete",
+        "inspection_trigger_empty_model",
+        "current_run_psi_churn",
+        "stale_results",
+        "timeout",
+        "inspection_still_running",
+    )
+    if any(reason not in retryable_reasons for reason in normalized_failures):
+        return "inspection_proof_failed"
+    for retryable_reason in retryable_reasons:
+        if retryable_reason in normalized_failures:
+            return retryable_reason
+    return "inspection_proof_failed"
+
+
 def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[str, Any]) -> str:
     if cleanup.get("status") in {"failed", "skipped"} or payload.get("cleanup_failed") or payload.get("cleanup_skipped"):
         return f"cleanup_{cleanup.get('status') or 'failed'}"
@@ -1907,7 +1957,94 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
 
 def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
     payload.update(verdict_for_payload(payload))
+    apply_agent_result(payload)
     return payload
+
+
+def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
+    verdict = str(payload.get("verdict") or verdict_for_payload(payload).get("verdict") or "UNKNOWN")
+    reason = str(payload.get("verdict_reason") or "unknown")
+    bucket = outcome_bucket(payload, reason)
+    retry_policy = retry_policy_for(verdict, bucket)
+    report = agent_report_for(verdict, bucket, reason, payload)
+    payload["bucket"] = bucket
+    payload["retry_policy"] = retry_policy
+    payload["agent_report"] = report
+    payload["agent_result"] = {
+        "verdict": verdict,
+        "bucket": bucket,
+        "retry_policy": retry_policy,
+        "next_action": str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload)),
+        "agent_report": report,
+    }
+    return payload
+
+
+def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
+    verdict = payload.get("verdict")
+    if verdict == "GREEN":
+        return "clean"
+    if verdict == "RED":
+        return "actionable_findings"
+    normalized = normalize_reason(reason)
+    if normalized in {"timeout", "inspection_still_running", "indexing", "running", "current_run_psi_churn"}:
+        return "ide_not_ready"
+    if normalized in {"stale_results"}:
+        return "stale_results"
+    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "inspection_trigger_empty_model"}:
+        return "capture_not_ready"
+    if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable"}:
+        return "route_not_ready"
+    if normalized.startswith("cleanup_") or payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
+        return "cleanup_not_clean"
+    if normalized in {"invalid_api_response", "inspection_api_http_error", "extractor_failure", "helper_plugin_error", "non_empty_unmapped_tree", "inspection_proof_failed"}:
+        return "tool_bug"
+    if normalized in {"inspection_api_unavailable", "ide_open_failed", "untrusted_auto_open_root", "project_open_blocked", "ide_not_ready_timeout"}:
+        return "environment_blocked"
+    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
+        return "policy_required"
+    return "unknown"
+
+
+def retry_policy_for(verdict: str, bucket: str) -> dict[str, Any]:
+    retry = verdict == "UNKNOWN" and bucket in UNKNOWN_RETRY_BUCKETS
+    return {
+        "retry": retry,
+        "max_attempts": 1 if retry else 0,
+        "wait_ms": UNKNOWN_RETRY_WAIT_MS if retry else 0,
+    }
+
+
+def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict[str, Any]) -> str:
+    if verdict == "GREEN":
+        return "No inspection action required for this scope/filter."
+    if verdict == "RED":
+        return "Fix the reported findings, then rerun inspection."
+    if bucket in UNKNOWN_RETRY_BUCKETS:
+        return next_action_for_unknown(reason, payload)
+    if bucket == "route_not_ready":
+        return "Open or select the exact target worktree in the configured IDE, then rerun inspection."
+    if bucket == "cleanup_not_clean":
+        return "Resolve helper lifecycle cleanup or rerun inspect-closeout after the IDE settles."
+    if bucket == "tool_bug":
+        return "Stop retrying and report the helper/plugin diagnostic payload."
+    if bucket == "environment_blocked":
+        return "Fix the IDE/plugin/environment blocker, then rerun inspection."
+    if bucket == "policy_required":
+        return "Add explicit repo or CLI IDE policy for this inspection path, then rerun."
+    return next_action_for_unknown(reason, payload)
+
+
+def agent_report_for(verdict: str, bucket: str, reason: str, payload: dict[str, Any]) -> str:
+    if verdict == "GREEN":
+        return "JetBrains inspection passed for the selected scope."
+    if verdict == "RED":
+        total = payload.get("total_problems")
+        if isinstance(total, int):
+            return f"JetBrains inspection found {total} actionable finding(s)."
+        return "JetBrains inspection found actionable findings."
+    action = str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
+    return f"JetBrains inspection was inconclusive ({bucket}: {reason}). {action}"
 
 
 def log_unknown_verdict(payload: dict[str, Any]) -> None:
@@ -1927,6 +2064,30 @@ def log_unknown_verdict(payload: dict[str, Any]) -> None:
         payload["unknown_log_error"] = str(error)
         return
     payload["unknown_log_path"] = str(log_path)
+
+
+def log_outcome(payload: dict[str, Any], exit_code: int) -> None:
+    if not should_log_outcome(payload):
+        return
+    log_path = outcome_log_path()
+    if log_path is None:
+        return
+    record = outcome_log_record(payload, exit_code)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as error:
+        payload["outcome_log_error"] = str(error)
+        return
+    payload["outcome_log_path"] = str(log_path)
+
+
+def should_log_outcome(payload: dict[str, Any]) -> bool:
+    command = canonical_command(str(payload.get("command") or ""))
+    if command:
+        return command in UNKNOWN_LOG_ASSESSMENT_COMMANDS
+    return payload.get("verdict") in {"GREEN", "RED", "UNKNOWN"} and payload.get("status") not in UNKNOWN_LOG_INFORMATIONAL_STATUSES
 
 
 def should_log_unknown_verdict(payload: dict[str, Any]) -> bool:
@@ -1959,13 +2120,21 @@ def should_log_unknown_verdict(payload: dict[str, Any]) -> bool:
 
 
 def unknown_log_path() -> Path | None:
-    configured = os.environ.get(UNKNOWN_LOG_ENV)
+    return configured_log_path(UNKNOWN_LOG_ENV, "unknown-verdicts.jsonl")
+
+
+def outcome_log_path() -> Path | None:
+    return configured_log_path(OUTCOME_LOG_ENV, "outcomes.jsonl")
+
+
+def configured_log_path(env_name: str, default_name: str) -> Path | None:
+    configured = os.environ.get(env_name)
     if configured is not None:
         value = configured.strip()
         if value.lower() in {"", "0", "false", "no", "off"}:
             return None
         return Path(value).expanduser().resolve()
-    return Path(code_home()) / "jetbrains-inspection" / "unknown-verdicts.jsonl"
+    return Path(code_home()) / "jetbrains-inspection" / default_name
 
 
 def code_home() -> Path:
@@ -1983,6 +2152,8 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
         "timestamp": utc_timestamp(),
         "command": preferred_command(str(command)) if command else None,
         "verdict": public.get("verdict"),
+        "bucket": public.get("bucket"),
+        "retry": (public.get("retry_policy") or {}).get("retry") if isinstance(public.get("retry_policy"), dict) else None,
         "verdict_reason": public.get("verdict_reason"),
         "verdict_message": public.get("verdict_message"),
         "verdict_next_action": public.get("verdict_next_action"),
@@ -2008,6 +2179,173 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
         if key in public:
             record[key] = public[key]
     return {key: value for key, value in record.items() if value not in (None, {}, [])}
+
+
+def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any]:
+    public = public_payload(payload)
+    context = public.get("context") if isinstance(public.get("context"), dict) else {}
+    cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
+    agent_result = public.get("agent_result") if isinstance(public.get("agent_result"), dict) else {}
+    agent_retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
+    record: dict[str, Any] = {
+        "timestamp": utc_timestamp(),
+        "command": public.get("command"),
+        "exit_code": exit_code,
+        "verdict": public.get("verdict"),
+        "bucket": public.get("bucket"),
+        "verdict_reason": public.get("verdict_reason"),
+        "retry": retry_policy.get("retry"),
+        "retry_max_attempts": retry_policy.get("max_attempts"),
+        "retry_wait_ms": agent_retry_policy.get("wait_ms") or retry_policy.get("wait_ms"),
+        "next_action": agent_result.get("next_action") or public.get("verdict_next_action"),
+        "agent_report": agent_result.get("agent_report") or public.get("agent_report"),
+        "status": public.get("status"),
+        "scope": context.get("scope") or public.get("scope"),
+        "repo_path": context.get("repo_path") or public.get("repo_path"),
+        "worktree_root": context.get("worktree_root") or public.get("worktree_root"),
+        "ide": selection.get("product") or context.get("ide") or public.get("ide"),
+        "ide_channel": selection.get("channel"),
+        "ide_version": selection.get("version"),
+        "eap_explicit": selection.get("explicit_eap"),
+        "cleanup_status": cleanup.get("status"),
+        "cleanup_reason": cleanup.get("reason"),
+        "total_problems": public.get("total_problems"),
+        "problems_shown": public.get("problems_shown"),
+    }
+    rollout_file = discover_rollout_file()
+    if rollout_file:
+        record["rollout_file"] = rollout_file
+    return {key: value for key, value in record.items() if value not in (None, {}, [])}
+
+
+def command_summarize_outcomes(args: argparse.Namespace) -> dict[str, Any]:
+    log_path = Path(args.log_path).expanduser().resolve() if getattr(args, "log_path", None) else outcome_log_path()
+    if log_path is None:
+        return {
+            "status": "disabled",
+            "message": f"Outcome logging is disabled by {OUTCOME_LOG_ENV}.",
+            "events": 0,
+            "invalid_lines": 0,
+        }
+    return summarize_outcome_log(log_path, limit=max(0, int(getattr(args, "limit", 10))))
+
+
+def summarize_outcome_log(log_path: Path, limit: int = 10) -> dict[str, Any]:
+    if not log_path.exists():
+        return {
+            "status": "missing",
+            "path": str(log_path),
+            "events": 0,
+            "invalid_lines": 0,
+            "summary": empty_outcome_summary(),
+            "recent": [],
+        }
+
+    events: list[dict[str, Any]] = []
+    invalid_lines = 0
+    try:
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    invalid_lines += 1
+                    continue
+                if isinstance(entry, dict):
+                    events.append(public_outcome_event(entry))
+                else:
+                    invalid_lines += 1
+    except OSError as error:
+        return {
+            "status": "error",
+            "path": str(log_path),
+            "error_reason": "outcome_log_unreadable",
+            "error_message": str(error),
+            "events": 0,
+            "invalid_lines": invalid_lines,
+            "summary": empty_outcome_summary(),
+            "recent": [],
+        }
+
+    return {
+        "status": "ok",
+        "path": str(log_path),
+        "events": len(events),
+        "invalid_lines": invalid_lines,
+        "summary": summarize_outcome_events(events),
+        "recent": events[-limit:] if limit else [],
+    }
+
+
+def public_outcome_event(event: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "timestamp",
+        "command",
+        "exit_code",
+        "verdict",
+        "bucket",
+        "verdict_reason",
+        "retry",
+        "retry_max_attempts",
+        "retry_wait_ms",
+        "next_action",
+        "agent_report",
+        "status",
+        "scope",
+        "ide",
+        "ide_channel",
+        "ide_version",
+        "eap_explicit",
+        "cleanup_status",
+        "cleanup_reason",
+        "total_problems",
+        "problems_shown",
+    )
+    return {key: event[key] for key in allowed if key in event and event[key] not in (None, {}, [])}
+
+
+def summarize_outcome_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    retryable_unknowns = sum(1 for event in events if event.get("verdict") == "UNKNOWN" and event.get("retry") is True)
+    return {
+        "by_verdict": count_by(events, "verdict"),
+        "by_bucket": count_by(events, "bucket"),
+        "by_command": count_by(events, "command"),
+        "by_retry": count_by(events, "retry"),
+        "by_ide_channel": count_by(events, "ide_channel"),
+        "by_cleanup_status": count_by(events, "cleanup_status"),
+        "retryable_unknowns": retryable_unknowns,
+    }
+
+
+def empty_outcome_summary() -> dict[str, Any]:
+    return {
+        "by_verdict": {},
+        "by_bucket": {},
+        "by_command": {},
+        "by_retry": {},
+        "by_ide_channel": {},
+        "by_cleanup_status": {},
+        "retryable_unknowns": 0,
+    }
+
+
+def count_by(events: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for event in events:
+        value = event.get(key)
+        if value in (None, {}, []):
+            label = "unknown"
+        elif isinstance(value, bool):
+            label = "true" if value else "false"
+        else:
+            label = str(value)
+        counts[label] = counts.get(label, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def utc_timestamp() -> str:
@@ -2132,13 +2470,21 @@ def classify_status_exit(result: dict[str, Any]) -> int:
     return verdict_exit_code(result, {"GREEN", "RED"})
 
 
-def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str | None = None) -> int:
+def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str | None = None, assess: bool = True) -> int:
     if command is not None:
         payload["command"] = preferred_command(command)
     elif payload.get("command"):
         payload["command"] = preferred_command(str(payload["command"]))
+    if not assess:
+        payload = public_payload(payload)
+        if json_only:
+            print(public_json(payload))
+        else:
+            print_human(payload)
+        return exit_code
     apply_verdict(payload)
     log_unknown_verdict(payload)
+    log_outcome(payload, exit_code)
     payload = public_payload(payload)
     if json_only:
         # codeql[py/clear-text-logging-sensitive-data]
@@ -2168,6 +2514,12 @@ def print_human(payload: dict[str, Any]) -> None:
             "reason": payload.get("verdict_reason"),
             "message": payload.get("verdict_message"),
         }))
+        if payload.get("bucket"):
+            print(safe_text("AGENT_RESULT: bucket={bucket} retry={retry} report={report}", {
+                "bucket": payload.get("bucket"),
+                "retry": (payload.get("retry_policy") or {}).get("retry"),
+                "report": payload.get("agent_report"),
+            }))
         if payload.get("verdict_next_action"):
             print(safe_text("NEXT_ACTION: {action}", {"action": payload.get("verdict_next_action")}))
     if payload.get("unknown_log_path"):
@@ -2639,7 +2991,7 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
                 "available_config_dirs": available,
                 "error_reason": "ide_config_missing",
                 "next_action": "Launch the selected JetBrains IDE once, or update .github/github.json to name an installed JetBrains IDE/version.",
-                "hint": "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable, or exact metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
+                "hint": "Use product-level metadata such as jetbrains.ide = WebStorm for latest stable. EAP requires explicit metadata such as jetbrains.ideChannel = eap and jetbrains.ideVersion = 2026.2.",
                 "matched_product": product.display_name if product else None,
             },
         )
