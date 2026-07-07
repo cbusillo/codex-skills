@@ -2091,6 +2091,7 @@ class LifecycleTest(unittest.TestCase):
         original_sleep = jb_inspect.time.sleep
         original_open = jb_inspect.open_in_ide
         original_diagnostic = jb_inspect.discover_diagnostic_identities
+        original_platform = jb_inspect.sys.platform
         calls = []
         route = {"base_path": "/tmp/repo", "project_name": "repo"}
 
@@ -2106,6 +2107,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.time.sleep = lambda seconds: None
         jb_inspect.open_in_ide = fake_open
         jb_inspect.discover_diagnostic_identities = lambda port: []
+        jb_inspect.sys.platform = "darwin"
         try:
             result = jb_inspect.wait_for_exact_route_with_fallback(
                 Namespace(port=None, background_open=True),
@@ -2118,6 +2120,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
             jb_inspect.open_in_ide = original_open
             jb_inspect.discover_diagnostic_identities = original_diagnostic
+            jb_inspect.sys.platform = original_platform
 
         self.assertEqual(result, route)
         self.assertIn("fallback", calls)
