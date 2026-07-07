@@ -38,6 +38,9 @@ Leave the user with a truthful closeout answer:
    "none" when no owning surface exists. Also state whether that surface was
    closed, updated, left open or parked with the current blocker and next action,
    or confirmed not applicable, with evidence.
+   If release, runtime, deploy, browser, or device evidence is decisive, ensure
+   the owning PR, issue, plan, or doc names the exact environment checked, or
+   names the substitute environment and the remaining gap.
 2. If `.github/github.json` exists, read it and check metadata
    freshness. Compare the current work with
    `metadataFreshness.updateWhen` and
@@ -222,6 +225,13 @@ link related artifacts when useful:
 For conditional safe-to-exit, at least one durable place must hold the next
 step. Avoid duplicating every detail everywhere; link PRs, issues, and plans
 when that improves continuity.
+
+When configured Focus lanes are part of the durable planning surface, make sure
+the owning item's lane reflects the closeout state: `Now` for the active finish,
+`Waiting` for blocked work or work awaiting an external decision/event,
+or `Next`/`Later` for deferred work. For completed planning issues, use the
+`github-plan` close flow so done labels and Project focus are updated together.
+Do not leave the lane stale when parking or closing a workstream.
 
 ## Handoff Surfaces
 

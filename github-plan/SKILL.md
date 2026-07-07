@@ -337,6 +337,12 @@ Use `Blocked by:` for issue dependencies and `Waiting for:` or `Parked until:`
 for non-issue conditions. Avoid listing completed work as a blocker; move it to
 `Relationships` as completed or historical context.
 
+Include decisive validation evidence only when it changes recovery state, such
+as the current blocker, last verified environment, or proof needed to resume.
+Keep raw logs, large check output, screenshots, and detailed run evidence in the
+linked PR, workflow run, artifact, or comment instead of bloating `Current
+Status`.
+
 Keep `Finish Line` observable. If the finish line is vague, narrow it before
 creating sub-issues or Project fields.
 

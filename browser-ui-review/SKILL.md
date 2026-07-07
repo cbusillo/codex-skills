@@ -92,6 +92,12 @@ Use `ui-browser` when it is the available browser interface for the harness.
 6. Capture a screenshot only when it adds evidence or the user asked for an artifact.
 7. Close the session when the task is complete.
 
+For release, runtime, browser-specific, or device-specific blockers, prefer
+evidence from the affected browser/device when it is available. If you must
+validate with a substitute environment, record the substitute and the remaining
+gap in the browser QA evidence handed to `repo-readiness` or the owning PR,
+issue, or plan instead of presenting it as equivalent proof.
+
 ## Interaction loop
 
 Use a snapshot-driven loop for multi-step work:
