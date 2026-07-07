@@ -125,6 +125,9 @@ fields in chat, a PR comment, or the owning issue when durable state is needed:
 - Required gates: the checks inferred from `.github/github.json`, repo docs, CI,
   and the changed surface.
 - Passed, failed, pending, and not-run evidence with concrete reasons.
+- For PR readiness, preserve watcher/check evidence, pending counts, and
+  unsettled long checks explicitly; do not flatten an unsettled PR into a
+  one-shot "mergeable" or "ready" summary.
 - Metadata/docs impact: whether `.github/github.json` or docs changed, were
   checked, are stale, or were intentionally not updated.
 - Next action: the smallest step that would change readiness.
