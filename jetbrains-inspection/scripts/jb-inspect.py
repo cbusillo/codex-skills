@@ -871,7 +871,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
-            result = run_inspection_on_route(args, context, prepared["route"])
+            result = run_inspection_with_internal_retry(args, context, prepared["route"])
             result["inspection_result"] = compact_inspection_result(result)
         finally:
             if not getattr(args, "keep_warm", False):
@@ -889,6 +889,42 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
             result["cleanup_skipped"] = True
         apply_verdict(result)
     return result
+
+
+def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+    result = run_inspection_on_route(args, context, route)
+    if not should_retry_unknown_result(result):
+        return result
+    retry_wait_ms = int((result.get("retry_policy") or {}).get("wait_ms") or 0)
+    retry_summaries = [compact_retry_result(result, attempt=0)]
+    if retry_wait_ms > 0:
+        time.sleep(retry_wait_ms / 1000.0)
+    retry_result = run_inspection_on_route(args, context, route)
+    retry_result["internal_retries"] = retry_summaries
+    retry_result["internal_retry_count"] = 1
+    retry_result["recovered_from_unknown"] = retry_result.get("verdict") in {"GREEN", "RED"}
+    return retry_result
+
+
+def should_retry_unknown_result(result: dict[str, Any]) -> bool:
+    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
+    return result.get("verdict") == "UNKNOWN" and retry_policy.get("retry") is True and int(retry_policy.get("max_attempts") or 0) > 0
+
+
+def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]:
+    wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
+    return {
+        "attempt": attempt,
+        "status": result.get("status"),
+        "verdict": result.get("verdict"),
+        "verdict_reason": result.get("verdict_reason"),
+        "bucket": result.get("bucket"),
+        "total_problems": result.get("total_problems"),
+        "cached_total_problems": result.get("cached_total_problems"),
+        "proof_failures": result.get("proof_failures"),
+        "wait_completion_reason": wait.get("completion_reason"),
+        "snapshot_change_kind": result.get("snapshot_change_kind"),
+    }
 
 
 def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -931,6 +967,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
     exact_route = find_exact_route(args, context)
     opened_by_helper = False
     reclaimed_lease: dict[str, Any] | None = None
+    open_attempts: list[dict[str, Any]] = []
     if exact_route is None:
         if not getattr(args, "open", False):
             raise InspectError(
@@ -940,9 +977,11 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             )
         ensure_trusted_auto_open_root(context)
         ensure_jetbrains_trusted_locations(context)
-        open_method = open_project_for_lifecycle(args, context)
+        open_method, open_attempts = open_project_for_lifecycle(args, context)
         opened_by_helper = True
-        exact_route = wait_for_exact_route(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+        exact_route = wait_for_exact_route_with_fallback(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS), open_attempts)
+        if any(attempt.get("method") == "fallback_app_open" and attempt.get("accepted") for attempt in open_attempts):
+            open_method = "fallback_app_open"
     else:
         open_method = "preexisting"
         reclaimed_lease = matching_deferred_lease(context, exact_route)
@@ -965,6 +1004,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             "project_key": exact_route.get("project_key"),
             "session_id": exact_route.get("session_id"),
             "prepared_at_ms": now_ms(),
+            "open_attempts": open_attempts,
         }
     )
     write_lease(lease)
@@ -975,6 +1015,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         "lease": public_lease(lease),
         "opened_by_helper": opened_by_helper,
         "open_method": open_method,
+        "open_attempts": open_attempts,
         "claim": claim_metadata,
     }
     return prepared, lease, close_proof
@@ -1006,6 +1047,31 @@ def wait_for_exact_route(args: argparse.Namespace, context: dict[str, Any], time
     if last_error:
         payload["last_error"] = str(last_error)
     raise InspectError("Timed out waiting for JetBrains IDE to open the exact worktree.", 3, payload)
+
+
+def wait_for_exact_route_with_fallback(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    timeout_ms: int,
+    open_attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return wait_for_exact_route(args, context, timeout_ms)
+    except InspectError as error:
+        reason = infer_error_reason(error, error.payload)
+        if reason != "project_open_blocked" or sys.platform != "darwin":
+            raise
+        if not any(attempt.get("accepted") for attempt in open_attempts):
+            raise
+        fallback_attempt = open_in_ide(context, background=getattr(args, "background_open", False), method="fallback_app_open")
+        open_attempts.append(fallback_attempt)
+        fallback_timeout_ms = max(30_000, min(timeout_ms, 120_000))
+        try:
+            return wait_for_exact_route(args, context, fallback_timeout_ms)
+        except InspectError as fallback_error:
+            fallback_error.payload["open_attempts"] = open_attempts
+            fallback_error.payload["fallback_timeout_ms"] = fallback_timeout_ms
+            raise
 
 
 def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
@@ -1228,7 +1294,43 @@ def route_status_ready(body: dict[str, Any]) -> bool:
     return True
 
 
-def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> bool:
+def open_attempt_payload(
+    method: str,
+    context: dict[str, Any],
+    accepted: bool,
+    identity: dict[str, Any] | None = None,
+    error: InspectError | None = None,
+    command: list[str] | None = None,
+    response: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "method": method,
+        "accepted": accepted,
+        "target_worktree": lifecycle_target_path(context),
+        "requested_ide": context.get("ide"),
+    }
+    if identity:
+        payload["identity"] = public_identity_summary(identity)
+    if command:
+        payload["command"] = command
+    if response:
+        payload["endpoint_status"] = response.get("status")
+        payload["reason"] = response.get("reason")
+        payload["opening_scheduled"] = response.get("opening_scheduled")
+        payload["opened"] = response.get("opened")
+        payload["session_id"] = response.get("session_id")
+    if error:
+        payload["error_reason"] = infer_error_reason(error, error.payload)
+        payload["message"] = str(error)
+    return payload
+
+
+def open_via_running_ide(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    attempts: list[dict[str, Any]] | None = None,
+    method: str = "running_ide",
+) -> bool:
     try:
         identities = discover_open_identities(args, context)
     except InspectError as error:
@@ -1242,7 +1344,7 @@ def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> b
         if not port:
             continue
         try:
-            http_get(
+            response = http_get(
                 int(port),
                 "lifecycle/open",
                 {
@@ -1253,31 +1355,48 @@ def open_via_running_ide(args: argparse.Namespace, context: dict[str, Any]) -> b
                 },
                 timeout=max(DEFAULT_TIMEOUT_SECONDS, 30.0),
             )
+            if attempts is not None:
+                attempts.append(open_attempt_payload(method, context, True, identity, response=response.body))
             return True
-        except InspectError:
+        except InspectError as error:
+            if attempts is not None:
+                attempts.append(open_attempt_payload(method, context, False, identity, error))
             continue
+    if attempts is not None and not matching:
+        attempts.append(
+            {
+                "method": method,
+                "accepted": False,
+                "target_worktree": lifecycle_target_path(context),
+                "requested_ide": context.get("ide"),
+                "reason": "no_matching_running_ide",
+                "discovered_identity_count": len(identities),
+            }
+        )
     return False
 
 
-def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> str:
-    if open_via_running_ide(args, context):
-        return "running_ide"
-    bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    attempts: list[dict[str, Any]] = []
+    if open_via_running_ide(args, context, attempts, "running_ide"):
+        return "running_ide", attempts
+    bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
     wait_for_matching_ide_identity(args, context, timeout_ms)
-    if wait_for_lifecycle_open(args, context, timeout_ms):
-        return "bootstrapped_ide"
+    if wait_for_lifecycle_open(args, context, timeout_ms, attempts):
+        return "bootstrapped_ide", attempts
     raise InspectError(
         "Bootstrapped JetBrains IDE did not accept the lifecycle open request.",
         3,
-        auto_open_timeout_payload(args, context, timeout_ms),
+        auto_open_timeout_payload(args, context, timeout_ms) | {"open_attempts": attempts},
     )
 
 
-def wait_for_lifecycle_open(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> bool:
+def wait_for_lifecycle_open(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int, attempts: list[dict[str, Any]] | None = None) -> bool:
     deadline = now_ms() + timeout_ms
     while now_ms() <= deadline:
-        if open_via_running_ide(args, context):
+        if open_via_running_ide(args, context, attempts, "bootstrapped_ide"):
             return True
         time.sleep(1)
     return False
@@ -3544,7 +3663,7 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
         )
 
 
-def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
+def open_in_ide(context: dict[str, Any], background: bool = False, method: str = "app_open") -> dict[str, Any]:
     ide_app = resolved_ide_app_name(context)
     ide_app_path = resolved_ide_app_path(context)
     if not (ide_app or ide_app_path) or sys.platform != "darwin":
@@ -3576,9 +3695,19 @@ def open_in_ide(context: dict[str, Any], background: bool = False) -> None:
                 "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
             },
         )
+    return {
+        "method": method,
+        "accepted": True,
+        "target_worktree": lifecycle_target_path(context),
+        "requested_ide": context.get("ide"),
+        "ide_app": ide_app,
+        "ide_app_path": str(ide_app_path) if ide_app_path else None,
+        "background_open": background,
+        "command": command,
+    }
 
 
-def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
+def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[str, Any]:
     ide_app = resolved_ide_app_name(context)
     ide_app_path = resolved_ide_app_path(context)
     if not (ide_app or ide_app_path) or sys.platform != "darwin":
@@ -3608,6 +3737,16 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> None:
                 "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
             },
         )
+    return {
+        "method": "bootstrap_ide",
+        "accepted": True,
+        "target_worktree": lifecycle_target_path(context),
+        "requested_ide": context.get("ide"),
+        "ide_app": ide_app,
+        "ide_app_path": str(ide_app_path) if ide_app_path else None,
+        "background_open": background,
+        "command": command,
+    }
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:
