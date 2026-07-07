@@ -861,6 +861,54 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(calls, [{"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}])
         self.assertNotIn("_lease", result["prepared"])
 
+    def test_closeout_retries_retryable_unknown_once_before_cleanup(self):
+        calls = []
+        sleeps = []
+        route = {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}
+
+        def fake_run(args, context, active_route):
+            calls.append(active_route)
+            if len(calls) == 1:
+                return {
+                    "status": "stale_results",
+                    "verdict": "UNKNOWN",
+                    "verdict_reason": "stale_results",
+                    "bucket": "stale_results",
+                    "retry_policy": {"retry": True, "max_attempts": 1, "wait_ms": 30000},
+                    "cached_total_problems": 2,
+                    "wait": {"completion_reason": "stale_results"},
+                }
+            return {
+                "status": "findings",
+                "verdict": "RED",
+                "verdict_reason": "actionable_findings",
+                "bucket": "actionable_findings",
+                "total_problems": 1,
+                "problems": [{"description": "real problem"}],
+                "route": active_route,
+            }
+
+        original_prepare = jb_inspect.prepare_lifecycle_details
+        original_run = jb_inspect.run_inspection_on_route
+        original_sleep = jb_inspect.time.sleep
+        jb_inspect.prepare_lifecycle_details = lambda args, context: ({"status": "prepared", "route": route}, {"opened_by_helper": False}, None)
+        jb_inspect.run_inspection_on_route = fake_run
+        jb_inspect.time.sleep = lambda seconds: sleeps.append(seconds)
+        try:
+            result = jb_inspect.command_closeout(Namespace(keep_warm=True), {})
+        finally:
+            jb_inspect.prepare_lifecycle_details = original_prepare
+            jb_inspect.run_inspection_on_route = original_run
+            jb_inspect.time.sleep = original_sleep
+
+        self.assertEqual(result["verdict"], "RED")
+        self.assertEqual(result["total_problems"], 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [30.0])
+        self.assertEqual(result["internal_retry_count"], 1)
+        self.assertTrue(result["recovered_from_unknown"])
+        self.assertEqual(result["internal_retries"][0]["verdict_reason"], "stale_results")
+
     def test_run_uses_lifecycle_prepare_and_cleanup(self):
         calls = []
         cleanups = []
@@ -1245,10 +1293,12 @@ class LifecycleTest(unittest.TestCase):
             return jb_inspect.HttpResult(200, {"status": "opened"}, "url")
 
         jb_inspect.http_get = fake_http_get
+        attempts = []
         try:
             result = jb_inspect.open_via_running_ide(
                 Namespace(port=None),
                 {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                attempts,
             )
         finally:
             jb_inspect.discover_identities = original_discover
@@ -1258,6 +1308,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
         self.assertEqual(calls[0][2]["session_id"], "s1")
+        self.assertEqual(attempts[0]["endpoint_status"], "opened")
 
     def test_identity_matches_exact_eap_version_from_identity_metadata(self):
         context = {
@@ -1834,7 +1885,7 @@ class LifecycleTest(unittest.TestCase):
         original_running = jb_inspect.open_via_running_ide
         original_bootstrap = jb_inspect.bootstrap_ide_app
         original_wait = jb_inspect.wait_for_matching_ide_identity
-        jb_inspect.open_via_running_ide = lambda args, context: calls.append("running") or True
+        jb_inspect.open_via_running_ide = lambda args, context, attempts=None, method="running_ide": calls.append(("running", method)) or (attempts.append({"method": method, "accepted": True}) if attempts is not None else None) or True
         jb_inspect.bootstrap_ide_app = lambda *args, **kwargs: calls.append("bootstrap")
         jb_inspect.wait_for_matching_ide_identity = lambda *args, **kwargs: calls.append("wait")
         try:
@@ -1844,8 +1895,9 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.bootstrap_ide_app = original_bootstrap
             jb_inspect.wait_for_matching_ide_identity = original_wait
 
-        self.assertEqual(result, "running_ide")
-        self.assertEqual(calls, ["running"])
+        self.assertEqual(result[0], "running_ide")
+        self.assertEqual(result[1], [{"method": "running_ide", "accepted": True}])
+        self.assertEqual(calls, [("running", "running_ide")])
 
     def test_open_via_running_ide_returns_false_for_unavailable_explicit_port(self):
         original_discover = jb_inspect.discover_open_identities
@@ -1894,12 +1946,15 @@ class LifecycleTest(unittest.TestCase):
         original_now = jb_inspect.now_ms
         original_sleep = jb_inspect.time.sleep
 
-        def fake_running(args, context):
-            calls.append("running")
-            return calls.count("running") == 2
+        def fake_running(args, context, attempts=None, method="running_ide"):
+            calls.append(("running", method))
+            accepted = len([call for call in calls if call[0] == "running"]) == 2
+            if attempts is not None:
+                attempts.append({"method": method, "accepted": accepted})
+            return accepted
 
         jb_inspect.open_via_running_ide = fake_running
-        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background))
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background)) or {"method": "bootstrap_ide", "accepted": True}
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
         jb_inspect.now_ms = lambda: 0
         jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
@@ -1912,8 +1967,9 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.now_ms = original_now
             jb_inspect.time.sleep = original_sleep
 
-        self.assertEqual(result, "bootstrapped_ide")
-        self.assertEqual(calls, ["running", ("bootstrap", True), ("wait", 1234), "running"])
+        self.assertEqual(result[0], "bootstrapped_ide")
+        self.assertEqual([attempt["method"] for attempt in result[1]], ["running_ide", "bootstrap_ide", "bootstrapped_ide"])
+        self.assertEqual(calls, [("running", "running_ide"), ("bootstrap", True), ("wait", 1234), ("running", "bootstrapped_ide")])
 
     def test_open_project_for_lifecycle_retries_open_after_cold_bootstrap(self):
         calls = []
@@ -1924,12 +1980,15 @@ class LifecycleTest(unittest.TestCase):
         original_sleep = jb_inspect.time.sleep
         ticks = iter([0, 0, 100, 200, 300])
 
-        def fake_running(args, context):
-            calls.append("running")
-            return calls.count("running") == 4
+        def fake_running(args, context, attempts=None, method="running_ide"):
+            calls.append(("running", method))
+            accepted = len([call for call in calls if call[0] == "running"]) == 4
+            if attempts is not None:
+                attempts.append({"method": method, "accepted": accepted})
+            return accepted
 
         jb_inspect.open_via_running_ide = fake_running
-        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background))
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background)) or {"method": "bootstrap_ide", "accepted": True}
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
         jb_inspect.now_ms = lambda: next(ticks)
         jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
@@ -1942,18 +2001,19 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.now_ms = original_now
             jb_inspect.time.sleep = original_sleep
 
-        self.assertEqual(result, "bootstrapped_ide")
+        self.assertEqual(result[0], "bootstrapped_ide")
+        self.assertEqual([attempt["accepted"] for attempt in result[1]], [False, True, False, False, True])
         self.assertEqual(
             calls,
             [
-                "running",
+                ("running", "running_ide"),
                 ("bootstrap", True),
                 ("wait", 1000),
-                "running",
+                ("running", "bootstrapped_ide"),
                 ("sleep", 1),
-                "running",
+                ("running", "bootstrapped_ide"),
                 ("sleep", 1),
-                "running",
+                ("running", "bootstrapped_ide"),
             ],
         )
 
@@ -1964,8 +2024,8 @@ class LifecycleTest(unittest.TestCase):
         original_now = jb_inspect.now_ms
         original_sleep = jb_inspect.time.sleep
         ticks = iter([0, 0, 500, 1500])
-        jb_inspect.open_via_running_ide = lambda args, context: False
-        jb_inspect.bootstrap_ide_app = lambda context, background=True: None
+        jb_inspect.open_via_running_ide = lambda args, context, attempts=None, method="running_ide": (attempts.append({"method": method, "accepted": False}) if attempts is not None else None) or False
+        jb_inspect.bootstrap_ide_app = lambda context, background=True: {"method": "bootstrap_ide", "accepted": True}
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: {"port": 63342}
         jb_inspect.now_ms = lambda: next(ticks)
         jb_inspect.time.sleep = lambda seconds: None
@@ -1984,6 +2044,7 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertIn("did not accept", str(raised.exception))
         self.assertEqual(raised.exception.payload["prepare_timeout_ms"], 1234)
+        self.assertEqual([attempt["method"] for attempt in raised.exception.payload["open_attempts"]], ["running_ide", "bootstrap_ide", "bootstrapped_ide", "bootstrapped_ide"])
 
     def test_wait_for_exact_route_reports_project_open_blocked_after_scheduled_open(self):
         original_find = jb_inspect.find_exact_route
@@ -2024,6 +2085,45 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(payload["blocked_diagnostic"]["target_worktree"], "/tmp/repo")
         self.assertEqual(payload["blocked_diagnostic"]["selected_trusted_root"], str(Path("/tmp").resolve()))
         self.assertEqual(payload["route_diagnostic"]["reason"], "target_ide_running_without_target_project")
+
+    def test_wait_for_exact_route_falls_back_to_app_open_after_blocked_lifecycle_open(self):
+        original_find = jb_inspect.find_exact_route
+        original_sleep = jb_inspect.time.sleep
+        original_open = jb_inspect.open_in_ide
+        original_diagnostic = jb_inspect.discover_diagnostic_identities
+        original_platform = jb_inspect.sys.platform
+        calls = []
+        route = {"base_path": "/tmp/repo", "project_name": "repo"}
+
+        def fake_find(args, context):
+            calls.append("find")
+            return route if "fallback" in calls else None
+
+        def fake_open(context, background=False, method="app_open"):
+            calls.append("fallback")
+            return {"method": method, "accepted": True, "target_worktree": context["worktree_root"]}
+
+        jb_inspect.find_exact_route = fake_find
+        jb_inspect.time.sleep = lambda seconds: None
+        jb_inspect.open_in_ide = fake_open
+        jb_inspect.discover_diagnostic_identities = lambda port: []
+        jb_inspect.sys.platform = "darwin"
+        try:
+            result = jb_inspect.wait_for_exact_route_with_fallback(
+                Namespace(port=None, background_open=True),
+                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                1,
+                [{"method": "running_ide", "accepted": True}],
+            )
+        finally:
+            jb_inspect.find_exact_route = original_find
+            jb_inspect.time.sleep = original_sleep
+            jb_inspect.open_in_ide = original_open
+            jb_inspect.discover_diagnostic_identities = original_diagnostic
+            jb_inspect.sys.platform = original_platform
+
+        self.assertEqual(result, route)
+        self.assertIn("fallback", calls)
 
     def test_wait_until_route_ready_requires_consecutive_ready_statuses(self):
         statuses = iter([
