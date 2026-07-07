@@ -77,6 +77,18 @@ $TMPDIR/chronicle/screen_recording/
         Summary of the last 6 hours, updated every hour
 ```
 
+## Memory Distillation
+
+Persisted Chronicle summaries are source evidence, not active memory by
+themselves. During memory cleanup or distillation, do not promote a raw
+Chronicle observation into memory, a skill, or a durable handoff unless it is
+validated against a current source of truth such as a repo, branch, issue, PR,
+workflow run, release surface, local file, or explicit user confirmation. Drop
+personal/incidental app context, raw screen/OCR paths, and point-in-time CI,
+release, or PR facts that are not revalidated. Raw Chronicle resources may be
+distilled into a local-only report and then archived or deleted according to the
+user's retention decision.
+
 ## Usage
 
 The most common workflow is to read the latest frame of the screen recording for
