@@ -31,6 +31,10 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_ROOT = "https://searchconsole.googleapis.com/webmasters/v3"
 INSPECTION_ROOT = "https://searchconsole.googleapis.com/v1"
 REDACTED = "[redacted]"
+INVALID_CONFIG_ACTIONS = {
+    "read": "fix OAuth client config, then run auth",
+    "write": "fix OAuth client config, then run auth-write",
+}
 RAW_SENSITIVE_KEYS = {
     "access_token",
     "api_key",
@@ -89,7 +93,8 @@ def redacted(value: Any) -> Any:
 
 
 def print_json(data: Any) -> None:
-    print(json.dumps(redacted(data), indent=2, sort_keys=True))
+    safe_data = redacted(data)
+    print(json.dumps(safe_data, indent=2, sort_keys=True))
 
 
 def fail(message: str, code: int = 1, *, public: bool = True) -> None:
@@ -284,8 +289,11 @@ def auth_command_for(access_level: str) -> str:
     raise AssertionError("unreachable")
 
 
-def oauth_client_repair_action(access_level: str) -> str:
-    return f"fix OAuth client config, then run {auth_command_for(access_level)}"
+def invalid_config_action(access_level: str) -> str:
+    if access_level in INVALID_CONFIG_ACTIONS:
+        return INVALID_CONFIG_ACTIONS[access_level]
+    fail(f"unknown access level: {access_level}")
+    raise AssertionError("unreachable")
 
 
 def refresh_access_token(
@@ -368,7 +376,7 @@ def token_status(access_level: str, *, validate: bool = True) -> dict[str, Any]:
                 "configured": True,
                 "state": "invalid",
                 "reason": "oauth_client_invalid",
-                "action": oauth_client_repair_action(access_level),
+                "action": invalid_config_action(access_level),
             }
         if exc.oauth_error == "invalid_grant":
             return {
@@ -481,7 +489,7 @@ def run_auth(access_level: str) -> None:
         )
     except OAuthTokenRequestError as exc:
         if exc.oauth_error == "invalid_client":
-            fail(oauth_client_repair_action(access_level))
+            fail(invalid_config_action(access_level))
         fail(
             f"OAuth token request failed with HTTP {exc.status_code}; response detail omitted",
             public=False,
@@ -510,7 +518,7 @@ def access_token(access_level: str = DEFAULT_ACCESS_LEVEL) -> str:
         fail(f"{token_path(access_level)} has no usable refresh_token; run {auth_command_for(access_level)}")
     except OAuthTokenRequestError as exc:
         if exc.oauth_error == "invalid_client":
-            fail(oauth_client_repair_action(access_level))
+            fail(invalid_config_action(access_level))
         if exc.oauth_error == "invalid_grant":
             fail(
                 f"{access_level} token expired or revoked; run {auth_command_for(access_level)}"
