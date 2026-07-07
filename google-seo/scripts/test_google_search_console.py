@@ -282,6 +282,16 @@ class GoogleSearchConsoleHelperTest(TestCase):
         self.assertIn("run auth", rendered[0]["read_token_status"]["action"])
         self.assertNotIn("secret-refresh", json.dumps(rendered[0]))
 
+    def test_invalid_config_actions_are_static_public_messages(self) -> None:
+        self.assertEqual(
+            google_search_console.invalid_config_action("read"),
+            "fix OAuth client config, then run auth",
+        )
+        self.assertEqual(
+            google_search_console.invalid_config_action("write"),
+            "fix OAuth client config, then run auth-write",
+        )
+
     def test_status_validation_does_not_rewrite_token_file(self) -> None:
         with TemporaryDirectory() as tmp:
             config_dir = Path(tmp)
