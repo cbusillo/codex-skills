@@ -324,7 +324,7 @@ class NpmplusClient:
             "/api/tokens",
             body={"identity": self.config.identity, "secret": self.config.secret},
         )
-        token_cookie_present = any(cookie.name == "token" for cookie in self.cookies)
+        token_cookie_present = any(cookie.name in {"token", "__Host-Http-token"} for cookie in self.cookies)
         if not token_cookie_present:
             raise OpsError("NPMplus authentication did not return a token cookie")
         return {
