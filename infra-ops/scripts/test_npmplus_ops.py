@@ -12,6 +12,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from http.cookiejar import Cookie
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,55 @@ def test_inventory_summary_redacts_ids_and_domains() -> None:
     }
     assert "example.invalid" not in rendered
     assert '"id"' not in rendered
+
+
+@pytest.mark.parametrize("cookie_name", ["token", "__Host-Http-token"])
+def test_authenticate_accepts_legacy_and_host_prefixed_token_cookies(
+    monkeypatch: pytest.MonkeyPatch, cookie_name: str
+) -> None:
+    client = npmplus_ops.NpmplusClient(
+        npmplus_ops.ApiConfig(
+            base_url="https://npmplus.invalid",
+            identity="robot@example.invalid",
+            secret="secret-value",
+            timeout=1,
+        )
+    )
+
+    def fake_request(method: str, path: str, *, body: dict[str, object] | None = None) -> dict[str, str]:
+        assert method == "POST"
+        assert path == "/api/tokens"
+        assert body == {"identity": "robot@example.invalid", "secret": "secret-value"}
+        client.cookies.set_cookie(
+            Cookie(
+                version=0,
+                name=cookie_name,
+                value="redacted",
+                port=None,
+                port_specified=False,
+                domain="npmplus.invalid",
+                domain_specified=True,
+                domain_initial_dot=False,
+                path="/",
+                path_specified=True,
+                secure=True,
+                expires=None,
+                discard=True,
+                comment=None,
+                comment_url=None,
+                rest={},
+                rfc2109=False,
+            )
+        )
+        return {"expires": "redacted"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert client.authenticate() == {
+        "ok": True,
+        "payload_keys": ["expires"],
+        "token_cookie_present": True,
+    }
 
 
 def test_public_engine_does_not_contain_private_literals() -> None:
