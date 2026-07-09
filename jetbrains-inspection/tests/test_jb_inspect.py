@@ -980,6 +980,27 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotIn("private-close-proof", result.url)
         self.assertIn(urllib.parse.quote(jb_inspect.REDACTED), result.url)
 
+    def test_http_get_returns_inspection_in_progress_conflict(self):
+        payload = {
+            "error": "inspection_in_progress",
+            "status": "inspection_in_progress",
+            "inspection_in_progress": True,
+            "inspection_run_id": 42,
+        }
+        error = jb_inspect.urllib.error.HTTPError(
+            "inspection-trigger",
+            409,
+            "Conflict",
+            {},
+            io.BytesIO(json.dumps(payload).encode()),
+        )
+
+        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=error):
+            result = jb_inspect.http_get(63342, "trigger", {})
+
+        self.assertEqual(result.status, 409)
+        self.assertEqual(result.body, payload)
+
     def test_open_in_ide_uses_background_flag_on_macos(self):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
