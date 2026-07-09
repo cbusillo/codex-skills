@@ -1584,6 +1584,8 @@ def private_http_get_body(port: int, endpoint: str, params: dict[str, Any], time
         body = parse_json(error.read())
         if error.code == 409 and body.get("session_drift"):
             raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, body)
+        if error.code == 409 and body.get("status") == "inspection_in_progress":
+            return body
         if error.code == 400:
             raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
         raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
@@ -1719,6 +1721,8 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
         body = parse_json(error.read())
         if error.code == 409 and body.get("session_drift"):
             raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, body)
+        if error.code == 409 and body.get("status") == "inspection_in_progress":
+            return HttpResult(error.code, body, display_url)
         if error.code == 400:
             raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
         raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
