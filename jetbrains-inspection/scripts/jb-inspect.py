@@ -884,11 +884,15 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     result: dict[str, Any] = {}
+    inspection_error: Exception | None = None
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_with_internal_retry(args, context, prepared["route"])
             result["inspection_result"] = compact_inspection_result(result)
+        except Exception as error:
+            inspection_error = error
+            result = inspection_exception_result(error)
         finally:
             if not getattr(args, "keep_warm", False):
                 if should_defer_lifecycle_cleanup(result, lease):
@@ -904,6 +908,13 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
         apply_verdict(result)
+        if inspection_error is not None:
+            if isinstance(inspection_error, InspectError):
+                inspection_error.payload.setdefault("context", public_context(context))
+                inspection_error.payload.setdefault("prepared", public_payload(prepared))
+                inspection_error.payload.setdefault("cleanup", public_payload(cleanup))
+                inspection_error.payload["inspection_failure"] = public_payload(result)
+            raise inspection_error
     return result
 
 
@@ -960,6 +971,24 @@ def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def inspection_exception_result(error: Exception) -> dict[str, Any]:
+    if isinstance(error, InspectError):
+        reason = infer_error_reason(error, error.payload)
+        message = str(error)
+    else:
+        reason = normalize_reason(error.__class__.__name__)
+        message = str(error) or error.__class__.__name__
+    result = {
+        "status": "error",
+        "error": message,
+        "error_message": message,
+        "error_reason": reason,
+        "transport_state_unknown": True,
+    }
+    apply_verdict(result)
+    return result
+
+
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
     try:
         trigger = call_endpoint(route, "trigger", trigger_params(args, context, route))
@@ -968,24 +997,38 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
             raise
         return recover_inspection_transport_timeout(args, context, route, error)
     active_route = trigger.get("route") or route
+    accepted_run_id = inspection_run_id(trigger)
     timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
+    wait_params = route_params(args, context, active_route) | {
+        "timeout_ms": timeout_ms,
+        "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
+    }
+    if accepted_run_id is not None:
+        wait_params["inspection_run_id"] = accepted_run_id
     try:
-        wait = call_endpoint(active_route, "wait", route_params(args, context, active_route) | {
-            "timeout_ms": timeout_ms,
-            "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-        }, timeout=wait_http_timeout(timeout_ms))
+        wait = call_endpoint(active_route, "wait", wait_params, timeout=wait_http_timeout(timeout_ms))
     except InspectError as error:
         if infer_error_reason(error, error.payload) != "inspection_api_timeout":
             raise
         return recover_inspection_transport_timeout(args, context, active_route, error, trigger)
+    wait_run_id = inspection_run_id(wait)
+    if wait.get("status") == "run_changed" or (
+        accepted_run_id is not None
+        and wait_run_id is not None
+        and wait_run_id != accepted_run_id
+    ):
+        return inspection_run_changed_result(active_route, trigger, wait)
     cancellation = cancel_timed_out_inspection(
         args,
         context,
         active_route,
         wait,
-        expected_run_id=inspection_run_id(wait) or inspection_run_id(trigger),
+        expected_run_id=accepted_run_id or wait_run_id,
     )
-    problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
+    try:
+        problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
+    except InspectError as error:
+        return inspection_endpoint_failure_result(error, active_route, trigger, wait, cancellation)
     if getattr(args, "include_stale", False):
         problems.setdefault("include_stale", True)
     summary = summarize_problems(context, problems.get("route") or active_route, problems)
@@ -996,6 +1039,51 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
     summary["status"] = classify_run_status(wait, problems)
     apply_verdict(summary)
     return summary
+
+
+def inspection_run_changed_result(
+    route: dict[str, Any],
+    trigger: dict[str, Any],
+    wait: dict[str, Any],
+) -> dict[str, Any]:
+    result = {
+        "status": "run_changed",
+        "error_reason": "run_changed",
+        "run_changed": True,
+        "transport_state_unknown": True,
+        "expected_inspection_run_id": inspection_run_id(trigger),
+        "inspection_run_id": inspection_run_id(wait),
+        "route": route,
+        "trigger": trigger,
+        "wait": wait,
+    }
+    apply_verdict(result)
+    return result
+
+
+def inspection_endpoint_failure_result(
+    error: InspectError,
+    route: dict[str, Any],
+    trigger: dict[str, Any],
+    wait: dict[str, Any],
+    cancellation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cancellation_settled = cancellation is not None and cancellation.get("settled") is True
+    result: dict[str, Any] = {
+        "status": "error",
+        "error": str(error),
+        "error_message": str(error),
+        "error_reason": infer_error_reason(error, error.payload),
+        "endpoint": error.payload.get("endpoint"),
+        "transport_state_unknown": wait.get("inspection_in_progress") is True and not cancellation_settled,
+        "route": route,
+        "trigger": trigger,
+        "wait": wait,
+    }
+    if cancellation is not None:
+        result["cancellation"] = cancellation
+    apply_verdict(result)
+    return result
 
 
 def recover_inspection_transport_timeout(
@@ -2187,20 +2275,34 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
             raise
     status = str(body.get("status") or "closed")
     if status == "closed":
-        return {
+        result = {
             "status": "closed",
             "reason": body.get("reason"),
             "cleanup_skipped": False,
             "cleanup_failed": False,
         }
-    return {
-        "status": status,
-        "reason": body.get("reason") or status,
-        "cleanup_skipped": True,
-        "cleanup_failed": False,
-        "message": body.get("message"),
-        "close_attempts": body.get("close_attempts"),
-    }
+    else:
+        result = {
+            "status": status,
+            "reason": body.get("reason") or status,
+            "cleanup_skipped": True,
+            "cleanup_failed": False,
+            "message": body.get("message"),
+            "close_attempts": body.get("close_attempts"),
+        }
+    for field in (
+        "project_instance_id",
+        "project_key",
+        "lease_id",
+        "session_id",
+        "closed_at_ms",
+        "inspection_run_id",
+        "inspection_in_progress",
+        "close_attempts",
+    ):
+        if body.get(field) is not None:
+            result[field] = body[field]
+    return result
 
 
 def public_cleanup_reason(error: InspectError) -> str:
@@ -2680,6 +2782,8 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         return str(payload.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason") or "capture_incomplete")
     if payload.get("error_reason") == "inspection_api_timeout":
         return "inspection_api_timeout"
+    if payload.get("run_changed") or payload.get("error_reason") == "run_changed" or wait.get("status") == "run_changed":
+        return "run_changed"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
         return "timeout"
     if payload.get("indexing") or payload.get("is_scanning") or payload.get("inspection_in_progress") or payload.get("status") in {"indexing", "running"}:
@@ -2739,6 +2843,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Wait for indexing/scanning to finish, then rerun inspection."
     if reason == "inspection_api_timeout":
         return "The IDE inspection API was busy. Wait for the active inspection or lifecycle operation to settle, then retry once."
+    if reason == "run_changed":
+        return "Another inspection replaced the accepted run. Wait for that run to settle, then resolve the route and retry once."
     if reason == "inspection_api_unavailable":
         return "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
     if reason == "ambiguous_route":
@@ -2787,7 +2893,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
-    if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "indexing", "running", "current_run_psi_churn"}:
+    if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "run_changed", "indexing", "running", "current_run_psi_churn"}:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
         return "stale_results"
