@@ -1972,8 +1972,8 @@ class LifecycleTest(unittest.TestCase):
         cancel_params = []
         statuses = iter(
             [
-                {"inspection_in_progress": True, "is_scanning": True},
-                {"inspection_in_progress": False, "is_scanning": False, "indexing": False},
+                {"inspection_in_progress": True, "inspection_run_id": 7, "is_scanning": True},
+                {"inspection_in_progress": False, "inspection_run_id": 7, "is_scanning": False, "indexing": False},
             ]
         )
 
@@ -2060,6 +2060,78 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(result["transport_state_unknown"])
         self.assertEqual(result["verdict_reason"], "run_changed")
         self.assertTrue(jb_inspect.should_defer_lifecycle_cleanup(result, {"opened_by_helper": True}))
+
+    def test_completed_replacement_run_is_not_reported_as_the_accepted_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            if endpoint == "trigger":
+                return {"status": "triggered", "run_id": 7, "route": route}
+            if endpoint == "wait":
+                return {
+                    "status": "results_available",
+                    "wait_completed": True,
+                    "inspection_in_progress": False,
+                    "inspection_run_id": 7,
+                }
+            if endpoint == "problems":
+                return {
+                    "status": "results_available",
+                    "inspection_in_progress": False,
+                    "inspection_run_id": 8,
+                    "snapshot_run_id": 8,
+                    "total_problems": 0,
+                    "problems": [],
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(timeout_ms=1000, poll_ms=1),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+            )
+
+        self.assertEqual(result["status"], "run_changed")
+        self.assertEqual(result["expected_inspection_run_id"], 7)
+        self.assertEqual(result["inspection_run_id"], 8)
+        self.assertTrue(result["transport_state_unknown"])
+        problems_call = next(params for endpoint, params in calls if endpoint == "problems")
+        self.assertEqual(problems_call["inspection_run_id"], 7)
+
+    def test_cancellation_settlement_rejects_completed_replacement_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            if endpoint == "cancel":
+                return {
+                    "status": "cancel_requested",
+                    "inspection_cancellation_requested": True,
+                    "inspection_run_id": 7,
+                }
+            if endpoint == "status":
+                return {
+                    "status": "results_available",
+                    "inspection_in_progress": False,
+                    "inspection_run_id": 8,
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.cancel_timed_out_inspection(
+                helper_args(),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+                {"timed_out": True, "inspection_in_progress": True, "inspection_run_id": 7},
+                expected_run_id=7,
+            )
+
+        self.assertEqual(result["status"], "run_changed")
+        self.assertFalse(result["settled"])
+        self.assertEqual(result["expected_inspection_run_id"], 7)
+        self.assertEqual(result["inspection_run_id"], 8)
 
     def test_problems_transport_failure_defers_cleanup_for_unsettled_run(self):
         route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
@@ -2228,6 +2300,53 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
         self.assertTrue(raised.exception.payload["inspection_failure"]["transport_state_unknown"])
         self.assertEqual(raised.exception.payload["inspection_failure"]["error_reason"], "invalid_api_response")
+
+    def test_keyboard_interrupt_defers_owned_project_cleanup_before_reraising(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        lease = {"lease_id": "lease-1", "opened_by_helper": True, "state": "prepared"}
+
+        with (
+            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch.object(jb_inspect, "run_inspection_with_internal_retry", side_effect=KeyboardInterrupt()),
+            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch.object(
+                jb_inspect,
+                "defer_lifecycle_cleanup",
+                return_value={"status": "deferred", "cleanup_deferred": True},
+            ) as defer_cleanup,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                jb_inspect.command_closeout(
+                    helper_args(keep_warm=False, lifecycle_lock_timeout_ms=0),
+                    {},
+                )
+
+        cleanup.assert_not_called()
+        defer_cleanup.assert_called_once()
+
+    def test_generic_inspection_exception_becomes_structured_inspect_error(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        lease = {"lease_id": "lease-1", "opened_by_helper": True, "state": "prepared"}
+
+        with (
+            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch.object(jb_inspect, "run_inspection_with_internal_retry", side_effect=RuntimeError("boom")),
+            patch.object(
+                jb_inspect,
+                "defer_lifecycle_cleanup",
+                return_value={"status": "deferred", "cleanup_deferred": True},
+            ),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.command_closeout(
+                    helper_args(keep_warm=False, lifecycle_lock_timeout_ms=0),
+                    {},
+                )
+
+        self.assertEqual(raised.exception.payload["error_type"], "RuntimeError")
+        self.assertEqual(raised.exception.payload["error_message"], "boom")
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
+        self.assertTrue(raised.exception.payload["inspection_failure"]["transport_state_unknown"])
 
     def test_settled_cancellation_allows_owned_project_cleanup(self):
         result = {

@@ -884,13 +884,13 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     result: dict[str, Any] = {}
-    inspection_error: Exception | None = None
+    inspection_error: BaseException | None = None
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_with_internal_retry(args, context, prepared["route"])
             result["inspection_result"] = compact_inspection_result(result)
-        except Exception as error:
+        except BaseException as error:
             inspection_error = error
             result = inspection_exception_result(error)
         finally:
@@ -914,7 +914,22 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 inspection_error.payload.setdefault("prepared", public_payload(prepared))
                 inspection_error.payload.setdefault("cleanup", public_payload(cleanup))
                 inspection_error.payload["inspection_failure"] = public_payload(result)
-            raise inspection_error
+                raise inspection_error
+            if isinstance(inspection_error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise inspection_error
+            raise InspectError(
+                "Inspection helper failed unexpectedly.",
+                3,
+                {
+                    "error_reason": result.get("error_reason"),
+                    "error_type": inspection_error.__class__.__name__,
+                    "error_message": str(inspection_error) or inspection_error.__class__.__name__,
+                    "context": public_context(context),
+                    "prepared": public_payload(prepared),
+                    "cleanup": public_payload(cleanup),
+                    "inspection_failure": public_payload(result),
+                },
+            ) from inspection_error
     return result
 
 
@@ -971,7 +986,7 @@ def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def inspection_exception_result(error: Exception) -> dict[str, Any]:
+def inspection_exception_result(error: BaseException) -> dict[str, Any]:
     if isinstance(error, InspectError):
         reason = infer_error_reason(error, error.payload)
         message = str(error)
@@ -1025,10 +1040,15 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         wait,
         expected_run_id=accepted_run_id or wait_run_id,
     )
+    problems_request = problems_params(args, context, active_route)
+    if accepted_run_id is not None:
+        problems_request["inspection_run_id"] = accepted_run_id
     try:
-        problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
+        problems = call_endpoint(active_route, "problems", problems_request)
     except InspectError as error:
         return inspection_endpoint_failure_result(error, active_route, trigger, wait, cancellation)
+    if accepted_run_id is not None and inspection_result_run_changed(problems, accepted_run_id):
+        return inspection_run_changed_result(active_route, trigger, problems, phase="problems")
     if getattr(args, "include_stale", False):
         problems.setdefault("include_stale", True)
     summary = summarize_problems(context, problems.get("route") or active_route, problems)
@@ -1044,7 +1064,8 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
 def inspection_run_changed_result(
     route: dict[str, Any],
     trigger: dict[str, Any],
-    wait: dict[str, Any],
+    observed: dict[str, Any],
+    phase: str = "wait",
 ) -> dict[str, Any]:
     result = {
         "status": "run_changed",
@@ -1052,13 +1073,31 @@ def inspection_run_changed_result(
         "run_changed": True,
         "transport_state_unknown": True,
         "expected_inspection_run_id": inspection_run_id(trigger),
-        "inspection_run_id": inspection_run_id(wait),
+        "inspection_run_id": inspection_run_id(observed) or positive_run_id(observed.get("snapshot_run_id")),
         "route": route,
         "trigger": trigger,
-        "wait": wait,
+        phase: observed,
     }
     apply_verdict(result)
     return result
+
+
+def inspection_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
+    if payload.get("status") == "run_changed":
+        return True
+    current_run_id = inspection_run_id(payload)
+    snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
+    return current_run_id != expected_run_id or (
+        snapshot_run_id is not None and snapshot_run_id != expected_run_id
+    )
+
+
+def positive_run_id(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit() and int(value) > 0:
+        return int(value)
+    return None
 
 
 def inspection_endpoint_failure_result(
@@ -1200,6 +1239,16 @@ def cancel_timed_out_inspection(
             "response": response,
             "last_status": wait,
         }
+    response_run_id = inspection_run_id(response)
+    if response_run_id is not None and response_run_id != expected_run_id:
+        return {
+            "status": "run_changed",
+            "requested": False,
+            "settled": False,
+            "reason": "run_changed",
+            "response": response,
+            "last_status": wait,
+        }
 
     deadline = now_ms() + DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS
     last_status = wait
@@ -1213,6 +1262,18 @@ def cancel_timed_out_inspection(
                 "settled": False,
                 "reason": infer_error_reason(error, error.payload),
                 "response": response,
+            }
+        last_status_run_id = inspection_run_id(last_status)
+        if last_status_run_id != expected_run_id:
+            return {
+                "status": "run_changed",
+                "requested": response.get("inspection_cancellation_requested") is True,
+                "settled": False,
+                "reason": "run_changed",
+                "expected_inspection_run_id": expected_run_id,
+                "inspection_run_id": last_status_run_id,
+                "response": response,
+                "last_status": last_status,
             }
         if last_status.get("inspection_in_progress") is not True:
             return {
