@@ -51,6 +51,11 @@ commands:
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "summarize-outcomes"]
     purpose: Summarizes helper outcome JSONL logs by verdict, bucket, and retry without running an inspection.
+  - name: jetbrains-inspection-cleanup-helper-leases
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "cleanup-helper-leases", "--no-dry-run"]
+    purpose: Reconciles stale helper-owned leases under the lifecycle lock without path-only project closes.
 policy:
   command_policies:
     - id: prefer-jb-inspect-for-plugin-http
@@ -100,6 +105,7 @@ uv run "$HELPER" inspect-closeout --repo "$PWD" --scope changed_files
 uv run "$HELPER" get-status --repo "$PWD"
 uv run "$HELPER" get-problems --repo "$PWD" --severity error
 uv run "$HELPER" summarize-outcomes
+uv run "$HELPER" cleanup-helper-leases --no-dry-run
 ```
 
 Command model:
@@ -114,6 +120,8 @@ Command model:
   is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
 - `get-status` and `get-problems`: route-pinned diagnostics for
   already-routable projects.
+- `cleanup-helper-leases`: reconcile stale helper-owned leases under the
+  lifecycle lock; unresolved identity or close failures return nonzero.
 
 `inspect` and `inspect-closeout` create a local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
@@ -129,6 +137,29 @@ out, the helper may leave that project warm and report `cleanup.status=deferred`
 with `cleanup_deferred=true`. Treat that as `UNKNOWN`, rerun `inspect-closeout`
 after indexing settles, and use `cleanup-helper-leases` only if the warm lease
 becomes stale.
+Preparation is failure-atomic for handled failures and interrupts. With plugin
+protocol `lease_bound_v1`, the helper persists `state=open_requesting` before
+sending its local `lease_id` to `lifecycle/open`. An open response registers the
+request but does not prove ownership. Only `lifecycle/claim` can bind that lease
+to the exact project instance and return a close token; the helper claims before
+the readiness wait and ignores token-shaped responses that lack the protocol's
+ownership proof. `already_open`, another lease's `already_opening`, legacy
+plugin responses, and session-mismatched routes never authorize close.
+After the plugin accepts a lifecycle open, the helper waits only for that
+lease-bound request; it does not issue a second app-level open that could create
+an unowned window or trust prompt.
+If preparation then fails, the helper closes immediately when a live claim
+proves ownership; otherwise it records `state=cleanup_pending` with the
+available evidence and cleanup action instead of leaving a generic `preparing`
+lease. `cleanup-helper-leases` may recover even a route-less pending lease by
+asking the live plugin to prove the same lease binding. A definitive
+`not_owned` response releases the local lease without closing; unavailable or
+legacy proof remains an explicit nonzero `unresolved` result. Path/session
+matching selects a candidate route but is never itself permission to close.
+Preparation failures for projects that were already open release only the local
+lease and never call lifecycle close. `cleanup-helper-leases` uses the same
+lifecycle lock as inspection commands so stale reconciliation cannot race a new
+helper-owned open or close.
 Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it
 or increase `--lifecycle-lock-timeout-ms`; do not start parallel auto-open

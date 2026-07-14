@@ -72,6 +72,48 @@ def helper_args(**overrides):
     return Namespace(**values)
 
 
+def claimed_lifecycle_result(route: dict, close_proof: str = "proof-1"):
+    return (
+        {
+            "status": "claimed",
+            "ownership_proven": True,
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+        },
+        close_proof,
+        True,
+        route,
+    )
+
+
+def unowned_lifecycle_result(route: dict):
+    return (
+        {
+            "status": "not_owned",
+            "ownership_proven": False,
+            "reason": "project_preexisted",
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+        },
+        None,
+        False,
+        route,
+    )
+
+
+def plugin_claim_body(route: dict, lease_id: str, close_proof: str = "proof-1", owned: bool = True):
+    body = {
+        "status": "claimed" if owned else "not_owned",
+        "ownership_proven": owned,
+        "lease_id": lease_id,
+        "route": route,
+        "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+    }
+    if owned:
+        body["close_token"] = close_proof
+    else:
+        body["reason"] = "project_preexisted"
+    return body
+
+
 class ParserCommandAliasTest(unittest.TestCase):
     def test_preferred_commands_parse_and_canonicalize(self):
         parser = jb_inspect.build_parser()
@@ -139,6 +181,13 @@ class ParserCommandAliasTest(unittest.TestCase):
         self.assertEqual(args.repo, "/tmp/repo")
         self.assertEqual(args.scope, "changed_files")
         self.assertFalse(args.open)
+
+    def test_cleanup_command_has_lifecycle_lock_timeout(self):
+        parser = jb_inspect.build_parser()
+
+        args = parser.parse_args(["cleanup-helper-leases", "--lifecycle-lock-timeout-ms", "1234"])
+
+        self.assertEqual(args.lifecycle_lock_timeout_ms, 1234)
 
 
 class BuildContextTest(unittest.TestCase):
@@ -452,7 +501,10 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.find_exact_route = lambda args, context: route
             jb_inspect.ensure_exact_worktree = lambda route, context, args: None
             jb_inspect.wait_until_route_ready = lambda args, context, route, timeout_ms: None
-            jb_inspect.claim_lifecycle = lambda args, context, route, lease: ({"status": "claimed"}, "private-close-proof")
+            jb_inspect.claim_lifecycle = lambda args, context, route, lease: claimed_lifecycle_result(
+                route,
+                "private-close-proof",
+            )
             jb_inspect.write_lease = lambda lease: None
 
             prepared = jb_inspect.prepare_lifecycle(Namespace(prepare_timeout_ms=1), {"worktree_root": "/tmp/repo"})
@@ -467,6 +519,633 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(prepared["status"], "prepared")
         self.assertNotIn("_control", prepared)
         self.assertNotIn("private-close-proof", json.dumps(prepared))
+
+    def test_prepare_failure_releases_preexisting_lease_without_close(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        removed = []
+        claimed = []
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect,
+                "wait_until_route_ready",
+                side_effect=jb_inspect.InspectError(
+                    "not ready",
+                    3,
+                    {"error_reason": "ide_not_ready_timeout", "last_status": {"indexing": True}},
+                ),
+            ),
+            patch.object(
+                jb_inspect,
+                "claim_lifecycle",
+                side_effect=lambda *args: claimed.append(args) or unowned_lifecycle_result(route),
+            ),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(jb_inspect, "remove_lease", side_effect=lambda removed_lease: removed.append(removed_lease["lease_id"])),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(removed, ["lease-1"])
+        self.assertEqual(lease["state"], "released")
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_not_ready_timeout")
+        self.assertEqual(raised.exception.payload["last_status"], {"indexing": True})
+        self.assertEqual(raised.exception.payload["cleanup"], {"status": "not_needed", "reason": "project_preexisted"})
+
+    def test_prepare_failure_after_open_acceptance_records_cleanup_pending(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        written = []
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "ownership_registered": True,
+                "identity": {"session_id": "session", "port": 63342},
+                "endpoint_status": "opening",
+            }
+        ]
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(jb_inspect, "open_project_for_lifecycle", return_value=("running_ide", open_attempts, True)),
+            patch.object(
+                jb_inspect,
+                "wait_for_exact_route_after_open",
+                side_effect=jb_inspect.InspectError("route missing", 3, {"error_reason": "project_open_blocked"}),
+            ),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertTrue(lease["opened_by_helper"])
+        self.assertEqual(lease["open_method"], "running_ide")
+        self.assertEqual(lease["session_id"], "session")
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertEqual(lease["preparation_failure_stage"], "route_wait")
+        self.assertEqual(written[-1]["state"], "cleanup_pending")
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
+        self.assertEqual(raised.exception.payload["cleanup"]["reason"], "preparation_cleanup_pending")
+
+    def test_prepare_failure_during_route_validation_does_not_close_unverified_route(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        cleanup_calls = []
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=(
+                    "running_ide",
+                    [
+                        {
+                            "method": "running_ide",
+                            "accepted": True,
+                            "ownership_registered": True,
+                            "identity": {"session_id": "session", "port": 1},
+                        }
+                    ],
+                    True,
+                ),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree", side_effect=jb_inspect.InspectError("wrong route", 3)),
+            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                side_effect=lambda *args: cleanup_calls.append("close"),
+            ),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(cleanup_calls, [])
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertNotIn("project_instance_id", lease)
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
+        self.assertEqual(raised.exception.payload["preparation_stage"], "route_validation")
+
+    def test_prepare_readiness_failure_reclaims_and_closes(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        cleanup_calls = []
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=(
+                    "running_ide",
+                    [
+                        {
+                            "method": "running_ide",
+                            "accepted": True,
+                            "ownership_registered": True,
+                            "identity": {"session_id": "session", "port": 1},
+                        }
+                    ],
+                    True,
+                ),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect,
+                "claim_lifecycle",
+                return_value=claimed_lifecycle_result(route, "proof-1"),
+            ),
+            patch.object(
+                jb_inspect,
+                "wait_until_route_ready",
+                side_effect=jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"}),
+            ),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
+                    (cleanup_lease["lease_id"], cleanup_route["project_instance_id"], proof)
+                )
+                or {"status": "closed"},
+            ),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(cleanup_calls, [("lease-1", "session:1", "proof-1")])
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_not_ready_timeout")
+        self.assertEqual(raised.exception.payload["cleanup"], {"status": "closed"})
+
+    def test_prepare_cleanup_error_does_not_mask_readiness_failure(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=(
+                    "running_ide",
+                    [
+                        {
+                            "method": "running_ide",
+                            "accepted": True,
+                            "ownership_registered": True,
+                            "identity": {"session_id": "session", "port": 1},
+                        }
+                    ],
+                    True,
+                ),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect,
+                "claim_lifecycle",
+                return_value=claimed_lifecycle_result(route, "proof-1"),
+            ),
+            patch.object(
+                jb_inspect,
+                "wait_until_route_ready",
+                side_effect=jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"}),
+            ),
+            patch.object(jb_inspect, "cleanup_lifecycle", side_effect=RuntimeError("close crashed")),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_not_ready_timeout")
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
+        self.assertEqual(raised.exception.payload["cleanup"]["cleanup_error"], "RuntimeError")
+        self.assertEqual(lease["state"], "cleanup_pending")
+
+    def test_prepare_claim_failure_records_cleanup_pending_when_reclaim_fails(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        written = []
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=(
+                    "running_ide",
+                    [
+                        {
+                            "method": "running_ide",
+                            "accepted": True,
+                            "ownership_registered": True,
+                            "identity": {"session_id": "session", "port": 1},
+                        }
+                    ],
+                    True,
+                ),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "wait_until_route_ready"),
+            patch.object(
+                jb_inspect,
+                "claim_lifecycle",
+                side_effect=jb_inspect.InspectError("HTTP 500", 3, {"error_reason": "inspection_api_http_error"}),
+            ),
+            patch.object(
+                jb_inspect,
+                "reclaim_lifecycle_claim",
+                return_value=(None, None, {"status": "unknown"}, route),
+            ),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertEqual(lease["project_instance_id"], "session:1")
+        self.assertEqual(lease["session_id"], "session")
+        self.assertEqual(lease["preparation_failure_stage"], "lifecycle_claim")
+        self.assertEqual(written[-1]["state"], "cleanup_pending")
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_api_http_error")
+        self.assertEqual(raised.exception.payload["cleanup"]["status"], "deferred")
+
+    def test_prepare_unproven_open_never_closes_project(self):
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        for outcome, method in (("already_open", "preexisting"), ("already_opening", "unproven_opening")):
+            with self.subTest(outcome=outcome):
+                lease = {"lease_id": f"lease-{outcome}", "state": "preparing"}
+                close_calls = []
+                open_attempts = [
+                    {
+                        "method": "running_ide",
+                        "accepted": True,
+                        "ownership_registered": False,
+                        "open_outcome": outcome,
+                    }
+                ]
+                with (
+                    patch.object(jb_inspect, "create_local_lease", return_value=lease),
+                    patch.object(jb_inspect, "find_exact_route", return_value=None),
+                    patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+                    patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+                    patch.object(
+                        jb_inspect,
+                        "open_project_for_lifecycle",
+                        return_value=(method, open_attempts, False),
+                    ),
+                    patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+                    patch.object(jb_inspect, "ensure_exact_worktree"),
+                    patch.object(
+                        jb_inspect,
+                        "claim_lifecycle",
+                        return_value=unowned_lifecycle_result(route),
+                    ),
+                    patch.object(
+                        jb_inspect,
+                        "wait_until_route_ready",
+                        side_effect=jb_inspect.InspectError(
+                            "not ready",
+                            3,
+                            {"error_reason": "ide_not_ready_timeout"},
+                        ),
+                    ),
+                    patch.object(jb_inspect, "call_lifecycle_close", side_effect=lambda *args: close_calls.append(args)),
+                    patch.object(jb_inspect, "write_lease"),
+                    patch.object(jb_inspect, "remove_lease"),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError):
+                        jb_inspect.prepare_lifecycle_details(
+                            helper_args(open=True, prepare_timeout_ms=1),
+                            {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                        )
+
+                self.assertEqual(close_calls, [])
+                self.assertFalse(lease["opened_by_helper"])
+                self.assertEqual(lease["state"], "released")
+
+    def test_prepare_registered_open_downgrades_when_claim_is_not_owned(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "ownership_registered": True,
+                "identity": {"session_id": "session", "port": 1},
+            }
+        ]
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=("running_ide", open_attempts, True),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
+            patch.object(jb_inspect, "wait_until_route_ready"),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
+                helper_args(open=True, prepare_timeout_ms=1),
+                {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+            )
+
+        self.assertFalse(prepared["opened_by_helper"])
+        self.assertFalse(prepared_lease["opened_by_helper"])
+        self.assertIsNone(close_proof)
+        self.assertEqual(prepared["claim"]["status"], "not_owned")
+
+    def test_prepare_rejects_route_from_different_open_session(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 2,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session-b:1",
+            "session_id": "session-b",
+        }
+        cleanup_calls = []
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "ownership_registered": True,
+                "identity": {"session_id": "session-a", "port": 1},
+            }
+        ]
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                return_value=("running_ide", open_attempts, True),
+            ),
+            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
+            patch.object(jb_inspect, "cleanup_lifecycle", side_effect=lambda *args: cleanup_calls.append("close")),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertTrue(raised.exception.payload["session_drift"])
+        self.assertEqual(cleanup_calls, [])
+        self.assertEqual(lease["session_id"], "session-a")
+        self.assertNotIn("project_instance_id", lease)
+        self.assertEqual(lease["state"], "cleanup_pending")
+
+    def test_prepare_cleanup_retains_original_payload_fields(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        original_cleanup = {"status": "original"}
+        original_lease = {"lease_id": "original"}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect,
+                "claim_lifecycle",
+                return_value=unowned_lifecycle_result(route),
+            ),
+            patch.object(
+                jb_inspect,
+                "wait_until_route_ready",
+                side_effect=jb_inspect.InspectError(
+                    "not ready",
+                    3,
+                    {
+                        "error_reason": "ide_not_ready_timeout",
+                        "cleanup": original_cleanup,
+                        "lease": original_lease,
+                    },
+                ),
+            ),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(jb_inspect, "remove_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertEqual(raised.exception.payload["cleanup"], original_cleanup)
+        self.assertEqual(raised.exception.payload["lease"], original_lease)
+        self.assertEqual(raised.exception.payload["preparation_cleanup"]["reason"], "project_preexisted")
+        self.assertEqual(raised.exception.payload["preparation_lease"]["lease_id"], "lease-1")
+
+    def test_prepare_interrupt_before_open_request_records_cleanup_pending(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        writes = []
+
+        def interrupt_first_write(written_lease):
+            writes.append(written_lease.copy())
+            if len(writes) == 1:
+                raise KeyboardInterrupt()
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(jb_inspect, "open_project_for_lifecycle") as open_project,
+            patch.object(jb_inspect, "write_lease", side_effect=interrupt_first_write),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        open_project.assert_not_called()
+        self.assertFalse(lease["opened_by_helper"])
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertEqual(len(writes), 2)
+
+    def test_prepare_interrupt_after_open_request_attempt_keeps_recoverable_lease(self):
+        lease = {"lease_id": "lease-1", "state": "preparing"}
+        written = []
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(
+                jb_inspect,
+                "open_project_for_lifecycle",
+                side_effect=KeyboardInterrupt(),
+            ),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda value: written.append(value.copy())),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=True, prepare_timeout_ms=1),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertFalse(lease["opened_by_helper"])
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertEqual(lease["preparation_failure_stage"], "project_open")
+        self.assertEqual(written[0]["state"], "open_requesting")
+        self.assertEqual(written[-1]["state"], "cleanup_pending")
+
+    def test_failed_preparation_close_results_remain_recoverable(self):
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        error = jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"})
+        for close_status in ("failed", "skipped"):
+            with self.subTest(close_status=close_status):
+                lease = {
+                    "lease_id": f"lease-{close_status}",
+                    "state": "route_resolved",
+                    "opened_by_helper": True,
+                    "project_instance_id": "session:1",
+                    "project_key": "path:/tmp/worktree",
+                    "session_id": "session",
+                    "lifecycle_target_path": "/tmp/worktree",
+                }
+                close_result = {"status": close_status, "reason": f"close_{close_status}"}
+                with (
+                    patch.object(
+                        jb_inspect,
+                        "reclaim_lifecycle_claim",
+                        return_value=(
+                            True,
+                            "proof-1",
+                            {"status": "claimed", "ownership_proven": True},
+                            route,
+                        ),
+                    ),
+                    patch.object(jb_inspect, "cleanup_lifecycle", return_value=close_result),
+                    patch.object(jb_inspect, "write_lease"),
+                ):
+                    result = jb_inspect.cleanup_failed_preparation(
+                        lease,
+                        route,
+                        None,
+                        error,
+                        "readiness_wait",
+                    )
+
+                self.assertEqual(result["status"], "deferred")
+                self.assertEqual(result["close_result"], close_result)
+                self.assertEqual(lease["state"], "cleanup_pending")
 
     def test_write_lease_strips_private_fields_on_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -606,7 +1285,7 @@ class LifecycleTest(unittest.TestCase):
 
         def fake_claim(args, context, exact_route, lease):
             claimed.append(lease["lease_id"])
-            return {"status": "claimed", "lease_id": lease["lease_id"]}, "proof-1"
+            return claimed_lifecycle_result(exact_route, "proof-1")
 
         jb_inspect.claim_lifecycle = fake_claim
         jb_inspect.write_lease = lambda lease: written.append(lease.copy())
@@ -651,6 +1330,7 @@ class LifecycleTest(unittest.TestCase):
         }
 
         self.assertTrue(jb_inspect.deferred_lease_matches_route(lease, context, route))
+        self.assertTrue(jb_inspect.deferred_lease_matches_route(lease | {"state": "cleanup_pending"}, context, route))
         self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"session_id": "other"}, context, route))
         self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"project_instance_id": "session:2"}, context, route))
         self.assertFalse(jb_inspect.deferred_lease_matches_route(lease | {"lifecycle_target_path": "/tmp/other"}, context, route))
@@ -685,12 +1365,12 @@ class LifecycleTest(unittest.TestCase):
         path = Path("/tmp/old-lease.json")
         jb_inspect.read_local_leases = lambda: [(path, lease.copy())]
         jb_inspect.pid_alive = lambda pid: False
-        jb_inspect.discover_routes_for_cleanup = lambda args: [route.copy()]
-        jb_inspect.private_http_get_body = lambda port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS: claims.append((endpoint, params["lease_id"])) or {"close_token": "proof-1"}
+        jb_inspect.discover_routes_for_cleanup = lambda args: ([route.copy()], {"session"})
+        jb_inspect.private_http_get_body = lambda port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS: claims.append((endpoint, params["lease_id"])) or plugin_claim_body(route, "old-lease")
         jb_inspect.cleanup_lifecycle = lambda cleanup_lease, cleanup_route, proof: closed.append((cleanup_lease["lease_id"], cleanup_route["project_instance_id"], proof)) or {"status": "closed"}
         try:
             with patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))):
-                result = jb_inspect.command_cleanup_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
+                result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
         finally:
             jb_inspect.read_local_leases = original_read
             jb_inspect.pid_alive = original_pid_alive
@@ -708,12 +1388,14 @@ class LifecycleTest(unittest.TestCase):
             "lease_id": "old-lease",
             "opened_by_helper": True,
             "project_instance_id": "session:1",
+            "session_id": "session",
             "lifecycle_target_path": "/tmp/worktree",
         }
         route = {
             "port": 1,
             "base_path": "/tmp/worktree",
             "project_instance_id": "session:1",
+            "session_id": "session",
         }
         original_private = jb_inspect.private_http_get_body
         jb_inspect.private_http_get_body = lambda *args, **kwargs: (_ for _ in ()).throw(jb_inspect.InspectError("drift", 4))
@@ -722,8 +1404,259 @@ class LifecycleTest(unittest.TestCase):
         finally:
             jb_inspect.private_http_get_body = original_private
 
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "close_failed")
+
+    def test_cleanup_pending_lease_reclaims_matching_exact_identity(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "session",
+            "project_instance_id": "session:1",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+        }
+        cleanup_calls = []
+
+        with (
+            patch.object(
+                jb_inspect,
+                "private_http_get_body",
+                return_value=plugin_claim_body(route, "pending-lease"),
+            ),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
+                    (cleanup_lease["lease_id"], cleanup_route["project_instance_id"], proof)
+                )
+                or {"status": "closed"},
+            ),
+        ):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
+
+        self.assertEqual(cleanup_calls, [("pending-lease", "session:1", "proof-1")])
+        self.assertEqual(result["status"], "closed")
+
+    def test_cleanup_pending_lease_does_not_close_matching_path_in_new_session(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "project_instance_id": "old-session:1",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "new-session:1",
+            "session_id": "new-session",
+        }
+
+        with patch.object(jb_inspect, "cleanup_lifecycle") as cleanup:
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
+
+        cleanup.assert_not_called()
         self.assertEqual(result["status"], "skipped")
-        self.assertEqual(result["reason"], "missing_close_token")
+        self.assertEqual(result["reason"], "ownership_route_unavailable")
+
+    def test_cleanup_pending_without_project_identity_never_closes_same_session_route(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "session",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:manual",
+            "session_id": "session",
+        }
+
+        with (
+            patch.object(
+                jb_inspect,
+                "private_http_get_body",
+                return_value=plugin_claim_body(route, "pending-lease", owned=False),
+            ),
+            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
+        ):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
+
+        cleanup.assert_not_called()
+        self.assertEqual(result["status"], "not_needed")
+        self.assertEqual(result["reason"], "ownership_not_proven")
+
+    def test_cleanup_route_less_pending_lease_closes_only_after_live_ownership_proof(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": False,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "session",
+        }
+        route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:owned",
+            "session_id": "session",
+        }
+        cleanup_calls = []
+
+        with (
+            patch.object(
+                jb_inspect,
+                "private_http_get_body",
+                return_value=plugin_claim_body(route, "pending-lease"),
+            ),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
+                    (cleanup_lease["opened_by_helper"], cleanup_route["project_instance_id"], proof)
+                )
+                or {"status": "closed"},
+            ),
+        ):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route], {"session"})
+
+        self.assertEqual(cleanup_calls, [(True, "session:owned", "proof-1")])
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(lease["project_instance_id"], "session:owned")
+
+    def test_cleanup_command_retains_unresolved_route_less_lease(self):
+        path = Path("/tmp/pending-lease.json")
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "session",
+            "pid": 999_999,
+            "updated_at_ms": jb_inspect.now_ms(),
+        }
+        delayed_route = {
+            "port": 1,
+            "base_path": "/tmp/worktree",
+            "project_key": "path:/tmp/worktree",
+            "project_instance_id": "session:late",
+            "session_id": "session",
+        }
+
+        with (
+            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch.object(jb_inspect, "pid_alive", return_value=False),
+            patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([delayed_route], {"session"})),
+            patch.object(
+                jb_inspect,
+                "private_http_get_body",
+                return_value={"status": "claimed", "lease_id": "pending-lease", "route": delayed_route},
+            ),
+            patch.object(Path, "unlink") as unlink,
+        ):
+            result = jb_inspect.cleanup_stale_helper_leases(
+                Namespace(max_age_ms=86_400_000, dry_run=False)
+            )
+
+        unlink.assert_not_called()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["unresolved"][0]["reason"], "ownership_unresolved")
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+
+    def test_cleanup_command_retains_leases_when_route_discovery_fails(self):
+        path = Path("/tmp/pending-lease.json")
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "project_instance_id": "session:1",
+            "session_id": "session",
+            "pid": 999_999,
+            "updated_at_ms": jb_inspect.now_ms(),
+        }
+
+        with (
+            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch.object(jb_inspect, "pid_alive", return_value=False),
+            patch.object(
+                jb_inspect,
+                "discover_routes_for_cleanup",
+                side_effect=jb_inspect.InspectError("registry unavailable", 3),
+            ),
+            patch.object(Path, "unlink") as unlink,
+        ):
+            result = jb_inspect.cleanup_stale_helper_leases(
+                Namespace(max_age_ms=86_400_000, dry_run=False)
+            )
+
+        unlink.assert_not_called()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["failed"][0]["reason"], "route_discovery_failed")
+
+    def test_cleanup_discovery_adds_identity_session_to_project_routes(self):
+        identity = {
+            "port": 63342,
+            "session_id": "session",
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+            "open_projects": [
+                {
+                    "base_path": "/tmp/worktree",
+                    "project_instance_id": "session:1",
+                }
+            ],
+        }
+
+        with patch.object(jb_inspect, "discover_identities", return_value=[identity]):
+            routes, sessions = jb_inspect.discover_routes_for_cleanup(Namespace(port=None))
+
+        self.assertEqual(sessions, {"session"})
+        self.assertEqual(routes[0]["session_id"], "session")
+        self.assertEqual(
+            routes[0]["ide"]["lifecycle_ownership_protocol"],
+            jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+        )
+
+    def test_cleanup_leases_uses_lifecycle_lock(self):
+        events = []
+
+        class FakeLock:
+            def __enter__(self):
+                events.append("enter")
+
+            def __exit__(self, exc_type, exc, traceback):
+                events.append("exit")
+
+        with (
+            patch.object(
+                jb_inspect,
+                "lifecycle_lock",
+                side_effect=lambda timeout_ms: events.append(("timeout", timeout_ms)) or FakeLock(),
+            ),
+            patch.object(jb_inspect, "cleanup_stale_helper_leases", return_value={"status": "ok", "removed": []}),
+        ):
+            result = jb_inspect.command_cleanup_leases(
+                Namespace(max_age_ms=1, dry_run=True, lifecycle_lock_timeout_ms=1234)
+            )
+
+        self.assertEqual(result, {"status": "ok", "removed": []})
+        self.assertEqual(events, [("timeout", 1234), "enter", "exit"])
 
     def test_lifecycle_close_preserves_failed_close_attempt_diagnostics(self):
         original_private = jb_inspect.private_http_get_body
@@ -779,11 +1712,14 @@ class LifecycleTest(unittest.TestCase):
         original_cleanup = jb_inspect.cleanup_stale_helper_lease
         jb_inspect.read_local_leases = lambda: [(path, lease.copy())]
         jb_inspect.pid_alive = lambda pid: False
-        jb_inspect.discover_routes_for_cleanup = lambda args: [{"port": 1, "base_path": "/tmp/worktree", "project_instance_id": "session:1"}]
-        jb_inspect.cleanup_stale_helper_lease = lambda cleanup_lease, routes: {"status": "failed", "reason": "close_failed", "lease_id": cleanup_lease["lease_id"]}
+        jb_inspect.discover_routes_for_cleanup = lambda args: (
+            [{"port": 1, "base_path": "/tmp/worktree", "project_instance_id": "session:1", "session_id": "session"}],
+            {"session"},
+        )
+        jb_inspect.cleanup_stale_helper_lease = lambda cleanup_lease, routes, observed_sessions=None: {"status": "failed", "reason": "close_failed", "lease_id": cleanup_lease["lease_id"]}
         try:
             with patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))):
-                result = jb_inspect.command_cleanup_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
+                result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86_400_000, dry_run=False))
         finally:
             jb_inspect.read_local_leases = original_read
             jb_inspect.pid_alive = original_pid_alive
@@ -1307,29 +2243,143 @@ class LifecycleTest(unittest.TestCase):
         calls = []
         original_discover = jb_inspect.discover_identities
         original_http_get = jb_inspect.http_get
-        jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "IntelliJ IDEA", "session_id": "s1"}]
+        jb_inspect.discover_identities = lambda port: [
+            {
+                "port": 63341,
+                "ide_name": "IntelliJ IDEA",
+                "session_id": "s1",
+                "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+            }
+        ]
 
         def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
             calls.append((port, endpoint, params))
-            return jb_inspect.HttpResult(200, {"status": "opened"}, "url")
+            return jb_inspect.HttpResult(
+                200,
+                {
+                    "status": "opening",
+                    "opening_scheduled": True,
+                    "opened": False,
+                    "session_id": "s1",
+                    "ownership_registered": True,
+                    "lease_id": "lease-1",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                },
+                "url",
+            )
 
         jb_inspect.http_get = fake_http_get
         attempts = []
         try:
-            result = jb_inspect.open_via_running_ide(
-                Namespace(port=None),
-                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
-                attempts,
-            )
+            with patch.object(jb_inspect, "persist_open_request_identity"):
+                result = jb_inspect.open_via_running_ide(
+                    Namespace(port=None),
+                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                    attempts,
+                    lease={"lease_id": "lease-1"},
+                )
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.http_get = original_http_get
 
-        self.assertTrue(result)
+        self.assertTrue(result["ownership_registered"])
+        self.assertEqual(result["open_outcome"], "helper_registered")
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/worktree")
         self.assertEqual(calls[0][2]["session_id"], "s1")
-        self.assertEqual(attempts[0]["endpoint_status"], "opened")
+        self.assertEqual(calls[0][2]["lease_id"], "lease-1")
+        self.assertEqual(attempts[0]["endpoint_status"], "opening")
+
+    def test_open_via_running_ide_persists_identity_before_http_request(self):
+        identity = {
+            "port": 63341,
+            "ide_name": "IntelliJ IDEA",
+            "session_id": "s1",
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+        }
+        response = {
+            "status": "opening",
+            "opening_scheduled": True,
+            "session_id": "s1",
+            "ownership_registered": True,
+            "lease_id": "lease-1",
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+        }
+        events = []
+        lease = {"lease_id": "lease-1", "state": "open_requesting"}
+
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch.object(
+                jb_inspect,
+                "persist_open_request_identity",
+                side_effect=lambda *args: events.append("persist"),
+            ),
+            patch.object(
+                jb_inspect,
+                "http_get",
+                side_effect=lambda port, endpoint, params, timeout: events.append(("http", params["lease_id"]))
+                or jb_inspect.HttpResult(200, response, "url"),
+            ),
+        ):
+            result = jb_inspect.open_via_running_ide(
+                Namespace(port=None),
+                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
+                lease=lease,
+            )
+
+        self.assertEqual(events, ["persist", ("http", "lease-1")])
+        self.assertTrue(result["ownership_registered"])
+
+    def test_lifecycle_claim_ownership_ignores_legacy_close_token(self):
+        claim = {"status": "claimed", "lease_id": "lease-1", "close_token": "legacy-proof"}
+
+        ownership_proven, close_proof = jb_inspect.lifecycle_claim_ownership(
+            claim,
+            {"lease_id": "lease-1"},
+        )
+
+        self.assertIsNone(ownership_proven)
+        self.assertIsNone(close_proof)
+        self.assertNotIn("close_token", claim)
+
+    def test_open_via_running_ide_does_not_claim_already_open_or_opening(self):
+        original_discover = jb_inspect.discover_identities
+        original_http_get = jb_inspect.http_get
+        jb_inspect.discover_identities = lambda port: [
+            {"port": 63341, "ide_name": "IntelliJ IDEA", "session_id": "s1"}
+        ]
+        responses = (
+            ({"status": "already_open", "opened": False, "session_id": "s1"}, "already_open"),
+            (
+                {
+                    "status": "opening",
+                    "opened": False,
+                    "opening_scheduled": False,
+                    "reason": "already_opening",
+                    "session_id": "s1",
+                },
+                "already_opening",
+            ),
+        )
+        try:
+            for body, outcome in responses:
+                with self.subTest(outcome=outcome):
+                    jb_inspect.http_get = lambda *args, response_body=body, **kwargs: jb_inspect.HttpResult(
+                        200,
+                        response_body,
+                        "url",
+                    )
+                    result = jb_inspect.open_via_running_ide(
+                        Namespace(port=None),
+                        {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
+                    )
+
+                    self.assertEqual(result["open_outcome"], outcome)
+                    self.assertFalse(result["ownership_registered"])
+        finally:
+            jb_inspect.discover_identities = original_discover
+            jb_inspect.http_get = original_http_get
 
     def test_identity_matches_exact_eap_version_from_identity_metadata(self):
         context = {
@@ -1377,28 +2427,49 @@ class LifecycleTest(unittest.TestCase):
         calls = []
         original_discover = jb_inspect.discover_identities
         original_http_get = jb_inspect.http_get
-        jb_inspect.discover_identities = lambda port: [{"port": 63341, "ide_name": "IntelliJ IDEA", "session_id": "s1"}]
+        jb_inspect.discover_identities = lambda port: [
+            {
+                "port": 63341,
+                "ide_name": "IntelliJ IDEA",
+                "session_id": "s1",
+                "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+            }
+        ]
 
         def fake_http_get(port, endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
             calls.append((port, endpoint, params))
-            return jb_inspect.HttpResult(200, {"status": "opened"}, "url")
+            return jb_inspect.HttpResult(
+                200,
+                {
+                    "status": "opening",
+                    "opening_scheduled": True,
+                    "opened": False,
+                    "session_id": "s1",
+                    "ownership_registered": True,
+                    "lease_id": "lease-1",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                },
+                "url",
+            )
 
         jb_inspect.http_get = fake_http_get
         try:
-            result = jb_inspect.open_via_running_ide(
-                Namespace(port=None),
-                {
-                    "ide": "IntelliJ IDEA",
-                    "worktree_root": "/tmp/harness-parent",
-                    "project_path": "/tmp/harness-parent/workspace/project",
-                    "lifecycle_target_path": "/tmp/harness-parent/workspace/project",
-                },
-            )
+            with patch.object(jb_inspect, "persist_open_request_identity"):
+                result = jb_inspect.open_via_running_ide(
+                    Namespace(port=None),
+                    {
+                        "ide": "IntelliJ IDEA",
+                        "worktree_root": "/tmp/harness-parent",
+                        "project_path": "/tmp/harness-parent/workspace/project",
+                        "lifecycle_target_path": "/tmp/harness-parent/workspace/project",
+                    },
+                    lease={"lease_id": "lease-1"},
+                )
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.http_get = original_http_get
 
-        self.assertTrue(result)
+        self.assertTrue(result["ownership_registered"])
         self.assertEqual(calls[0][1], "lifecycle/open")
         self.assertEqual(calls[0][2]["worktree_path"], "/tmp/harness-parent/workspace/project")
 
@@ -1906,7 +2977,14 @@ class LifecycleTest(unittest.TestCase):
         original_running = jb_inspect.open_via_running_ide
         original_bootstrap = jb_inspect.bootstrap_ide_app
         original_wait = jb_inspect.wait_for_matching_ide_identity
-        jb_inspect.open_via_running_ide = lambda args, context, attempts=None, method="running_ide": calls.append(("running", method)) or (attempts.append({"method": method, "accepted": True}) if attempts is not None else None) or True
+        def fake_running(args, context, attempts=None, method="running_ide", lease=None):
+            calls.append(("running", method))
+            attempt = {"method": method, "accepted": True, "ownership_registered": True}
+            if attempts is not None:
+                attempts.append(attempt)
+            return attempt
+
+        jb_inspect.open_via_running_ide = fake_running
         jb_inspect.bootstrap_ide_app = lambda *args, **kwargs: calls.append("bootstrap")
         jb_inspect.wait_for_matching_ide_identity = lambda *args, **kwargs: calls.append("wait")
         try:
@@ -1917,8 +2995,28 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.wait_for_matching_ide_identity = original_wait
 
         self.assertEqual(result[0], "running_ide")
-        self.assertEqual(result[1], [{"method": "running_ide", "accepted": True}])
+        self.assertEqual(result[1], [{"method": "running_ide", "accepted": True, "ownership_registered": True}])
+        self.assertTrue(result[2])
         self.assertEqual(calls, [("running", "running_ide")])
+
+    def test_open_project_for_lifecycle_treats_already_open_as_preexisting(self):
+        attempt = {
+            "method": "running_ide",
+            "accepted": True,
+            "ownership_registered": False,
+            "open_outcome": "already_open",
+        }
+        with (
+            patch.object(jb_inspect, "open_via_running_ide", return_value=attempt),
+            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+        ):
+            result = jb_inspect.open_project_for_lifecycle(
+                Namespace(port=None, background_open=True),
+                {"ide": "IntelliJ IDEA"},
+            )
+
+        bootstrap.assert_not_called()
+        self.assertEqual(result, ("preexisting", [], False))
 
     def test_open_via_running_ide_returns_false_for_unavailable_explicit_port(self):
         original_discover = jb_inspect.discover_open_identities
@@ -1935,7 +3033,7 @@ class LifecycleTest(unittest.TestCase):
         finally:
             jb_inspect.discover_open_identities = original_discover
 
-        self.assertFalse(result)
+        self.assertIsNone(result)
 
     def test_open_via_running_ide_reraises_explicit_port_identity_mismatch(self):
         original_discover = jb_inspect.discover_open_identities
@@ -1967,12 +3065,13 @@ class LifecycleTest(unittest.TestCase):
         original_now = jb_inspect.now_ms
         original_sleep = jb_inspect.time.sleep
 
-        def fake_running(args, context, attempts=None, method="running_ide"):
+        def fake_running(args, context, attempts=None, method="running_ide", lease=None):
             calls.append(("running", method))
             accepted = len([call for call in calls if call[0] == "running"]) == 2
+            attempt = {"method": method, "accepted": accepted, "ownership_registered": accepted}
             if attempts is not None:
-                attempts.append({"method": method, "accepted": accepted})
-            return accepted
+                attempts.append(attempt)
+            return attempt if accepted else None
 
         jb_inspect.open_via_running_ide = fake_running
         jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background)) or {"method": "bootstrap_ide", "accepted": True}
@@ -1989,6 +3088,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result[0], "bootstrapped_ide")
+        self.assertTrue(result[2])
         self.assertEqual([attempt["method"] for attempt in result[1]], ["running_ide", "bootstrap_ide", "bootstrapped_ide"])
         self.assertEqual(calls, [("running", "running_ide"), ("bootstrap", True), ("wait", 1234), ("running", "bootstrapped_ide")])
 
@@ -2001,12 +3101,13 @@ class LifecycleTest(unittest.TestCase):
         original_sleep = jb_inspect.time.sleep
         ticks = iter([0, 0, 100, 200, 300])
 
-        def fake_running(args, context, attempts=None, method="running_ide"):
+        def fake_running(args, context, attempts=None, method="running_ide", lease=None):
             calls.append(("running", method))
             accepted = len([call for call in calls if call[0] == "running"]) == 4
+            attempt = {"method": method, "accepted": accepted, "ownership_registered": accepted}
             if attempts is not None:
-                attempts.append({"method": method, "accepted": accepted})
-            return accepted
+                attempts.append(attempt)
+            return attempt if accepted else None
 
         jb_inspect.open_via_running_ide = fake_running
         jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background)) or {"method": "bootstrap_ide", "accepted": True}
@@ -2023,6 +3124,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result[0], "bootstrapped_ide")
+        self.assertTrue(result[2])
         self.assertEqual([attempt["accepted"] for attempt in result[1]], [False, True, False, False, True])
         self.assertEqual(
             calls,
@@ -2045,7 +3147,7 @@ class LifecycleTest(unittest.TestCase):
         original_now = jb_inspect.now_ms
         original_sleep = jb_inspect.time.sleep
         ticks = iter([0, 0, 500, 1500])
-        jb_inspect.open_via_running_ide = lambda args, context, attempts=None, method="running_ide": (attempts.append({"method": method, "accepted": False}) if attempts is not None else None) or False
+        jb_inspect.open_via_running_ide = lambda args, context, attempts=None, method="running_ide", lease=None: (attempts.append({"method": method, "accepted": False}) if attempts is not None else None)
         jb_inspect.bootstrap_ide_app = lambda context, background=True: {"method": "bootstrap_ide", "accepted": True}
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: {"port": 63342}
         jb_inspect.now_ms = lambda: next(ticks)
@@ -2107,44 +3209,35 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(payload["blocked_diagnostic"]["selected_trusted_root"], str(Path("/tmp").resolve()))
         self.assertEqual(payload["route_diagnostic"]["reason"], "target_ide_running_without_target_project")
 
-    def test_wait_for_exact_route_falls_back_to_app_open_after_blocked_lifecycle_open(self):
+    def test_wait_for_exact_route_after_registered_open_does_not_launch_app_fallback(self):
         original_find = jb_inspect.find_exact_route
         original_sleep = jb_inspect.time.sleep
-        original_open = jb_inspect.open_in_ide
         original_diagnostic = jb_inspect.discover_diagnostic_identities
-        original_platform = jb_inspect.sys.platform
         calls = []
-        route = {"base_path": "/tmp/repo", "project_name": "repo"}
 
         def fake_find(args, context):
             calls.append("find")
-            return route if "fallback" in calls else None
-
-        def fake_open(context, background=False, method="app_open"):
-            calls.append("fallback")
-            return {"method": method, "accepted": True, "target_worktree": context["worktree_root"]}
+            return None
 
         jb_inspect.find_exact_route = fake_find
         jb_inspect.time.sleep = lambda seconds: None
-        jb_inspect.open_in_ide = fake_open
         jb_inspect.discover_diagnostic_identities = lambda port: []
-        jb_inspect.sys.platform = "darwin"
+        open_attempts = [{"method": "running_ide", "accepted": True, "ownership_registered": True}]
         try:
-            result = jb_inspect.wait_for_exact_route_with_fallback(
-                Namespace(port=None, background_open=True),
-                {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
-                1,
-                [{"method": "running_ide", "accepted": True}],
-            )
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_for_exact_route_after_open(
+                    Namespace(port=None, background_open=True),
+                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    1,
+                    open_attempts,
+                )
         finally:
             jb_inspect.find_exact_route = original_find
             jb_inspect.time.sleep = original_sleep
-            jb_inspect.open_in_ide = original_open
             jb_inspect.discover_diagnostic_identities = original_diagnostic
-            jb_inspect.sys.platform = original_platform
 
-        self.assertEqual(result, route)
-        self.assertIn("fallback", calls)
+        self.assertNotIn("fallback", calls)
+        self.assertEqual(raised.exception.payload["open_attempts"], open_attempts)
 
     def test_wait_until_route_ready_requires_consecutive_ready_statuses(self):
         statuses = iter([
