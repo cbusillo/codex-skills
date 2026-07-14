@@ -1027,11 +1027,7 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
             raise
         return recover_inspection_transport_timeout(args, context, active_route, error, trigger)
     wait_run_id = inspection_run_id(wait)
-    if wait.get("status") == "run_changed" or (
-        accepted_run_id is not None
-        and wait_run_id is not None
-        and wait_run_id != accepted_run_id
-    ):
+    if accepted_run_id is not None and wait_result_run_changed(wait, accepted_run_id):
         return inspection_run_changed_result(active_route, trigger, wait)
     cancellation = cancel_timed_out_inspection(
         args,
@@ -1090,6 +1086,27 @@ def inspection_result_run_changed(payload: dict[str, Any], expected_run_id: int)
     return current_run_id != expected_run_id or (
         snapshot_run_id is not None and snapshot_run_id != expected_run_id
     )
+
+
+def wait_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
+    if payload.get("status") == "run_changed":
+        return True
+    if inspection_run_id(payload) != expected_run_id:
+        return True
+    if payload.get("inspection_in_progress") is True:
+        return False
+    snapshot_backed = (
+        "snapshot_run_id" in payload
+        or payload.get("has_inspection_results") is True
+        or payload.get("clean_inspection") is True
+        or payload.get("capture_incomplete") is True
+        or payload.get("results_may_be_stale") is True
+        or payload.get("inspection_triggered") is True
+        or payload.get("wait_completed") is True
+    )
+    if not snapshot_backed:
+        return False
+    return positive_run_id(payload.get("snapshot_run_id")) != expected_run_id
 
 
 def positive_run_id(value: Any) -> int | None:

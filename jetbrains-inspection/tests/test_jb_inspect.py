@@ -2061,6 +2061,39 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["verdict_reason"], "run_changed")
         self.assertTrue(jb_inspect.should_defer_lifecycle_cleanup(result, {"opened_by_helper": True}))
 
+    def test_wait_rejects_snapshot_from_an_older_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            if endpoint == "trigger":
+                return {"status": "triggered", "run_id": 7, "route": route}
+            if endpoint == "wait":
+                return {
+                    "status": "clean",
+                    "wait_completed": True,
+                    "inspection_in_progress": False,
+                    "inspection_run_id": 7,
+                    "snapshot_run_id": 6,
+                    "clean_inspection": True,
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(timeout_ms=1000, poll_ms=1),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+            )
+
+        self.assertEqual([endpoint for endpoint, _ in calls], ["trigger", "wait"])
+        self.assertEqual(result["status"], "run_changed")
+        self.assertEqual(result["expected_inspection_run_id"], 7)
+        self.assertEqual(result["inspection_run_id"], 7)
+        self.assertEqual(result["wait"]["snapshot_run_id"], 6)
+        self.assertTrue(result["transport_state_unknown"])
+
     def test_completed_replacement_run_is_not_reported_as_the_accepted_run(self):
         route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
         calls = []
@@ -2075,6 +2108,7 @@ class LifecycleTest(unittest.TestCase):
                     "wait_completed": True,
                     "inspection_in_progress": False,
                     "inspection_run_id": 7,
+                    "snapshot_run_id": 7,
                 }
             if endpoint == "problems":
                 return {
