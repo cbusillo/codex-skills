@@ -19,14 +19,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
+os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
+os.environ.setdefault("JB_INSPECT_OUTCOME_LOG", "0")
+os.environ.setdefault("JB_INSPECT_UNKNOWN_LOG", "0")
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
 SPEC = importlib.util.spec_from_file_location("jb_inspect", SCRIPT_PATH)
 jb_inspect = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
-os.environ.setdefault(jb_inspect.OUTCOME_LOG_ENV, "0")
-os.environ.setdefault(jb_inspect.UNKNOWN_LOG_ENV, "0")
 
 
 def write_json(path: Path, payload: dict) -> None:
