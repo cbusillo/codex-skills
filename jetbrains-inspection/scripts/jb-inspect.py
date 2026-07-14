@@ -53,6 +53,19 @@ UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status"
 UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
+LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
+RECOVERABLE_HELPER_LEASE_STATES = frozenset(
+    {
+        "route_resolved",
+        "ownership_claimed",
+        "prepared",
+        "kept_warm_after_indexing_timeout",
+        "cleanup_pending",
+        "cleanup_failed",
+        "cleanup_skipped",
+    }
+)
+POTENTIAL_OPEN_LEASE_STATES = frozenset({"open_requesting", "open_registered", "cleanup_pending"})
 PREFERRED_COMMANDS = {
     "list": "list-projects",
     "route": "resolve-route",
@@ -395,6 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
     subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
     subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
+    subparsers.choices["cleanup-helper-leases"].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["summarize-outcomes"].add_argument("--log", dest="log_path", help="Outcome JSONL log path. Defaults to JB_INSPECT_OUTCOME_LOG or the standard Code log path.")
     subparsers.choices["summarize-outcomes"].add_argument("--limit", type=int, default=10, help="Maximum number of recent events to include.")
     subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
@@ -964,61 +978,331 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
 
 def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     lease = create_local_lease(context, state="preparing")
-    exact_route = find_exact_route(args, context)
+    exact_route: dict[str, Any] | None = None
+    validated_route: dict[str, Any] | None = None
     opened_by_helper = False
-    reclaimed_lease: dict[str, Any] | None = None
+    open_method: str | None = None
     open_attempts: list[dict[str, Any]] = []
-    if exact_route is None:
-        if not getattr(args, "open", False):
-            raise InspectError(
-                "Exact worktree is not open in a JetBrains IDE.",
-                3,
-                {"context": public_context(context), "lease": public_lease(lease)},
+    close_proof: str | None = None
+    preparation_stage = "route_discovery"
+    try:
+        exact_route = find_exact_route(args, context)
+        if exact_route is None:
+            if not getattr(args, "open", False):
+                raise InspectError(
+                    "Exact worktree is not open in a JetBrains IDE.",
+                    3,
+                    {"context": public_context(context), "lease": public_lease(lease)},
+                )
+            preparation_stage = "open_policy"
+            ensure_trusted_auto_open_root(context)
+            ensure_jetbrains_trusted_locations(context)
+            preparation_stage = "project_open"
+            persist_preparation_lease(
+                lease,
+                state="open_requesting",
+                stage="project_open",
+                opened_by_helper=False,
+                open_method=None,
+                open_attempts=open_attempts,
             )
-        ensure_trusted_auto_open_root(context)
-        ensure_jetbrains_trusted_locations(context)
-        open_method, open_attempts = open_project_for_lifecycle(args, context)
-        opened_by_helper = True
-        exact_route = wait_for_exact_route_with_fallback(args, context, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS), open_attempts)
-        if any(attempt.get("method") == "fallback_app_open" and attempt.get("accepted") for attempt in open_attempts):
-            open_method = "fallback_app_open"
-    else:
-        open_method = "preexisting"
-        reclaimed_lease = matching_deferred_lease(context, exact_route)
-        if reclaimed_lease is not None:
-            remove_lease(lease)
-            lease = reclaimed_lease
-            opened_by_helper = True
-            open_method = "reclaimed_deferred"
-    ensure_exact_worktree(exact_route, context, args)
-    wait_until_route_ready(args, context, exact_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
-    claim_metadata, close_proof = claim_lifecycle(args, context, exact_route, lease)
-    lease.update(
-        {
-            "state": "prepared",
+            open_method, open_attempts, opened_by_helper = open_project_for_lifecycle(args, context, lease)
+            persist_preparation_lease(
+                lease,
+                state="open_registered" if opened_by_helper else "open_observed",
+                stage="route_wait",
+                opened_by_helper=opened_by_helper,
+                open_method=open_method,
+                open_attempts=open_attempts,
+            )
+            preparation_stage = "route_wait"
+            exact_route = wait_for_exact_route_after_open(
+                args,
+                context,
+                getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS),
+                open_attempts,
+            )
+        else:
+            open_method = "preexisting"
+            reclaimed_lease = matching_deferred_lease(context, exact_route)
+            if reclaimed_lease is not None:
+                remove_lease(lease)
+                lease = reclaimed_lease
+                opened_by_helper = True
+                open_method = "reclaimed_deferred"
+
+        preparation_stage = "route_validation"
+        ensure_exact_worktree(exact_route, context, args)
+        ensure_helper_open_route_identity(lease, exact_route)
+        validated_route = exact_route
+        persist_preparation_lease(
+            lease,
+            state="route_resolved",
+            stage="lifecycle_claim",
+            opened_by_helper=opened_by_helper,
+            open_method=open_method,
+            open_attempts=open_attempts,
+            route=validated_route,
+        )
+        preparation_stage = "lifecycle_claim"
+        claim_metadata, close_proof, opened_by_helper, validated_route = claim_lifecycle(
+            args,
+            context,
+            validated_route,
+            lease,
+        )
+        persist_preparation_lease(
+            lease,
+            state="ownership_claimed" if opened_by_helper else "ownership_not_proven",
+            stage="readiness_wait",
+            opened_by_helper=opened_by_helper,
+            open_method=open_method,
+            open_attempts=open_attempts,
+            route=validated_route,
+            claim_metadata=claim_metadata,
+        )
+        preparation_stage = "readiness_wait"
+        wait_until_route_ready(args, context, validated_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+        persist_preparation_lease(
+            lease,
+            state="prepared",
+            stage="prepared",
+            opened_by_helper=opened_by_helper,
+            open_method=open_method,
+            open_attempts=open_attempts,
+            route=validated_route,
+            claim_metadata=claim_metadata,
+            prepared_at_ms=now_ms(),
+        )
+        prepared = {
+            "status": "prepared",
+            "context": public_context(context),
+            "route": validated_route,
+            "lease": public_lease(lease),
             "opened_by_helper": opened_by_helper,
             "open_method": open_method,
-            "route": exact_route,
-            "plugin_claim": claim_metadata,
-            "project_instance_id": exact_route.get("project_instance_id"),
-            "project_key": exact_route.get("project_key"),
-            "session_id": exact_route.get("session_id"),
-            "prepared_at_ms": now_ms(),
             "open_attempts": open_attempts,
+            "claim": claim_metadata,
         }
-    )
-    write_lease(lease)
-    prepared = {
-        "status": "prepared",
-        "context": public_context(context),
-        "route": exact_route,
-        "lease": public_lease(lease),
+        return prepared, lease, close_proof
+    except BaseException as error:
+        cleanup = cleanup_failed_preparation(
+            lease=lease,
+            route=validated_route,
+            close_proof=close_proof,
+            error=error,
+            stage=preparation_stage,
+        )
+        if isinstance(error, InspectError):
+            error.payload.setdefault("preparation_stage", preparation_stage)
+            cleanup_payload = public_payload(cleanup)
+            lease_payload = public_lease(lease)
+            error.payload.setdefault("cleanup", cleanup_payload)
+            error.payload.setdefault("lease", lease_payload)
+            error.payload["preparation_cleanup"] = cleanup_payload
+            error.payload["preparation_lease"] = lease_payload
+        raise
+
+
+def persist_preparation_lease(
+    lease: dict[str, Any],
+    state: str,
+    stage: str,
+    opened_by_helper: bool,
+    open_method: str | None,
+    open_attempts: list[dict[str, Any]],
+    route: dict[str, Any] | None = None,
+    claim_metadata: dict[str, Any] | None = None,
+    prepared_at_ms: int | None = None,
+) -> None:
+    updates: dict[str, Any] = {
         "opened_by_helper": opened_by_helper,
         "open_method": open_method,
         "open_attempts": open_attempts,
-        "claim": claim_metadata,
+        "preparation_stage": stage,
+        "pid": os.getpid(),
     }
-    return prepared, lease, close_proof
+    if route is not None:
+        updates.update(
+            {
+                "route": route,
+                "project_instance_id": route.get("project_instance_id"),
+                "project_key": route.get("project_key"),
+                "session_id": route.get("session_id"),
+            }
+        )
+    else:
+        updates.update(accepted_open_identity(open_attempts))
+    if claim_metadata is not None:
+        updates["plugin_claim"] = claim_metadata
+    if prepared_at_ms is not None:
+        updates["prepared_at_ms"] = prepared_at_ms
+    lease.update({key: value for key, value in updates.items() if value is not None})
+    mark_lease_state(lease, state)
+
+
+def accepted_open_identity(open_attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    for attempt in reversed(open_attempts):
+        if not attempt.get("ownership_registered"):
+            continue
+        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        session_id = identity.get("session_id") or attempt.get("session_id")
+        port = identity.get("port")
+        return {
+            "session_id": session_id,
+            "ide_port": port,
+        }
+    return {}
+
+
+def ensure_helper_open_route_identity(lease: dict[str, Any], route: dict[str, Any]) -> None:
+    if not lease.get("opened_by_helper"):
+        return
+    expected_session_id = lease.get("session_id")
+    actual_session_id = route.get("session_id")
+    expected_port = lease.get("ide_port")
+    actual_port = route.get("port") or (route.get("ide") or {}).get("port")
+    if not expected_session_id or not actual_session_id or expected_session_id != actual_session_id:
+        raise InspectError(
+            "Lifecycle open resolved in a different or unverified IDE session.",
+            3,
+            {
+                "error_reason": "session_drift",
+                "session_drift": True,
+                "expected_session_id": expected_session_id,
+                "actual_session_id": actual_session_id,
+            },
+        )
+    if expected_port and actual_port and int(expected_port) != int(actual_port):
+        raise InspectError(
+            "Lifecycle open resolved on a different IDE port.",
+            3,
+            {
+                "error_reason": "session_drift",
+                "session_drift": True,
+                "expected_port": int(expected_port),
+                "actual_port": int(actual_port),
+            },
+        )
+
+
+def cleanup_failed_preparation(
+    lease: dict[str, Any],
+    route: dict[str, Any] | None,
+    close_proof: str | None,
+    error: BaseException,
+    stage: str,
+) -> dict[str, Any]:
+    if not lease.get("opened_by_helper") and lease.get("state") not in POTENTIAL_OPEN_LEASE_STATES:
+        try:
+            return cleanup_lifecycle(lease, route or {}, None)
+        except BaseException as cleanup_error:
+            return {
+                "status": "failed",
+                "cleanup_failed": True,
+                "reason": "preexisting_lease_release_failed",
+                "message": str(cleanup_error),
+            }
+
+    proof = close_proof
+    ownership_proven: bool | None = True if proof is not None else None
+    reclaim_error: BaseException | None = None
+    if proof is None and route is not None and route.get("project_instance_id"):
+        try:
+            ownership_proven, proof, claim_metadata, route = reclaim_lifecycle_claim(lease, route)
+            if ownership_proven is True:
+                persist_claimed_cleanup_ownership(lease, route, claim_metadata)
+            elif ownership_proven is False:
+                lease["opened_by_helper"] = False
+                return cleanup_lifecycle(lease, route, None)
+        except BaseException as error_reclaiming_proof:
+            proof = None
+            reclaim_error = error_reclaiming_proof
+    if ownership_proven is True and proof is not None and route is not None:
+        try:
+            cleanup = cleanup_lifecycle(lease, route, proof)
+            if cleanup.get("status") == "closed":
+                return cleanup
+            return defer_failed_preparation_cleanup(
+                lease,
+                route,
+                error,
+                stage,
+                cleanup_result=cleanup,
+            )
+        except BaseException as cleanup_error:
+            return defer_failed_preparation_cleanup(lease, route, error, stage, cleanup_error)
+    return defer_failed_preparation_cleanup(lease, route, error, stage, reclaim_error)
+
+
+def persist_claimed_cleanup_ownership(
+    lease: dict[str, Any],
+    route: dict[str, Any],
+    claim_metadata: dict[str, Any],
+) -> None:
+    lease.update(
+        {
+            "opened_by_helper": True,
+            "route": route,
+            "project_instance_id": route.get("project_instance_id"),
+            "project_key": route.get("project_key"),
+            "session_id": route.get("session_id"),
+            "plugin_claim": claim_metadata,
+            "preparation_stage": "cleanup_pending",
+        }
+    )
+    mark_lease_state(lease, "cleanup_pending")
+
+
+def defer_failed_preparation_cleanup(
+    lease: dict[str, Any],
+    route: dict[str, Any] | None,
+    error: BaseException,
+    stage: str,
+    cleanup_error: BaseException | None = None,
+    cleanup_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    failure_reason = infer_error_reason(error, error.payload) if isinstance(error, InspectError) else normalize_reason(error.__class__.__name__)
+    updates: dict[str, Any] = {
+        "preparation_failure_stage": stage,
+        "preparation_failure_reason": failure_reason,
+        "cleanup_next_action": "Run cleanup-helper-leases after the exact IDE route is available or the helper process exits.",
+    }
+    if route is not None:
+        updates.update(
+            {
+                "route": route,
+                "project_instance_id": route.get("project_instance_id"),
+                "project_key": route.get("project_key"),
+                "session_id": route.get("session_id"),
+            }
+        )
+    if cleanup_error is not None:
+        updates["cleanup_error"] = cleanup_error.__class__.__name__
+    if cleanup_result is not None:
+        updates["cleanup_result"] = public_payload(cleanup_result)
+    lease.update({key: value for key, value in updates.items() if value is not None})
+    state_write_error: BaseException | None = None
+    try:
+        mark_lease_state(lease, "cleanup_pending")
+    except BaseException as error_writing_state:
+        lease["state"] = "cleanup_pending"
+        state_write_error = error_writing_state
+    result = {
+        "status": "failed" if state_write_error is not None else "deferred",
+        "cleanup_deferred": state_write_error is None,
+        "cleanup_failed": state_write_error is not None,
+        "reason": "preparation_cleanup_state_write_failed" if state_write_error is not None else "preparation_cleanup_pending",
+        "lease_state": "cleanup_pending",
+        "next_action": lease["cleanup_next_action"],
+    }
+    if cleanup_error is not None:
+        result["cleanup_error"] = cleanup_error.__class__.__name__
+    if cleanup_result is not None:
+        result["close_result"] = public_payload(cleanup_result)
+    if state_write_error is not None:
+        result["state_write_error"] = state_write_error.__class__.__name__
+    return result
 
 
 def find_exact_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
@@ -1049,7 +1333,7 @@ def wait_for_exact_route(args: argparse.Namespace, context: dict[str, Any], time
     raise InspectError("Timed out waiting for JetBrains IDE to open the exact worktree.", 3, payload)
 
 
-def wait_for_exact_route_with_fallback(
+def wait_for_exact_route_after_open(
     args: argparse.Namespace,
     context: dict[str, Any],
     timeout_ms: int,
@@ -1058,20 +1342,8 @@ def wait_for_exact_route_with_fallback(
     try:
         return wait_for_exact_route(args, context, timeout_ms)
     except InspectError as error:
-        reason = infer_error_reason(error, error.payload)
-        if reason != "project_open_blocked" or sys.platform != "darwin":
-            raise
-        if not any(attempt.get("accepted") for attempt in open_attempts):
-            raise
-        fallback_attempt = open_in_ide(context, background=getattr(args, "background_open", False), method="fallback_app_open")
-        open_attempts.append(fallback_attempt)
-        fallback_timeout_ms = max(30_000, min(timeout_ms, 120_000))
-        try:
-            return wait_for_exact_route(args, context, fallback_timeout_ms)
-        except InspectError as fallback_error:
-            fallback_error.payload["open_attempts"] = open_attempts
-            fallback_error.payload["fallback_timeout_ms"] = fallback_timeout_ms
-            raise
+        error.payload["open_attempts"] = open_attempts
+        raise
 
 
 def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
@@ -1222,6 +1494,7 @@ def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
         "ide_version": identity.get("ide_version") or identity.get("version"),
         "plugin_version": identity.get("plugin_version"),
         "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
+        "lifecycle_ownership_protocol": identity.get("lifecycle_ownership_protocol"),
         "session_id": identity.get("session_id"),
         "port": identity.get("port"),
         "pid": identity.get("pid"),
@@ -1319,6 +1592,9 @@ def open_attempt_payload(
         payload["opening_scheduled"] = response.get("opening_scheduled")
         payload["opened"] = response.get("opened")
         payload["session_id"] = response.get("session_id")
+        payload["lease_id"] = response.get("lease_id")
+        payload["ownership_registered"] = response.get("ownership_registered")
+        payload["lifecycle_ownership_protocol"] = response.get("lifecycle_ownership_protocol")
     if error:
         payload["error_reason"] = infer_error_reason(error, error.payload)
         payload["message"] = str(error)
@@ -1330,13 +1606,14 @@ def open_via_running_ide(
     context: dict[str, Any],
     attempts: list[dict[str, Any]] | None = None,
     method: str = "running_ide",
-) -> bool:
+    lease: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     try:
         identities = discover_open_identities(args, context)
     except InspectError as error:
         reason = infer_error_reason(error, error.payload)
         if getattr(args, "port", None) and reason in {"inspection_api_unavailable", "timeout"}:
-            return False
+            return None
         raise
     matching = [identity for identity in identities if identity_matches_context(identity, context)]
     for identity in matching:
@@ -1344,6 +1621,8 @@ def open_via_running_ide(
         if not port:
             continue
         try:
+            if lease is not None:
+                persist_open_request_identity(lease, identity, method, attempts or [])
             response = http_get(
                 int(port),
                 "lifecycle/open",
@@ -1352,15 +1631,26 @@ def open_via_running_ide(
                     "project_path": context.get("project_path"),
                     "ide": context.get("ide"),
                     "session_id": identity.get("session_id"),
+                    "lease_id": lease.get("lease_id") if lease is not None else None,
                 },
                 timeout=max(DEFAULT_TIMEOUT_SECONDS, 30.0),
             )
+            attempt = open_attempt_payload(method, context, True, identity, response=response.body)
+            outcome, ownership_registered = lifecycle_open_outcome(
+                identity,
+                response.body,
+                lease.get("lease_id") if lease is not None else None,
+            )
+            attempt["open_outcome"] = outcome
+            attempt["ownership_registered"] = ownership_registered
             if attempts is not None:
-                attempts.append(open_attempt_payload(method, context, True, identity, response=response.body))
-            return True
+                attempts.append(attempt)
+            return attempt
         except InspectError as error:
             if attempts is not None:
                 attempts.append(open_attempt_payload(method, context, False, identity, error))
+            if lease is not None:
+                raise
             continue
     if attempts is not None and not matching:
         attempts.append(
@@ -1373,19 +1663,90 @@ def open_via_running_ide(
                 "discovered_identity_count": len(identities),
             }
         )
-    return False
+    return None
 
 
-def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def persist_open_request_identity(
+    lease: dict[str, Any],
+    identity: dict[str, Any],
+    method: str,
+    open_attempts: list[dict[str, Any]],
+) -> None:
+    lease.update(
+        {
+            "opened_by_helper": False,
+            "open_method": method,
+            "open_attempts": open_attempts,
+            "preparation_stage": "project_open",
+            "session_id": identity.get("session_id"),
+            "ide_port": identity.get("port"),
+            "lifecycle_ownership_protocol": identity.get("lifecycle_ownership_protocol"),
+            "pid": os.getpid(),
+        }
+    )
+    mark_lease_state(lease, "open_requesting")
+
+
+def lifecycle_open_outcome(
+    identity: dict[str, Any],
+    response: dict[str, Any],
+    lease_id: str | None,
+) -> tuple[str, bool]:
+    status = str(response.get("status") or "")
+    reason = str(response.get("reason") or "")
+    response_session_id = response.get("session_id")
+    identity_session_id = identity.get("session_id")
+    protocol_matches = (
+        identity.get("lifecycle_ownership_protocol") == LIFECYCLE_OWNERSHIP_PROTOCOL
+        and response.get("lifecycle_ownership_protocol") == LIFECYCLE_OWNERSHIP_PROTOCOL
+    )
+    ownership_registered = bool(
+        lease_id
+        and response.get("ownership_registered") is True
+        and response.get("lease_id") == lease_id
+        and response_session_id
+        and identity_session_id
+        and response_session_id == identity_session_id
+        and protocol_matches
+    )
+    if ownership_registered:
+        return "helper_registered", True
+    if response.get("opening_scheduled") is True:
+        return "scheduled_unregistered", False
+    if status == "already_open":
+        return "already_open", False
+    if reason == "already_opening":
+        return "already_opening", False
+    return "unverified_response", False
+
+
+def open_method_for_outcome(method: str, attempt: dict[str, Any]) -> str:
+    if attempt.get("ownership_registered"):
+        return method
+    outcome = attempt.get("open_outcome")
+    if outcome == "already_open":
+        return "preexisting"
+    if outcome == "already_opening":
+        return "unproven_opening"
+    return "unproven_open"
+
+
+def open_project_for_lifecycle(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    lease: dict[str, Any] | None = None,
+) -> tuple[str, list[dict[str, Any]], bool]:
     attempts: list[dict[str, Any]] = []
-    if open_via_running_ide(args, context, attempts, "running_ide"):
-        return "running_ide", attempts
+    open_attempt = open_via_running_ide(args, context, attempts, "running_ide", lease)
+    if open_attempt is not None:
+        return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
     bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
     attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
     wait_for_matching_ide_identity(args, context, timeout_ms)
-    if wait_for_lifecycle_open(args, context, timeout_ms, attempts):
-        return "bootstrapped_ide", attempts
+    open_attempt = wait_for_lifecycle_open(args, context, timeout_ms, attempts, lease)
+    if open_attempt is not None:
+        return open_method_for_outcome("bootstrapped_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
     raise InspectError(
         "Bootstrapped JetBrains IDE did not accept the lifecycle open request.",
         3,
@@ -1393,13 +1754,20 @@ def open_project_for_lifecycle(args: argparse.Namespace, context: dict[str, Any]
     )
 
 
-def wait_for_lifecycle_open(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int, attempts: list[dict[str, Any]] | None = None) -> bool:
+def wait_for_lifecycle_open(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    timeout_ms: int,
+    attempts: list[dict[str, Any]] | None = None,
+    lease: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     deadline = now_ms() + timeout_ms
     while now_ms() <= deadline:
-        if open_via_running_ide(args, context, attempts, "bootstrapped_ide"):
-            return True
+        open_attempt = open_via_running_ide(args, context, attempts, "bootstrapped_ide", lease)
+        if open_attempt is not None:
+            return open_attempt
         time.sleep(1)
-    return False
+    return None
 
 
 def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
@@ -1468,7 +1836,7 @@ def claim_lifecycle(
     context: dict[str, Any],
     route: dict[str, Any],
     lease: dict[str, Any],
-) -> tuple[dict[str, Any], str | None]:
+) -> tuple[dict[str, Any], str | None, bool, dict[str, Any]]:
     project_instance_id = route.get("project_instance_id")
     if not project_instance_id:
         raise InspectError(
@@ -1480,16 +1848,57 @@ def claim_lifecycle(
         "project_instance_id": project_instance_id,
         "lease_id": lease.get("lease_id"),
     })
-    close_proof = claim.pop("close_" + "token", None)
+    claimed_route = claim.get("route") if isinstance(claim.get("route"), dict) else route
+    ensure_exact_worktree(claimed_route, context, args)
+    ensure_claim_route_matches(route, claimed_route)
+    ownership_proven, close_proof = lifecycle_claim_ownership(claim, lease)
+    if ownership_proven is True and close_proof is None:
+        raise InspectError(
+            "JetBrains lifecycle claim proved ownership without returning a close token.",
+            3,
+            {"error_reason": "lifecycle_claim_incomplete", "claim": public_payload(claim)},
+        )
     claim_metadata = {
-        "status": "claimed",
-        "project_key": route.get("project_key"),
-        "project_instance_id": project_instance_id,
-        "session_id": route.get("session_id"),
+        "status": claim.get("status") or "unknown",
+        "ownership_proven": ownership_proven is True,
+        "reason": claim.get("reason"),
+        "lifecycle_ownership_protocol": claim.get("lifecycle_ownership_protocol"),
+        "project_key": claimed_route.get("project_key"),
+        "project_instance_id": claimed_route.get("project_instance_id"),
+        "session_id": claimed_route.get("session_id"),
         "lease_id": lease.get("lease_id"),
         "claimed_at_ms": now_ms(),
     }
-    return claim_metadata, str(close_proof) if close_proof else None
+    return claim_metadata, close_proof, ownership_proven is True, claimed_route
+
+
+def ensure_claim_route_matches(expected_route: dict[str, Any], claimed_route: dict[str, Any]) -> None:
+    for field in ("session_id", "project_instance_id", "project_key"):
+        expected = expected_route.get(field)
+        actual = claimed_route.get(field)
+        if expected and actual and expected != actual:
+            raise InspectError(
+                "Lifecycle claim resolved a different project route.",
+                3,
+                {
+                    "error_reason": "session_drift",
+                    "session_drift": True,
+                    "field": field,
+                    "expected": expected,
+                    "actual": actual,
+                },
+            )
+
+
+def lifecycle_claim_ownership(claim: dict[str, Any], lease: dict[str, Any]) -> tuple[bool | None, str | None]:
+    close_proof = claim.pop("close_" + "token", None)
+    protocol_matches = claim.get("lifecycle_ownership_protocol") == LIFECYCLE_OWNERSHIP_PROTOCOL
+    lease_matches = claim.get("lease_id") == lease.get("lease_id")
+    if claim.get("ownership_proven") is True and protocol_matches and lease_matches:
+        return True, str(close_proof) if close_proof else None
+    if claim.get("ownership_proven") is False and protocol_matches:
+        return False, None
+    return None, None
 
 
 def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof: str | None = None) -> dict[str, Any]:
@@ -2538,7 +2947,7 @@ def classify_closeout_exit(result: dict[str, Any]) -> int:
 
 
 def classify_cleanup_leases_exit(result: dict[str, Any]) -> int:
-    return 1 if result.get("failed") else 0
+    return 1 if result.get("failed") or result.get("unresolved") else 0
 
 
 def classify_wait_exit(result: dict[str, Any]) -> int:
@@ -3436,11 +3845,13 @@ def matching_deferred_lease(context: dict[str, Any], route: dict[str, Any]) -> d
 def deferred_lease_matches_route(lease: dict[str, Any], context: dict[str, Any], route: dict[str, Any]) -> bool:
     if not lease.get("opened_by_helper"):
         return False
-    if lease.get("state") != "kept_warm_after_indexing_timeout":
+    if lease.get("state") not in RECOVERABLE_HELPER_LEASE_STATES:
         return False
-    if lease.get("project_instance_id") and route.get("project_instance_id") and lease.get("project_instance_id") != route.get("project_instance_id"):
+    if not lease_has_exact_route_identity(lease):
         return False
-    if lease.get("session_id") and route.get("session_id") and lease.get("session_id") != route.get("session_id"):
+    if route.get("project_instance_id") != lease.get("project_instance_id"):
+        return False
+    if route.get("session_id") != lease.get("session_id"):
         return False
     if lease.get("project_key") and route.get("project_key") and lease.get("project_key") != route.get("project_key"):
         return False
@@ -3448,6 +3859,11 @@ def deferred_lease_matches_route(lease: dict[str, Any], context: dict[str, Any],
     context_target = lifecycle_target_path(context)
     route_base = route.get("base_path")
     return paths_same(lease_target, context_target) and paths_same(route_base, context_target)
+
+
+def lease_has_exact_route_identity(lease: dict[str, Any]) -> bool:
+    lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    return bool(lease_target and lease.get("project_instance_id") and lease.get("session_id"))
 
 
 def paths_same(left: Any, right: Any) -> bool:
@@ -3460,15 +3876,21 @@ def paths_same(left: Any, right: Any) -> bool:
 
 
 def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:
+    with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
+        return cleanup_stale_helper_leases(args)
+
+
+def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
     removed: list[str] = []
     stale: list[str] = []
     closed: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
     local_leases = read_local_leases()
     if not local_leases:
-        return {"status": "ok", "removed": [], "stale": [], "closed": [], "failed": []}
+        return {"status": "ok", "removed": [], "stale": [], "closed": [], "failed": [], "unresolved": []}
     cutoff = now_ms() - int(args.max_age_ms)
-    routes = discover_routes_for_cleanup(args)
+    stale_leases: list[tuple[Path, dict[str, Any]]] = []
     for path, lease in local_leases:
         updated = int(lease.get("updated_at_ms") or lease.get("created_at_ms") or 0)
         pid = lease.get("pid")
@@ -3476,83 +3898,191 @@ def command_cleanup_leases(args: argparse.Namespace) -> dict[str, Any]:
         if not is_stale:
             continue
         stale.append(str(path))
-        if not args.dry_run:
-            cleanup_result = cleanup_stale_helper_lease(lease, routes)
-            if cleanup_result.get("status") == "closed":
-                closed.append(cleanup_result)
-                path.unlink(missing_ok=True)
-                removed.append(str(path))
-            elif cleanup_result.get("status") == "failed":
-                failed.append(cleanup_result)
-            elif cleanup_result.get("reason") in {"project_not_open", "project_preexisted"}:
-                path.unlink(missing_ok=True)
-                removed.append(str(path))
-    return {"status": "ok", "dry_run": args.dry_run, "stale": stale, "removed": removed, "closed": closed, "failed": failed}
-
-
-def discover_routes_for_cleanup(args: argparse.Namespace) -> list[dict[str, Any]]:
-    routes: list[dict[str, Any]] = []
+        stale_leases.append((path, lease))
+    if args.dry_run or not stale_leases:
+        return {
+            "status": "ok",
+            "dry_run": args.dry_run,
+            "stale": stale,
+            "removed": [],
+            "closed": [],
+            "failed": [],
+            "unresolved": [],
+        }
     try:
-        identities = discover_identities(getattr(args, "port", None))
-    except InspectError:
-        return routes
+        routes, observed_sessions = discover_routes_for_cleanup(args)
+    except InspectError as error:
+        return {
+            "status": "incomplete",
+            "dry_run": False,
+            "stale": stale,
+            "removed": [],
+            "closed": [],
+            "failed": [
+                {
+                    "status": "failed",
+                    "reason": "route_discovery_failed",
+                    "message": str(error),
+                }
+            ],
+            "unresolved": [],
+        }
+    for path, lease in stale_leases:
+        cleanup_result = cleanup_stale_helper_lease(lease, routes, observed_sessions)
+        if cleanup_result.get("status") == "closed":
+            closed.append(cleanup_result)
+            path.unlink(missing_ok=True)
+            removed.append(str(path))
+        elif cleanup_result.get("status") == "failed":
+            failed.append(cleanup_result)
+        elif cleanup_result.get("status") == "skipped":
+            unresolved.append(cleanup_result)
+        elif cleanup_result.get("reason") in {"project_not_open", "project_preexisted", "ownership_not_proven"}:
+            path.unlink(missing_ok=True)
+            removed.append(str(path))
+    return {
+        "status": "incomplete" if failed or unresolved else "ok",
+        "dry_run": args.dry_run,
+        "stale": stale,
+        "removed": removed,
+        "closed": closed,
+        "failed": failed,
+        "unresolved": unresolved,
+    }
+
+
+def discover_routes_for_cleanup(args: argparse.Namespace) -> tuple[list[dict[str, Any]], set[str]]:
+    routes: list[dict[str, Any]] = []
+    observed_sessions: set[str] = set()
+    identities = discover_identities(getattr(args, "port", None))
     for identity in identities:
         port = identity.get("port")
+        session_id = identity.get("session_id")
+        if session_id:
+            observed_sessions.add(str(session_id))
         if not port:
             continue
         for project in identity.get("open_projects") or []:
             if isinstance(project, dict):
                 route = project.copy()
                 route.setdefault("port", port)
+                route.setdefault("session_id", session_id)
                 route.setdefault("ide", {
                     "name": identity.get("ide_name") or identity.get("name"),
                     "product_code": identity.get("ide_product_code") or identity.get("product_code"),
                     "version": identity.get("ide_version") or identity.get("version"),
                     "plugin_version": identity.get("plugin_version"),
                     "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
+                    "lifecycle_ownership_protocol": identity.get("lifecycle_ownership_protocol"),
                 })
                 routes.append(route)
-    return routes
+    return routes, observed_sessions
 
 
-def cleanup_stale_helper_lease(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any]:
-    if not lease.get("opened_by_helper"):
+def cleanup_stale_helper_lease(
+    lease: dict[str, Any],
+    routes: list[dict[str, Any]],
+    observed_sessions: set[str] | None = None,
+) -> dict[str, Any]:
+    if not lease.get("opened_by_helper") and lease.get("state") not in POTENTIAL_OPEN_LEASE_STATES:
         return {"status": "not_needed", "reason": "project_preexisted", "lease_id": lease.get("lease_id")}
-    route = matching_route_for_lease(lease, routes)
+    sessions = observed_sessions if observed_sessions is not None else {
+        str(route.get("session_id")) for route in routes if route.get("session_id")
+    }
+    route = matching_route_for_lease(lease, routes) if lease_has_exact_route_identity(lease) else matching_route_for_ownership_probe(lease, routes)
     if route is None:
-        return {"status": "not_needed", "reason": "project_not_open", "lease_id": lease.get("lease_id")}
-    close_proof = reclaim_close_proof(lease, route)
-    if not close_proof:
-        return {"status": "skipped", "reason": "missing_close_token", "lease_id": lease.get("lease_id")}
-    result = cleanup_lifecycle(lease, route, str(close_proof))
+        if lease_has_exact_route_identity(lease) and lease.get("session_id") in sessions:
+            return {"status": "not_needed", "reason": "project_not_open", "lease_id": lease.get("lease_id")}
+        return {
+            "status": "skipped",
+            "reason": "ownership_route_unavailable",
+            "lease_id": lease.get("lease_id"),
+            "next_action": "Retry cleanup after the original IDE session and exact route are discoverable.",
+        }
+    try:
+        ownership_proven, close_proof, claim_metadata, claimed_route = reclaim_lifecycle_claim(lease, route)
+    except InspectError as error:
+        return {
+            "status": "failed",
+            "reason": public_cleanup_reason(error),
+            "lease_id": lease.get("lease_id"),
+        }
+    if ownership_proven is False:
+        lease["opened_by_helper"] = False
+        return {"status": "not_needed", "reason": "ownership_not_proven", "lease_id": lease.get("lease_id")}
+    if ownership_proven is not True or not close_proof:
+        return {
+            "status": "skipped",
+            "reason": "ownership_unresolved",
+            "lease_id": lease.get("lease_id"),
+            "claim": claim_metadata,
+        }
+    persist_claimed_cleanup_ownership(lease, claimed_route, claim_metadata)
+    result = cleanup_lifecycle(lease, claimed_route, str(close_proof))
     result.setdefault("lease_id", lease.get("lease_id"))
     return result
 
 
-def reclaim_close_proof(lease: dict[str, Any], route: dict[str, Any]) -> str | None:
+def reclaim_lifecycle_claim(
+    lease: dict[str, Any],
+    route: dict[str, Any],
+) -> tuple[bool | None, str | None, dict[str, Any], dict[str, Any]]:
     project_instance_id = lease.get("project_instance_id") or route.get("project_instance_id")
     if not project_instance_id:
-        return None
-    try:
-        claim = private_http_get_body(route_port(route), "lifecycle/claim", {
-            "project_key": lease.get("project_key") or route.get("project_key"),
-            "project_path": route.get("base_path"),
-            "worktree_path": route.get("base_path"),
-            "session_id": lease.get("session_id") or route.get("session_id"),
-            "project_instance_id": project_instance_id,
-            "lease_id": lease.get("lease_id"),
-        })
-    except InspectError:
-        return None
-    close_proof = claim.pop("close_" + "token", None)
-    return str(close_proof) if close_proof else None
+        return None, None, {"status": "missing_project_instance"}, route
+    claim = private_http_get_body(route_port(route), "lifecycle/claim", {
+        "project_key": lease.get("project_key") or route.get("project_key"),
+        "project_path": route.get("base_path"),
+        "worktree_path": route.get("base_path"),
+        "session_id": lease.get("session_id") or route.get("session_id"),
+        "project_instance_id": project_instance_id,
+        "lease_id": lease.get("lease_id"),
+    })
+    claimed_route = claim.get("route") if isinstance(claim.get("route"), dict) else route
+    ensure_claim_route_matches(route, claimed_route)
+    lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    claimed_path = claimed_route.get("base_path") or claimed_route.get("project_file_path")
+    if lease_target and claimed_path and not paths_same(lease_target, claimed_path):
+        raise InspectError(
+            "Lifecycle ownership claim resolved a different path.",
+            3,
+            {"error_reason": "route_mismatch", "expected_path": lease_target, "actual_path": claimed_path},
+        )
+    ownership_proven, close_proof = lifecycle_claim_ownership(claim, lease)
+    claim_metadata = {
+        "status": claim.get("status") or "unknown",
+        "ownership_proven": ownership_proven is True,
+        "reason": claim.get("reason"),
+        "lifecycle_ownership_protocol": claim.get("lifecycle_ownership_protocol"),
+        "lease_id": lease.get("lease_id"),
+    }
+    return ownership_proven, close_proof, claim_metadata, claimed_route
+
+
+def reclaim_close_proof(lease: dict[str, Any], route: dict[str, Any]) -> str | None:
+    ownership_proven, close_proof, _, _ = reclaim_lifecycle_claim(lease, route)
+    return close_proof if ownership_proven is True else None
+
+
+def matching_route_for_ownership_probe(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    for route in routes:
+        route_base = route.get("base_path") or route.get("project_file_path")
+        if not paths_same(lease_target, route_base):
+            continue
+        if lease.get("session_id") and route.get("session_id") != lease.get("session_id"):
+            continue
+        return route
+    return None
 
 
 def matching_route_for_lease(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not lease_has_exact_route_identity(lease):
+        return None
     for route in routes:
-        if lease.get("project_instance_id") and route.get("project_instance_id") != lease.get("project_instance_id"):
+        if route.get("project_instance_id") != lease.get("project_instance_id"):
             continue
-        if lease.get("session_id") and route.get("session_id") and route.get("session_id") != lease.get("session_id"):
+        if route.get("session_id") != lease.get("session_id"):
             continue
         if lease.get("project_key") and route.get("project_key") and route.get("project_key") != lease.get("project_key"):
             continue
