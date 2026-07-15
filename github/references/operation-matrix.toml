@@ -1,0 +1,591 @@
+schema_version = 1
+
+[metadata]
+description = "Machine-readable foundation for public GitHub skill helper operations."
+current_transport_semantics = "The transport used by the checked-in implementation today."
+selected_transport_semantics = "The reviewed target transport; rows not yet migrated set migration_status=planned and retain explicit current endpoint and quota fields."
+quota_bucket_semantics = "Expected bucket for selected_transport; current_quota_bucket records the live bucket on planned rows."
+
+[[operations]]
+id = "github.api.call"
+entrypoint = "github/scripts/github_api.py call"
+intent = "Execute one body-safe GitHub REST request and emit structured response, actor, quota, and failure evidence."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "gh api --include --method {method} -H X-GitHub-Api-Version:{version} {path}; request body via --input -"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "passthrough"
+retry_eligibility = "conditional"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No retained GraphQL transport; this command is the shared REST request and diagnostics boundary."
+source_refs = ["github/scripts/github_api.py"]
+test_refs = ["github/scripts/test_github_api.py"]
+
+[[operations]]
+id = "github.api.rate_limit"
+entrypoint = "github/scripts/github_api.py rate-limit"
+intent = "Read REST, GraphQL, search, and other GitHub quota buckets once per process."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /rate_limit"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "quota_snapshot"
+retained_graphql_rationale = "No retained GraphQL transport; REST reports the GraphQL bucket without consuming GraphQL quota."
+source_refs = ["github/scripts/github_api.py"]
+test_refs = ["github/scripts/test_github_api.py"]
+
+[[operations]]
+id = "github.pr.view"
+entrypoint = "github/scripts/gh-pr.py view"
+intent = "Read normalized pull request metadata for one PR."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/pulls/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST pull metadata is sufficient and keeps high-frequency PR orientation on the core bucket."
+source_refs = ["github/scripts/gh-pr.py:58", "github/scripts/gh-pr.py:136"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.list"
+entrypoint = "github/scripts/gh-pr.py list"
+intent = "List pull requests with normalized compact metadata."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/pulls?state={state}&per_page={per_page}&page={page}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No retained GraphQL transport; paged REST pull listing avoids GraphQL costs for routine open-PR polling."
+source_refs = ["github/scripts/gh-pr.py:62", "github/scripts/gh-pr.py:142"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.create"
+entrypoint = "github/scripts/gh-pr.py create"
+intent = "Create a pull request with safe title, body-file, labels, reviewers, assignees, milestone, and project flags."
+current_transport = "gh_cli_wrapper"
+selected_transport = "gh_cli_wrapper"
+endpoint_or_command = "gh pr create via github/scripts/gh-with-env-token"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "create"
+retry_eligibility = "manual"
+reconciliation_strategy = "body_file_write"
+retained_graphql_rationale = "GraphQL may be used internally by gh pr create; the helper retains gh CLI for full PR-create semantics and safe body handling."
+source_refs = ["github/scripts/gh-pr.py:67", "github/scripts/gh-pr.py:149"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.edit"
+entrypoint = "github/scripts/gh-pr.py edit"
+intent = "Edit pull request metadata or body with safe body-file handling."
+current_transport = "gh_cli_wrapper"
+selected_transport = "gh_cli_wrapper"
+endpoint_or_command = "gh pr edit via github/scripts/gh-with-env-token"
+quota_bucket = "mixed"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+retry_eligibility = "conditional"
+reconciliation_strategy = "body_file_write"
+retained_graphql_rationale = "GraphQL may be used internally by gh pr edit; the helper retains gh CLI to preserve supported PR edit flags while enforcing automation auth."
+source_refs = ["github/scripts/gh-pr.py:86", "github/scripts/gh-pr.py:180"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.comment"
+entrypoint = "github/scripts/gh-pr.py comment"
+intent = "Post a pull request timeline comment from a Markdown body file."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/issues/{number}/comments"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "comment"
+retry_eligibility = "manual"
+reconciliation_strategy = "operation_marker"
+retained_graphql_rationale = "No retained GraphQL transport; pull request timeline comments use the REST issue-comment endpoint with JSON-stdin body handling."
+source_refs = ["github/scripts/gh-pr.py:103", "github/scripts/gh-pr.py:205"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.checks"
+entrypoint = "github/scripts/gh-pr.py checks"
+intent = "Read PR head check runs, commit statuses, and combined status summary."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/commits/{sha}/statuses; GET /repos/{repo}/commits/{sha}/status"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST check-run and status endpoints provide the polling data needed for readiness decisions."
+source_refs = ["github/scripts/gh-pr.py:108", "github/scripts/gh-pr.py:213"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.merge"
+entrypoint = "github/scripts/gh-pr.py merge"
+intent = "Merge a pull request using a selected merge method and optional branch deletion."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "PUT /repos/{repo}/pulls/{number}/merge; optional DELETE /repos/{repo}/git/refs/heads/{head_ref}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "merge"
+retry_eligibility = "conditional"
+reconciliation_strategy = "sha_guarded_merge"
+retained_graphql_rationale = "No retained GraphQL transport; REST merge accepts an expected head SHA and gives the helper a concrete merge guard."
+source_refs = ["github/scripts/gh-pr.py:112", "github/scripts/gh-pr.py:246"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.pr.supersede"
+entrypoint = "github/scripts/gh-pr.py supersede"
+intent = "Mark a stale PR as superseded by a canonical PR, neutralize closing references, comment, close, and optionally delete its branch."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET/PATCH /repos/{repo}/pulls/{number}; POST /repos/{repo}/issues/{number}/comments; optional DELETE /repos/{repo}/git/refs/{ref}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+retry_eligibility = "manual"
+reconciliation_strategy = "two_phase_compensating"
+retained_graphql_rationale = "No retained GraphQL transport; the supersede workflow is implemented with explicit REST reads and writes plus compensating warnings for partial success."
+source_refs = ["github/scripts/gh-pr.py:120", "github/scripts/gh-pr.py:286"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_supersede_comments_neutralizes_and_closes", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.pr.rate_limit"
+entrypoint = "github/scripts/gh-pr.py rate-limit"
+intent = "Read REST/core, GraphQL, and search rate-limit buckets."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /rate_limit"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "quota_snapshot"
+retained_graphql_rationale = "No retained GraphQL transport; the REST rate-limit endpoint reports the GraphQL bucket without spending GraphQL quota."
+source_refs = ["github/scripts/gh-pr.py:130", "github/scripts/gh-pr.py:380"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+
+[[operations]]
+id = "github.plan.index"
+entrypoint = "github/scripts/gh-plan.py index"
+intent = "List compact durable planning issues by label and state."
+current_transport = "gh_cli_graphql"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue list --json via github/scripts/gh-with-env-token"
+current_quota_bucket = "graphql"
+endpoint_or_command = "GET /repos/{repo}/issues?labels={label}&state={state}&sort=updated&direction=desc"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; the REST issues endpoint supplies the planning index fields and avoids routine GraphQL pressure."
+source_refs = ["github/scripts/gh-plan.py"]
+test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.search"
+entrypoint = "github/scripts/gh-plan.py search"
+intent = "Search issues and return compact normalized planning results."
+current_transport = "gh_cli_graphql"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue list --search --json via github/scripts/gh-with-env-token"
+current_quota_bucket = "graphql"
+endpoint_or_command = "GET /search/issues?q={query}+repo:{repo}+is:issue+state:{state}"
+quota_bucket = "search"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; the REST issue search endpoint preserves planning discovery while using the search bucket explicitly."
+source_refs = ["github/scripts/gh-plan.py"]
+test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.show"
+entrypoint = "github/scripts/gh-plan.py show"
+intent = "Read one planning issue and emit compact sections or the full body."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST issue reads include the body needed for section extraction."
+source_refs = ["github/scripts/gh-plan.py:813", "github/scripts/gh-plan.py:1351"]
+test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.create"
+entrypoint = "github/scripts/gh-plan.py create"
+intent = "Create a durable planning issue with configured labels and optional Project fields."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "gh issue list dedupe; POST /repos/{repo}/issues; optional gh project item-add/item-edit"
+quota_bucket = "mixed"
+actor_policy = "automation_required_for_writes"
+mutation_class = "create"
+retry_eligibility = "conditional"
+reconciliation_strategy = "dedupe_then_create"
+retained_graphql_rationale = "GraphQL is retained for gh issue list dedupe and optional Project sync; the issue creation itself uses REST and Project failures are non-blocking warnings."
+source_refs = ["github/scripts/gh-plan.py:828", "github/scripts/gh-plan.py:1357"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_create_reports_issue_when_project_sync_fails", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.update_section"
+entrypoint = "github/scripts/gh-plan.py update-section"
+intent = "Patch one markdown section in a planning issue body."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}; PATCH /repos/{repo}/issues/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; REST issue body reads and PATCH updates preserve deterministic section replacement."
+source_refs = ["github/scripts/gh-plan.py:907", "github/scripts/gh-plan.py:1372"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.link"
+entrypoint = "github/scripts/gh-plan.py link"
+intent = "Create a native issue dependency, sub-issue relationship, or markdown related-note relationship."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/issues/{number}/dependencies/blocked_by; POST /repos/{repo}/issues/{number}/sub_issues; or PATCH /repos/{repo}/issues/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "relationship_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; native dependency and sub-issue REST endpoints plus body PATCH cover the relationship writes."
+source_refs = ["github/scripts/gh-plan.py:918", "github/scripts/gh-plan.py:1379"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.unlink"
+entrypoint = "github/scripts/gh-plan.py unlink"
+intent = "Remove a native issue dependency, sub-issue relationship, or markdown related-note relationship."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "DELETE /repos/{repo}/issues/{number}/dependencies/blocked_by/{issue_id}; DELETE /repos/{repo}/issues/{number}/sub_issue; or PATCH /repos/{repo}/issues/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "relationship_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; relationship removal uses REST endpoints or deterministic markdown body replacement."
+source_refs = ["github/scripts/gh-plan.py:949", "github/scripts/gh-plan.py:1385"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.deps"
+entrypoint = "github/scripts/gh-plan.py deps"
+intent = "Read native dependencies and sub-issues for a planning issue."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}/dependencies/blocked_by; GET /repos/{repo}/issues/{number}/dependencies/blocking; GET /repos/{repo}/issues/{number}/sub_issues"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "relationship_read"
+retained_graphql_rationale = "No retained GraphQL transport; native REST relationship endpoints expose dependencies and sub-issues directly."
+source_refs = ["github/scripts/gh-plan.py:972", "github/scripts/gh-plan.py:1391"]
+test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.close"
+entrypoint = "github/scripts/gh-plan.py close"
+intent = "Close a completed durable plan, update planning labels, optionally comment, and reconcile Project focus/status fields."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "gh issue edit/comment/close; optional gh project view/field-list/item-list/item-edit"
+quota_bucket = "mixed"
+actor_policy = "automation_required_for_writes"
+mutation_class = "close"
+retry_eligibility = "manual"
+reconciliation_strategy = "project_recoverable_warning"
+retained_graphql_rationale = "GraphQL is retained for optional Project reconciliation while issue label/comment/close state uses gh issue commands; Project failures return non-blocking warnings."
+source_refs = ["github/scripts/gh-plan.py:1242", "github/scripts/gh-plan.py:1395"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.project_add"
+entrypoint = "github/scripts/gh-plan.py project-add"
+intent = "Add an issue to a configured GitHub Project and return the Project item."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "gh project item-add {project_number} --owner {owner} --url {issue_url} --format json"
+quota_bucket = "graphql"
+actor_policy = "automation_required_with_explicit_project_override"
+mutation_class = "project_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "project_recoverable_warning"
+retained_graphql_rationale = "GraphQL is retained because GitHub Projects v2 item mutation is exposed through gh project GraphQL-backed commands."
+source_refs = ["github/scripts/gh-plan.py:1202", "github/scripts/gh-plan.py:1404"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recoverable", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.project_set"
+entrypoint = "github/scripts/gh-plan.py project-set"
+intent = "Set configured Project fields such as Focus, Manager, and Finish Line for an issue item."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "gh project view/field-list/item-list/item-edit with ProjectV2 ids"
+quota_bucket = "graphql"
+actor_policy = "automation_required_with_explicit_project_override"
+mutation_class = "project_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "project_recoverable_warning"
+retained_graphql_rationale = "GraphQL is retained because ProjectV2 field and item edits require GraphQL-backed gh project commands and field ids."
+source_refs = ["github/scripts/gh-plan.py:1219", "github/scripts/gh-plan.py:1410"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recoverable", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.project_list"
+entrypoint = "github/scripts/gh-plan.py project-list"
+intent = "List GitHub Projects for an owner."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "gh project list --owner {owner} --format json --limit {limit}"
+quota_bucket = "graphql"
+actor_policy = "automation_required_with_explicit_project_override"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL is retained because gh project list is the stable CLI surface for ProjectV2 discovery."
+source_refs = ["github/scripts/gh-plan.py:1313", "github/scripts/gh-plan.py:1420"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recoverable", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.ensure_labels"
+entrypoint = "github/scripts/gh-plan.py ensure-labels"
+intent = "Ensure configured planning labels exist, creating documented missing labels."
+current_transport = "gh_cli"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh label list/create via github/scripts/gh-with-env-token"
+current_quota_bucket = "rest_core"
+endpoint_or_command = "GET /repos/{repo}/labels; POST /repos/{repo}/labels"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "label_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "ensure_missing"
+retained_graphql_rationale = "No retained GraphQL transport; gh label commands map to label listing and creation without ProjectV2 GraphQL requirements."
+source_refs = ["github/scripts/gh-plan.py:1326", "github/scripts/gh-plan.py:1426"]
+test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.issue.create"
+entrypoint = "github/scripts/gh-issue create"
+intent = "Create an issue from stdin-backed Markdown body content."
+current_transport = "gh_cli_wrapper"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue create --body-file via github/scripts/gh-with-env-token"
+current_quota_bucket = "mixed"
+endpoint_or_command = "POST /repos/{repo}/issues"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "create"
+retry_eligibility = "manual"
+reconciliation_strategy = "operation_marker"
+retained_graphql_rationale = "No retained GraphQL transport; issue creation uses REST with JSON-stdin body handling and an operation-specific reconciliation key."
+source_refs = ["github/scripts/gh-issue:10", "github/scripts/gh-issue:60"]
+test_refs = ["github/scripts/validate-gh-issue.sh:287", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.issue.edit"
+entrypoint = "github/scripts/gh-issue edit"
+intent = "Replace an issue body from stdin-backed Markdown body content."
+current_transport = "gh_cli_wrapper"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue edit --body-file via github/scripts/gh-with-env-token"
+current_quota_bucket = "mixed"
+endpoint_or_command = "PATCH /repos/{repo}/issues/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; issue body replacement maps directly to the REST issue update endpoint."
+source_refs = ["github/scripts/gh-issue:11", "github/scripts/gh-issue:63"]
+test_refs = ["github/scripts/validate-gh-issue.sh:332", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.issue.close"
+entrypoint = "github/scripts/gh-issue close"
+intent = "Close an issue with an optional stdin-backed close comment, streaming large comments before close."
+current_transport = "gh_cli_wrapper"
+selected_transport = "composite"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue comment/close via github/scripts/gh-with-env-token"
+current_quota_bucket = "mixed"
+endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "close"
+retry_eligibility = "manual"
+reconciliation_strategy = "two_phase_compensating"
+retained_graphql_rationale = "No retained GraphQL transport; close comments and issue state changes use explicit REST steps with partial-success reporting."
+source_refs = ["github/scripts/gh-issue:12", "github/scripts/gh-issue:66"]
+test_refs = ["github/scripts/validate-gh-issue.sh:358", "github/scripts/validate-gh-issue.sh:493", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.comment.issue"
+entrypoint = "github/scripts/gh-comment issue"
+intent = "Post an issue timeline comment from stdin-backed Markdown."
+current_transport = "gh_cli_wrapper"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh issue comment --body-file via github/scripts/gh-with-env-token"
+current_quota_bucket = "mixed"
+endpoint_or_command = "POST /repos/{repo}/issues/{number}/comments"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "comment"
+retry_eligibility = "manual"
+reconciliation_strategy = "operation_marker"
+retained_graphql_rationale = "No retained GraphQL transport; issue comments use REST with JSON-stdin Markdown and an operation-specific reconciliation key."
+source_refs = ["github/scripts/gh-comment:6", "github/scripts/gh-comment:24"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.comment.pr"
+entrypoint = "github/scripts/gh-comment pr"
+intent = "Post a PR timeline comment from stdin-backed Markdown."
+current_transport = "gh_cli_wrapper"
+selected_transport = "rest_api"
+migration_status = "planned"
+current_endpoint_or_command = "gh pr comment --body-file via github/scripts/gh-with-env-token"
+current_quota_bucket = "mixed"
+endpoint_or_command = "POST /repos/{repo}/issues/{number}/comments"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "comment"
+retry_eligibility = "manual"
+reconciliation_strategy = "operation_marker"
+retained_graphql_rationale = "No retained GraphQL transport; PR timeline comments use the shared REST issue-comment endpoint."
+source_refs = ["github/scripts/gh-comment:6", "github/scripts/gh-comment:24"]
+test_refs = ["github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.gh_with_env_token"
+entrypoint = "github/scripts/gh-with-env-token <gh-args>"
+intent = "Run gh with configured automation credentials and preserve the selected actor unless active-auth fallback is explicitly authorized."
+current_transport = "gh_cli_wrapper"
+selected_transport = "gh_cli_wrapper"
+endpoint_or_command = "gh <args> with CODEX_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN selection and write-command classification"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "passthrough"
+retry_eligibility = "conditional"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "GraphQL depends on the delegated gh command; the wrapper is retained to enforce actor policy across both REST and GraphQL gh operations."
+source_refs = ["github/scripts/gh-with-env-token:4", "github/scripts/gh-with-env-token:54", "github/scripts/gh-with-env-token:247"]
+test_refs = ["github/scripts/validate-gh-issue.sh:1", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.git_commit_as_bot"
+entrypoint = "github/scripts/git-commit-as-bot <git-commit-args>"
+intent = "Create a local git commit with the configured automation author and committer identity."
+current_transport = "local_git"
+selected_transport = "local_git"
+endpoint_or_command = "git commit <args> with GIT_AUTHOR_* and GIT_COMMITTER_* environment"
+quota_bucket = "local"
+actor_policy = "local_bot_identity"
+mutation_class = "local_git_write"
+retry_eligibility = "manual"
+reconciliation_strategy = "identity_env"
+retained_graphql_rationale = "No retained GraphQL transport; this is a local git identity wrapper."
+source_refs = ["github/scripts/git-commit-as-bot:1"]
+test_refs = ["github/scripts/validate-gh-issue.sh:190", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.git_push_as_bot"
+entrypoint = "github/scripts/git-push-as-bot <git-push-args>"
+intent = "Push to a GitHub remote through an HTTPS token flow while restoring the original origin URL."
+current_transport = "git_remote"
+selected_transport = "git_remote"
+endpoint_or_command = "git push <args> with temporary HTTPS origin and GIT_ASKPASS token"
+quota_bucket = "git_remote"
+actor_policy = "automation_required_for_writes"
+mutation_class = "remote_git_write"
+retry_eligibility = "conditional"
+reconciliation_strategy = "restore_remote_url"
+retained_graphql_rationale = "No retained GraphQL transport; push uses the git remote protocol with an automation token."
+source_refs = ["github/scripts/git-push-as-bot:1", "github/scripts/git-push-as-bot:59"]
+test_refs = ["github/scripts/validate-gh-issue.sh:198", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.ci_diagnose"
+entrypoint = "github/scripts/github-ci-diagnose.py diagnose"
+intent = "Diagnose PR checks, fetch relevant workflow run metadata and logs, and summarize failing snippets."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "gh pr checks; gh run view --json/--log-failed/--log; gh api /repos/{repo}/actions/jobs/{job_id}/logs"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "degraded_diagnosis"
+retained_graphql_rationale = "GraphQL may be used internally by gh pr checks or gh run view; REST job-log fallback is retained for log downloads."
+source_refs = ["github/scripts/github-ci-diagnose.py:32", "github/scripts/github-ci-diagnose.py:163", "github/scripts/github-ci-diagnose.py:290"]
+test_refs = [".github/github.json:qualityGate.syntax.python", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.repo_snapshot"
+entrypoint = "github/scripts/github-repo-snapshot.sh snapshot"
+intent = "Capture compact local git, PR, issue, workflow, repository setting, cleanup, and optional health state."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "git status/branch/log; optional git fetch; gh-pr.py view/list or gh pr view/list; gh issue list; gh run list; gh repo view"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "conditional"
+reconciliation_strategy = "degraded_snapshot"
+retained_graphql_rationale = "GraphQL may be used by gh fallback reads; the selected path prefers REST-first gh-pr.py for PR data and records degraded fields when GraphQL-backed fallback is used."
+source_refs = ["github/scripts/github-repo-snapshot.sh:64", "github/scripts/github-repo-snapshot.sh:335", "github/scripts/github-repo-snapshot.sh:600"]
+test_refs = ["github/scripts/validate-gh-issue.sh:563", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.work_evidence"
+entrypoint = "github/scripts/github-work-evidence.py collect"
+intent = "Collect bounded read-only GitHub work evidence for reports, readiness, closeout, and LLM synthesis."
+current_transport = "delegated_python"
+selected_transport = "delegated_python"
+endpoint_or_command = "Delegates to github-work-rollup/scripts/github_work_rollup.py collect_rollup(settings)"
+quota_bucket = "delegated"
+actor_policy = "automation_required"
+mutation_class = "read"
+retry_eligibility = "safe"
+reconciliation_strategy = "delegated_evidence"
+retained_graphql_rationale = "GraphQL decisions are delegated to the work-rollup collector; this wrapper stays read-only and preserves bounded evidence output."
+source_refs = ["github/scripts/github-work-evidence.py:17", "github/scripts/github-work-evidence.py:69"]
+test_refs = ["github/scripts/test_github_work_evidence.py:1", "github/scripts/validate-operation-matrix.py:self-test"]

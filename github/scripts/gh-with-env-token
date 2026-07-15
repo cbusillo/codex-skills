@@ -206,14 +206,12 @@ verify_bot_login_for_write() {
 	return 1
 }
 
-require_bot_for_write() {
+refuse_active_auth_fallback() {
 	reason=$1
-	shift
-	if ! is_write_command "$@" || allows_active_auth_fallback; then
+	if allows_active_auth_fallback; then
 		return 1
 	fi
-	cat "$stderr_file" >&2 || true
-	echo "error: $reason; refusing to run GitHub write with active local gh auth" >&2
+	echo "error: $reason; refusing to use active local gh auth" >&2
 	echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot, or set GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 for an explicitly approved one-off" >&2
 	return 0
 }
@@ -227,11 +225,10 @@ is_auth_failed() {
 }
 
 retry_with_active_auth() {
-	if require_bot_for_write "automation gh token failed" "$@"; then
-		return 1
-	fi
+	reason=$1
+	shift
 	cat "$stderr_file" >&2
-	echo "warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account" >&2
+	echo "warning: $reason; explicitly authorized active-auth fallback; retrying with the active gh account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
@@ -245,10 +242,10 @@ print_account() {
 }
 
 if [ -z "${GH_TOKEN:-}" ]; then
-	if require_bot_for_write "no automation gh token found" "$@"; then
+	if refuse_active_auth_fallback "no automation gh token found"; then
 		exit 1
 	fi
-	echo "warning: no automation gh token found; using active gh auth; GitHub writes may appear as the active account" >&2
+	echo "warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		echo "gh auth status (active gh auth):" >&2
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
@@ -272,8 +269,23 @@ if [ "$status" -eq 0 ]; then
 	exit 0
 fi
 
-if is_rate_limited "$stderr_file" || is_auth_failed "$stderr_file"; then
-	retry_with_active_auth "$@"
+if is_rate_limited "$stderr_file"; then
+	if refuse_active_auth_fallback "automation gh request was rate-limited"; then
+		cat "$stdout_file"
+		cat "$stderr_file" >&2
+		exit "$status"
+	fi
+	retry_with_active_auth "automation gh request was rate-limited" "$@"
+	exit $?
+fi
+
+if is_auth_failed "$stderr_file"; then
+	if refuse_active_auth_fallback "automation gh authentication failed"; then
+		cat "$stdout_file"
+		cat "$stderr_file" >&2
+		exit "$status"
+	fi
+	retry_with_active_auth "automation gh authentication failed" "$@"
 	exit $?
 fi
 

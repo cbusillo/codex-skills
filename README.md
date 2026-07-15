@@ -120,10 +120,10 @@ Then call:
 github/scripts/gh-with-env-token pr view
 ```
 
-Write-like GitHub commands require the configured automation token and are
-refused if they would otherwise fall back to the active local `gh` account. Set
+GitHub commands require the configured automation token and never change to the
+active local `gh` account implicitly. Set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
-one-off human-owned write.
+one-off command whose human-owned actor is acceptable.
 
 The `local.env` file is local to the user account. Do not commit real
 tokens.

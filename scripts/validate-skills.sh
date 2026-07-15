@@ -6,6 +6,8 @@ cd "$repo_root"
 
 uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
+uv run github/scripts/validate-operation-matrix.py --self-test
+uv run github/scripts/validate-operation-matrix.py
 uv run skill-creator/scripts/validate-skill-behavior.py
 uv run skill-creator/scripts/validate-command-policy-simulator.py --self-test
 uv run skill-creator/scripts/validate-command-policy-simulator.py
@@ -24,6 +26,7 @@ helper_tests=(
 	github-work-rollup/scripts/test_synthesize_work_brief.py
 	github-work-rollup/scripts/test_verify_work_brief.py
 	github/scripts/test_github_work_evidence.py
+	github/scripts/test_github_api.py
 	infra-ops/scripts/test_npmplus_ops.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
@@ -52,6 +55,7 @@ helper_tests=(
 # added test_*.py or validate_*.py files do not silently miss validation.
 helper_test_skiplist=(
 	github/scripts/validate-gh-plan.py
+	github/scripts/validate-operation-matrix.py
 	rollout-friction/scripts/validate_rollout_memory_llm_results.py
 	scripts/validate-public-safety.py
 	skill-creator/scripts/validate-skill-behavior.py

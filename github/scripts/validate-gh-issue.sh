@@ -45,12 +45,14 @@ elif [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
 	fi
 elif [[ "${1:-}" == "rate-limited-command" ]]; then
 	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'HTTP/2.0 403 \\r\\ncontent-type: application/json\\r\\n\\r\\n{\"message\":\"API rate limit exceeded\"}\\n'
 		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
 		exit 1
 	fi
 	printf 'active-success\n'
 elif [[ "${1:-}" == "invalid-token-command" ]]; then
 	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'HTTP/2.0 401 \\r\\ncontent-type: application/json\\r\\n\\r\\n{\"message\":\"Bad credentials\"}\\n'
 		printf 'X Failed to log in to github.com using token (GH_TOKEN)\n' >&2
 		printf 'The token in GH_TOKEN is invalid.\n' >&2
 		exit 1
@@ -153,6 +155,7 @@ env -u HOME -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CO
 	PATH="$tmpdir:$PATH" \
 	GH_ISSUE_ENV_LOG="$env_log" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
 	"$repo_root/github/scripts/gh-with-env-token" auth status >/dev/null
 
 grep -qx '' "$env_log"
@@ -215,14 +218,27 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 grep -qx 'codex-token' "$env_log"
 grep -q 'Logged in to github.com account code-bot' "$stderr_log"
 
-PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
 	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account rate-limited-command \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: rate-limited reads must not change actor without explicit authorization" >&2
+	exit 1
+fi
+
+grep -q 'error: automation gh request was rate-limited; refusing to use active local gh auth' "$stderr_log"
+grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
+grep -q 'gh auth status (automation token):' "$stderr_log"
+
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" rate-limited-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account' "$stderr_log"
-grep -q 'gh auth status (automation token):' "$stderr_log"
+grep -q 'warning: automation gh request was rate-limited; explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -235,7 +251,7 @@ if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	exit 1
 fi
 
-grep -q 'refusing to run GitHub write with active local gh auth' "$stderr_log"
+grep -q 'error: automation gh request was rate-limited; refusing to use active local gh auth' "$stderr_log"
 if grep -q '^active:-R owner/repo run rerun' "$log"; then
 	echo "error: run rerun should not fall back to active gh auth" >&2
 	exit 1
@@ -249,7 +265,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	"$repo_root/github/scripts/gh-with-env-token" pr comment 1 --body-file body.md \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'retrying with active gh auth' "$stderr_log"
+grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -261,23 +277,47 @@ if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	exit 1
 fi
 
-grep -q 'no automation gh token found; refusing to run GitHub write with active local gh auth' "$stderr_log"
+grep -q 'no automation gh token found; refusing to use active local gh auth' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" invalid-token-command \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: invalid automation auth must not change actor without explicit authorization" >&2
+	exit 1
+fi
+
+grep -q 'error: automation gh authentication failed; refusing to use active local gh auth' "$stderr_log"
+grep -q 'The token in GH_TOKEN is invalid' "$stderr_log"
 
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
 	"$repo_root/github/scripts/gh-with-env-token" invalid-token-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account' "$stderr_log"
+grep -q 'warning: automation gh authentication failed; explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account active-command \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: missing automation auth must not use active auth without explicit authorization" >&2
+	exit 1
+fi
+
+grep -q 'error: no automation gh token found; refusing to use active local gh auth' "$stderr_log"
 
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
 	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account active-command \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q 'warning: no automation gh token found; using active gh auth; GitHub writes may appear as the active account' "$stderr_log"
+grep -q 'warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account' "$stderr_log"
 grep -q 'gh auth status (active gh auth):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
@@ -311,7 +351,7 @@ EOF
 grep -q '^bot:issue create' "$log"
 grep -q '^active:issue create' "$log"
 grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
-grep -q 'retrying with active gh auth' "$stderr_log"
+grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
 grep -q 'active-success' "$stdout_log"
 
 cat >"$tmpdir/record-edit-gh" <<'EOF'
