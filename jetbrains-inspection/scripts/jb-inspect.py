@@ -1079,34 +1079,23 @@ def inspection_run_changed_result(
 
 
 def inspection_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
-    if payload.get("status") == "run_changed":
-        return True
     current_run_id = inspection_run_id(payload)
     snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
-    return current_run_id != expected_run_id or (
+    return (
+        current_run_id is not None and current_run_id != expected_run_id
+    ) or (
         snapshot_run_id is not None and snapshot_run_id != expected_run_id
     )
 
 
 def wait_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
-    if payload.get("status") == "run_changed":
-        return True
-    if inspection_run_id(payload) != expected_run_id:
+    current_run_id = inspection_run_id(payload)
+    if current_run_id is not None and current_run_id != expected_run_id:
         return True
     if payload.get("inspection_in_progress") is True:
         return False
-    snapshot_backed = (
-        "snapshot_run_id" in payload
-        or payload.get("has_inspection_results") is True
-        or payload.get("clean_inspection") is True
-        or payload.get("capture_incomplete") is True
-        or payload.get("results_may_be_stale") is True
-        or payload.get("inspection_triggered") is True
-        or payload.get("wait_completed") is True
-    )
-    if not snapshot_backed:
-        return False
-    return positive_run_id(payload.get("snapshot_run_id")) != expected_run_id
+    snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
+    return snapshot_run_id is not None and snapshot_run_id != expected_run_id
 
 
 def positive_run_id(value: Any) -> int | None:
@@ -2860,8 +2849,13 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         return str(payload.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason") or "capture_incomplete")
     if payload.get("error_reason") == "inspection_api_timeout":
         return "inspection_api_timeout"
-    if payload.get("run_changed") or payload.get("error_reason") == "run_changed" or wait.get("status") == "run_changed":
+    if payload.get("run_changed") or payload.get("error_reason") == "run_changed":
         return "run_changed"
+    if wait.get("status") == "run_changed":
+        trigger = payload.get("trigger") if isinstance(payload.get("trigger"), dict) else {}
+        expected_run_id = inspection_run_id(trigger) or positive_run_id(wait.get("expected_inspection_run_id"))
+        if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
+            return "run_changed"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
         return "timeout"
     if payload.get("indexing") or payload.get("is_scanning") or payload.get("inspection_in_progress") or payload.get("status") in {"indexing", "running"}:

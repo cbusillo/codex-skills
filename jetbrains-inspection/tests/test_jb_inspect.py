@@ -2061,6 +2061,46 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["verdict_reason"], "run_changed")
         self.assertTrue(jb_inspect.should_defer_lifecycle_cleanup(result, {"opened_by_helper": True}))
 
+    def test_unproven_wait_run_change_continues_with_the_accepted_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            if endpoint == "trigger":
+                return {"status": "triggered", "run_id": 7, "route": route}
+            if endpoint == "wait":
+                return {
+                    "status": "run_changed",
+                    "expected_inspection_run_id": 7,
+                    "inspection_run_id": 7,
+                    "inspection_triggered": True,
+                    "inspection_in_progress": False,
+                    "wait_completed": False,
+                }
+            if endpoint == "problems":
+                return {
+                    "status": "results_available",
+                    "inspection_run_id": 7,
+                    "snapshot_run_id": 7,
+                    "total_problems": 1,
+                    "problems": [{"description": "accepted run finding", "severity": "warning"}],
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(timeout_ms=1000, poll_ms=1),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+            )
+
+        self.assertEqual([endpoint for endpoint, _ in calls], ["trigger", "wait", "problems"])
+        self.assertEqual(result["status"], "findings")
+        self.assertEqual(result["verdict"], "RED")
+        self.assertEqual(result["verdict_reason"], "actionable_findings")
+        self.assertNotEqual(result.get("error_reason"), "run_changed")
+
     def test_wait_rejects_snapshot_from_an_older_run(self):
         route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
         calls = []
