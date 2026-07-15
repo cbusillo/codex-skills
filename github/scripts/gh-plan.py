@@ -115,21 +115,19 @@ def run_raw(
     prefer_active: bool = False,
     recoverable: bool = False,
 ) -> tuple[str, str, str]:
-    """Run gh through automation first, with active gh as a rate-limit fallback."""
+    """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
     bot_enabled = BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
     active_first = prefer_active and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
     commands: list[tuple[str, list[str]]] = []
     if active_first:
         commands.append(("active-gh-user", ["gh", *args]))
-        if bot_enabled:
-            commands.append(("automation-gh", [str(BOT_GH), *args]))
     elif bot_enabled:
         commands.append(("automation-gh", [str(BOT_GH), *args]))
     else:
         commands.append(("active-gh-user", ["gh", *args]))
 
-    for index, (actor, command) in enumerate(commands):
+    for actor, command in commands:
         proc = subprocess.run(
             command,
             input=input_text,
@@ -140,31 +138,6 @@ def run_raw(
         tried.append((actor, proc))
         if proc.returncode == 0:
             return actor, proc.stdout, proc.stderr
-        if (
-            not active_first
-            and actor == "automation-gh"
-            and index + 1 == len(commands)
-            and is_graphql_rate_limited(proc.stderr)
-        ):
-            continue
-        if actor == "automation-gh" or active_first:
-            break
-
-    if tried and tried[-1][0] == "automation-gh" and is_graphql_rate_limited(tried[-1][1].stderr):
-        print(
-            "warning: automation gh token hit a GraphQL/API rate limit; retrying with active gh auth",
-            file=sys.stderr,
-        )
-        proc = subprocess.run(
-            ["gh", *args],
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        tried.append(("active-gh-user", proc))
-        if proc.returncode == 0:
-            return "active-gh-user", proc.stdout, proc.stderr
 
     actor, proc = tried[-1]
     if check:
@@ -175,13 +148,6 @@ def run_raw(
             raise PlanError(f"gh command failed: {detail or proc.stdout}")
         die("gh command failed", detail=detail or proc.stdout)
     return actor, proc.stdout, proc.stderr
-
-
-def is_graphql_rate_limited(stderr: str) -> bool:
-    lowered = stderr.lower()
-    return "rate limit" in lowered and (
-        "graphql" in lowered or "api rate" in lowered or "secondary rate" in lowered
-    )
 
 
 PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}

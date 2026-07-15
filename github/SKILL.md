@@ -4,6 +4,9 @@ description: "Comprehensive GitHub Expert persona for repository execution and h
 metadata:
   short-description: Execute GitHub repo workflows
 resources:
+  - path: scripts/github_api.py
+    kind: script
+    description: Shared body-safe GitHub API transport, response parser, diagnostics envelope, and rate-limit metadata layer.
   - path: scripts/gh-pr.py
     kind: script
     description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.
@@ -15,7 +18,7 @@ resources:
     description: Safe stdin-backed comment helper for issues and pull requests.
   - path: scripts/gh-with-env-token
     kind: script
-    description: GitHub CLI wrapper that selects configured automation auth and refuses write fallback to active local auth unless explicitly allowed.
+    description: GitHub CLI wrapper that selects configured automation auth and refuses active-auth fallback unless explicitly allowed.
   - path: scripts/git-commit-as-bot
     kind: script
     description: Commit with the configured automation author and committer identity.
@@ -52,7 +55,21 @@ resources:
   - path: references/work-evidence.md
     kind: reference
     description: Contract for the read-only GitHub work evidence helper and downstream consumers.
+  - path: references/operation-matrix.toml
+    kind: reference
+    description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: github-api-call
+    source: skill
+    resource_path: scripts/github_api.py
+    example_argv:
+      ["uv", "run", "scripts/github_api.py", "call", "--method", "GET", "/rate_limit"]
+    purpose: Runs one body-safe GitHub API request and emits the versioned diagnostics envelope.
+  - name: github-api-rate-limit
+    source: skill
+    resource_path: scripts/github_api.py
+    example_argv: ["uv", "run", "scripts/github_api.py", "rate-limit"]
+    purpose: Reads and normalizes GitHub rate-limit metadata through the shared API layer.
   - name: github-pr-view
     source: skill
     resource_path: scripts/gh-pr.py
@@ -124,7 +141,7 @@ commands:
     source: skill
     resource_path: scripts/gh-with-env-token
     example_argv: ["scripts/gh-with-env-token", "api", "user", "--jq", ".login"]
-    purpose: Routes unsupported gh commands through configured automation auth and fails closed for write-like commands if bot auth is unavailable.
+    purpose: Routes unsupported gh commands through configured automation auth and fails closed without changing actor unless fallback is explicitly allowed.
   - name: github-git-commit-as-bot
     source: skill
     resource_path: scripts/git-commit-as-bot
@@ -333,7 +350,7 @@ policy:
               "-f",
               "per_page=100",
             ]
-          purpose: Runs GitHub API calls through configured automation auth; read calls may fall back with warning, write calls fail closed by default.
+          purpose: Runs GitHub API calls through configured automation auth and changes actor only when active-auth fallback is explicitly approved.
     - id: prefer-gh-issue-create-helper
       match:
         argv_prefix: ["gh", "issue", "create"]
@@ -605,9 +622,10 @@ invocation rules.
   `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command.
 - **Authentication**: The helpers own token selection, fallback behavior,
   consistent warnings, and parseable output. `scripts/gh-with-env-token` loads
-  automation auth and fails closed for write-like GitHub commands when bot auth
-  is unavailable or rejected. Read-only commands may still fall back to active
-  local `gh` with a warning. Use
+  automation auth and fails closed without changing actor when bot auth is
+  unavailable, rejected, or rate-limited. Active local `gh` auth is used only
+  when the user explicitly approves the one-off and
+  `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` is set. Use
   `scripts/gh-with-env-token --print-auth-account ...` when the acting account
   should be visible; it writes the account receipt to stderr so JSON stdout
   remains parseable.
@@ -643,6 +661,8 @@ consistent auth/retry behavior, and safe formatting:
   `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
+- `scripts/github_api.py`: Shared JSON-stdin REST transport, response-header
+  parsing, diagnostics envelope, redaction, and bounded rate-limit probe.
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.

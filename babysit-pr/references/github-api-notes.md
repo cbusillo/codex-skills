@@ -1,10 +1,10 @@
 # GitHub CLI / API Notes For `babysit-pr`
 
 The watcher routes GitHub CLI calls through
-`github/scripts/gh-with-env-token` by default. Read-only calls may fall back to
-active local `gh` with a warning when bot auth is unavailable; write-like calls
-such as Actions reruns fail closed unless active-auth fallback is explicitly
-allowed for a one-off.
+`github/scripts/gh-with-env-token` by default. Reads and writes preserve the
+configured automation actor when auth or quota failures occur. Active local
+`gh` is used only when active-auth fallback is explicitly allowed for a one-off;
+write-like calls such as Actions reruns remain fail-closed by default.
 
 ## Primary commands used
 

@@ -17,10 +17,11 @@ import sys
 import urllib.parse
 from typing import Any, Optional, Tuple
 
+import github_api as github_api_core
+
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 GH = os.environ.get("GH_PR_GH") or str(SCRIPT_DIR / "gh-with-env-token")
-API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
 
 
 class HelperError(Exception):
@@ -29,8 +30,8 @@ class HelperError(Exception):
 
 class PrHelperError(HelperError):
     def __init__(self, message: str, **payload: Any):
-        super().__init__(message)
-        self.payload = payload
+        super().__init__(github_api_core.redact_string(message))
+        self.payload = github_api_core.redact_body(payload)
 
 
 def main() -> int:
@@ -38,12 +39,25 @@ def main() -> int:
     try:
         payload = args.func(args)
     except PrHelperError as exc:
-        error_payload = {"ok": False, "error": str(exc), **exc.payload}
-        print(json.dumps(error_payload, sort_keys=True), file=sys.stderr)
+        error_payload = {
+            "schema_version": github_api_core.SCHEMA_VERSION,
+            "ok": False,
+            "error": str(exc),
+            **exc.payload,
+        }
+        print(json.dumps(error_payload, sort_keys=True, separators=(",", ":")))
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     except HelperError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True), file=sys.stderr)
+        message = github_api_core.redact_string(str(exc))
+        print(json.dumps({
+            "schema_version": github_api_core.SCHEMA_VERSION,
+            "ok": False,
+            "error": message,
+        }, sort_keys=True, separators=(",", ":")))
+        print(f"error: {message}", file=sys.stderr)
         return 1
+    payload.setdefault("schema_version", github_api_core.SCHEMA_VERSION)
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
     return 0
 
@@ -100,7 +114,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--remove-project", action="append", default=[], help="Remove the PR from projects. Repeat for multiple entries.")
     p.set_defaults(func=cmd_edit)
 
-    p = sub.add_parser("comment", help="Add a PR timeline comment through gh-with-env-token.")
+    p = sub.add_parser("comment", help="Add a PR timeline comment through the shared REST path.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
     p.set_defaults(func=cmd_comment)
@@ -203,11 +217,13 @@ def cmd_edit(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
-    repo = resolve_repo(args.repo)
-    gh_args = ["pr", "comment", args.pr, "--repo", repo, "--body-file", args.body_file]
-    proc = run_pr_write(gh_args, operation="comment", repo=repo, pr=args.pr)
-    stdout = proc.stdout.strip()
-    return {"ok": True, "operation": "comment", "repo": repo, "pr": args.pr, "url": extract_url(stdout), "stdout": stdout}
+    repo, number = resolve_pr(args.repo, args.pr)
+    body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
+    if not body:
+        raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
+    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+    url = comment.get("html_url") if isinstance(comment, dict) else None
+    return {"ok": True, "operation": "comment", "repo": repo, "pr": args.pr, "url": url, "stdout": url or ""}
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
@@ -255,6 +271,7 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     try:
         result = rest_json("PUT", merge_path, payload)
     except HelperError as exc:
+        api_result = exc.payload.get("api_result") if isinstance(exc, PrHelperError) else None
         raise PrHelperError(
             "PR merge failed",
             detail=str(exc),
@@ -265,6 +282,7 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             method=args.method,
             headSha=pr["head"]["sha"],
             hint=merge_failure_hint(str(exc)),
+            api_result=api_result,
         ) from exc
     deleted = None
     if args.delete_branch and result.get("merged"):
@@ -638,7 +656,16 @@ def resolve_pr_number(repo: str, value: Optional[str]) -> int:
     if value:
         if value.isdigit():
             return int(value)
-        raise HelperError(f"Could not parse PR number: {value}")
+        pulls = rest_json(
+            "GET",
+            f"/repos/{repo}/pulls",
+            params={"head": f"{repo.split('/')[0]}:{value}", "state": "open"},
+        )
+        if isinstance(pulls, list) and len(pulls) == 1:
+            return int(pulls[0]["number"])
+        if isinstance(pulls, list) and len(pulls) > 1:
+            raise HelperError(f"Multiple open PRs found for branch {value}; pass a PR number")
+        raise HelperError(f"No open PR found for branch {value}; pass a PR number")
     branch = run_git(["branch", "--show-current"]).strip()
     if not branch:
         raise HelperError("Current branch is detached; pass a PR number")
@@ -655,15 +682,34 @@ def rest_json(
     *,
     params: Optional[dict] = None,
 ) -> Any:
-    args = ["api", "--method", method, *API_VERSION_ARGS]
+    return rest_result(method, path, payload, params=params).body
+
+
+def rest_result(
+    method: str,
+    path: str,
+    payload: Optional[dict] = None,
+    *,
+    params: Optional[dict] = None,
+) -> github_api_core.ApiResult:
     if params:
-        for key, value in params.items():
-            args.extend(["-f", f"{key}={value}"])
-    if payload is not None:
-        for key, value in payload.items():
-            args.extend(["-f", f"{key}={value}"])
-    args.append(path)
-    return gh_json(args)
+        path = path_with_query(path, params)
+    result = github_api_core.call_gh(
+        method,
+        path,
+        payload,
+        gh_cmd=GH,
+        operation="gh-pr.rest",
+    )
+    if not result.ok:
+        detail = result.failure.message if result.failure else "GitHub API request failed"
+        raise PrHelperError(
+            detail,
+            method=method.upper(),
+            endpoint=github_api_core.redact_path(path),
+            api_result=result.as_dict(),
+        )
+    return result
 
 
 def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
@@ -688,12 +734,8 @@ def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str
 
 
 def collect_single_rest_page(method: str, path: str, *, per_page: int, page: int) -> list[dict[str, Any]]:
-    data = gh_json(["api", "--method", method, *API_VERSION_ARGS, path_with_query(path, {"per_page": per_page, "page": page})])
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        return [data]
-    return []
+    data = rest_json(method, path, params={"per_page": per_page, "page": page})
+    return rest_page_items(data)
 
 
 def path_with_query(path: str, params: dict[str, Any]) -> str:
@@ -702,37 +744,52 @@ def path_with_query(path: str, params: dict[str, Any]) -> str:
 
 
 def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per_page: int) -> list[dict[str, Any]]:
-    separator = "&" if "?" in path else "?"
-    data = gh_json([
-        "api",
-        "--method",
-        method,
-        *API_VERSION_ARGS,
-        "--paginate",
-        "--slurp",
-        f"{path}{separator}per_page={per_page}",
-    ])
-    pages = data if isinstance(data, list) else [data]
     items: list[dict[str, Any]] = []
-    for page in pages:
-        if isinstance(page, list):
-            items.extend(item for item in page if isinstance(item, dict))
-            if limit is not None and len(items) >= limit:
-                return items[:limit]
-            continue
-        if isinstance(page, dict):
-            for key in ("check_runs", "statuses"):
-                value = page.get(key)
-                if isinstance(value, list):
-                    items.extend(item for item in value if isinstance(item, dict))
-                    if limit is not None and len(items) >= limit:
-                        return items[:limit]
+    next_path: Optional[str] = path_with_query(path, {"per_page": per_page})
+    while next_path:
+        result = rest_result(method, next_path)
+        items.extend(rest_page_items(result.body))
+        if limit is not None and len(items) >= limit:
+            return items[:limit]
+        next_path = next_link(result.headers.get("link"))
     return items if limit is None else items[:limit]
 
 
+def rest_page_items(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in ("check_runs", "statuses", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def next_link(link_header: Optional[str]) -> Optional[str]:
+    if not link_header:
+        return None
+    for item in link_header.split(","):
+        if 'rel="next"' not in item:
+            continue
+        match = re.search(r"<([^>]+)>", item)
+        if match:
+            return match.group(1)
+    return None
+
+
 def delete_ref(repo: str, ref: str) -> dict[str, Any]:
-    proc = run_gh(["api", "--method", "DELETE", *API_VERSION_ARGS, f"/repos/{repo}/git/refs/{ref}"])
-    return {"ref": ref, "deleted": proc.returncode == 0, "stderr": proc.stderr.strip()}
+    result = github_api_core.call_gh(
+        "DELETE",
+        f"/repos/{repo}/git/refs/{ref}",
+        gh_cmd=GH,
+        operation="gh-pr.delete-ref",
+    )
+    deleted = {"ref": ref, "deleted": result.ok, "stderr": ""}
+    if not result.ok:
+        deleted["stderr"] = result.failure.message if result.failure else "GitHub API request failed"
+        deleted["api_result"] = result.as_dict()
+    return deleted
 
 
 def append_flag(args: list[str], flag: str, value: Optional[str]) -> None:
@@ -748,6 +805,15 @@ def append_bool(args: list[str], flag: str, enabled: bool) -> None:
 def append_repeated_flag(args: list[str], flag: str, values: list[str]) -> None:
     for value in values:
         args.extend([flag, value])
+
+
+def read_text_file(path: str, **payload: Any) -> str:
+    try:
+        if path == "-":
+            return sys.stdin.read()
+        return pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PrHelperError("Could not read body file", detail=str(exc), path=path, **payload) from exc
 
 
 def run_pr_write(args: list[str], **payload: Any) -> subprocess.CompletedProcess[str]:
@@ -770,13 +836,23 @@ def extract_url(value: str) -> Optional[str]:
 def gh_json(args: list[str]) -> Any:
     proc = run_gh(args)
     if proc.returncode != 0:
-        raise HelperError((proc.stderr or proc.stdout or "gh api failed").strip())
+        message = (proc.stderr or proc.stdout or "gh command failed").strip()
+        failure = github_api_core.classify_legacy_failure(message)
+        result = github_api_core.ApiResult(
+            ok=False,
+            status=0,
+            body=None,
+            operation="gh-pr.legacy",
+            failure=failure,
+            failed_step="gh_invocation",
+        )
+        raise PrHelperError(message, command=args[:2], api_result=result.as_dict())
     if not proc.stdout.strip():
         return None
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        raise HelperError(f"Expected JSON from gh, got: {proc.stdout[:300]}") from exc
+        raise PrHelperError("Expected JSON from gh", detail=proc.stdout[:300], command=args[:2]) from exc
 
 
 def run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
