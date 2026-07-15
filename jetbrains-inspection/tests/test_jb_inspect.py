@@ -2175,6 +2175,52 @@ class LifecycleTest(unittest.TestCase):
         problems_call = next(params for endpoint, params in calls if endpoint == "problems")
         self.assertEqual(problems_call["inspection_run_id"], 7)
 
+    def test_active_accepted_run_keeps_prior_snapshot_as_stale(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            if endpoint == "trigger":
+                return {"status": "triggered", "run_id": 7, "route": route}
+            if endpoint == "wait":
+                return {
+                    "status": "timed_out",
+                    "timed_out": True,
+                    "inspection_in_progress": True,
+                    "inspection_run_id": 7,
+                }
+            if endpoint == "problems":
+                return {
+                    "status": "inspection_in_progress",
+                    "inspection_in_progress": True,
+                    "inspection_run_id": 7,
+                    "snapshot_run_id": 6,
+                    "total_problems": 0,
+                    "problems": [],
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with (
+            patch.object(jb_inspect, "call_endpoint", side_effect=fake_call),
+            patch.object(
+                jb_inspect,
+                "cancel_timed_out_inspection",
+                return_value={"status": "settlement_timeout", "requested": True, "settled": False},
+            ),
+        ):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(timeout_ms=1000, poll_ms=1),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+            )
+
+        self.assertEqual([endpoint for endpoint, _ in calls], ["trigger", "wait", "problems"])
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertEqual(result["verdict_reason"], "timeout")
+        self.assertNotEqual(result.get("error_reason"), "run_changed")
+
     def test_cancellation_settlement_rejects_completed_replacement_run(self):
         route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
 

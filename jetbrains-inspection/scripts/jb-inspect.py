@@ -1081,11 +1081,11 @@ def inspection_run_changed_result(
 def inspection_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
     current_run_id = inspection_run_id(payload)
     snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
-    return (
-        current_run_id is not None and current_run_id != expected_run_id
-    ) or (
-        snapshot_run_id is not None and snapshot_run_id != expected_run_id
-    )
+    if current_run_id is not None and current_run_id != expected_run_id:
+        return True
+    if payload.get("inspection_in_progress") is True:
+        return False
+    return snapshot_run_id is not None and snapshot_run_id != expected_run_id
 
 
 def wait_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
