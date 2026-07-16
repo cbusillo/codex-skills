@@ -115,21 +115,19 @@ def run_raw(
     prefer_active: bool = False,
     recoverable: bool = False,
 ) -> tuple[str, str, str]:
-    """Run gh through automation first, with active gh as a rate-limit fallback."""
+    """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
     bot_enabled = BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
     active_first = prefer_active and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
     commands: list[tuple[str, list[str]]] = []
     if active_first:
         commands.append(("active-gh-user", ["gh", *args]))
-        if bot_enabled:
-            commands.append(("automation-gh", [str(BOT_GH), *args]))
     elif bot_enabled:
         commands.append(("automation-gh", [str(BOT_GH), *args]))
     else:
         commands.append(("active-gh-user", ["gh", *args]))
 
-    for index, (actor, command) in enumerate(commands):
+    for actor, command in commands:
         proc = subprocess.run(
             command,
             input=input_text,
@@ -140,31 +138,6 @@ def run_raw(
         tried.append((actor, proc))
         if proc.returncode == 0:
             return actor, proc.stdout, proc.stderr
-        if (
-            not active_first
-            and actor == "automation-gh"
-            and index + 1 == len(commands)
-            and is_graphql_rate_limited(proc.stderr)
-        ):
-            continue
-        if actor == "automation-gh" or active_first:
-            break
-
-    if tried and tried[-1][0] == "automation-gh" and is_graphql_rate_limited(tried[-1][1].stderr):
-        print(
-            "warning: automation gh token hit a GraphQL/API rate limit; retrying with active gh auth",
-            file=sys.stderr,
-        )
-        proc = subprocess.run(
-            ["gh", *args],
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        tried.append(("active-gh-user", proc))
-        if proc.returncode == 0:
-            return "active-gh-user", proc.stdout, proc.stderr
 
     actor, proc = tried[-1]
     if check:
@@ -175,13 +148,6 @@ def run_raw(
             raise PlanError(f"gh command failed: {detail or proc.stdout}")
         die("gh command failed", detail=detail or proc.stdout)
     return actor, proc.stdout, proc.stderr
-
-
-def is_graphql_rate_limited(stderr: str) -> bool:
-    lowered = stderr.lower()
-    return "rate limit" in lowered and (
-        "graphql" in lowered or "api rate" in lowered or "secondary rate" in lowered
-    )
 
 
 PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}
@@ -259,9 +225,18 @@ def project_failure_payload(
     return payload
 
 
-def ensure_graphql_budget(*, recoverable: bool = False, minimum: int = GRAPHQL_PREFLIGHT_MINIMUM) -> None:
+def ensure_graphql_budget(
+    *,
+    prefer_active: bool = False,
+    recoverable: bool = False,
+    minimum: int = GRAPHQL_PREFLIGHT_MINIMUM,
+) -> None:
     try:
-        actor, data = gh_json(["api", *API_VERSION_ARGS, "rate_limit"], recoverable=recoverable)
+        actor, data = gh_json(
+            ["api", *API_VERSION_ARGS, "rate_limit"],
+            prefer_active=prefer_active,
+            recoverable=recoverable,
+        )
     except PlanError as exc:
         if isinstance(exc, ClassifiedPlanError):
             raise
@@ -871,7 +846,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         try:
             owner = project_config.get("owner") or repo.split("/", 1)[0]
             _, number, _ = resolve_project(owner, project, recoverable=True)
-            ensure_graphql_budget(recoverable=True)
+            ensure_graphql_budget(prefer_active=True, recoverable=True)
             _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"], prefer_active=True, recoverable=True)
             added_item = json.loads(added_stdout) if added_stdout.strip() else {}
             added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
@@ -989,7 +964,7 @@ def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = Fal
     cache_key = ("project", owner, title_or_number)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     actor, data = gh_json(
         ["project", "list", "--owner", owner, "--format", "json", "--limit", "100"],
         prefer_active=True,
@@ -1012,7 +987,7 @@ def project_meta(owner: str, title_or_number: str, *, recoverable: bool = False)
     cache_key = ("project", owner, str(number))
     if cache_key in PROJECT_CACHE and PROJECT_CACHE[cache_key][2]:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     actor, data = gh_json(["project", "view", str(number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
     PROJECT_CACHE[cache_key] = (actor, number, data)
     return actor, number, data
@@ -1022,7 +997,7 @@ def project_fields(owner: str, project_number: int, *, recoverable: bool = False
     cache_key = ("fields", owner, project_number)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     _, data = gh_json(["project", "field-list", str(project_number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
     fields = {item["name"]: item for item in data.get("fields", [])}
     PROJECT_CACHE[cache_key] = fields
@@ -1040,7 +1015,7 @@ def project_items(
     cache_key = ("items", owner, project_number, query, limit)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     args = [
         "project",
         "item-list",
@@ -1209,7 +1184,7 @@ def cmd_project_add(args: argparse.Namespace) -> None:
     if not project:
         raise PlanError("Pass --project or set planning.projects.default_project")
     _, number, project_data = resolve_project(owner, project, recoverable=True)
-    ensure_graphql_budget(recoverable=True)
+    ensure_graphql_budget(prefer_active=True, recoverable=True)
     actor, data = gh_json([
         "project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"
     ], prefer_active=True, recoverable=True)
@@ -1312,6 +1287,7 @@ def cmd_close(args: argparse.Namespace) -> None:
 
 def cmd_project_list(args: argparse.Namespace) -> None:
     owner = args.owner
+    ensure_graphql_budget(prefer_active=True, recoverable=True)
     cmd = ["project", "list", "--owner", owner, "--format", "json", "--limit", str(args.limit)]
     if args.closed:
         cmd.append("--closed")

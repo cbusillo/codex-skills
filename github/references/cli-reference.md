@@ -30,9 +30,46 @@ Choose the interpreter from the helper's extension and shebang before running
   matter. Plain `python3` is only appropriate when the skill docs explicitly
   say the helper has no managed environment needs.
 
+## Shared API Contract
+
+`scripts/github_api.py` is the common body-safe REST and diagnostics layer.
+It invokes `gh api --include` through `scripts/gh-with-env-token` by default,
+sends mutation bodies as JSON on stdin, and emits one versioned JSON envelope
+on stdout. Human diagnostics remain on stderr and terminal failures return a
+nonzero exit code.
+
+- `uv run scripts/github_api.py call --method GET /rate_limit`: Run one REST
+  request.
+- `uv run scripts/github_api.py call --method POST /path --body-file body.json`:
+  Send a JSON body without exposing it in argv. Use `--body-file -` for stdin.
+- `uv run scripts/github_api.py rate-limit`: Read and normalize quota metadata;
+  the in-process probe is bounded to one live request.
+
+Set `GITHUB_API_GH` only in tests or controlled local diagnostics that need to
+replace the default `scripts/gh-with-env-token` executable.
+
+The result envelope separates failure cause, write-outcome certainty,
+retryability, fallback eligibility, and final disposition. It also carries the
+GitHub request id and rate-limit headers when available. Authentication or quota
+failure never changes the acting account implicitly.
+
+Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
+each public helper operation's live and selected transport, quota bucket, actor
+policy, idempotency/retry posture, reconciliation strategy, and retained
+GraphQL rationale. A row with a pending transport or internal component change
+must set `migration_status = "planned"` plus its current command and quota
+bucket, even when both the current and selected top-level transports are
+`composite`. This prevents automation from mistaking an approved target for
+checked-in behavior. Validate the matrix with
+`uv run scripts/validate-operation-matrix.py`.
+
 ## Common Commands
 
 ### Execution: PRs And Rate Limits
+
+`scripts/gh-pr.py` emits one versioned JSON object on stdout for success or
+terminal failure. Human-readable failure text stays on stderr; REST failures
+also include the shared `api_result` diagnostics envelope.
 
 - `scripts/gh-pr.py view <pr>`: Show PR metadata.
 - `scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
@@ -41,7 +78,7 @@ Choose the interpreter from the helper's extension and shebang before running
 - `scripts/gh-pr.py edit <pr> --body-file BODY.md`: Replace a PR
   body through the automation-token wrapper.
 - `scripts/gh-pr.py comment <pr> --body-file COMMENT.md`: Add a PR
-  timeline comment through the automation-token wrapper.
+  timeline comment through the shared REST issue-comment endpoint.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
@@ -143,40 +180,46 @@ instead of inlined into argv. For completed durable plan issues, use
 `scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
 in sync.
 
-For timeline comments, use `scripts/gh-comment` or
-`scripts/gh-pr.py comment --body-file`. For PR review feedback, use
-`scripts/gh-with-env-token pr review --body-file`.
+For timeline comments, use `scripts/gh-pr.py comment --body-file` in PR-centric
+workflows that already resolve PR numbers, URLs, or branches. Use
+`scripts/gh-comment issue|pr` for the generic stdin interface and its
+`--edit-last` / `--create-if-none` compatibility surface. The planned comment
+migration will route both entry points through one shared REST implementation.
+For PR review feedback, use `scripts/gh-with-env-token pr review --body-file`.
 
 Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
 account. Prefer the PR helper write subcommands above so PR creation, PR body
-edits, and PR timeline comments route through `scripts/gh-with-env-token` and
-use the configured automation token by default.
+edits, and PR timeline comments use the configured automation token. PR
+timeline comments use the shared REST transport; create/edit retain the guarded
+CLI path until their full option surface is migrated.
 
 `scripts/gh-issue` routes through `scripts/gh-with-env-token` by default so it
 uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
 special local cases where a different `gh` executable should be used.
+`GH_COMMENT_GH` provides the equivalent test-only override for
+`scripts/gh-comment`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
 `$CODEX_HOME/local.env` and then `~/.code/local.env`, then prefers
-`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. Read-only
-commands may fall back to active local `gh` with a warning when automation auth
-is unavailable. Write-like commands fail closed unless the authenticated login
-matches `shiny-code-bot`; set
-`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
-one-off human-owned write. Set `CODEX_SKILLS_ENV_FILE` only in tests or special
-local cases where a different env file should be used.
+`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. Commands fail
+closed without changing actor when automation auth is missing, rejected, or
+rate-limited. Write-like commands also require the authenticated login to match
+`shiny-code-bot`. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
+an explicitly approved one-off command whose human-owned actor is acceptable.
+Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
+different env file should be used.
 
 For commits and pushes performed by Code or spawned agents, use
 `scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,
 committer, push events, and resulting Actions runs stay owned by
 `shiny-code-bot`.
 
-Planning helpers are bot-first by default. If the bot token hits a GraphQL/API
-rate limit, helpers may retry with the active `gh` account and report the actor
-in their JSON output. Set `GH_PLAN_SKIP_BOT=1` for temporary active-account
-planning work, or reserve `GH_PLAN_ALLOW_ACTIVE_FIRST=1` for explicit local
-debugging of Project operations that already request active auth.
+Planning helpers preserve the selected actor when authentication or quota
+failures occur. Set `GH_PLAN_SKIP_BOT=1` for explicitly authorized temporary
+active-account planning work, or reserve `GH_PLAN_ALLOW_ACTIVE_FIRST=1` for
+explicit local debugging of Project operations that already request active
+auth. Neither setting is an automatic rate-limit retry.
 
 Avoid passing escaped `\n` through shell-quoted `--body`. Also avoid unquoted
 heredocs like `<<EOF` for Markdown bodies: shell command substitution runs

@@ -144,11 +144,21 @@ def test_project_commands_are_recoverable() -> None:
     )
     with redirect_stdout(StringIO()):
         plan.cmd_project_add(types.SimpleNamespace(repo="owner/repo", issue="1", owner=None, project=None))
-        plan.cmd_project_list(types.SimpleNamespace(owner="owner", limit=30, closed=False))
 
     project_calls = [call for call in calls if call["args"] and call["args"][0] == "project"]
     assert project_calls, calls
     assert all(call["recoverable"] for call in project_calls), project_calls
+    assert all(call["prefer_active"] for call in calls), calls
+
+    calls.clear()
+    with redirect_stdout(StringIO()):
+        plan.cmd_project_list(types.SimpleNamespace(owner="owner", limit=30, closed=False))
+
+    assert len(calls) == 2, calls
+    assert calls[0]["args"][-1] == "rate_limit", calls
+    assert calls[1]["args"][:2] == ["project", "list"], calls
+    assert all(call["prefer_active"] for call in calls), calls
+    assert all(call["recoverable"] for call in calls), calls
 
 
 def test_repo_config_path_skips_missing_home_candidate() -> None:
@@ -976,7 +986,7 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
     assert created_names == ["plan", "plan:active"], created_names
 
 
-def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
+def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
 
@@ -984,16 +994,16 @@ def test_run_raw_falls_back_only_for_graphql_rate_limit() -> None:
         calls.append(command)
         if command[0].endswith("gh-with-env-token"):
             return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
-        if command[0] == "gh":
-            return completed(stdout='{"ok": true}')
-        raise AssertionError(f"unexpected command: {command}")
+        raise AssertionError(f"active gh should not be called for rate limits: {command}")
 
     plan.subprocess.run = fake_run
-    with redirect_stderr(StringIO()):
-        actor, stdout, _ = plan.run_raw(["api", "rate_limit"], recoverable=True)
-    assert actor == "active-gh-user", actor
-    assert json.loads(stdout) == {"ok": True}, stdout
-    assert len(calls) == 2, calls
+    try:
+        plan.run_raw(["api", "rate_limit"], recoverable=True)
+    except plan.PlanError as exc:
+        assert "GraphQL: API rate limit already exceeded" in str(exc), exc
+    else:
+        raise AssertionError("GraphQL rate limit should remain on the automation actor")
+    assert len(calls) == 1, calls
 
     calls.clear()
 
@@ -1138,11 +1148,13 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "payload=''\n"
+            "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
+            "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "case \"$*\" in\n"
             "  pr\\ create*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
             "  pr\\ edit*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
-            "  pr\\ comment*) printf 'https://github.com/owner/repo/pull/9#issuecomment-1\\n' ;;\n"
+            "  *'/repos/owner/repo/issues/9/comments'*) printf '{\"html_url\":\"https://github.com/owner/repo/pull/9#issuecomment-1\"}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
             "esac\n"
         )
@@ -1206,13 +1218,18 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
     assert json.loads(comment.stdout)["url"] == "https://github.com/owner/repo/pull/9#issuecomment-1"
     assert create_without_body.returncode == 1
     assert "requires --body-file" in create_without_body.stderr
+    assert json.loads(create_without_body.stdout)["schema_version"] == 1
     assert edit_without_changes.returncode == 1
     assert "requires at least one edit flag" in edit_without_changes.stderr
-    assert f"pr create --repo owner/repo --title Bot write path --body-file {body_path} --base main --head feature" in calls
-    assert f"pr edit 9 --repo owner/repo --body-file {body_path}" in calls
-    assert f"pr comment 9 --repo owner/repo --body-file {body_path}" in calls
-    assert "pr create --repo owner/repo --title Missing body" not in calls
-    assert "pr edit 9 --repo owner/repo" not in calls
+    assert json.loads(edit_without_changes.stdout)["schema_version"] == 1
+    assert any(
+        f"pr create --repo owner/repo --title Bot write path --body-file {body_path} --base main --head feature" in call
+        for call in calls
+    ), calls
+    assert any(f"pr edit 9 --repo owner/repo --body-file {body_path}" in call for call in calls), calls
+    assert any("/repos/owner/repo/issues/9/comments" in call and "Closes #146" in call for call in calls), calls
+    assert not any("pr create --repo owner/repo --title Missing body" in call for call in calls), calls
+    assert not any(call.startswith("pr edit 9 --repo owner/repo |") for call in calls), calls
 
 
 def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
@@ -1341,8 +1358,9 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
         )
 
     assert result.returncode == 1, result
-    payload = json.loads(result.stderr)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False, payload
+    assert payload["schema_version"] == 1, payload
     assert payload["error"] == "PR merge failed", payload
     assert payload["detail"] == "gh: Not Found (HTTP 404)", payload
     assert payload["operation"] == "merge", payload
@@ -1351,6 +1369,58 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
     assert payload["endpoint"] == "/repos/owner/repo/pulls/12/merge", payload
     assert payload["headSha"] == "head-sha", payload
     assert "token scope" in payload["hint"], payload
+    assert payload["api_result"]["failure"]["cause"] == "network_provider_failure", payload
+    assert result.stderr.strip() == "error: PR merge failed", result.stderr
+
+
+def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        body_path = tmp_path / "comment.md"
+        body_path.write_text("Review note\n")
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/issues/9/comments'* ]]; then\n"
+            "  printf 'HTTP/2.0 403 \\r\\n'\n"
+            "  printf 'content-type: application/json\\r\\n'\n"
+            "  printf 'x-github-request-id: request-123\\r\\n'\n"
+            "  printf '\\r\\n'\n"
+            "  printf '{\"message\":\"Forbidden token=synthetic-secret\",\"credentials\":\"synthetic-private\"}\\n'\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf '{}\\n'\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path))
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "comment",
+                "9",
+                "--body-file",
+                str(body_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 1, result
+    assert "synthetic-secret" not in result.stdout + result.stderr, result
+    assert "synthetic-private" not in result.stdout + result.stderr, result
+    payload = json.loads(result.stdout)
+    api_result = payload["api_result"]
+    assert api_result["failure"]["cause"] == "permission_denied", payload
+    assert api_result["failure"]["request_id"] == "request-123", payload
+    assert api_result["body"]["credentials"] == "[REDACTED]", payload
+    assert "[REDACTED]" in api_result["failure"]["message"], payload
 
 
 def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
@@ -1377,10 +1447,12 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "payload=''\n"
+            "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
+            "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  if [[ \"$*\" != *'superseded by #13'* ]]; then exit 2; fi\n"
-            "  if [[ \"$*\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
+            "  if [[ \"$payload\" != *'superseded by #13'* ]]; then exit 2; fi\n"
+            "  if [[ \"$payload\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
             "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
             "  printf '[{\"number\":12}]\\n'\n"
@@ -1390,10 +1462,10 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
             "  if [[ \"$*\" != *'--method DELETE'* ]]; then exit 2; fi\n"
             "  exit 0\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "  if [[ \"$payload\" == *'\"state\": \"closed\"'* ]]; then\n"
             "    printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "  else\n"
-            "    if [[ \"$*\" != *'body=Refs #144'* || \"$*\" != *'Refs owner/repo#145'* ]]; then exit 2; fi\n"
+            "    if [[ \"$payload\" != *'Refs #144'* || \"$payload\" != *'Refs owner/repo#145'* ]]; then exit 2; fi\n"
             "    printf '%s\\n' \"$PR_JSON\"\n"
             "  fi\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -1446,7 +1518,7 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
     ], payload
     assert "/repos/owner/repo/issues/12/comments" in calls, calls
     assert "/repos/owner/repo/git/refs/heads/old-topic" in calls, calls
-    assert "state=closed" in calls, calls
+    assert '\"state\": \"closed\"' in calls, calls
 
 
 def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
@@ -1473,11 +1545,13 @@ def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "payload=''\n"
+            "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
+            "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  exit 3\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  if [[ \"$*\" == *'state=closed'* ]]; then\n"
+            "  if [[ \"$payload\" == *'\"state\": \"closed\"'* ]]; then\n"
             "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
             "    exit 1\n"
             "  fi\n"
@@ -1503,12 +1577,14 @@ def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
         calls = log_path.read_text()
 
     assert result.returncode == 1, result
-    payload = json.loads(result.stderr)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False, payload
     assert payload["error"] == "gh: Forbidden (HTTP 403)", payload
+    assert payload["api_result"]["failure"]["cause"] == "permission_denied", payload
+    assert result.stderr.strip() == "error: gh: Forbidden (HTTP 403)", result.stderr
     assert not any("/repos/owner/repo/issues/12/comments" in line for line in calls.splitlines()), calls
     assert not any(
-        "/repos/owner/repo/pulls/12" in line and "--method PATCH" in line and "body=" in line
+        "/repos/owner/repo/pulls/12" in line and "--method PATCH" in line and '\"body\":' in line
         for line in calls.splitlines()
     ), calls
 
@@ -1537,11 +1613,13 @@ def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "payload=''\n"
+            "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
+            "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  if [[ \"$*\" == *'body=Refs #144'* ]]; then\n"
+            "  if [[ \"$payload\" == *'Refs #144'* ]]; then\n"
             "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
             "    exit 1\n"
             "  fi\n"
@@ -1602,7 +1680,7 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
-            "  printf 'remote ref could not be deleted\\n' >&2\n"
+            "  printf 'remote ref could not be deleted credentials=synthetic-delete authorization=synthetic-auth\\n' >&2\n"
             "  exit 1\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
             "  printf '[{\"number\":12}]\\n'\n"
@@ -1643,16 +1721,19 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
 
     payload = json.loads(result.stdout)
     assert payload["closed"] is True, payload
-    assert payload["deletedBranch"] == {
-        "deleted": False,
-        "ref": "heads/old-topic",
-        "stderr": "remote ref could not be deleted",
-    }, payload
+    assert "synthetic-delete" not in result.stdout + result.stderr, result
+    assert "synthetic-auth" not in result.stdout + result.stderr, result
+    assert payload["deletedBranch"]["deleted"] is False, payload
+    assert payload["deletedBranch"]["ref"] == "heads/old-topic", payload
+    assert payload["deletedBranch"]["stderr"] == (
+        "remote ref could not be deleted credentials=[REDACTED] authorization=[REDACTED]"
+    ), payload
+    assert payload["deletedBranch"]["api_result"]["failure"]["cause"] == "network_provider_failure", payload
     assert payload["cleanupWarnings"] == [
         {
             "kind": "remote_branch_delete_failed",
             "ref": "heads/old-topic",
-            "stderr": "remote ref could not be deleted",
+            "stderr": "remote ref could not be deleted credentials=[REDACTED] authorization=[REDACTED]",
         }
     ], payload
 
@@ -1881,11 +1962,27 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
             "if [[ \"$*\" == *'/repos/other/repo/pulls/44'* ]]; then\n"
             "  printf '{\"number\":44,\"title\":\"Cross repo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/other/repo/pull/44\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"other/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"other/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/check-runs'* ]]; then\n"
-            "  if [[ \"$*\" != *'--paginate'* || \"$*\" != *'--slurp'* ]]; then exit 2; fi\n"
-            "  printf '[{\"check_runs\":[{\"name\":\"ci-1\",\"status\":\"completed\",\"conclusion\":\"success\"}]},{\"check_runs\":[{\"name\":\"ci-2\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}]\\n'\n"
+            "  printf 'HTTP/2.0 200 \\r\\ncontent-type: application/json\\r\\n'\n"
+            "  if [[ \"$*\" != *'page=2'* ]]; then\n"
+            "    printf 'link: <https://api.github.com/repos/other/repo/commits/head-sha/check-runs?per_page=100&page=2>; rel=\"next\"\\r\\n'\n"
+            "  fi\n"
+            "  printf '\\r\\n'\n"
+            "  if [[ \"$*\" == *'page=2'* ]]; then\n"
+            "    printf '{\"check_runs\":[{\"name\":\"ci-2\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\\n'\n"
+            "  else\n"
+            "    printf '{\"check_runs\":[{\"name\":\"ci-1\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\\n'\n"
+            "  fi\n"
             "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/statuses'* ]]; then\n"
-            "  if [[ \"$*\" != *'--paginate'* || \"$*\" != *'--slurp'* ]]; then exit 2; fi\n"
-            "  printf '[[{\"context\":\"legacy-1\",\"state\":\"success\"}],[{\"context\":\"legacy-2\",\"state\":\"error\"}]]\\n'\n"
+            "  printf 'HTTP/2.0 200 \\r\\ncontent-type: application/json\\r\\n'\n"
+            "  if [[ \"$*\" != *'page=2'* ]]; then\n"
+            "    printf 'link: <https://api.github.com/repos/other/repo/commits/head-sha/statuses?per_page=100&page=2>; rel=\"next\"\\r\\n'\n"
+            "  fi\n"
+            "  printf '\\r\\n'\n"
+            "  if [[ \"$*\" == *'page=2'* ]]; then\n"
+            "    printf '[{\"context\":\"legacy-2\",\"state\":\"error\"}]\\n'\n"
+            "  else\n"
+            "    printf '[{\"context\":\"legacy-1\",\"state\":\"success\"}]\\n'\n"
+            "  fi\n"
             "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/status'* ]]; then\n"
             "  printf '{\"state\":\"failure\"}\\n'\n"
             "else\n"
@@ -1921,6 +2018,44 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     assert payload["summary"]["legacyStatusesPresent"] is True, payload
     assert "/repos/other/repo/pulls/44" in calls
     assert "/repos/owner/repo/pulls/44" not in calls
+    assert "page=2" in calls
+    assert "--paginate" not in calls
+
+
+def test_pr_helper_paged_rest_failure_preserves_diagnostics() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"head\":{\"sha\":\"head-sha\"}}\\n'\n"
+            "  exit 0\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/check-runs'* ]]; then\n"
+            "  printf 'HTTP/2.0 403 \\r\\ncontent-type: application/json\\r\\nx-github-request-id: paged-request\\r\\n\\r\\n'\n"
+            "  printf '{\"message\":\"Forbidden credentials=synthetic-paged\"}\\n'\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf '{}\\n'\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path))
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 1, result
+    assert "synthetic-paged" not in result.stdout + result.stderr, result
+    assert result.stdout.strip(), result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["api_result"]["failure"]["cause"] == "permission_denied", payload
+    assert payload["api_result"]["request_id"] == "paged-request", payload
 
 
 def test_pr_helper_accepts_enterprise_pr_urls() -> None:
@@ -2033,13 +2168,14 @@ def main() -> None:
         test_label_defs_cover_planning_labels_without_generic_fallback,
         test_create_refuses_to_mint_undocumented_extra_labels,
         test_create_allows_existing_extra_labels_without_creating_them,
-        test_run_raw_falls_back_only_for_graphql_rate_limit,
+        test_run_raw_does_not_change_actor_on_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
         test_pr_helper_write_commands_route_through_configured_gh,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
+        test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_supersede_does_not_comment_when_close_fails,
         test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close,
@@ -2048,6 +2184,7 @@ def main() -> None:
         test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch,
         test_pr_helper_supersede_skips_branch_delete_for_default_branch,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
+        test_pr_helper_paged_rest_failure_preserves_diagnostics,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,
     ]
