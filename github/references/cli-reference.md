@@ -53,6 +53,22 @@ retryability, fallback eligibility, and final disposition. It also carries the
 GitHub request id and rate-limit headers when available. Authentication or quota
 failure never changes the acting account implicitly.
 
+Terminal envelopes use stable top-level fields for `schema_version`, `ok`,
+`exit_code`, `operation`, `actor`, `expected_actor`, `host`, `transport`,
+`bucket`, `status`, `request_id`, quota and retry timing, `write_outcome`,
+`retryable`, `fallback_eligible`, `disposition`, `completed_steps`, and
+`failed_step`. Helper-specific result fields remain top-level for compatibility;
+legacy short operation names are exposed as `action` when needed.
+Argument-validation failures use the same envelope with `exit_code: 2` instead
+of bypassing machine output through argparse-only usage text.
+
+GraphQL requests carry `graphql_operation` as `query`, `mutation`,
+`subscription`, or conservative `unknown`. A GraphQL POST query is read-only;
+only mutations and unknown documents receive write-outcome semantics. Direct
+status/header/body evidence wins over diagnostics, and the bounded
+`GET /rate_limit` probe is used only when legacy output reports a rate limit
+without identifying its bucket.
+
 Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor
 policy, idempotency/retry posture, reconciliation strategy, and retained
@@ -199,6 +215,12 @@ special local cases where a different `gh` executable should be used.
 `GH_COMMENT_GH` provides the equivalent test-only override for
 `scripts/gh-comment`.
 
+`scripts/gh-issue` and `scripts/gh-comment` emit the same single terminal JSON
+envelope contract as the Python helpers. Delegated command output is available
+as `body`; compound large-comment close flows report `completed_steps` and the
+failing step without printing multiple machine objects. Human warnings and
+progress remain on stderr, and the process exit code matches `exit_code`.
+
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
 `$CODEX_HOME/local.env` and then `~/.code/local.env`, then prefers
@@ -209,6 +231,19 @@ rate-limited. Write-like commands also require the authenticated login to match
 an explicitly approved one-off command whose human-owned actor is acceptable.
 Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
 different env file should be used.
+
+The wrapper remains a transparent transport for delegated `gh` stdout, but its
+failure decision is owned by `scripts/github_api.py classify-legacy` rather
+than independent shell greps. Structured HTTP evidence is preferred, explicit
+GraphQL/secondary-limit output is classified without changing actor, and an
+unknown legacy rate-limit bucket may use one bounded diagnostic probe.
+Even with explicit active-auth fallback authorization, a write classified with
+`write_outcome: unknown` is never replayed under another identity. Planning
+commands also fail closed when the automation helper is unavailable unless
+active auth was explicitly selected with the documented planning override.
+Before any explicitly authorized active-auth command runs, the wrapper reports
+the resolved active login (or `unknown` when it cannot be resolved). Write actor
+preflight failures use the shared classifier before the mutation is refused.
 
 For commits and pushes performed by Code or spawned agents, use
 `scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,

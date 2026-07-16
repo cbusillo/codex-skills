@@ -3,6 +3,23 @@ set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GH_ISSUE_GH:-$script_dir/gh-with-env-token}"
+classifier="${GH_ISSUE_CLASSIFIER:-$script_dir/github_api.py}"
+python_command="${GH_ISSUE_PYTHON:-python3}"
+expected_actor="${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}"
+
+terminal_error() {
+	local operation="$1"
+	local message="$2"
+	"$python_command" "$classifier" terminal-error \
+		--operation "$operation" \
+		--message "$message" \
+		--cause validation_error \
+		--exit-code 2 \
+		--transport shell_compatibility \
+		--bucket mixed \
+		--expected-actor "$expected_actor" \
+		--write-outcome not_started
+}
 
 usage() {
 	cat <<'USAGE'
@@ -23,7 +40,8 @@ USAGE
 
 if [[ $# -lt 2 ]]; then
 	usage >&2
-	exit 2
+	terminal_error github.issue.unknown "Issue command and target are required"
+	exit $?
 fi
 
 command="$1"
@@ -33,17 +51,56 @@ shift 2
 case "$command" in
 create | edit | close) ;;
 *)
-	echo "error: first argument must be 'create', 'edit', or 'close'" >&2
 	usage >&2
-	exit 2
+	terminal_error github.issue.unknown "First argument must be 'create', 'edit', or 'close'"
+	exit $?
 	;;
 esac
 
 tmp_body="$(mktemp)"
+tmp_stdout="$(mktemp)"
+tmp_stderr="$(mktemp)"
+step_stdout="$(mktemp)"
+step_stderr="$(mktemp)"
 cleanup() {
-	rm -f "$tmp_body"
+	rm -f "$tmp_body" "$tmp_stdout" "$tmp_stderr" "$step_stdout" "$step_stderr"
 }
 trap cleanup EXIT
+
+run_step() {
+	: >"$step_stdout"
+	: >"$step_stderr"
+	local status=0
+	"$@" >"$step_stdout" 2>"$step_stderr" || status=$?
+	cat "$step_stdout" >>"$tmp_stdout"
+	cat "$step_stderr" >>"$tmp_stderr"
+	return "$status"
+}
+
+emit_result() {
+	local status="$1"
+	local operation="$2"
+	local failed_step="$3"
+	shift 3
+	local args=(
+		"$classifier" classify-legacy
+		--returncode "$status"
+		--stdout-file "$tmp_stdout"
+		--stderr-file "$tmp_stderr"
+		--operation "$operation"
+		--expected-actor "$expected_actor"
+		--transport gh_cli_wrapper
+		--bucket mixed
+		--write
+		--failed-step "$failed_step"
+		--forward-stderr
+	)
+	local completed_step
+	for completed_step in "$@"; do
+		args+=(--completed-step "$completed_step")
+	done
+	"$python_command" "${args[@]}"
+}
 
 if [[ "$command" == "close" && -t 0 ]]; then
 	: >"$tmp_body"
@@ -52,16 +109,22 @@ else
 fi
 
 if [[ "$command" != "close" && ! -s "$tmp_body" ]]; then
-	echo "error: issue body is empty" >&2
-	exit 2
+	terminal_error "github.issue.$command" "Issue body is empty"
+	exit $?
 fi
 
 case "$command" in
 create)
-	"$gh_bin" issue create --title "$target" --body-file "$tmp_body" "$@"
+	status=0
+	run_step "$gh_bin" issue create --title "$target" --body-file "$tmp_body" "$@" || status=$?
+	emit_result "$status" github.issue.create create_issue
+	exit $?
 	;;
 edit)
-	"$gh_bin" issue edit "$target" --body-file "$tmp_body" "$@"
+	status=0
+	run_step "$gh_bin" issue edit "$target" --body-file "$tmp_body" "$@" || status=$?
+	emit_result "$status" github.issue.edit edit_issue
+	exit $?
 	;;
 close)
 	close_args=()
@@ -73,8 +136,8 @@ close)
 		case "$arg" in
 		--repo | -R)
 			if [[ "$((idx + 1))" -ge "${#remaining[@]}" ]]; then
-				echo "error: $arg requires a value" >&2
-				exit 2
+				terminal_error github.issue.close "$arg requires a value"
+				exit $?
 			fi
 			close_args+=("$arg" "${remaining[$((idx + 1))]}")
 			comment_args+=("$arg" "${remaining[$((idx + 1))]}")
@@ -92,8 +155,8 @@ close)
 			;;
 		--comment | -c)
 			if [[ "$((idx + 1))" -ge "${#remaining[@]}" ]]; then
-				echo "error: $arg requires a value" >&2
-				exit 2
+				terminal_error github.issue.close "$arg requires a value"
+				exit $?
 			fi
 			idx=$((idx + 2))
 			;;
@@ -107,22 +170,35 @@ close)
 		esac
 	done
 	if [[ ! -s "$tmp_body" ]]; then
-		"$gh_bin" issue close "$target" "${remaining[@]}"
-		exit 0
+		status=0
+		run_step "$gh_bin" issue close "$target" "${remaining[@]}" || status=$?
+		emit_result "$status" github.issue.close close_issue
+		exit $?
 	fi
 
 	comment_arg_max="${GH_ISSUE_CLOSE_COMMENT_ARG_MAX:-32768}"
 	if [[ ! "$comment_arg_max" =~ ^[0-9]+$ ]]; then
-		echo "error: GH_ISSUE_CLOSE_COMMENT_ARG_MAX must be a non-negative integer" >&2
-		exit 2
+		terminal_error github.issue.close "GH_ISSUE_CLOSE_COMMENT_ARG_MAX must be a non-negative integer"
+		exit $?
 	fi
 	body_size="$(wc -c <"$tmp_body" | tr -d '[:space:]')"
 	if [[ "$body_size" -le "$comment_arg_max" ]]; then
 		IFS= read -r -d '' close_comment <"$tmp_body" || true
-		"$gh_bin" issue close "$target" --comment "$close_comment" "${close_args[@]}"
+		status=0
+		run_step "$gh_bin" issue close "$target" --comment "$close_comment" "${close_args[@]}" || status=$?
+		emit_result "$status" github.issue.close close_issue
+		exit $?
 	else
-		"$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}"
-		"$gh_bin" issue close "$target" "${close_args[@]}"
+		status=0
+		run_step "$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}" || status=$?
+		if [[ "$status" -ne 0 ]]; then
+			emit_result "$status" github.issue.close post_close_comment
+			exit $?
+		fi
+		status=0
+		run_step "$gh_bin" issue close "$target" "${close_args[@]}" || status=$?
+		emit_result "$status" github.issue.close close_issue post_close_comment
+		exit $?
 	fi
 	;;
 esac

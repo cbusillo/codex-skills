@@ -18,6 +18,8 @@ import json
 import subprocess
 import sys
 import types
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
@@ -186,6 +188,23 @@ def test_parse_rate_limit_headers_extracted() -> None:
     _, headers, _ = _api.parse_gh_include_output(raw)
     assert headers["x-ratelimit-remaining"] == "99"
     assert headers["x-ratelimit-resource"] == "graphql"
+
+
+def test_parse_uses_final_http_response_block() -> None:
+    raw = (
+        "HTTP/1.1 100 Continue\r\n"
+        "x-interim: true\r\n"
+        "\r\n"
+        "HTTP/2.0 200 OK\r\n"
+        "content-type: application/json\r\n"
+        "x-github-request-id: final-request\r\n"
+        "\r\n"
+        '{"ok":true}'
+    )
+    status, headers, body = _api.parse_gh_include_output(raw)
+    assert status == 200, status
+    assert headers["x-github-request-id"] == "final-request"
+    assert body == {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +654,166 @@ def test_partial_success_graphql_rate_limit_carries_completed_steps() -> None:
     assert result.failure.failed_step == "graphql_project_query"
 
 
+def test_graphql_anonymous_query_is_read_only() -> None:
+    stdout = _include_output(
+        200,
+        body={"data": None, "errors": [{"type": "RATE_LIMITED", "message": "Rate limited"}]},
+    )
+    result = _call("POST", "/graphql", {"query": "{ viewer { login } }"}, fake_stdout=stdout, returncode=1)
+    assert result.graphql_operation == "query"
+    assert result.bucket == "graphql"
+    assert result.failure is not None
+    assert result.failure.write_outcome is None
+    assert result.failure.retryable is True
+
+
+def test_graphql_mutation_is_write_aware() -> None:
+    stdout = _include_output(
+        200,
+        body={"data": None, "errors": [{"type": "RATE_LIMITED", "message": "Rate limited"}]},
+    )
+    result = _call(
+        "POST",
+        "/graphql",
+        {"query": "mutation UpdateIssue { updateIssue(input: {}) { clientMutationId } }"},
+        fake_stdout=stdout,
+        returncode=1,
+    )
+    assert result.graphql_operation == "mutation"
+    assert result.failure is not None
+    assert result.failure.write_outcome == "unknown"
+
+
+def test_unknown_graphql_document_fails_closed_as_write() -> None:
+    assert _api.infer_graphql_operation_type({"query": "fragment Fields on User { login }"}) == "unknown"
+    assert _api.infer_is_write("POST", "/graphql", {"query": "fragment Fields on User { login }"}) is True
+
+
+def test_structured_legacy_response_wins_over_stderr_phrase() -> None:
+    stdout = _include_output(
+        403,
+        headers={"x-ratelimit-remaining": "0", "x-ratelimit-resource": "core"},
+        body={"message": "API rate limit exceeded"},
+    )
+    failure = _api.classify_legacy_failure(
+        "The token in GH_TOKEN is invalid",
+        stdout=stdout,
+        is_write=False,
+    )
+    assert failure.cause == "rest_primary_rate_limited"
+    assert failure.fallback_eligible is False
+
+
+def test_legacy_write_rate_limit_is_rejected_and_retryable() -> None:
+    failure = _api.classify_legacy_failure(
+        "GraphQL: API rate limit already exceeded",
+        is_write=True,
+    )
+    assert failure.cause == "graphql_primary_rate_limited"
+    assert failure.write_outcome == "rejected"
+    assert failure.retryable is True
+
+
+def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
+    probe = _api.ApiResult(
+        ok=True,
+        status=200,
+        body={"resources": {"core": {"remaining": 4999}, "graphql": {"remaining": 0, "reset": 1700000000}}},
+    )
+    failure = _api.classify_legacy_failure(
+        "API rate limit exceeded",
+        rate_limit_result=probe,
+    )
+    assert failure.cause == "graphql_primary_rate_limited"
+    assert failure.rate_limit == {"resource": "graphql", "remaining": 0, "reset": 1700000000}
+
+
+def test_legacy_deadline_and_cancellation_are_distinct() -> None:
+    deadline = _api.classify_legacy_failure("request timed out", is_write=True)
+    cancelled = _api.classify_legacy_failure("operation cancelled", is_write=False)
+    assert deadline.cause == "deadline_exceeded"
+    assert deadline.write_outcome == "unknown"
+    assert cancelled.cause == "cancelled"
+    assert cancelled.retryable is False
+
+
+def test_infer_gh_command_context_distinguishes_project_reads_and_writes() -> None:
+    read_context = _api.infer_gh_command_context(["project", "item-list", "12", "--owner", "owner"])
+    write_context = _api.infer_gh_command_context(["project", "item-edit", "--id", "PVTI_1"])
+    assert read_context.is_write is False
+    assert read_context.graphql_operation == "query"
+    assert write_context.is_write is True
+    assert write_context.graphql_operation == "mutation"
+
+
+def test_terminal_envelopes_have_stable_fields_and_redaction() -> None:
+    success = _api.terminal_success(
+        {"ok": True, "actor": "automation-gh", "plans": []},
+        operation="github.plan.index",
+        actor="automation-gh",
+        expected_actor="shiny-code-bot",
+        transport="gh_cli_graphql",
+        bucket="graphql",
+    )
+    assert success["schema_version"] == _api.SCHEMA_VERSION
+    assert success["exit_code"] == 0
+    assert success["disposition"] == "complete"
+    assert success["plans"] == []
+    assert "body" not in success
+
+    failure = _api.FailureDetail(
+        cause="invalid_credentials",
+        message="token=synthetic-secret failed",
+        retryable=False,
+        fallback_eligible=True,
+        disposition="requires_authorization",
+        write_outcome="rejected",
+    )
+    error = _api.terminal_failure(
+        failure,
+        operation="github.pr.create",
+        payload={"detail": "Authorization: Bearer synthetic-secret"},
+        transport="gh_cli_wrapper",
+        bucket="mixed",
+    )
+    serialized = json.dumps(error)
+    assert "synthetic-secret" not in serialized
+    assert error["error_code"] == "invalid_credentials"
+    assert error["write_outcome"] == "rejected"
+    assert error["fallback_eligible"] is True
+
+
+def test_cli_argument_failure_emits_terminal_envelope() -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+    with patch.object(sys, "argv", ["github_api.py", "call"]), redirect_stdout(stdout), redirect_stderr(stderr):
+        exit_code = _api.main()
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 2
+    assert payload["exit_code"] == 2
+    assert payload["operation"] == "github.api.call"
+    assert payload["failure"]["cause"] == "validation_error"
+    assert "required" in stderr.getvalue()
+
+
+def test_rate_limit_cli_uses_public_operation_id() -> None:
+    proc = _fake_proc(stdout=_include_output(200, body={"resources": {"core": {"remaining": 4999}}}))
+    stdout = StringIO()
+    stderr = StringIO()
+    _api.reset_rate_limit_cache()
+    with (
+        patch.object(sys, "argv", ["github_api.py", "--gh", "fake-gh", "rate-limit"]),
+        patch("subprocess.run", return_value=proc),
+        redirect_stdout(stdout),
+        redirect_stderr(stderr),
+    ):
+        exit_code = _api.main()
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload["operation"] == "github.api.rate_limit"
+    assert stderr.getvalue() == ""
+
+
 # ---------------------------------------------------------------------------
 # Redaction
 # ---------------------------------------------------------------------------
@@ -913,6 +1092,7 @@ def main() -> None:
         test_parse_non_json_body_returned_as_string,
         test_parse_bare_json_without_status_line,
         test_parse_rate_limit_headers_extracted,
+        test_parse_uses_final_http_response_block,
         # build_gh_command (body safety)
         test_build_get_command_no_stdin_flag,
         test_build_post_command_uses_stdin,
@@ -958,6 +1138,17 @@ def main() -> None:
         test_failure_envelope_asdict_includes_request_id,
         # partial success
         test_partial_success_graphql_rate_limit_carries_completed_steps,
+        test_graphql_anonymous_query_is_read_only,
+        test_graphql_mutation_is_write_aware,
+        test_unknown_graphql_document_fails_closed_as_write,
+        test_structured_legacy_response_wins_over_stderr_phrase,
+        test_legacy_write_rate_limit_is_rejected_and_retryable,
+        test_legacy_unknown_rate_limit_uses_probe_bucket,
+        test_legacy_deadline_and_cancellation_are_distinct,
+        test_infer_gh_command_context_distinguishes_project_reads_and_writes,
+        test_terminal_envelopes_have_stable_fields_and_redaction,
+        test_cli_argument_failure_emits_terminal_envelope,
+        test_rate_limit_cli_uses_public_operation_id,
         # redaction
         test_redact_headers_removes_authorization,
         test_redact_body_removes_token_keys,

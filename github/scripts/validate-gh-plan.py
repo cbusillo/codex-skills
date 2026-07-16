@@ -1040,6 +1040,151 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     assert len(calls) == 1, calls
 
 
+def test_plan_cli_emits_shared_terminal_envelope() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'repos/owner/repo/issues/1'* ]]; then\n"
+            "  printf '%s\\n' '{\"number\":1,\"id\":1001,\"title\":\"Plan\",\"body\":\"## Current Status\\n\\nReady.\\n\",\"html_url\":\"https://github.com/owner/repo/issues/1\",\"labels\":[],\"state\":\"open\"}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "printf 'unexpected command: %s\\n' \"$*\" >&2\n"
+            "exit 1\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            PATH=f"{tmp_path}:{os.environ['PATH']}",
+            GH_PLAN_SKIP_BOT="1",
+            GH_PLAN_ALLOW_ACTIVE_FIRST="1",
+            CODE_HOME=str(tmp_path / ".code"),
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(SCRIPT), "--repo", "owner/repo", "show", "1", "--full"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 0, result
+    assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == 1, payload
+    assert payload["operation"] == "github.plan.show", payload
+    assert payload["transport"] == "rest_api", payload
+    assert payload["bucket"] == "rest_core", payload
+    assert payload["actor"] == "active-gh-user", payload
+    assert payload["issue"]["number"] == 1, payload
+    assert result.stderr == "", result.stderr
+
+
+def test_plan_project_query_failure_is_not_a_write() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'rate_limit'* ]]; then\n"
+            "  printf '{\"resources\":{\"graphql\":{\"limit\":5000,\"remaining\":100,\"reset\":1700000000}}}\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [[ \"${1:-} ${2:-}\" == \"project list\" ]]; then\n"
+            "  printf 'GraphQL: API rate limit already exceeded\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf 'unexpected command: %s\\n' \"$*\" >&2\n"
+            "exit 1\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            PATH=f"{tmp_path}:{os.environ['PATH']}",
+            GH_PLAN_SKIP_BOT="1",
+            GH_PLAN_ALLOW_ACTIVE_FIRST="1",
+            CODE_HOME=str(tmp_path / ".code"),
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(SCRIPT), "project-list", "--owner", "owner"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 1, result
+    assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "github.plan.project_list", payload
+    assert payload["failure"]["cause"] == "graphql_primary_rate_limited", payload
+    assert payload["graphql_operation"] == "query", payload
+    assert payload["write_outcome"] is None, payload
+    assert payload["retryable"] is True, payload
+    assert "GraphQL" in result.stderr, result.stderr
+
+
+def test_python_helper_parser_failures_emit_envelopes() -> None:
+    pr_result = REAL_SUBPROCESS_RUN(
+        [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "comment", "1"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert pr_result.returncode == 2, pr_result
+    pr_payload = json.loads(pr_result.stdout)
+    assert pr_payload["operation"] == "github.pr.comment", pr_payload
+    assert pr_payload["failure"]["cause"] == "validation_error", pr_payload
+    assert pr_payload["write_outcome"] == "not_started", pr_payload
+    assert "required" in pr_result.stderr, pr_result.stderr
+
+    plan_result = REAL_SUBPROCESS_RUN(
+        [sys.executable, str(SCRIPT), "project-list"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert plan_result.returncode == 2, plan_result
+    plan_payload = json.loads(plan_result.stdout)
+    assert plan_payload["operation"] == "github.plan.project_list", plan_payload
+    assert plan_payload["failure"]["cause"] == "validation_error", plan_payload
+    assert plan_payload["write_outcome"] is None, plan_payload
+    assert "required" in plan_result.stderr, plan_result.stderr
+
+
+def test_plan_missing_bot_route_fails_closed() -> None:
+    plan = load_plan_module()
+    plan.BOT_GH = Path("/definitely/missing/gh-with-env-token")
+    original_skip = os.environ.pop("GH_PLAN_SKIP_BOT", None)
+    original_active = os.environ.pop("GH_PLAN_ALLOW_ACTIVE_FIRST", None)
+
+    def unexpected_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("active gh must not run without explicit authorization")
+
+    plan.subprocess.run = unexpected_run
+    try:
+        try:
+            plan.run_raw(["issue", "close", "1", "-R", "owner/repo"])
+        except plan.PlanError as exc:
+            assert exc.failure is not None, exc
+            assert exc.failure.cause == "invalid_credentials", exc.failure
+            assert exc.failure.write_outcome == "not_started", exc.failure
+        else:
+            raise AssertionError("missing automation helper should fail closed")
+    finally:
+        if original_skip is not None:
+            os.environ["GH_PLAN_SKIP_BOT"] = original_skip
+        if original_active is not None:
+            os.environ["GH_PLAN_ALLOW_ACTIVE_FIRST"] = original_active
+
+
 def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -1214,7 +1359,9 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
         )
         calls = log_path.read_text().splitlines()
     assert json.loads(create.stdout)["url"] == "https://github.com/owner/repo/pull/9"
-    assert json.loads(edit.stdout)["operation"] == "edit"
+    edit_payload = json.loads(edit.stdout)
+    assert edit_payload["operation"] == "github.pr.edit"
+    assert edit_payload["action"] == "edit"
     assert json.loads(comment.stdout)["url"] == "https://github.com/owner/repo/pull/9#issuecomment-1"
     assert create_without_body.returncode == 1
     assert "requires --body-file" in create_without_body.stderr
@@ -1363,7 +1510,8 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
     assert payload["schema_version"] == 1, payload
     assert payload["error"] == "PR merge failed", payload
     assert payload["detail"] == "gh: Not Found (HTTP 404)", payload
-    assert payload["operation"] == "merge", payload
+    assert payload["operation"] == "github.pr.merge", payload
+    assert payload["action"] == "merge", payload
     assert payload["repo"] == "owner/repo", payload
     assert payload["pr"] == 12, payload
     assert payload["endpoint"] == "/repos/owner/repo/pulls/12/merge", payload
@@ -1417,6 +1565,11 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
     assert "synthetic-private" not in result.stdout + result.stderr, result
     payload = json.loads(result.stdout)
     api_result = payload["api_result"]
+    assert payload["operation"] == "github.pr.comment", payload
+    assert payload["failure"]["cause"] == "permission_denied", payload
+    assert payload["request_id"] == "request-123", payload
+    assert payload["write_outcome"] == "not_started", payload
+    assert payload["fallback_eligible"] is True, payload
     assert api_result["failure"]["cause"] == "permission_denied", payload
     assert api_result["failure"]["request_id"] == "request-123", payload
     assert api_result["body"]["credentials"] == "[REDACTED]", payload
@@ -2170,6 +2323,10 @@ def main() -> None:
         test_create_allows_existing_extra_labels_without_creating_them,
         test_run_raw_does_not_change_actor_on_graphql_rate_limit,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
+        test_plan_cli_emits_shared_terminal_envelope,
+        test_plan_project_query_failure_is_not_a_write,
+        test_python_helper_parser_failures_emit_envelopes,
+        test_plan_missing_bot_route_fails_closed,
         test_pr_helper_uses_rest_endpoints_for_common_pr_work,
         test_pr_helper_write_commands_route_through_configured_gh,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
