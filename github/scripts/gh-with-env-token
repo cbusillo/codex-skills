@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+classifier=${GH_WITH_ENV_TOKEN_CLASSIFIER:-$script_dir/github_api.py}
+python_command=${GH_WITH_ENV_TOKEN_PYTHON:-python3}
+
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
 elif [ -n "${CODE_HOME:-}" ]; then
@@ -17,8 +21,9 @@ expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}
 print_auth_account=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
+classification_file=$(mktemp)
 
-trap 'rm -f "$stdout_file" "$stderr_file"' EXIT INT HUP TERM
+trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file"' EXIT INT HUP TERM
 
 case "${1:-}" in
 --print-auth-account)
@@ -189,15 +194,25 @@ is_write_command() {
 	return 1
 }
 
-current_login() {
-	"$gh_command" api user --jq .login 2>/dev/null || true
+active_auth_login() {
+	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" api user --jq .login 2>/dev/null || true
 }
 
 verify_bot_login_for_write() {
 	if ! is_write_command "$@"; then
 		return 0
 	fi
-	login=$(current_login)
+	login_status=0
+	"$gh_command" api user --jq .login >"$stdout_file" 2>"$stderr_file" || login_status=$?
+	if [ "$login_status" -ne 0 ]; then
+		if classify_failure "$login_status" api user --jq .login; then
+			:
+		fi
+		print_classified_message
+		echo "error: unable to verify the automation GitHub actor; refusing write" >&2
+		return "$login_status"
+	fi
+	login=$(cat "$stdout_file")
 	if [ "$login" = "$expected_login" ]; then
 		return 0
 	fi
@@ -216,19 +231,57 @@ refuse_active_auth_fallback() {
 	return 0
 }
 
-is_rate_limited() {
-	grep -Eiq 'rate limit|rate_limit|API rate limit|secondary rate' "$1"
+classify_failure() {
+	status_code=$1
+	shift
+	write_flag=
+	if is_write_command "$@"; then
+		write_flag=--write
+	fi
+	"$python_command" "$classifier" --gh "$gh_command" classify-legacy \
+		--returncode "$status_code" \
+		--stdout-file "$stdout_file" \
+		--stderr-file "$stderr_file" \
+		--operation github.gh_with_env_token \
+		--expected-actor "$expected_login" \
+		--transport gh_cli_wrapper \
+		--probe-unknown-rate-limit \
+		$write_flag >"$classification_file" 2>/dev/null
 }
 
-is_auth_failed() {
-	grep -Eiq 'failed to log in|token is invalid|bad credentials|authentication failed|requires authentication|gh auth login' "$1"
+classified_value() {
+	field=$1
+	default_value=$2
+	"$python_command" - "$classification_file" "$field" "$default_value" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+field = sys.argv[2]
+default = sys.argv[3]
+failure = payload.get("failure") or {}
+if field == "cause":
+    value = payload.get("error_code") or failure.get("cause")
+elif field == "message":
+    value = failure.get("message") or payload.get("error")
+else:
+    value = payload.get(field)
+print(default if value is None else value)
+PY
+}
+
+print_classified_message() {
+	message=$(classified_value message "GitHub command failed" 2>/dev/null) || message="GitHub command failed"
+	printf '%s\n' "$message" >&2
 }
 
 retry_with_active_auth() {
 	reason=$1
 	shift
-	cat "$stderr_file" >&2
-	echo "warning: $reason; explicitly authorized active-auth fallback; retrying with the active gh account" >&2
+	print_classified_message
+	fallback_login=$(active_auth_login)
+	echo "warning: $reason; explicitly authorized active-auth fallback; retrying with the active gh account '${fallback_login:-unknown}'" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
@@ -245,7 +298,8 @@ if [ -z "${GH_TOKEN:-}" ]; then
 	if refuse_active_auth_fallback "no automation gh token found"; then
 		exit 1
 	fi
-	echo "warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account" >&2
+	fallback_login=$(active_auth_login)
+	echo "warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account '${fallback_login:-unknown}'" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		echo "gh auth status (active gh auth):" >&2
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
@@ -269,26 +323,43 @@ if [ "$status" -eq 0 ]; then
 	exit 0
 fi
 
-if is_rate_limited "$stderr_file"; then
+cause=unknown_error
+if classify_failure "$status" "$@"; then
+	:
+fi
+if [ -s "$classification_file" ]; then
+	cause=$(classified_value cause unknown_error 2>/dev/null) || cause=unknown_error
+fi
+write_outcome=$(classified_value write_outcome "" 2>/dev/null) || write_outcome=
+
+if is_write_command "$@" && [ "$write_outcome" = "unknown" ]; then
+	cat "$stdout_file"
+	print_classified_message
+	echo "error: automation GitHub write outcome is unknown; refusing active-auth replay" >&2
+	exit "$status"
+fi
+
+case "$cause" in
+graphql_primary_rate_limited | rest_primary_rate_limited | secondary_rate_limited | rate_limited_unknown_bucket)
 	if refuse_active_auth_fallback "automation gh request was rate-limited"; then
 		cat "$stdout_file"
-		cat "$stderr_file" >&2
+		print_classified_message
 		exit "$status"
 	fi
 	retry_with_active_auth "automation gh request was rate-limited" "$@"
 	exit $?
-fi
-
-if is_auth_failed "$stderr_file"; then
+	;;
+invalid_credentials)
 	if refuse_active_auth_fallback "automation gh authentication failed"; then
 		cat "$stdout_file"
-		cat "$stderr_file" >&2
+		print_classified_message
 		exit "$status"
 	fi
 	retry_with_active_auth "automation gh authentication failed" "$@"
 	exit $?
-fi
+	;;
+esac
 
 cat "$stdout_file"
-cat "$stderr_file" >&2
+print_classified_message
 exit "$status"

@@ -14,6 +14,50 @@ stderr_log="$tmpdir/stderr.log"
 stdout_log="$tmpdir/stdout.log"
 env_log="$tmpdir/env.log"
 
+assert_helper_envelope() {
+	local file="$1"
+	local operation="$2"
+	local expected_body="$3"
+	python3 - "$file" "$operation" "$expected_body" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = [line for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() if line.strip()]
+assert len(lines) == 1, lines
+payload = json.loads(lines[0])
+assert payload["schema_version"] == 1, payload
+assert payload["ok"] is True, payload
+assert payload["exit_code"] == 0, payload
+assert payload["operation"] == sys.argv[2], payload
+assert payload["body"] == sys.argv[3], payload
+PY
+}
+
+assert_failure_envelope() {
+	local file="$1"
+	local operation="$2"
+	local cause="$3"
+	local failed_step="$4"
+	local write_outcome="$5"
+	python3 - "$file" "$operation" "$cause" "$failed_step" "$write_outcome" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = [line for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() if line.strip()]
+assert len(lines) == 1, lines
+payload = json.loads(lines[0])
+assert payload["schema_version"] == 1, payload
+assert payload["ok"] is False, payload
+assert payload["exit_code"] != 0, payload
+assert payload["operation"] == sys.argv[2], payload
+assert payload["failure"]["cause"] == sys.argv[3], payload
+assert payload["failed_step"] == sys.argv[4], payload
+assert payload["write_outcome"] == sys.argv[5], payload
+PY
+}
+
 cat >"$tmpdir/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -38,7 +82,10 @@ if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
 	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
 	printf 'github.com\n  ✓ Logged in to github.com account code-bot (%s)\n' "${GH_TOKEN:-}" >&2
 elif [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
-	if [[ -n "${GH_TOKEN:-}" ]]; then
+	if [[ "${GH_TOKEN:-}" == "invalid-write-token" ]]; then
+		printf 'Bad credentials\n' >&2
+		exit 1
+	elif [[ -n "${GH_TOKEN:-}" ]]; then
 		printf 'shiny-code-bot\n'
 	else
 		printf 'cbusillo\n'
@@ -58,6 +105,21 @@ elif [[ "${1:-}" == "invalid-token-command" ]]; then
 		exit 1
 	fi
 	printf 'active-success\n'
+elif [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'bot:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+		printf 'HTTP/2.0 200 OK\r\n'
+		printf 'content-type: application/json\r\n'
+		printf '\r\n'
+		printf '{"data":{"updateIssue":{"clientMutationId":"applied"}},"errors":[{"type":"RATE_LIMITED","message":"Rate limited"}]}\n'
+		printf 'GraphQL mutation returned a rate-limit error.\n' >&2
+		exit 1
+	fi
+	printf 'active:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+	printf 'active-success\n'
+elif [[ "${1:-}" == "secret-error-command" ]]; then
+	printf 'transport failed token=synthetic-secret\n' >&2
+	exit 1
 elif [[ "${1:-}" == "active-command" ]]; then
 	if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}${CODEX_GITHUB_TOKEN:-}" ]]; then
 		printf 'expected active auth without token env vars\n' >&2
@@ -239,6 +301,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q 'warning: automation gh request was rate-limited; explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
+grep -q "active gh account 'cbusillo'" "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -299,7 +362,62 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q 'warning: automation gh authentication failed; explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
+grep -q "active gh account 'cbusillo'" "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
+
+printf 'CODEX_GITHUB_TOKEN=invalid-write-token\n' >"$tmpdir/invalid-write.env"
+: >"$log"
+if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/invalid-write.env" \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" issue edit 1 --title test \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: invalid write auth must fail during actor verification" >&2
+	exit 1
+fi
+
+grep -q 'Bad credentials' "$stderr_log"
+grep -q 'unable to verify the automation GitHub actor; refusing write' "$stderr_log"
+if grep -q 'issue edit 1 --title test' "$log"; then
+	echo "error: invalid write auth reached the GitHub mutation" >&2
+	exit 1
+fi
+
+: >"$log"
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api graphql \
+	-f 'query=mutation UpdateIssue { updateIssue(input: {}) { clientMutationId } }' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: unknown-outcome writes must not replay under active auth" >&2
+	exit 1
+fi
+
+grep -q '^bot:api graphql' "$log"
+if grep -q '^active:api graphql' "$log"; then
+	echo "error: unknown-outcome GraphQL mutation was replayed under active auth" >&2
+	exit 1
+fi
+grep -q 'write outcome is unknown; refusing active-auth replay' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" secret-error-command \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: synthetic transport failure should remain nonzero" >&2
+	exit 1
+fi
+
+if grep -q 'synthetic-secret' "$stderr_log"; then
+	echo "error: wrapper stderr leaked a synthetic secret" >&2
+	exit 1
+fi
+grep -q '\[REDACTED\]' "$stderr_log"
 
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
@@ -318,6 +436,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q 'warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account' "$stderr_log"
+grep -q "active gh account 'cbusillo'" "$stderr_log"
 grep -q 'gh auth status (active gh auth):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
@@ -335,10 +454,12 @@ if grep -q '^active:' "$log"; then
 	echo "error: GH_ISSUE_GH override should not fall back to active gh" >&2
 	exit 1
 fi
+assert_failure_envelope "$stdout_log" github.issue.create graphql_primary_rate_limited create_issue rejected
 
 mkdir -p "$tmpdir/github/scripts"
 cp "$repo_root/github/scripts/gh-issue" "$tmpdir/github/scripts/gh-issue"
 cp "$repo_root/github/scripts/gh-with-env-token" "$tmpdir/github/scripts/gh-with-env-token"
+cp "$repo_root/github/scripts/github_api.py" "$tmpdir/github/scripts/github_api.py"
 
 : >"$log"
 PATH="$tmpdir:$PATH" GH_ISSUE_TEST_LOG="$log" GH_TOKEN=bot-token \
@@ -352,7 +473,7 @@ grep -q '^bot:issue create' "$log"
 grep -q '^active:issue create' "$log"
 grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
 grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
-grep -q 'active-success' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.create active-success
 
 cat >"$tmpdir/record-edit-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -375,7 +496,7 @@ printf 'Updated body with `literal markdown`.\n' | GH_ISSUE_GH="$tmpdir/record-e
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Updated body with `literal markdown`.\n' >"$tmpdir/expected-edit-body"
 cmp "$tmpdir/expected-edit-body" "$log"
-grep -qx 'edited' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.edit edited
 
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -401,7 +522,7 @@ grep -q '^issue comment 42 --body-file .* --repo owner/repo$' "$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Issue comment with `literal markdown`.\n' >"$tmpdir/expected-comment-body"
 cmp "$tmpdir/expected-comment-body" "$env_log"
-grep -qx 'https://github.com/owner/repo/issues/42#issuecomment-1' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.comment.issue 'https://github.com/owner/repo/issues/42#issuecomment-1'
 
 : >"$log"
 : >"$env_log"
@@ -412,6 +533,7 @@ printf 'Updated PR comment.\n' | \
 grep -q '^pr comment 42 --body-file .* --repo owner/repo --edit-last --create-if-none$' "$log"
 printf 'Updated PR comment.\n' >"$tmpdir/expected-pr-comment-body"
 cmp "$tmpdir/expected-pr-comment-body" "$env_log"
+assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-1'
 
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -436,7 +558,7 @@ printf '%s' "Closing with \`literal markdown\`." | GH_ISSUE_GH="$tmpdir/record-g
 
 expected_close_line="issue close 9 --comment Closing with \`literal markdown\`. --repo owner/repo --reason completed"
 grep -Fqx "$expected_close_line" "$log"
-grep -qx 'closed' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
@@ -444,7 +566,7 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
 grep -qx 'issue close 90 --repo owner/repo --reason completed' "$log"
-grep -qx 'closed' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
@@ -452,7 +574,7 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
 grep -qx 'issue close 91 --repo owner/repo --comment caller-supplied' "$log"
-grep -qx 'closed' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 
 cat >"$tmpdir/record-bytes-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -473,7 +595,7 @@ printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-bytes-gh" GH_ISSUE
 
 printf 'Line one\nLine two\n\n' >"$tmpdir/expected-comment-bytes"
 cmp "$tmpdir/expected-comment-bytes" "$log"
-grep -qx 'closed' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 
 cat >"$tmpdir/record-comment-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -497,6 +619,7 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-commen
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q '^issue close 10 --comment Closing with stdin body only\.[[:space:]]--repo owner/repo --reason completed$' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 if grep -q -- '--comment' "$log"; then
 	comment_count="$(grep -o -- '--comment' "$log" | wc -l | tr -d ' ')"
 	if [[ "$comment_count" != "1" ]]; then
@@ -512,6 +635,7 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-commen
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q '^issue close 11 --comment Closing with stdin body only\.[[:space:]]-Rowner/repo --reason completed$' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 if grep -q -- '-cduplicate comment' "$log"; then
 	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
 	exit 1
@@ -541,6 +665,7 @@ if printf '%s' 'Closing with one atomic close command.' | GH_ISSUE_GH="$tmpdir/f
 	echo "error: gh-issue close should surface close failures" >&2
 	exit 1
 fi
+assert_failure_envelope "$stdout_log" github.issue.close network_provider_failure close_issue unknown
 
 grep -q '^issue close 12 --comment Closing with one atomic close command\.[[:space:]]--repo owner/repo$' "$log"
 if grep -q '^issue comment ' "$log"; then
@@ -573,8 +698,15 @@ EOF
 
 grep -q '^issue comment 13 --body-file .* --repo owner/repo$' "$log"
 grep -qx 'issue close 13 --repo owner/repo --reason completed' "$log"
-grep -qx 'commented' "$stdout_log"
-grep -qx 'closed' "$stdout_log"
+assert_helper_envelope "$stdout_log" github.issue.close $'commented\nclosed'
+python3 - "$stdout_log" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert payload["completed_steps"] == ["post_close_comment"], payload
+PY
 if grep -q -- '--comment' "$log"; then
 	echo "error: large gh-issue close comments should not be inlined into argv" >&2
 	exit 1
@@ -607,6 +739,7 @@ EOF
 	echo "error: gh-issue close should not close if the streamed comment fails" >&2
 	exit 1
 fi
+assert_failure_envelope "$stdout_log" github.issue.close network_provider_failure post_close_comment unknown
 
 grep -q '^issue comment 14 --body-file .* --repo owner/repo$' "$log"
 if grep -q '^issue close 14' "$log"; then

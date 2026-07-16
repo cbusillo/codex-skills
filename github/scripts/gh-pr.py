@@ -22,6 +22,20 @@ import github_api as github_api_core
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 GH = os.environ.get("GH_PR_GH") or str(SCRIPT_DIR / "gh-with-env-token")
+EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+CURRENT_OPERATION = "github.pr.unknown"
+
+PR_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
+    "view": ("rest_api", "rest_core", False),
+    "list": ("rest_api", "rest_core", False),
+    "create": ("gh_cli_wrapper", "mixed", True),
+    "edit": ("gh_cli_wrapper", "mixed", True),
+    "comment": ("rest_api", "rest_core", True),
+    "checks": ("rest_api", "rest_core", False),
+    "merge": ("rest_api", "rest_core", True),
+    "supersede": ("rest_api", "rest_core", True),
+    "rate-limit": ("rest_api", "rest_core", False),
+}
 
 
 class HelperError(Exception):
@@ -29,45 +43,119 @@ class HelperError(Exception):
 
 
 class PrHelperError(HelperError):
-    def __init__(self, message: str, **payload: Any):
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure: Optional[github_api_core.FailureDetail] = None,
+        api_result: Optional[dict[str, Any]] = None,
+        **payload: Any,
+    ):
         super().__init__(github_api_core.redact_string(message))
+        self.failure = failure
+        if api_result is not None:
+            payload["api_result"] = api_result
         self.payload = github_api_core.redact_body(payload)
 
 
 def main() -> int:
-    args = parse_args()
+    global CURRENT_OPERATION
+    try:
+        args = parse_args()
+    except github_api_core.ArgumentParsingError as exc:
+        command = github_api_core.requested_subcommand(sys.argv[1:], set(PR_COMMAND_CONTEXT))
+        CURRENT_OPERATION = f"github.pr.{command.replace('-', '_')}"
+        transport, bucket, is_write = PR_COMMAND_CONTEXT.get(command, ("helper", "unknown", False))
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=str(exc),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started" if is_write else None,
+            failed_step="argument_parsing",
+        )
+        return github_api_core.emit_terminal(
+            github_api_core.terminal_failure(
+                failure,
+                operation=CURRENT_OPERATION,
+                expected_actor=EXPECTED_ACTOR,
+                transport=transport,
+                bucket=bucket,
+                exit_code=2,
+                failed_step="argument_parsing",
+            ),
+            stderr_message=f"error: {exc}",
+        )
+    CURRENT_OPERATION = f"github.pr.{args.command.replace('-', '_')}"
+    transport, bucket, is_write = PR_COMMAND_CONTEXT.get(args.command, ("helper", "unknown", False))
     try:
         payload = args.func(args)
     except PrHelperError as exc:
-        error_payload = {
-            "schema_version": github_api_core.SCHEMA_VERSION,
-            "ok": False,
-            "error": str(exc),
-            **exc.payload,
-        }
-        print(json.dumps(error_payload, sort_keys=True, separators=(",", ":")))
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        failure = exc.failure or github_api_core.FailureDetail(
+            cause="helper_error",
+            message=str(exc),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started" if is_write else None,
+        )
+        return github_api_core.emit_terminal(
+            github_api_core.terminal_failure(
+                failure,
+                operation=CURRENT_OPERATION,
+                payload=exc.payload,
+                expected_actor=EXPECTED_ACTOR,
+                transport=transport,
+                bucket=bucket,
+                error=str(exc),
+            ),
+            stderr_message=f"error: {exc}",
+        )
     except HelperError as exc:
         message = github_api_core.redact_string(str(exc))
-        print(json.dumps({
-            "schema_version": github_api_core.SCHEMA_VERSION,
-            "ok": False,
-            "error": message,
-        }, sort_keys=True, separators=(",", ":")))
-        print(f"error: {message}", file=sys.stderr)
-        return 1
-    payload.setdefault("schema_version", github_api_core.SCHEMA_VERSION)
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    return 0
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started" if is_write else None,
+        )
+        return github_api_core.emit_terminal(
+            github_api_core.terminal_failure(
+                failure,
+                operation=CURRENT_OPERATION,
+                expected_actor=EXPECTED_ACTOR,
+                transport=transport,
+                bucket=bucket,
+                error=message,
+            ),
+            stderr_message=f"error: {message}",
+        )
+    actor = payload.get("actor") if isinstance(payload, dict) else None
+    return github_api_core.emit_terminal(
+        github_api_core.terminal_success(
+            payload,
+            operation=CURRENT_OPERATION,
+            actor=actor,
+            expected_actor=EXPECTED_ACTOR,
+            transport=transport,
+            bucket=bucket,
+        )
+    )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = github_api_core.TerminalArgumentParser(
         description="Handle GitHub PR reads, writes, checks, merge, and rate limits with transport-aware defaults.",
     )
     parser.add_argument("--repo", help="Repository in OWNER/REPO form.")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=github_api_core.TerminalArgumentParser,
+    )
 
     p = sub.add_parser("view", help="Show PR metadata via REST.")
     p.add_argument("pr", nargs="?", help="PR number or URL. Defaults to current branch PR.")
@@ -274,6 +362,7 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         api_result = exc.payload.get("api_result") if isinstance(exc, PrHelperError) else None
         raise PrHelperError(
             "PR merge failed",
+            failure=exc.failure if isinstance(exc, PrHelperError) else None,
             detail=str(exc),
             operation="merge",
             repo=repo,
@@ -699,12 +788,15 @@ def rest_result(
         path,
         payload,
         gh_cmd=GH,
-        operation="gh-pr.rest",
+        operation=CURRENT_OPERATION,
+        expected_actor=EXPECTED_ACTOR,
+        bucket="rest_core",
     )
     if not result.ok:
         detail = result.failure.message if result.failure else "GitHub API request failed"
         raise PrHelperError(
             detail,
+            failure=result.failure,
             method=method.upper(),
             endpoint=github_api_core.redact_path(path),
             api_result=result.as_dict(),
@@ -819,8 +911,21 @@ def read_text_file(path: str, **payload: Any) -> str:
 def run_pr_write(args: list[str], **payload: Any) -> subprocess.CompletedProcess[str]:
     proc = run_gh(args)
     if proc.returncode != 0:
+        operation = f"github.pr.{str(payload.get('operation') or 'write').replace('-', '_')}"
+        result = github_api_core.legacy_process_result(
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+            operation=operation,
+            is_write=True,
+            expected_actor=EXPECTED_ACTOR,
+            transport="gh_cli_wrapper",
+            bucket="mixed",
+        )
         raise PrHelperError(
             "PR write failed",
+            failure=result.failure,
+            api_result=result.as_dict(),
             detail=(proc.stderr or proc.stdout or "gh pr write failed").strip(),
             command=args[:3],
             **payload,
@@ -837,16 +942,22 @@ def gh_json(args: list[str]) -> Any:
     proc = run_gh(args)
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout or "gh command failed").strip()
-        failure = github_api_core.classify_legacy_failure(message)
-        result = github_api_core.ApiResult(
-            ok=False,
-            status=0,
-            body=None,
-            operation="gh-pr.legacy",
-            failure=failure,
-            failed_step="gh_invocation",
+        result = github_api_core.legacy_process_result(
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+            operation=CURRENT_OPERATION,
+            is_write=False,
+            expected_actor=EXPECTED_ACTOR,
+            transport="gh_cli_wrapper",
+            bucket="mixed",
         )
-        raise PrHelperError(message, command=args[:2], api_result=result.as_dict())
+        raise PrHelperError(
+            message,
+            failure=result.failure,
+            command=args[:2],
+            api_result=result.as_dict(),
+        )
     if not proc.stdout.strip():
         return None
     try:
