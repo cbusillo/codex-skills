@@ -6,7 +6,7 @@ metadata:
 resources:
   - path: scripts/github_api.py
     kind: script
-    description: Shared body-safe GitHub API transport, response parser, diagnostics envelope, and rate-limit metadata layer.
+    description: Shared body-safe GitHub API transport, terminal envelope, legacy failure classifier, GraphQL operation context, and rate-limit metadata layer.
   - path: scripts/gh-pr.py
     kind: script
     description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.
@@ -662,12 +662,15 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.
 - `scripts/github_api.py`: Shared JSON-stdin REST transport, response-header
-  parsing, diagnostics envelope, redaction, and bounded rate-limit probe.
+  parsing, diagnostics envelope, legacy command classification, GraphQL
+  query/mutation context, redaction, and bounded rate-limit probe.
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.
-- `scripts/gh-issue`: Safe multiline issue create/edit/close bodies from stdin.
-- `scripts/gh-comment`: Safe multiline commenting.
+- `scripts/gh-issue`: Safe multiline issue create/edit/close bodies from stdin
+  with one versioned terminal JSON envelope, including compound-step evidence.
+- `scripts/gh-comment`: Safe multiline commenting with the same terminal JSON
+  envelope and stderr-only human diagnostics.
 
 ## Workflow Loop
 

@@ -6,6 +6,8 @@ current_transport_semantics = "The transport used by the checked-in implementati
 selected_transport_semantics = "The reviewed target transport; rows not yet migrated set migration_status=planned and retain explicit current endpoint and quota fields."
 quota_bucket_semantics = "Expected bucket for selected_transport; current_quota_bucket records the live bucket on planned rows."
 idempotency_semantics = "Provider-side repeat safety for the same logical request; retry policy must also consider write outcome and reconciliation."
+terminal_contract_semantics = "Public helpers emit one schema-versioned terminal JSON envelope on stdout; human diagnostics stay on stderr and exit_code matches the process result."
+graphql_operation_context_semantics = "GraphQL POST requests are classified explicitly as query, mutation, subscription, or conservative unknown so read failures do not receive mutation write-outcome semantics."
 
 [[operations]]
 id = "github.api.call"
@@ -40,6 +42,40 @@ reconciliation_strategy = "quota_snapshot"
 retained_graphql_rationale = "No retained GraphQL transport; REST reports the GraphQL bucket without consuming GraphQL quota."
 source_refs = ["github/scripts/github_api.py:rate_limit_probe", "github/scripts/github_api.py:main"]
 test_refs = ["github/scripts/test_github_api.py"]
+
+[[operations]]
+id = "github.api.classify_legacy"
+entrypoint = "github/scripts/github_api.py classify-legacy"
+intent = "Convert captured legacy gh stdout, stderr, and exit status into the shared terminal diagnostics envelope, using a bounded quota probe only when the bucket is unknown."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Local response/stderr classification; optional bounded GET /rate_limit through the supplied gh executable"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "delegated_evidence"
+retained_graphql_rationale = "No GraphQL request is issued; explicit GraphQL failure evidence is classified locally and the optional REST rate-limit probe only reads bucket metadata."
+source_refs = ["github/scripts/github_api.py:classify_legacy_failure", "github/scripts/github_api.py:legacy_process_result", "github/scripts/github_api.py:main"]
+test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-issue.sh"]
+
+[[operations]]
+id = "github.api.terminal_error"
+entrypoint = "github/scripts/github_api.py terminal-error"
+intent = "Emit one versioned machine envelope for local shell-entrypoint validation failures without contacting GitHub."
+current_transport = "delegated_python"
+selected_transport = "delegated_python"
+endpoint_or_command = "Local terminal_failure and emit_terminal invocation"
+quota_bucket = "local"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "delegated_evidence"
+retained_graphql_rationale = "No GitHub or GraphQL transport is used; this command normalizes local validation failures only."
+source_refs = ["github/scripts/github_api.py:terminal_failure", "github/scripts/github_api.py:emit_terminal", "github/scripts/github_api.py:main"]
+test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-issue.sh"]
 
 [[operations]]
 id = "github.pr.view"

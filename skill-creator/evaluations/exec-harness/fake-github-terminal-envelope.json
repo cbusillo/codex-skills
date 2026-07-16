@@ -1,0 +1,65 @@
+{
+  "name": "fake-github-terminal-envelope",
+  "model": "gpt-5.1-codex",
+  "prompt": "Classify the supplied synthetic GitHub failure with the installed helper, verify its machine envelope, and report completion.",
+  "files": {
+    "fixtures/stdout.txt": "",
+    "fixtures/stderr.txt": "GraphQL: API rate limit already exceeded for user ID 279560559.\n"
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-github-envelope-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_classify_github_failure",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"python3 \\\"$CODE_HOME/skills/github/scripts/github_api.py\\\" classify-legacy --returncode 1 --stdout-file fixtures/stdout.txt --stderr-file fixtures/stderr.txt --operation github.plan.project_list --expected-actor shiny-code-bot --transport gh_cli_graphql --bucket graphql --graphql-operation query > envelope.json 2> human.err; status=$?; test \\\"$status\\\" -eq 1\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-github-envelope-2",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_verify_github_envelope",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json\\nfrom pathlib import Path\\nlines = [line for line in Path('envelope.json').read_text().splitlines() if line.strip()]\\nassert len(lines) == 1, lines\\npayload = json.loads(lines[0])\\nassert payload['schema_version'] == 1, payload\\nassert payload['ok'] is False, payload\\nassert payload['exit_code'] == 1, payload\\nassert payload['operation'] == 'github.plan.project_list', payload\\nassert payload['failure']['cause'] == 'graphql_primary_rate_limited', payload\\nassert payload['graphql_operation'] == 'query', payload\\nassert payload['write_outcome'] is None, payload\\nassert payload['retryable'] is True, payload\\nassert 'GraphQL' in Path('human.err').read_text()\\nPY\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-github-envelope-3",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Verified the GitHub terminal envelope."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "Verified the GitHub terminal envelope."
+    ],
+    "responses_request_count": 3
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

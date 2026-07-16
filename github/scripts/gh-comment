@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+gh_bin="${GH_COMMENT_GH:-$script_dir/gh-with-env-token}"
+classifier="${GH_COMMENT_CLASSIFIER:-$script_dir/github_api.py}"
+python_command="${GH_COMMENT_PYTHON:-python3}"
+expected_actor="${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}"
+
+terminal_error() {
+  local operation="$1"
+  local message="$2"
+  "$python_command" "$classifier" terminal-error \
+    --operation "$operation" \
+    --message "$message" \
+    --cause validation_error \
+    --exit-code 2 \
+    --transport shell_compatibility \
+    --bucket mixed \
+    --expected-actor "$expected_actor" \
+    --write-outcome not_started
+}
+
 usage() {
   cat <<'USAGE'
 Usage: gh-comment issue|pr NUMBER [--repo OWNER/REPO] [--edit-last] [--create-if-none]
@@ -12,35 +32,49 @@ USAGE
 
 if [[ $# -lt 2 ]]; then
   usage >&2
-  exit 2
+  terminal_error github.comment.unknown "Comment kind and number are required"
+  exit $?
 fi
 
 kind="$1"
 number="$2"
 shift 2
-script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-gh_bin="${GH_COMMENT_GH:-$script_dir/gh-with-env-token}"
 
 case "$kind" in
   issue|pr) ;;
   *)
-    echo "error: first argument must be 'issue' or 'pr'" >&2
     usage >&2
-    exit 2
+    terminal_error github.comment.unknown "First argument must be 'issue' or 'pr'"
+    exit $?
     ;;
 esac
 
 tmp_body="$(mktemp)"
+tmp_stdout="$(mktemp)"
+tmp_stderr="$(mktemp)"
 cleanup() {
-  rm -f "$tmp_body"
+  rm -f "$tmp_body" "$tmp_stdout" "$tmp_stderr"
 }
 trap cleanup EXIT
 
 cat >"$tmp_body"
 
 if [[ ! -s "$tmp_body" ]]; then
-  echo "error: comment body is empty" >&2
-  exit 2
+  terminal_error "github.comment.$kind" "Comment body is empty"
+  exit $?
 fi
 
-"$gh_bin" "$kind" comment "$number" --body-file "$tmp_body" "$@"
+status=0
+"$gh_bin" "$kind" comment "$number" --body-file "$tmp_body" "$@" >"$tmp_stdout" 2>"$tmp_stderr" || status=$?
+"$python_command" "$classifier" classify-legacy \
+  --returncode "$status" \
+  --stdout-file "$tmp_stdout" \
+  --stderr-file "$tmp_stderr" \
+  --operation "github.comment.$kind" \
+  --expected-actor "$expected_actor" \
+  --transport gh_cli_wrapper \
+  --bucket mixed \
+  --write \
+  --failed-step post_comment \
+  --forward-stderr
+exit $?

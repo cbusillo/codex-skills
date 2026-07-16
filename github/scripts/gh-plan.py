@@ -19,11 +19,34 @@ import tempfile
 import time
 from typing import Any, Optional
 
+import github_api as github_api_core
+
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
 BOT_GH = SKILL_DIR.parent / "github/scripts/gh-with-env-token"
 PEOPLE_RESOLVER = SKILL_DIR.parent / "people/scripts/resolve_person.py"
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
+EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+CURRENT_OPERATION = "github.plan.unknown"
+CURRENT_TRANSPORT = "helper"
+CURRENT_BUCKET = "unknown"
+CURRENT_IS_WRITE = False
+
+PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
+    "index": ("gh_cli_graphql", "graphql", False),
+    "search": ("gh_cli_graphql", "graphql", False),
+    "show": ("rest_api", "rest_core", False),
+    "create": ("composite", "mixed", True),
+    "update-section": ("rest_api", "rest_core", True),
+    "link": ("rest_api", "rest_core", True),
+    "unlink": ("rest_api", "rest_core", True),
+    "deps": ("rest_api", "rest_core", False),
+    "close": ("composite", "mixed", True),
+    "project-add": ("gh_cli_graphql", "graphql", True),
+    "project-set": ("gh_cli_graphql", "graphql", True),
+    "project-list": ("gh_cli_graphql", "graphql", False),
+    "ensure-labels": ("composite", "mixed", True),
+}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "labels": {
@@ -59,12 +82,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 class PlanError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure: Optional[github_api_core.FailureDetail] = None,
+        api_result: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(github_api_core.redact_string(message))
+        self.failure = failure
+        self.api_result = github_api_core.redact_body(api_result) if api_result is not None else None
 
 
 class ClassifiedPlanError(PlanError):
-    def __init__(self, code: str, message: str, *, retry_at: Optional[int] = None):
-        super().__init__(message)
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retry_at: Optional[int] = None,
+        failure: Optional[github_api_core.FailureDetail] = None,
+        api_result: Optional[dict[str, Any]] = None,
+    ):
+        super().__init__(message, failure=failure, api_result=api_result)
         self.code = code
         self.retry_at = retry_at
 
@@ -76,20 +116,67 @@ def die(
     code: int = 1,
     error_code: str | None = None,
     retry_at: int | None = None,
+    failure: github_api_core.FailureDetail | None = None,
+    api_result: dict[str, Any] | None = None,
 ) -> None:
-    payload = {"ok": False, "error": message}
-    if error_code:
-        payload["error_code"] = error_code
-    if retry_at is not None:
-        payload["retry_at"] = retry_at
+    if failure is None:
+        failure = github_api_core.FailureDetail(
+            cause=error_code or "plan_error",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started" if CURRENT_IS_WRITE else None,
+        )
+    payload: dict[str, Any] = {}
     if detail:
         payload["detail"] = detail.strip()
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    if api_result is not None:
+        payload["api_result"] = api_result
+    envelope = github_api_core.terminal_failure(
+        failure,
+        operation=CURRENT_OPERATION,
+        payload=payload,
+        expected_actor=EXPECTED_ACTOR,
+        transport=CURRENT_TRANSPORT,
+        bucket=CURRENT_BUCKET,
+        exit_code=code,
+        error=message,
+        error_code=error_code,
+    )
+    if api_result is not None:
+        for key in (
+            "actor",
+            "status",
+            "request_id",
+            "quota",
+            "rate_limit",
+            "retry_at",
+            "retry_after",
+            "graphql_operation",
+            "completed_steps",
+            "failed_step",
+        ):
+            if api_result.get(key) is not None:
+                envelope[key] = api_result[key]
+    if retry_at is not None:
+        envelope["retry_at"] = retry_at
+    github_api_core.emit_terminal(envelope, stderr_message=f"error: {message}")
     raise SystemExit(code)
 
 
 def emit(payload: Any) -> None:
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    actor = payload.get("actor") if isinstance(payload, dict) else None
+    github_api_core.emit_terminal(
+        github_api_core.terminal_success(
+            payload,
+            operation=CURRENT_OPERATION,
+            actor=actor,
+            expected_actor=EXPECTED_ACTOR,
+            transport=CURRENT_TRANSPORT,
+            bucket=CURRENT_BUCKET,
+        )
+    )
 
 
 def get_runtime_home() -> pathlib.Path:
@@ -114,18 +201,50 @@ def run_raw(
     check: bool = True,
     prefer_active: bool = False,
     recoverable: bool = False,
+    operation: str | None = None,
+    is_write: bool | None = None,
+    bucket: str | None = None,
+    graphql_operation: github_api_core.GraphQLOperation | None = None,
+    failed_step: str = "gh_invocation",
 ) -> tuple[str, str, str]:
     """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
-    bot_enabled = BOT_GH.exists() and os.environ.get("GH_PLAN_SKIP_BOT") != "1"
+    skip_bot = os.environ.get("GH_PLAN_SKIP_BOT") == "1"
+    bot_enabled = BOT_GH.exists() and not skip_bot
     active_first = prefer_active and os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
     commands: list[tuple[str, list[str]]] = []
     if active_first:
         commands.append(("active-gh-user", ["gh", *args]))
     elif bot_enabled:
         commands.append(("automation-gh", [str(BOT_GH), *args]))
-    else:
+    elif skip_bot:
         commands.append(("active-gh-user", ["gh", *args]))
+    else:
+        inferred = github_api_core.infer_gh_command_context(args, input_text=input_text)
+        resolved_is_write = inferred.is_write if is_write is None else is_write
+        failure = github_api_core.FailureDetail(
+            cause="invalid_credentials",
+            message="Automation GitHub helper is unavailable and active auth was not explicitly authorized",
+            retryable=False,
+            fallback_eligible=True,
+            disposition="requires_authorization",
+            write_outcome="not_started" if resolved_is_write else None,
+            failed_step="auth_selection",
+        )
+        result = github_api_core.ApiResult(
+            ok=False,
+            status=0,
+            body=None,
+            operation=operation or CURRENT_OPERATION,
+            expected_actor=EXPECTED_ACTOR,
+            host=github_api_core.DEFAULT_HOST,
+            transport=inferred.transport,
+            bucket=bucket or inferred.bucket,
+            graphql_operation=graphql_operation or inferred.graphql_operation,
+            failure=failure,
+            failed_step="auth_selection",
+        )
+        raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
 
     for actor, command in commands:
         proc = subprocess.run(
@@ -144,9 +263,48 @@ def run_raw(
         detail = "\n".join(
             f"[{name}] exit={p.returncode}\n{p.stderr.strip()}" for name, p in tried if p.stderr.strip()
         )
-        if recoverable:
-            raise PlanError(f"gh command failed: {detail or proc.stdout}")
-        die("gh command failed", detail=detail or proc.stdout)
+        inferred = github_api_core.infer_gh_command_context(args, input_text=input_text)
+        resolved_is_write = inferred.is_write if is_write is None else is_write
+        resolved_bucket = bucket or inferred.bucket
+        resolved_graphql_operation = graphql_operation or inferred.graphql_operation
+        result = github_api_core.legacy_process_result(
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+            operation=operation or CURRENT_OPERATION,
+            is_write=resolved_is_write,
+            actor=actor,
+            expected_actor=EXPECTED_ACTOR,
+            transport=inferred.transport,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            failed_step=failed_step,
+        )
+        if result.failure and result.failure.cause == "rate_limited_unknown_bucket":
+            probe = github_api_core.rate_limit_probe(
+                gh_cmd=commands[-1][1][0],
+                expected_actor=EXPECTED_ACTOR,
+            )
+            result = github_api_core.legacy_process_result(
+                proc.returncode,
+                proc.stdout,
+                proc.stderr,
+                operation=operation or CURRENT_OPERATION,
+                is_write=resolved_is_write,
+                actor=actor,
+                expected_actor=EXPECTED_ACTOR,
+                transport=inferred.transport,
+                bucket=resolved_bucket,
+                graphql_operation=resolved_graphql_operation,
+                failed_step=failed_step,
+                rate_limit_result=probe,
+            )
+        message = result.failure.message if result.failure else detail or proc.stdout or "gh command failed"
+        raise PlanError(
+            f"gh command failed: {message}",
+            failure=result.failure,
+            api_result=result.as_dict(),
+        )
     return actor, proc.stdout, proc.stderr
 
 
@@ -175,8 +333,19 @@ def classify_project_error(message: str) -> str:
     return "project_update_failed"
 
 
-def project_error(message: str, *, retry_at: int | None = None) -> ClassifiedPlanError:
-    return ClassifiedPlanError(classify_project_error(message), message, retry_at=retry_at)
+def project_error(
+    message: str,
+    *,
+    retry_at: int | None = None,
+    source: PlanError | None = None,
+) -> ClassifiedPlanError:
+    return ClassifiedPlanError(
+        classify_project_error(message),
+        message,
+        retry_at=retry_at,
+        failure=source.failure if source else None,
+        api_result=source.api_result if source else None,
+    )
 
 
 def project_failure_payload(
@@ -192,6 +361,8 @@ def project_failure_payload(
         payload["error_code"] = exc.code
         if exc.retry_at is not None:
             payload["retry_at"] = exc.retry_at
+    if exc.api_result is not None:
+        payload["api_result"] = exc.api_result
     if owner or project:
         payload["target"] = {"owner": owner, "project": project}
     if operation:
@@ -241,7 +412,7 @@ def ensure_graphql_budget(
         if isinstance(exc, ClassifiedPlanError):
             raise
         if recoverable:
-            raise project_error(f"rate_limit preflight failed: {exc}") from exc
+            raise project_error(f"rate_limit preflight failed: {exc}", source=exc) from exc
         raise
     del actor
     resources = data.get("resources") if isinstance(data, dict) else None
@@ -264,9 +435,20 @@ def gh_json(
     input_text: str | None = None,
     prefer_active: bool = False,
     recoverable: bool = False,
+    operation: str | None = None,
+    is_write: bool | None = None,
+    bucket: str | None = None,
+    graphql_operation: github_api_core.GraphQLOperation | None = None,
 ) -> tuple[str, Any]:
     actor, stdout, _ = run_raw(
-        args, input_text=input_text, prefer_active=prefer_active, recoverable=recoverable
+        args,
+        input_text=input_text,
+        prefer_active=prefer_active,
+        recoverable=recoverable,
+        operation=operation,
+        is_write=is_write,
+        bucket=bucket,
+        graphql_operation=graphql_operation,
     )
     if not stdout.strip():
         return actor, None
@@ -274,6 +456,79 @@ def gh_json(
         return actor, json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise PlanError(f"Expected JSON from gh, got: {stdout[:300]}") from exc
+
+
+def api_json(
+    method: str,
+    path: str,
+    payload: Any = None,
+    *,
+    operation: str | None = None,
+    is_write: bool | None = None,
+    graphql_operation: github_api_core.GraphQLOperation | None = None,
+    completed_steps: list[str] | None = None,
+    failed_step: str | None = None,
+) -> tuple[str, Any]:
+    resolved_graphql_operation = graphql_operation
+    if github_api_core.is_graphql_path(path) and resolved_graphql_operation is None:
+        resolved_graphql_operation = github_api_core.infer_graphql_operation_type(payload)
+    resolved_is_write = github_api_core.infer_is_write(
+        method,
+        path,
+        payload,
+        explicit_is_write=is_write,
+        graphql_operation=resolved_graphql_operation,
+    )
+    bucket = "graphql" if github_api_core.is_graphql_path(path) else "rest_core"
+    args = [
+        "api",
+        *API_VERSION_ARGS,
+        "-X",
+        method.upper(),
+        path.lstrip("/"),
+        "--include",
+    ]
+    input_text = None
+    if payload is not None or method.upper() in ("POST", "PUT", "PATCH"):
+        args.extend(["--input", "-"])
+        input_text = json.dumps(payload if payload is not None else {})
+    actor, stdout, _ = run_raw(
+        args,
+        input_text=input_text,
+        operation=operation or CURRENT_OPERATION,
+        is_write=resolved_is_write,
+        bucket=bucket,
+        graphql_operation=resolved_graphql_operation,
+        failed_step=failed_step or "gh_invocation",
+    )
+    status, headers, body = github_api_core.parse_gh_include_output(stdout)
+    if status == 0:
+        status = 200
+    rate_limit = github_api_core.RateLimitInfo.from_headers(headers)
+    if not 200 <= status < 300 or (status == 200 and github_api_core._is_graphql_rate_limit_body(body)):
+        failure = github_api_core.classify_error(status, headers, body, is_write=resolved_is_write)
+        failure.completed_steps = completed_steps or []
+        failure.failed_step = failed_step or f"http_{status}"
+        result = github_api_core.ApiResult(
+            ok=False,
+            status=status,
+            body=body,
+            headers=headers,
+            request_id=headers.get("x-github-request-id"),
+            rate_limit=rate_limit if rate_limit.is_populated() else None,
+            failure=failure,
+            operation=operation or CURRENT_OPERATION,
+            actor=actor,
+            expected_actor=EXPECTED_ACTOR,
+            host=github_api_core.DEFAULT_HOST,
+            transport="graphql_api" if bucket == "graphql" else "rest_api",
+            bucket=bucket,
+            graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps or [],
+            failed_step=failure.failed_step,
+        )
+        raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
+    return actor, body
 
 
 def git_root(start: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -452,7 +707,7 @@ def issue_ref(ref: str, repo: str) -> tuple[str, int]:
 
 def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     issue_repo, number = issue_ref(ref, repo)
-    actor, data = gh_json(["api", *API_VERSION_ARGS, f"repos/{issue_repo}/issues/{number}"])
+    actor, data = api_json("GET", f"/repos/{issue_repo}/issues/{number}", failed_step="get_issue")
     data["repo"] = issue_repo
     return actor, data
 
@@ -482,17 +737,11 @@ def rest_create_issue(
         payload["labels"] = labels
     if milestone:
         payload["milestone"] = milestone
-    actor, data = gh_json(
-        [
-            "api",
-            *API_VERSION_ARGS,
-            "-X",
-            "POST",
-            f"repos/{repo}/issues",
-            "--input",
-            "-",
-        ],
-        input_text=json.dumps(payload),
+    actor, data = api_json(
+        "POST",
+        f"/repos/{repo}/issues",
+        payload,
+        failed_step="create_issue",
     )
     if not isinstance(data, dict):
         raise PlanError("gh api issue create returned no issue")
@@ -517,17 +766,11 @@ def rest_edit_issue(
         payload["labels"] = labels
     if not payload:
         raise PlanError("No issue fields to update")
-    actor, data = gh_json(
-        [
-            "api",
-            *API_VERSION_ARGS,
-            "-X",
-            "PATCH",
-            f"repos/{repo}/issues/{number}",
-            "--input",
-            "-",
-        ],
-        input_text=json.dumps(payload),
+    actor, data = api_json(
+        "PATCH",
+        f"/repos/{repo}/issues/{number}",
+        payload,
+        failed_step="edit_issue",
     )
     if not isinstance(data, dict):
         raise PlanError("gh api issue edit returned no issue")
@@ -901,11 +1144,26 @@ def cmd_link(args: argparse.Namespace) -> None:
     rel = args.relationship
 
     if rel == "blocked-by":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "POST", f"repos/{source_repo}/issues/{source_number}/dependencies/blocked_by", "-F", f"issue_id={target['id']}"])
+        actor, _ = api_json(
+            "POST",
+            f"/repos/{source_repo}/issues/{source_number}/dependencies/blocked_by",
+            {"issue_id": target["id"]},
+            failed_step="link_blocked_by",
+        )
     elif rel == "blocks":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "POST", f"repos/{target_repo}/issues/{target_number}/dependencies/blocked_by", "-F", f"issue_id={source['id']}"])
+        actor, _ = api_json(
+            "POST",
+            f"/repos/{target_repo}/issues/{target_number}/dependencies/blocked_by",
+            {"issue_id": source["id"]},
+            failed_step="link_blocks",
+        )
     elif rel == "subissue":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "POST", f"repos/{source_repo}/issues/{source_number}/sub_issues", "-F", f"sub_issue_id={target['id']}"])
+        actor, _ = api_json(
+            "POST",
+            f"/repos/{source_repo}/issues/{source_number}/sub_issues",
+            {"sub_issue_id": target["id"]},
+            failed_step="link_subissue",
+        )
     elif rel == "related":
         updated = add_relationship_note(source.get("body") or "", "related", target)
         actor, source = rest_edit_issue(source_repo, source_number, body=updated)
@@ -931,11 +1189,24 @@ def cmd_unlink(args: argparse.Namespace) -> None:
     target_number = int(target["number"])
     rel = args.relationship
     if rel == "blocked-by":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "DELETE", f"repos/{source_repo}/issues/{source_number}/dependencies/blocked_by/{target['id']}"])
+        actor, _ = api_json(
+            "DELETE",
+            f"/repos/{source_repo}/issues/{source_number}/dependencies/blocked_by/{target['id']}",
+            failed_step="unlink_blocked_by",
+        )
     elif rel == "blocks":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "DELETE", f"repos/{target_repo}/issues/{target_number}/dependencies/blocked_by/{source['id']}"])
+        actor, _ = api_json(
+            "DELETE",
+            f"/repos/{target_repo}/issues/{target_number}/dependencies/blocked_by/{source['id']}",
+            failed_step="unlink_blocks",
+        )
     elif rel == "subissue":
-        actor, _, _ = run_raw(["api", *API_VERSION_ARGS, "-X", "DELETE", f"repos/{source_repo}/issues/{source_number}/sub_issue", "-F", f"sub_issue_id={target['id']}"])
+        actor, _ = api_json(
+            "DELETE",
+            f"/repos/{source_repo}/issues/{source_number}/sub_issue",
+            {"sub_issue_id": target["id"]},
+            failed_step="unlink_subissue",
+        )
     elif rel == "related":
         updated = remove_relationship_note(source.get("body") or "", "related", target)
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
@@ -951,9 +1222,17 @@ def cmd_deps(args: argparse.Namespace) -> None:
     number = int(issue["number"])
     result: dict[str, Any] = {"issue": compact_issue(issue)}
     for name, endpoint in [("blocked_by", "blocked_by"), ("blocking", "blocking")]:
-        actor, data = gh_json(["api", *API_VERSION_ARGS, f"repos/{issue_repo}/issues/{number}/dependencies/{endpoint}"])
+        actor, data = api_json(
+            "GET",
+            f"/repos/{issue_repo}/issues/{number}/dependencies/{endpoint}",
+            failed_step=f"read_{endpoint}",
+        )
         result[name] = [compact_issue({**item, "repo": (item.get("repository") or {}).get("full_name")}) for item in data or []]
-    actor, data = gh_json(["api", *API_VERSION_ARGS, f"repos/{issue_repo}/issues/{number}/sub_issues"])
+    actor, data = api_json(
+        "GET",
+        f"/repos/{issue_repo}/issues/{number}/sub_issues",
+        failed_step="read_sub_issues",
+    )
     result["sub_issues"] = [compact_issue({**item, "repo": (item.get("repository") or {}).get("full_name")}) for item in data or []]
     emit({"ok": True, "actor": actor, **result})
 
@@ -1308,9 +1587,13 @@ def cmd_ensure_labels(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Compact GitHub issue planning helper")
+    parser = github_api_core.TerminalArgumentParser(description="Compact GitHub issue planning helper")
     parser.add_argument("--repo", help="Default OWNER/REPO for issue refs")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=github_api_core.TerminalArgumentParser,
+    )
 
     p = sub.add_parser("index", help="Compact plan issue index, no bodies")
     p.add_argument("--state", default="open", choices=["open", "closed", "all"])
@@ -1406,16 +1689,65 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    global CURRENT_OPERATION, CURRENT_TRANSPORT, CURRENT_BUCKET, CURRENT_IS_WRITE
     parser = build_parser()
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except github_api_core.ArgumentParsingError as exc:
+        command = github_api_core.requested_subcommand(sys.argv[1:], set(PLAN_COMMAND_CONTEXT))
+        CURRENT_OPERATION = f"github.plan.{command.replace('-', '_')}"
+        CURRENT_TRANSPORT, CURRENT_BUCKET, CURRENT_IS_WRITE = PLAN_COMMAND_CONTEXT.get(
+            command,
+            ("helper", "unknown", False),
+        )
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=str(exc),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started" if CURRENT_IS_WRITE else None,
+            failed_step="argument_parsing",
+        )
+        die(
+            str(exc),
+            code=2,
+            error_code="validation_error",
+            failure=failure,
+        )
+    CURRENT_OPERATION = f"github.plan.{args.command.replace('-', '_')}"
+    CURRENT_TRANSPORT, CURRENT_BUCKET, CURRENT_IS_WRITE = PLAN_COMMAND_CONTEXT.get(
+        args.command,
+        ("helper", "unknown", False),
+    )
     try:
         args.func(args)
     except ClassifiedPlanError as exc:
-        die(str(exc), error_code=exc.code, retry_at=exc.retry_at)
+        die(
+            str(exc),
+            error_code=exc.code,
+            retry_at=exc.retry_at,
+            failure=exc.failure,
+            api_result=exc.api_result,
+        )
     except PlanError as exc:
-        die(str(exc), error_code=classify_project_error(str(exc)))
+        error_code = exc.failure.cause if exc.failure else classify_project_error(str(exc))
+        die(
+            str(exc),
+            error_code=error_code,
+            failure=exc.failure,
+            api_result=exc.api_result,
+        )
     except KeyboardInterrupt:
-        die("Interrupted", code=130)
+        failure = github_api_core.FailureDetail(
+            cause="cancelled",
+            message="Interrupted",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="unknown" if CURRENT_IS_WRITE else None,
+        )
+        die("Interrupted", code=130, error_code="cancelled", failure=failure)
 
 
 if __name__ == "__main__":
