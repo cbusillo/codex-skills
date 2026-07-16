@@ -4523,6 +4523,63 @@ class EndpointUtilityTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["include_stale"], "true")
         self.assertTrue(result["include_stale"])
 
+    def test_command_problems_enriches_endpoint_error_with_context_and_route(self):
+        route = {
+            "port": 63343,
+            "project_key": "path:/tmp/example",
+            "base_path": "/tmp/example",
+        }
+        context = {
+            "repo_path": "/tmp/example",
+            "worktree_root": "/tmp/example",
+            "project_path": "/tmp/example",
+            "lifecycle_target_path": "/tmp/example",
+            "scope": "changed_files",
+        }
+
+        def fake_resolve_route(args, current_context):
+            return route
+
+        def fake_call_endpoint(current_route, endpoint, params, timeout=None):
+            raise jb_inspect.InspectError(
+                "Inspection API returned invalid JSON: boom",
+                3,
+                {"error_reason": "invalid_api_response"},
+            )
+
+        original_resolve_route = jb_inspect.resolve_route
+        original_call_endpoint = jb_inspect.call_endpoint
+        jb_inspect.resolve_route = fake_resolve_route
+        jb_inspect.call_endpoint = fake_call_endpoint
+        try:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.command_problems(
+                    Namespace(
+                        project_key=None,
+                        session_id=None,
+                        project_path=None,
+                        worktree_path=None,
+                        cwd=None,
+                        project=None,
+                        ide=None,
+                        scope=None,
+                        severity="all",
+                        problem_type="all",
+                        file_pattern="all",
+                        limit=100,
+                        offset=0,
+                        include_stale=False,
+                    ),
+                    context,
+                )
+        finally:
+            jb_inspect.resolve_route = original_resolve_route
+            jb_inspect.call_endpoint = original_call_endpoint
+
+        self.assertEqual(raised.exception.payload["context"]["repo_path"], "/tmp/example")
+        self.assertEqual(raised.exception.payload["route"], route)
+        self.assertEqual(raised.exception.payload["endpoint"], "problems")
+
     def test_wait_http_timeout_exceeds_plugin_timeout(self):
         self.assertEqual(jb_inspect.wait_http_timeout(60_000), 65.0)
 
@@ -5412,6 +5469,42 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(body["command"], "summarize-outcomes")
             self.assertNotIn("verdict", body)
             self.assertFalse(outcome_path.exists())
+
+    def test_summarize_outcomes_human_output_renders_counts_without_verdict(self):
+        summary = {
+            "status": "ok",
+            "path": "/tmp/outcomes.jsonl",
+            "events": 3,
+            "invalid_lines": 1,
+            "summary": {
+                "by_verdict": {"GREEN": 2, "UNKNOWN": 1},
+                "by_bucket": {"clean": 2, "stale_results": 1},
+                "by_command": {"inspect-closeout": 3},
+                "by_retry": {"false": 2, "true": 1},
+                "by_ide_channel": {"stable": 3},
+                "by_cleanup_status": {"closed": 3},
+                "retryable_unknowns": 1,
+            },
+            "recent": [],
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = jb_inspect.emit(
+                summary,
+                json_only=False,
+                exit_code=0,
+                command="summarize-outcomes",
+                assess=False,
+            )
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("STATUS: ok", rendered)
+        self.assertIn("OUTCOMES: events=3 invalid_lines=1 path=/tmp/outcomes.jsonl", rendered)
+        self.assertIn("BY_VERDICT: GREEN=2 UNKNOWN=1", rendered)
+        self.assertIn("RETRYABLE_UNKNOWNS: 1", rendered)
+        self.assertFalse(any(line.startswith("VERDICT:") for line in rendered.splitlines()))
 
     def test_outcome_log_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:

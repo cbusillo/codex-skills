@@ -791,17 +791,17 @@ def command_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
 
 def command_trigger(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "trigger", trigger_params(args, context, route))
+    body = call_contextual_endpoint(route, "trigger", trigger_params(args, context, route), context)
     return {"status": body.get("status", "triggered"), "context": public_context(context), "route": body.get("route") or route, "trigger": body}
 
 
 def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
-    body = call_endpoint(route, "wait", route_params(args, context, route) | {
+    body = call_contextual_endpoint(route, "wait", route_params(args, context, route) | {
         "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-    }, timeout=wait_http_timeout(timeout_ms))
+    }, context, timeout=wait_http_timeout(timeout_ms))
     result = {
         "status": body.get("completion_reason") or body.get("status", "unknown"),
         "context": public_context(context),
@@ -815,7 +815,7 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
 
 def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "status", route_params(args, context, route))
+    body = call_contextual_endpoint(route, "status", route_params(args, context, route), context)
     status = status_label(body)
     result = {
         "status": status,
@@ -856,7 +856,7 @@ def copy_verdict_evidence(target: dict[str, Any], source: dict[str, Any]) -> Non
 
 def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "problems", problems_params(args, context, route))
+    body = call_contextual_endpoint(route, "problems", problems_params(args, context, route), context)
     if getattr(args, "include_stale", False):
         body.setdefault("include_stale", True)
     return summarize_problems(context, body.get("route") or route, body)
@@ -2572,6 +2572,22 @@ def call_endpoint(
     return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
 
 
+def call_contextual_endpoint(
+    route: dict[str, Any],
+    endpoint: str,
+    params: dict[str, Any],
+    context: dict[str, Any],
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    try:
+        return call_endpoint(route, endpoint, params, timeout=timeout)
+    except InspectError as error:
+        error.payload.setdefault("context", public_context(context))
+        error.payload.setdefault("route", route)
+        error.payload.setdefault("endpoint", endpoint)
+        raise
+
+
 def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     return {
         "project_key": args.project_key,
@@ -3425,7 +3441,7 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
         if json_only:
             print(public_json(payload))
         else:
-            print_human(payload)
+            print_human(payload, assess=False)
         return exit_code
     apply_verdict(payload)
     log_unknown_verdict(payload)
@@ -3439,8 +3455,9 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
     return exit_code
 
 
-def print_human(payload: dict[str, Any]) -> None:
-    apply_verdict(payload)
+def print_human(payload: dict[str, Any], assess: bool = True) -> None:
+    if assess:
+        apply_verdict(payload)
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
         print(safe_text("ROUTE: {ide_name} project={project_name} project_key={project_key} base_path={base_path}", {
@@ -3452,6 +3469,7 @@ def print_human(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    print_outcome_summary(payload)
     verdict = payload.get("verdict")
     if verdict:
         print(safe_text("VERDICT: {verdict} reason={reason} message={message}", {
@@ -3520,6 +3538,33 @@ def print_human(payload: dict[str, Any]) -> None:
     if not route and not status:
         # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
+
+
+def print_outcome_summary(payload: dict[str, Any]) -> None:
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return
+    print(safe_text("OUTCOMES: events={events} invalid_lines={invalid_lines} path={path}", {
+        "events": payload.get("events", 0),
+        "invalid_lines": payload.get("invalid_lines", 0),
+        "path": payload.get("path"),
+    }))
+    for key, label in (
+        ("by_verdict", "BY_VERDICT"),
+        ("by_bucket", "BY_BUCKET"),
+        ("by_command", "BY_COMMAND"),
+        ("by_retry", "BY_RETRY"),
+        ("by_ide_channel", "BY_IDE_CHANNEL"),
+        ("by_cleanup_status", "BY_CLEANUP_STATUS"),
+    ):
+        counts = summary.get(key)
+        if not isinstance(counts, dict) or not counts:
+            continue
+        rendered = " ".join(f"{name}={count}" for name, count in counts.items())
+        print(f"{label}: {rendered}")
+    print(safe_text("RETRYABLE_UNKNOWNS: {count}", {
+        "count": summary.get("retryable_unknowns", 0),
+    }))
 
 
 def print_error_details(payload: dict[str, Any]) -> None:
