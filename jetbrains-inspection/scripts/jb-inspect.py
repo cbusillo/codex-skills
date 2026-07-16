@@ -43,6 +43,7 @@ DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 DEFAULT_PREPARE_TIMEOUT_MS = 300_000
 DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
+DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS = 10_000
 LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
@@ -52,6 +53,7 @@ OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
 UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
+INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
 LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 RECOVERABLE_HELPER_LEASE_STATES = frozenset(
@@ -789,17 +791,17 @@ def command_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
 
 def command_trigger(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "trigger", trigger_params(args, context, route))
+    body = call_contextual_endpoint(route, "trigger", trigger_params(args, context, route), context)
     return {"status": body.get("status", "triggered"), "context": public_context(context), "route": body.get("route") or route, "trigger": body}
 
 
 def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
     timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
-    body = call_endpoint(route, "wait", route_params(args, context, route) | {
+    body = call_contextual_endpoint(route, "wait", route_params(args, context, route) | {
         "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-    }, timeout=wait_http_timeout(timeout_ms))
+    }, context, timeout=wait_http_timeout(timeout_ms))
     result = {
         "status": body.get("completion_reason") or body.get("status", "unknown"),
         "context": public_context(context),
@@ -813,7 +815,7 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
 
 def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "status", route_params(args, context, route))
+    body = call_contextual_endpoint(route, "status", route_params(args, context, route), context)
     status = status_label(body)
     result = {
         "status": status,
@@ -854,7 +856,7 @@ def copy_verdict_evidence(target: dict[str, Any], source: dict[str, Any]) -> Non
 
 def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     route = resolve_route(args, context)
-    body = call_endpoint(route, "problems", problems_params(args, context, route))
+    body = call_contextual_endpoint(route, "problems", problems_params(args, context, route), context)
     if getattr(args, "include_stale", False):
         body.setdefault("include_stale", True)
     return summarize_problems(context, body.get("route") or route, body)
@@ -882,11 +884,15 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"status": "not_needed"}
     result: dict[str, Any] = {}
+    inspection_error: BaseException | None = None
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_with_internal_retry(args, context, prepared["route"])
             result["inspection_result"] = compact_inspection_result(result)
+        except BaseException as error:
+            inspection_error = error
+            result = inspection_exception_result(error)
         finally:
             if not getattr(args, "keep_warm", False):
                 if should_defer_lifecycle_cleanup(result, lease):
@@ -902,6 +908,28 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
         apply_verdict(result)
+        if inspection_error is not None:
+            if isinstance(inspection_error, InspectError):
+                inspection_error.payload.setdefault("context", public_context(context))
+                inspection_error.payload.setdefault("prepared", public_payload(prepared))
+                inspection_error.payload.setdefault("cleanup", public_payload(cleanup))
+                inspection_error.payload["inspection_failure"] = public_payload(result)
+                raise inspection_error
+            if isinstance(inspection_error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise inspection_error
+            raise InspectError(
+                "Inspection helper failed unexpectedly.",
+                3,
+                {
+                    "error_reason": result.get("error_reason"),
+                    "error_type": inspection_error.__class__.__name__,
+                    "error_message": str(inspection_error) or inspection_error.__class__.__name__,
+                    "context": public_context(context),
+                    "prepared": public_payload(prepared),
+                    "cleanup": public_payload(cleanup),
+                    "inspection_failure": public_payload(result),
+                },
+            ) from inspection_error
     return result
 
 
@@ -917,12 +945,18 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
     retry_result["internal_retries"] = retry_summaries
     retry_result["internal_retry_count"] = 1
     retry_result["recovered_from_unknown"] = retry_result.get("verdict") in {"GREEN", "RED"}
+    retry_result["retry_exhausted"] = retry_result.get("verdict") == "UNKNOWN"
     return retry_result
 
 
 def should_retry_unknown_result(result: dict[str, Any]) -> bool:
     retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
-    return result.get("verdict") == "UNKNOWN" and retry_policy.get("retry") is True and int(retry_policy.get("max_attempts") or 0) > 0
+    return (
+        result.get("verdict") == "UNKNOWN"
+        and result.get("bucket") in INTERNAL_RETRY_BUCKETS
+        and retry_policy.get("retry") is True
+        and int(retry_policy.get("max_attempts") or 0) > 0
+    )
 
 
 def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]:
@@ -952,23 +986,317 @@ def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def inspection_exception_result(error: BaseException) -> dict[str, Any]:
+    if isinstance(error, InspectError):
+        reason = infer_error_reason(error, error.payload)
+        message = str(error)
+    else:
+        reason = normalize_reason(error.__class__.__name__)
+        message = str(error) or error.__class__.__name__
+    result = {
+        "status": "error",
+        "error": message,
+        "error_message": message,
+        "error_reason": reason,
+        "transport_state_unknown": True,
+    }
+    apply_verdict(result)
+    return result
+
+
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
-    trigger = call_endpoint(route, "trigger", trigger_params(args, context, route))
+    try:
+        trigger = call_endpoint(route, "trigger", trigger_params(args, context, route))
+    except InspectError as error:
+        if infer_error_reason(error, error.payload) != "inspection_api_timeout":
+            raise
+        return recover_inspection_transport_timeout(args, context, route, error)
     active_route = trigger.get("route") or route
+    accepted_run_id = inspection_run_id(trigger)
     timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
-    wait = call_endpoint(active_route, "wait", route_params(args, context, active_route) | {
+    wait_params = route_params(args, context, active_route) | {
         "timeout_ms": timeout_ms,
         "poll_ms": getattr(args, "poll_ms", DEFAULT_POLL_MS),
-    }, timeout=wait_http_timeout(timeout_ms))
-    problems = call_endpoint(active_route, "problems", problems_params(args, context, active_route))
+    }
+    if accepted_run_id is not None:
+        wait_params["inspection_run_id"] = accepted_run_id
+    try:
+        wait = call_endpoint(active_route, "wait", wait_params, timeout=wait_http_timeout(timeout_ms))
+    except InspectError as error:
+        if infer_error_reason(error, error.payload) != "inspection_api_timeout":
+            raise
+        return recover_inspection_transport_timeout(args, context, active_route, error, trigger)
+    wait_run_id = inspection_run_id(wait)
+    if accepted_run_id is not None and wait_result_run_changed(wait, accepted_run_id):
+        return inspection_run_changed_result(active_route, trigger, wait)
+    cancellation = cancel_timed_out_inspection(
+        args,
+        context,
+        active_route,
+        wait,
+        expected_run_id=accepted_run_id or wait_run_id,
+    )
+    problems_request = problems_params(args, context, active_route)
+    if accepted_run_id is not None:
+        problems_request["inspection_run_id"] = accepted_run_id
+    try:
+        problems = call_endpoint(active_route, "problems", problems_request)
+    except InspectError as error:
+        return inspection_endpoint_failure_result(error, active_route, trigger, wait, cancellation)
+    if accepted_run_id is not None and inspection_result_run_changed(problems, accepted_run_id):
+        return inspection_run_changed_result(active_route, trigger, problems, phase="problems")
     if getattr(args, "include_stale", False):
         problems.setdefault("include_stale", True)
     summary = summarize_problems(context, problems.get("route") or active_route, problems)
     summary["trigger"] = trigger
     summary["wait"] = wait
+    if cancellation is not None:
+        summary["cancellation"] = cancellation
     summary["status"] = classify_run_status(wait, problems)
     apply_verdict(summary)
     return summary
+
+
+def inspection_run_changed_result(
+    route: dict[str, Any],
+    trigger: dict[str, Any],
+    observed: dict[str, Any],
+    phase: str = "wait",
+) -> dict[str, Any]:
+    result = {
+        "status": "run_changed",
+        "error_reason": "run_changed",
+        "run_changed": True,
+        "transport_state_unknown": True,
+        "expected_inspection_run_id": inspection_run_id(trigger),
+        "inspection_run_id": inspection_run_id(observed) or positive_run_id(observed.get("snapshot_run_id")),
+        "route": route,
+        "trigger": trigger,
+        phase: observed,
+    }
+    apply_verdict(result)
+    return result
+
+
+def inspection_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
+    current_run_id = inspection_run_id(payload)
+    snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
+    if current_run_id is not None and current_run_id != expected_run_id:
+        return True
+    if payload.get("inspection_in_progress") is True:
+        return False
+    return snapshot_run_id is not None and snapshot_run_id != expected_run_id
+
+
+def wait_result_run_changed(payload: dict[str, Any], expected_run_id: int) -> bool:
+    current_run_id = inspection_run_id(payload)
+    if current_run_id is not None and current_run_id != expected_run_id:
+        return True
+    if payload.get("inspection_in_progress") is True:
+        return False
+    snapshot_run_id = positive_run_id(payload.get("snapshot_run_id"))
+    return snapshot_run_id is not None and snapshot_run_id != expected_run_id
+
+
+def positive_run_id(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit() and int(value) > 0:
+        return int(value)
+    return None
+
+
+def inspection_endpoint_failure_result(
+    error: InspectError,
+    route: dict[str, Any],
+    trigger: dict[str, Any],
+    wait: dict[str, Any],
+    cancellation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cancellation_settled = cancellation is not None and cancellation.get("settled") is True
+    result: dict[str, Any] = {
+        "status": "error",
+        "error": str(error),
+        "error_message": str(error),
+        "error_reason": infer_error_reason(error, error.payload),
+        "endpoint": error.payload.get("endpoint"),
+        "transport_state_unknown": wait.get("inspection_in_progress") is True and not cancellation_settled,
+        "route": route,
+        "trigger": trigger,
+        "wait": wait,
+    }
+    if cancellation is not None:
+        result["cancellation"] = cancellation
+    apply_verdict(result)
+    return result
+
+
+def recover_inspection_transport_timeout(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    error: InspectError,
+    trigger: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    expected_run_id = inspection_run_id(trigger or {})
+    status: dict[str, Any] = {}
+    status_error: InspectError | None = None
+    try:
+        status = call_endpoint(route, "status", route_params(args, context, route))
+    except InspectError as probe_error:
+        status_error = probe_error
+
+    wait = dict(status)
+    wait["timed_out"] = True
+    if expected_run_id is not None:
+        wait.setdefault("inspection_run_id", expected_run_id)
+
+    cancellation: dict[str, Any] | None = None
+    if status.get("inspection_in_progress") is True:
+        active_run_id = inspection_run_id(status)
+        if expected_run_id is not None and active_run_id == expected_run_id:
+            cancellation = cancel_timed_out_inspection(
+                args,
+                context,
+                route,
+                wait,
+                expected_run_id=expected_run_id,
+            )
+        else:
+            cancellation = {
+                "status": "run_changed" if expected_run_id is not None else "not_requested",
+                "requested": False,
+                "settled": False,
+                "reason": "run_changed" if expected_run_id is not None else "run_id_unknown",
+                "expected_inspection_run_id": expected_run_id,
+                "inspection_run_id": active_run_id,
+                "last_status": status,
+            }
+
+    result: dict[str, Any] = {
+        "status": "error",
+        "error": str(error),
+        "error_message": str(error),
+        "error_reason": "inspection_api_timeout",
+        "timeout_endpoint": error.payload.get("endpoint"),
+        "transport_timeout": True,
+        "transport_state_unknown": status_error is not None or trigger is None,
+        "route": route,
+        "wait": wait,
+    }
+    if trigger:
+        result["trigger"] = trigger
+    if cancellation is not None:
+        result["cancellation"] = cancellation
+    if status_error is not None:
+        result["status_probe_error"] = {
+            "reason": infer_error_reason(status_error, status_error.payload),
+            "message": str(status_error),
+        }
+    apply_verdict(result)
+    return result
+
+
+def inspection_run_id(payload: dict[str, Any]) -> int | None:
+    for key in ("inspection_run_id", "run_id"):
+        value = payload.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit() and int(value) > 0:
+            return int(value)
+    return None
+
+
+def cancel_timed_out_inspection(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    wait: dict[str, Any],
+    expected_run_id: int | None = None,
+) -> dict[str, Any] | None:
+    if wait.get("timed_out") is not True or wait.get("inspection_in_progress") is not True:
+        return None
+    expected_run_id = expected_run_id or inspection_run_id(wait)
+    if expected_run_id is None:
+        return {
+            "status": "not_requested",
+            "requested": False,
+            "settled": False,
+            "reason": "run_id_unknown",
+            "last_status": wait,
+        }
+    cancel_params = route_params(args, context, route)
+    cancel_params["inspection_run_id"] = expected_run_id
+    try:
+        response = call_endpoint(route, "cancel", cancel_params)
+    except InspectError as error:
+        return {
+            "status": "failed",
+            "requested": False,
+            "settled": False,
+            "reason": infer_error_reason(error, error.payload),
+        }
+    if response.get("status") == "run_changed":
+        return {
+            "status": "run_changed",
+            "requested": False,
+            "settled": False,
+            "reason": "run_changed",
+            "response": response,
+            "last_status": wait,
+        }
+    response_run_id = inspection_run_id(response)
+    if response_run_id is not None and response_run_id != expected_run_id:
+        return {
+            "status": "run_changed",
+            "requested": False,
+            "settled": False,
+            "reason": "run_changed",
+            "response": response,
+            "last_status": wait,
+        }
+
+    deadline = now_ms() + DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS
+    last_status = wait
+    while now_ms() <= deadline:
+        try:
+            last_status = call_endpoint(route, "status", route_params(args, context, route))
+        except InspectError as error:
+            return {
+                "status": "failed",
+                "requested": response.get("inspection_cancellation_requested") is True,
+                "settled": False,
+                "reason": infer_error_reason(error, error.payload),
+                "response": response,
+            }
+        last_status_run_id = inspection_run_id(last_status)
+        if last_status_run_id != expected_run_id:
+            return {
+                "status": "run_changed",
+                "requested": response.get("inspection_cancellation_requested") is True,
+                "settled": False,
+                "reason": "run_changed",
+                "expected_inspection_run_id": expected_run_id,
+                "inspection_run_id": last_status_run_id,
+                "response": response,
+                "last_status": last_status,
+            }
+        if last_status.get("inspection_in_progress") is not True:
+            return {
+                "status": "settled",
+                "requested": response.get("inspection_cancellation_requested") is True,
+                "settled": True,
+                "response": response,
+                "last_status": last_status,
+            }
+        time.sleep(max(DEFAULT_POLL_MS, 1_000) / 1000.0)
+    return {
+        "status": "pending",
+        "requested": response.get("inspection_cancellation_requested") is True,
+        "settled": False,
+        "response": response,
+        "last_status": last_status,
+    }
 
 
 def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -1007,9 +1335,10 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
                 open_attempts=open_attempts,
             )
             open_method, open_attempts, opened_by_helper = open_project_for_lifecycle(args, context, lease)
+            open_response_unknown = lifecycle_open_response_unknown(open_attempts)
             persist_preparation_lease(
                 lease,
-                state="open_registered" if opened_by_helper else "open_observed",
+                state="open_registered" if opened_by_helper else "open_requesting" if open_response_unknown else "open_observed",
                 stage="route_wait",
                 opened_by_helper=opened_by_helper,
                 open_method=open_method,
@@ -1094,6 +1423,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             stage=preparation_stage,
         )
         if isinstance(error, InspectError):
+            error.payload.setdefault("context", public_context(context))
             error.payload.setdefault("preparation_stage", preparation_stage)
             cleanup_payload = public_payload(cleanup)
             lease_payload = public_lease(lease)
@@ -1115,8 +1445,17 @@ def persist_preparation_lease(
     claim_metadata: dict[str, Any] | None = None,
     prepared_at_ms: int | None = None,
 ) -> None:
+    potential_open = lease.get("open_request_may_have_been_accepted") is True
+    if lifecycle_open_response_unknown(open_attempts):
+        potential_open = True
+    if opened_by_helper or (
+        claim_metadata is not None
+        and claim_metadata.get("ownership_determined") is True
+    ):
+        potential_open = False
     updates: dict[str, Any] = {
         "opened_by_helper": opened_by_helper,
+        "open_request_may_have_been_accepted": potential_open,
         "open_method": open_method,
         "open_attempts": open_attempts,
         "preparation_stage": stage,
@@ -1155,8 +1494,20 @@ def accepted_open_identity(open_attempts: list[dict[str, Any]]) -> dict[str, Any
     return {}
 
 
+def lifecycle_open_response_unknown(open_attempts: list[dict[str, Any]]) -> bool:
+    return any(attempt.get("request_may_have_been_accepted") is True for attempt in open_attempts)
+
+
+def lease_may_own_open_project(lease: dict[str, Any]) -> bool:
+    return (
+        lease.get("opened_by_helper") is True
+        or lease.get("open_request_may_have_been_accepted") is True
+        or lease.get("state") in POTENTIAL_OPEN_LEASE_STATES
+    )
+
+
 def ensure_helper_open_route_identity(lease: dict[str, Any], route: dict[str, Any]) -> None:
-    if not lease.get("opened_by_helper"):
+    if not lease_may_own_open_project(lease):
         return
     expected_session_id = lease.get("session_id")
     actual_session_id = route.get("session_id")
@@ -1193,7 +1544,7 @@ def cleanup_failed_preparation(
     error: BaseException,
     stage: str,
 ) -> dict[str, Any]:
-    if not lease.get("opened_by_helper") and lease.get("state") not in POTENTIAL_OPEN_LEASE_STATES:
+    if not lease_may_own_open_project(lease):
         try:
             return cleanup_lifecycle(lease, route or {}, None)
         except BaseException as cleanup_error:
@@ -1203,6 +1554,11 @@ def cleanup_failed_preparation(
                 "reason": "preexisting_lease_release_failed",
                 "message": str(cleanup_error),
             }
+
+    if isinstance(error, InspectError) and lease.get("opened_by_helper") and stage == "readiness_wait":
+        last_status = error.payload.get("last_status") if isinstance(error.payload.get("last_status"), dict) else {}
+        if ide_churn_present(last_status):
+            return defer_active_preparation_cleanup(lease, error, stage, last_status)
 
     proof = close_proof
     ownership_proven: bool | None = True if proof is not None else None
@@ -1233,6 +1589,30 @@ def cleanup_failed_preparation(
         except BaseException as cleanup_error:
             return defer_failed_preparation_cleanup(lease, route, error, stage, cleanup_error)
     return defer_failed_preparation_cleanup(lease, route, error, stage, reclaim_error)
+
+
+def defer_active_preparation_cleanup(
+    lease: dict[str, Any],
+    error: InspectError,
+    stage: str,
+    last_status: dict[str, Any],
+) -> dict[str, Any]:
+    lease.update(
+        {
+            "preparation_failure_stage": stage,
+            "preparation_failure_reason": infer_error_reason(error, error.payload),
+            "preparation_last_status": public_payload(last_status),
+            "cleanup_next_action": "Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases if the warm project becomes stale.",
+        }
+    )
+    mark_lease_state(lease, "kept_warm_after_indexing_timeout")
+    return {
+        "status": "deferred",
+        "cleanup_deferred": True,
+        "reason": "indexing_or_inspection_still_running",
+        "lease_state": "kept_warm_after_indexing_timeout",
+        "next_action": lease["cleanup_next_action"],
+    }
 
 
 def persist_claimed_cleanup_ownership(
@@ -1622,7 +2002,7 @@ def open_via_running_ide(
             continue
         try:
             if lease is not None:
-                persist_open_request_identity(lease, identity, method, attempts or [])
+                persist_open_request_identity(lease, identity, method, attempts if attempts is not None else [])
             response = http_get(
                 int(port),
                 "lifecycle/open",
@@ -1647,9 +2027,19 @@ def open_via_running_ide(
                 attempts.append(attempt)
             return attempt
         except InspectError as error:
+            attempt = open_attempt_payload(method, context, False, identity, error)
             if attempts is not None:
-                attempts.append(open_attempt_payload(method, context, False, identity, error))
+                attempts.append(attempt)
             if lease is not None:
+                lease["open_attempts"] = attempts or [attempt]
+                if ambiguous_lifecycle_open_error(error):
+                    attempt["open_outcome"] = "response_unknown"
+                    attempt["request_may_have_been_accepted"] = True
+                    attempt["ownership_registered"] = False
+                    lease["open_request_may_have_been_accepted"] = True
+                    mark_lease_state(lease, "open_requesting")
+                    return attempt
+                mark_lease_state(lease, "open_requesting")
                 raise
             continue
     if attempts is not None and not matching:
@@ -1685,6 +2075,12 @@ def persist_open_request_identity(
         }
     )
     mark_lease_state(lease, "open_requesting")
+
+
+def ambiguous_lifecycle_open_error(error: InspectError) -> bool:
+    reason = infer_error_reason(error, error.payload)
+    message = str(error).lower()
+    return reason in {"inspection_api_timeout", "timeout"} and "timed out" in message
 
 
 def lifecycle_open_outcome(
@@ -1861,6 +2257,7 @@ def claim_lifecycle(
     claim_metadata = {
         "status": claim.get("status") or "unknown",
         "ownership_proven": ownership_proven is True,
+        "ownership_determined": ownership_proven is not None,
         "reason": claim.get("reason"),
         "lifecycle_ownership_protocol": claim.get("lifecycle_ownership_protocol"),
         "project_key": claimed_route.get("project_key"),
@@ -1945,20 +2342,34 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
             raise
     status = str(body.get("status") or "closed")
     if status == "closed":
-        return {
+        result = {
             "status": "closed",
             "reason": body.get("reason"),
             "cleanup_skipped": False,
             "cleanup_failed": False,
         }
-    return {
-        "status": status,
-        "reason": body.get("reason") or status,
-        "cleanup_skipped": True,
-        "cleanup_failed": False,
-        "message": body.get("message"),
-        "close_attempts": body.get("close_attempts"),
-    }
+    else:
+        result = {
+            "status": status,
+            "reason": body.get("reason") or status,
+            "cleanup_skipped": True,
+            "cleanup_failed": False,
+            "message": body.get("message"),
+            "close_attempts": body.get("close_attempts"),
+        }
+    for field in (
+        "project_instance_id",
+        "project_key",
+        "lease_id",
+        "session_id",
+        "closed_at_ms",
+        "inspection_run_id",
+        "inspection_in_progress",
+        "close_attempts",
+    ):
+        if body.get(field) is not None:
+            result[field] = body[field]
+    return result
 
 
 def public_cleanup_reason(error: InspectError) -> str:
@@ -1999,7 +2410,19 @@ def private_http_get_body(port: int, endpoint: str, params: dict[str, Any], time
             raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
         raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
     except (urllib.error.URLError, TimeoutError) as error:
-        raise InspectError(f"Inspection API unavailable on port {port}: {error}", 3)
+        raise inspection_transport_error(port, endpoint, error) from error
+
+
+def inspection_transport_error(port: int, endpoint: str, error: BaseException) -> InspectError:
+    reason = getattr(error, "reason", None)
+    timed_out = isinstance(error, TimeoutError) or isinstance(reason, TimeoutError) or "timed out" in str(error).lower()
+    error_reason = "inspection_api_timeout" if timed_out else "inspection_api_unavailable"
+    condition = "timed out" if timed_out else "unavailable"
+    return InspectError(
+        f"Inspection API {condition} on port {port}: {error}",
+        3,
+        {"error_reason": error_reason, "endpoint": endpoint, "port": port},
+    )
 
 
 def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -2136,7 +2559,7 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
             raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
         raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
     except (urllib.error.URLError, TimeoutError) as error:
-        raise InspectError(f"Inspection API unavailable on port {port}: {error}", 3)
+        raise inspection_transport_error(port, endpoint, error) from error
 
 
 def call_endpoint(
@@ -2147,6 +2570,22 @@ def call_endpoint(
 ) -> dict[str, Any]:
     port = route_port(route)
     return http_get(port, endpoint, params, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)).body
+
+
+def call_contextual_endpoint(
+    route: dict[str, Any],
+    endpoint: str,
+    params: dict[str, Any],
+    context: dict[str, Any],
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    try:
+        return call_endpoint(route, endpoint, params, timeout=timeout)
+    except InspectError as error:
+        error.payload.setdefault("context", public_context(context))
+        error.payload.setdefault("route", route)
+        error.payload.setdefault("endpoint", endpoint)
+        raise
 
 
 def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -2290,6 +2729,12 @@ def should_defer_lifecycle_cleanup(result: dict[str, Any], lease: dict[str, Any]
         return False
     if result.get("verdict") in {"GREEN", "RED"}:
         return False
+    cancellation = result.get("cancellation") if isinstance(result.get("cancellation"), dict) else {}
+    if cancellation.get("settled") is True:
+        last_status = cancellation.get("last_status") if isinstance(cancellation.get("last_status"), dict) else {}
+        return ide_churn_present(last_status)
+    if result.get("transport_state_unknown") is True:
+        return True
     wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
     return active_ide_churn(result) or active_ide_churn(wait)
 
@@ -2297,17 +2742,18 @@ def should_defer_lifecycle_cleanup(result: dict[str, Any], lease: dict[str, Any]
 def active_ide_churn(payload: dict[str, Any]) -> bool:
     if not payload:
         return False
+    return payload.get("timed_out") is True and ide_churn_present(payload)
+
+
+def ide_churn_present(payload: dict[str, Any]) -> bool:
     status = str(payload.get("status") or payload.get("completion_reason") or "").lower()
     proof_failures = payload.get("proof_failures") if isinstance(payload.get("proof_failures"), list) else []
     return (
-        payload.get("timed_out") is True
-        and (
-            payload.get("indexing") is True
-            or payload.get("is_scanning") is True
-            or payload.get("inspection_in_progress") is True
-            or status in {"indexing", "running", "timed_out"}
-            or any(reason in {"indexing", "inspection_still_running", "timeout"} for reason in proof_failures)
-        )
+        payload.get("indexing") is True
+        or payload.get("is_scanning") is True
+        or payload.get("inspection_in_progress") is True
+        or status in {"indexing", "running"}
+        or any(reason in {"indexing", "inspection_still_running"} for reason in proof_failures)
     )
 
 
@@ -2417,6 +2863,15 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         return "stale_results"
     if payload.get("capture_incomplete") or wait.get("capture_incomplete") or payload.get("status") == "capture_incomplete":
         return str(payload.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason") or "capture_incomplete")
+    if payload.get("error_reason") == "inspection_api_timeout":
+        return "inspection_api_timeout"
+    if payload.get("run_changed") or payload.get("error_reason") == "run_changed":
+        return "run_changed"
+    if wait.get("status") == "run_changed":
+        trigger = payload.get("trigger") if isinstance(payload.get("trigger"), dict) else {}
+        expected_run_id = inspection_run_id(trigger) or positive_run_id(wait.get("expected_inspection_run_id"))
+        if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
+            return "run_changed"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
         return "timeout"
     if payload.get("indexing") or payload.get("is_scanning") or payload.get("inspection_in_progress") or payload.get("status") in {"indexing", "running"}:
@@ -2474,6 +2929,10 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Wait for indexing/scanning to settle or rerun with a larger timeout."
     if reason == "inspection_still_running":
         return "Wait for indexing/scanning to finish, then rerun inspection."
+    if reason == "inspection_api_timeout":
+        return "The IDE inspection API was busy. Wait for the active inspection or lifecycle operation to settle, then retry once."
+    if reason == "run_changed":
+        return "Another inspection replaced the accepted run. Wait for that run to settle, then resolve the route and retry once."
     if reason == "inspection_api_unavailable":
         return "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
     if reason == "ambiguous_route":
@@ -2498,6 +2957,9 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     reason = str(payload.get("verdict_reason") or "unknown")
     bucket = outcome_bucket(payload, reason)
     retry_policy = retry_policy_for(verdict, bucket)
+    if verdict == "UNKNOWN" and payload.get("retry_exhausted") is True:
+        retry_policy = {"retry": False, "max_attempts": 0, "wait_ms": 0}
+        payload["verdict_next_action"] = "The helper already used its one internal retry. Stop retrying this result and report the diagnostic payload."
     report = agent_report_for(verdict, bucket, reason, payload)
     payload["bucket"] = bucket
     payload["retry_policy"] = retry_policy
@@ -2519,7 +2981,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
-    if normalized in {"timeout", "inspection_still_running", "indexing", "running", "current_run_psi_churn"}:
+    if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "run_changed", "indexing", "running", "current_run_psi_churn"}:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
         return "stale_results"
@@ -2889,40 +3351,7 @@ def discover_rollout_file() -> str | None:
         value = os.environ.get(env_name)
         if value:
             return str(Path(value).expanduser())
-    candidates: list[Path] = []
-    home = Path(code_home())
-    for root in (home / "sessions", home / "rollouts"):
-        if root.exists():
-            candidates.extend(root.rglob("rollout-*.jsonl"))
-    for catalog in (home / "sessions" / "index" / "catalog.jsonl", home / "rollouts" / "index" / "catalog.jsonl"):
-        candidates.extend(rollout_candidates_from_catalog(catalog))
-    if not candidates:
-        return None
-    newest = max(candidates, key=lambda path: path.stat().st_mtime if path.exists() else 0)
-    return str(newest)
-
-
-def rollout_candidates_from_catalog(catalog: Path) -> list[Path]:
-    if not catalog.exists():
-        return []
-    candidates: list[Path] = []
-    try:
-        with catalog.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                for key in ("path", "file", "rollout_file", "session_file"):
-                    value = entry.get(key)
-                    if isinstance(value, str) and "rollout-" in value:
-                        path = Path(value).expanduser()
-                        candidates.append(path if path.is_absolute() else (catalog.parent / path).resolve())
-    except OSError:
-        return []
-    return candidates
+    return None
 
 
 def verdict_exit_code(payload: dict[str, Any], success_verdicts: set[str]) -> int:
@@ -3012,7 +3441,7 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
         if json_only:
             print(public_json(payload))
         else:
-            print_human(payload)
+            print_human(payload, assess=False)
         return exit_code
     apply_verdict(payload)
     log_unknown_verdict(payload)
@@ -3026,8 +3455,9 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
     return exit_code
 
 
-def print_human(payload: dict[str, Any]) -> None:
-    apply_verdict(payload)
+def print_human(payload: dict[str, Any], assess: bool = True) -> None:
+    if assess:
+        apply_verdict(payload)
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
         print(safe_text("ROUTE: {ide_name} project={project_name} project_key={project_key} base_path={base_path}", {
@@ -3039,6 +3469,7 @@ def print_human(payload: dict[str, Any]) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    print_outcome_summary(payload)
     verdict = payload.get("verdict")
     if verdict:
         print(safe_text("VERDICT: {verdict} reason={reason} message={message}", {
@@ -3107,6 +3538,33 @@ def print_human(payload: dict[str, Any]) -> None:
     if not route and not status:
         # codeql[py/clear-text-logging-sensitive-data]
         print(public_json(payload))
+
+
+def print_outcome_summary(payload: dict[str, Any]) -> None:
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return
+    print(safe_text("OUTCOMES: events={events} invalid_lines={invalid_lines} path={path}", {
+        "events": payload.get("events", 0),
+        "invalid_lines": payload.get("invalid_lines", 0),
+        "path": payload.get("path"),
+    }))
+    for key, label in (
+        ("by_verdict", "BY_VERDICT"),
+        ("by_bucket", "BY_BUCKET"),
+        ("by_command", "BY_COMMAND"),
+        ("by_retry", "BY_RETRY"),
+        ("by_ide_channel", "BY_IDE_CHANNEL"),
+        ("by_cleanup_status", "BY_CLEANUP_STATUS"),
+    ):
+        counts = summary.get(key)
+        if not isinstance(counts, dict) or not counts:
+            continue
+        rendered = " ".join(f"{name}={count}" for name, count in counts.items())
+        print(f"{label}: {rendered}")
+    print(safe_text("RETRYABLE_UNKNOWNS: {count}", {
+        "count": summary.get("retryable_unknowns", 0),
+    }))
 
 
 def print_error_details(payload: dict[str, Any]) -> None:
@@ -3984,7 +4442,7 @@ def cleanup_stale_helper_lease(
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None = None,
 ) -> dict[str, Any]:
-    if not lease.get("opened_by_helper") and lease.get("state") not in POTENTIAL_OPEN_LEASE_STATES:
+    if not lease_may_own_open_project(lease):
         return {"status": "not_needed", "reason": "project_preexisted", "lease_id": lease.get("lease_id")}
     sessions = observed_sessions if observed_sessions is not None else {
         str(route.get("session_id")) for route in routes if route.get("session_id")

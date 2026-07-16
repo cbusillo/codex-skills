@@ -132,11 +132,19 @@ background activation by default to reduce focus stealing; when the target IDE i
 not already running, the helper launches the app hidden first and then asks the
 plugin to open the exact worktree. Use `--foreground-open` only when debugging
 IDE launch behavior.
-If a helper-opened project is still indexing or scanning when closeout times
-out, the helper may leave that project warm and report `cleanup.status=deferred`
-with `cleanup_deferred=true`. Treat that as `UNKNOWN`, rerun `inspect-closeout`
-after indexing settles, and use `cleanup-helper-leases` only if the warm lease
-becomes stale.
+If an inspection wait times out while a run is still active, the helper asks the
+plugin to cancel that exact `inspection_run_id` and waits briefly for
+cancellation to settle. If the run changed, the helper leaves the newer run
+untouched. If the trigger/wait transport itself times out, the helper probes
+status first; an unproven active run or unreachable status keeps the owned
+project warm instead of closing it blindly.
+Once settled, it closes the helper-owned project normally. If indexing,
+scanning, or inspection churn remains active, the helper leaves the project warm
+and reports `cleanup.status=deferred` with `cleanup_deferred=true`. Treat that as
+`UNKNOWN`, rerun `inspect-closeout` after the IDE settles, and use
+`cleanup-helper-leases` only if the warm lease becomes stale. Full inspection
+timeouts are not retried internally; the one automatic retry is reserved for
+safe stale/capture-readiness outcomes.
 Preparation is failure-atomic for handled failures and interrupts. With plugin
 protocol `lease_bound_v1`, the helper persists `state=open_requesting` before
 sending its local `lease_id` to `lifecycle/open`. An open response registers the
@@ -147,9 +155,15 @@ ownership proof. `already_open`, another lease's `already_opening`, legacy
 plugin responses, and session-mismatched routes never authorize close.
 After the plugin accepts a lifecycle open, the helper waits only for that
 lease-bound request; it does not issue a second app-level open that could create
-an unowned window or trust prompt.
+an unowned window or trust prompt. A timed-out lifecycle-open response is
+treated as ambiguous rather than absent: the helper waits for the exact route
+and requires a successful lease-bound claim before it can close anything.
+That potential ownership evidence remains recoverable through route/claim
+timeouts and is discarded only after a definitive `not_owned` claim.
 If preparation then fails, the helper closes immediately when a live claim
-proves ownership; otherwise it records `state=cleanup_pending` with the
+proves ownership, except when the readiness status still reports active
+indexing, scanning, or inspection work; active churn keeps the owned project
+warm for a bounded retry. Otherwise it records `state=cleanup_pending` with the
 available evidence and cleanup action instead of leaving a generic `preparing`
 lease. `cleanup-helper-leases` may recover even a route-less pending lease by
 asking the live plugin to prove the same lease binding. A definitive
