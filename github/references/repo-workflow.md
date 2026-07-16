@@ -298,13 +298,11 @@ inline threads before deciding what to change.
 - Ask before posting GitHub replies, resolving threads, or dismissing feedback
   unless the user explicitly asked to handle review comments end-to-end.
 - For issue and PR timeline comments, use `scripts/gh-comment` or
-  `scripts/gh-pr.py comment --body-file`; never pass escaped `\n` through
-  `--body`.
-- For issue close comments, use `scripts/gh-issue close` with stdin. Ordinary
-  comments are passed through `gh issue close --comment` so the close and
-  comment happen in one `gh` operation. Large comments are streamed through
-  `gh issue comment --body-file` before closing because `gh issue close` has no
-  body-file flag.
+  `scripts/gh-pr.py comment --body-file`; both use the shared actor-aware REST
+  implementation and never pass escaped `\n` through `--body`.
+- For issue close comments, use `scripts/gh-issue close` with stdin. The comment
+  is posted through the shared REST implementation before the guarded close,
+  and the final envelope records partial success if close fails afterward.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

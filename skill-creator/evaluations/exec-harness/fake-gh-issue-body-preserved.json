@@ -31,6 +31,19 @@
           {
             "item": {
               "type": "function_call",
+              "call_id": "wait_issue_create",
+              "name": "wait",
+              "arguments": "{\"call_id\": \"call_issue_create\", \"timeout_ms\": 600000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-body-3",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
               "call_id": "call_verify_body",
               "name": "shell_command",
               "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, os, pathlib, sys\\nstate = json.loads(pathlib.Path(os.environ['CODE_EXEC_HARNESS_GH_STATE']).read_text())\\nissue = state['issues']['1001']\\nexpected = '''Line one\\n\\n```sh\\necho $(do-not-run)\\n```\\nTrailing line\\n'''\\nif issue.get('body') != expected:\\n    print(repr(issue.get('body')), file=sys.stderr)\\n    raise SystemExit(1)\\nif issue.get('title') != 'Body preservation check':\\n    raise SystemExit(2)\\nPY\", \"timeout_ms\": 30000}"
@@ -39,14 +52,27 @@
         ]
       },
       {
-        "response_id": "resp-fake-gh-body-3"
+        "response_id": "resp-fake-gh-body-4",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "wait_verify_body",
+              "name": "wait",
+              "arguments": "{\"call_id\": \"call_verify_body\", \"timeout_ms\": 600000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-body-5"
       }
     ]
   },
   "expect": {
     "returncode": 0,
     "gh_contains": ["issue create"],
-    "responses_request_count": 3
+    "responses_request_count": 5
   },
   "max_seconds": 45,
   "timeout_seconds": 120

@@ -22,9 +22,27 @@
     "responses": [
       {
         "match": {
+          "contains": ["api", "user", "--jq", ".login"]
+        },
+        "stdout": "shiny-code-bot"
+      },
+      {
+        "match": {
           "contains": ["api", "repos/cbusillo/codex-skills/issues/900"]
         },
         "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"OPEN\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "/user"]
+        },
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues/900/comments"]
+        },
+        "stdout": "{\"id\":9001,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900#issuecomment-9001\",\"user\":{\"login\":\"shiny-code-bot\"}}"
       },
       {
         "match": {
@@ -44,13 +62,26 @@
               "type": "function_call",
               "call_id": "call_plan_close",
               "name": "shell_command",
-              "arguments": "{\"command\": \"GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills close 900 --comment-file close-comment.md\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills close 900 --comment-file close-comment.md\", \"timeout_ms\": 30000}"
             }
           }
         ]
       },
       {
-        "response_id": "resp-fake-gh-plan-close-2"
+        "response_id": "resp-fake-gh-plan-close-2",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "wait_plan_close",
+              "name": "wait",
+              "arguments": "{\"call_id\": \"call_plan_close\", \"timeout_ms\": 600000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-plan-close-3"
       }
     ]
   },
@@ -61,10 +92,10 @@
       "issue edit 900",
       "--remove-label plan:active",
       "--add-label plan:done",
-      "issue comment 900",
+      "/repos/cbusillo/codex-skills/issues/900/comments",
       "issue close 900"
     ],
-    "responses_request_count": 2
+    "responses_request_count": 3
   },
   "max_seconds": 45,
   "timeout_seconds": 120

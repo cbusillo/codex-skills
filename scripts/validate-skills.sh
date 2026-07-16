@@ -27,6 +27,7 @@ helper_tests=(
 	github-work-rollup/scripts/test_verify_work_brief.py
 	github/scripts/test_github_work_evidence.py
 	github/scripts/test_github_api.py
+	github/scripts/test_github_comment.py
 	infra-ops/scripts/test_npmplus_ops.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py

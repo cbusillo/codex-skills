@@ -880,6 +880,30 @@ def _rate_limit_from_probe(result: Optional[ApiResult]) -> tuple[Optional[str], 
     }
 
 
+def _failure_from_terminal_envelope(payload: Any, *, is_write: bool) -> Optional[FailureDetail]:
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return None
+    failure = payload.get("failure")
+    if not isinstance(failure, dict) or not failure.get("cause"):
+        return None
+    write_outcome = failure.get("write_outcome", payload.get("write_outcome"))
+    if is_write and write_outcome is None:
+        write_outcome = "unknown"
+    completed_steps = failure.get("completed_steps", payload.get("completed_steps"))
+    return FailureDetail(
+        cause=str(failure["cause"]),
+        message=str(failure.get("message") or payload.get("error") or "Delegated GitHub helper failed"),
+        retryable=bool(failure.get("retryable", payload.get("retryable", False))),
+        fallback_eligible=bool(failure.get("fallback_eligible", payload.get("fallback_eligible", False))),
+        disposition=str(failure.get("disposition") or payload.get("disposition") or "stop"),
+        write_outcome=str(write_outcome) if write_outcome is not None else None,
+        completed_steps=[str(step) for step in completed_steps] if isinstance(completed_steps, list) else [],
+        failed_step=str(failure.get("failed_step") or payload.get("failed_step") or "delegated_helper"),
+        request_id=str(failure.get("request_id") or payload.get("request_id")) if failure.get("request_id") or payload.get("request_id") else None,
+        rate_limit=failure.get("rate_limit") or payload.get("quota") or payload.get("rate_limit"),
+    )
+
+
 def classify_legacy_failure(
     stderr: str,
     *,
@@ -890,6 +914,9 @@ def classify_legacy_failure(
 ) -> FailureDetail:
     """Classify a legacy gh failure, preferring structured evidence when present."""
     if stdout:
+        delegated_failure = _failure_from_terminal_envelope(_try_parse_json(stdout.strip()), is_write=is_write)
+        if delegated_failure is not None:
+            return delegated_failure
         status, headers, body = parse_gh_include_output(stdout)
         if status or _is_graphql_rate_limit_body(body):
             if not _extract_message(body) and stderr.strip():
@@ -1000,7 +1027,7 @@ def legacy_process_result(
 ) -> ApiResult:
     """Convert a completed legacy subprocess into the shared result contract."""
     parsed_body = _try_parse_json(stdout.strip()) if stdout.strip() else None
-    resolved_completed_steps = completed_steps or []
+    outer_completed_steps = list(completed_steps or [])
     if returncode == 0:
         return ApiResult(
             ok=True,
@@ -1013,7 +1040,7 @@ def legacy_process_result(
             transport=transport,
             bucket=bucket,
             graphql_operation=graphql_operation,
-            completed_steps=resolved_completed_steps,
+            completed_steps=outer_completed_steps,
         )
     failure = classify_legacy_failure(
         stderr,
@@ -1022,8 +1049,12 @@ def legacy_process_result(
         command_started=command_started,
         rate_limit_result=rate_limit_result,
     )
+    resolved_completed_steps: list[str] = []
+    for step in [*outer_completed_steps, *failure.completed_steps]:
+        if step not in resolved_completed_steps:
+            resolved_completed_steps.append(step)
     failure.completed_steps = resolved_completed_steps
-    failure.failed_step = failed_step
+    failure.failed_step = failure.failed_step or failed_step
     status, headers, body = parse_gh_include_output(stdout) if stdout else (0, {}, None)
     request_id = headers.get("x-github-request-id")
     rate_limit = RateLimitInfo.from_headers(headers)
@@ -1513,6 +1544,7 @@ def main() -> int:
     p.add_argument("--completed-step", action="append", default=[])
     p.add_argument("--failed-step", default="gh_invocation")
     p.add_argument("--forward-stderr", action="store_true")
+    p.add_argument("--payload-file", help="Merge non-contract fields from a JSON object into the final envelope.")
 
     p = sub.add_parser("terminal-error", help="Emit a terminal envelope for local validation failure.")
     p.add_argument("--operation", required=True)
@@ -1555,6 +1587,8 @@ def main() -> int:
         )
 
     captured_stderr = ""
+    extra_payload: Optional[dict[str, Any]] = None
+    input_error = False
     try:
         if args.cmd == "call":
             body_file = getattr(args, "body_file", None)
@@ -1581,6 +1615,11 @@ def main() -> int:
         elif args.cmd == "classify-legacy":
             stdout = pathlib.Path(args.stdout_file).read_text(encoding="utf-8")
             stderr = pathlib.Path(args.stderr_file).read_text(encoding="utf-8")
+            if args.payload_file:
+                parsed_payload = json.loads(pathlib.Path(args.payload_file).read_text(encoding="utf-8"))
+                if not isinstance(parsed_payload, dict):
+                    raise ValueError("--payload-file must contain a JSON object")
+                extra_payload = parsed_payload
             captured_stderr = stderr.strip()
             result = legacy_process_result(
                 args.returncode,
@@ -1651,7 +1690,8 @@ def main() -> int:
             )
         else:
             result = rate_limit_probe(gh_cmd=args.gh, operation="github.api.rate_limit")
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        input_error = True
         failure = FailureDetail(
             cause="validation_error",
             message=f"Could not read or parse helper input ({type(exc).__name__})",
@@ -1691,8 +1731,12 @@ def main() -> int:
         )
 
     output = result.as_dict()
+    if extra_payload is not None:
+        for key, value in redact_body(extra_payload).items():
+            if key not in _TERMINAL_RESERVED_KEYS and key not in ("error", "error_code"):
+                output[key] = value
     if args.cmd == "classify-legacy":
-        output["exit_code"] = args.returncode
+        output["exit_code"] = 2 if input_error else args.returncode
     elif args.cmd == "terminal-error":
         output["exit_code"] = args.exit_code
     stderr_parts: list[str] = []

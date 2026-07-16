@@ -17,6 +17,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import types
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -704,6 +705,65 @@ def test_structured_legacy_response_wins_over_stderr_phrase() -> None:
     assert failure.fallback_eligible is False
 
 
+def test_delegated_terminal_envelope_preserves_failure_evidence() -> None:
+    stdout = json.dumps({
+        "schema_version": 1,
+        "ok": False,
+        "failure": {
+            "cause": "permission_denied",
+            "message": "Permission denied",
+            "retryable": False,
+            "fallback_eligible": True,
+            "disposition": "requires_authorization",
+            "write_outcome": "not_started",
+            "completed_steps": ["resolve_actor"],
+            "failed_step": "create_comment",
+            "request_id": "request-123",
+        },
+    })
+    failure = _api.classify_legacy_failure(
+        "outer wrapper failed",
+        stdout=stdout,
+        is_write=True,
+    )
+    assert failure.cause == "permission_denied"
+    assert failure.write_outcome == "not_started"
+    assert failure.completed_steps == ["resolve_actor"]
+    assert failure.failed_step == "create_comment"
+    assert failure.request_id == "request-123"
+
+
+def test_legacy_process_result_merges_outer_and_delegated_failure_evidence() -> None:
+    stdout = json.dumps({
+        "schema_version": 1,
+        "ok": False,
+        "failure": {
+            "cause": "not_found",
+            "message": "Selected comment was deleted",
+            "retryable": False,
+            "fallback_eligible": False,
+            "disposition": "stop",
+            "write_outcome": "rejected",
+            "completed_steps": ["resolve_actor", "list_comments_page_1"],
+            "failed_step": "update_comment",
+        },
+    })
+    result = _api.legacy_process_result(
+        1,
+        stdout,
+        "outer wrapper failed",
+        operation="github.issue.close",
+        is_write=True,
+        completed_steps=["update_labels"],
+        failed_step="post_close_comment",
+    )
+    assert result.completed_steps == ["update_labels", "resolve_actor", "list_comments_page_1"], result
+    assert result.failed_step == "post_close_comment", result
+    assert result.failure is not None
+    assert result.failure.completed_steps == result.completed_steps
+    assert result.failure.failed_step == "update_comment"
+
+
 def test_legacy_write_rate_limit_is_rejected_and_retryable() -> None:
     failure = _api.classify_legacy_failure(
         "GraphQL: API rate limit already exceeded",
@@ -812,6 +872,42 @@ def test_rate_limit_cli_uses_public_operation_id() -> None:
     assert exit_code == 0
     assert payload["operation"] == "github.api.rate_limit"
     assert stderr.getvalue() == ""
+
+
+def test_classify_legacy_rejects_malformed_payload_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        stdout_file = root / "stdout"
+        stderr_file = root / "stderr"
+        payload_file = root / "payload.json"
+        stdout_file.write_text("ok\n", encoding="utf-8")
+        stderr_file.write_text("", encoding="utf-8")
+        payload_file.write_text("[]", encoding="utf-8")
+        stdout = StringIO()
+        stderr = StringIO()
+        argv = [
+            "github_api.py",
+            "classify-legacy",
+            "--returncode",
+            "0",
+            "--stdout-file",
+            str(stdout_file),
+            "--stderr-file",
+            str(stderr_file),
+            "--payload-file",
+            str(payload_file),
+            "--operation",
+            "github.issue.close",
+        ]
+        with patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = _api.main()
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 2
+    assert payload["exit_code"] == 2
+    assert payload["failure"]["cause"] == "validation_error"
+    assert payload["failed_step"] == "input_validation"
+    assert "JSON object" not in stderr.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -1142,6 +1238,8 @@ def main() -> None:
         test_graphql_mutation_is_write_aware,
         test_unknown_graphql_document_fails_closed_as_write,
         test_structured_legacy_response_wins_over_stderr_phrase,
+        test_delegated_terminal_envelope_preserves_failure_evidence,
+        test_legacy_process_result_merges_outer_and_delegated_failure_evidence,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
@@ -1149,6 +1247,7 @@ def main() -> None:
         test_terminal_envelopes_have_stable_fields_and_redaction,
         test_cli_argument_failure_emits_terminal_envelope,
         test_rate_limit_cli_uses_public_operation_id,
+        test_classify_legacy_rejects_malformed_payload_file,
         # redaction
         test_redact_headers_removes_authorization,
         test_redact_body_removes_token_keys,

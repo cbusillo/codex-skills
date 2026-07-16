@@ -94,7 +94,9 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py edit <pr> --body-file BODY.md`: Replace a PR
   body through the automation-token wrapper.
 - `scripts/gh-pr.py comment <pr> --body-file COMMENT.md`: Add a PR
-  timeline comment through the shared REST issue-comment endpoint.
+  timeline comment through the shared REST issue-comment endpoint. Add
+  `--edit-last` to replace the authenticated actor's latest comment and
+  `--create-if-none` only when a missing prior comment should create one.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
 - `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
@@ -188,19 +190,23 @@ EOF
 ```
 
 `gh issue close` does not support `--body-file`; `scripts/gh-issue close` reads
-stdin and uses the best available safe transport for non-plan issues. Ordinary
-close comments are passed as `gh issue close --comment` so the close and comment
-are one `gh` operation. Large comments are posted first with
-`gh issue comment --body-file`, then the issue is closed, so the body is streamed
-instead of inlined into argv. For completed durable plan issues, use
+stdin and posts any close comment through the shared JSON-stdin REST comment
+implementation before invoking the guarded close command. The final envelope
+reports `post_close_comment` in `completed_steps` when the comment succeeded but
+the close failed, and comment failure stops before close. For completed durable
+plan issues, use
 `scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
 in sync.
 
 For timeline comments, use `scripts/gh-pr.py comment --body-file` in PR-centric
 workflows that already resolve PR numbers, URLs, or branches. Use
 `scripts/gh-comment issue|pr` for the generic stdin interface and its
-`--edit-last` / `--create-if-none` compatibility surface. The planned comment
-migration will route both entry points through one shared REST implementation.
+`--edit-last` / `--create-if-none` surface. Both entry points resolve the
+authenticated actor through REST, page through all comments for edit-last,
+select that actor's newest comment by creation time and id, and stream Markdown
+through JSON stdin. If the selected comment is deleted before PATCH, the helper
+fails without creating a replacement; `--create-if-none` applies only when the
+initial paged lookup finds no actor-owned comment.
 For PR review feedback, use `scripts/gh-with-env-token pr review --body-file`.
 
 Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
@@ -216,10 +222,12 @@ special local cases where a different `gh` executable should be used.
 `scripts/gh-comment`.
 
 `scripts/gh-issue` and `scripts/gh-comment` emit the same single terminal JSON
-envelope contract as the Python helpers. Delegated command output is available
-as `body`; compound large-comment close flows report `completed_steps` and the
-failing step without printing multiple machine objects. Human warnings and
-progress remain on stderr, and the process exit code matches `exit_code`.
+envelope contract as the Python helpers. Comment results report
+`comment_action` (`created` or `updated`), the authenticated `actor`, normalized
+comment evidence, and the returned URL; the compatibility `body` field remains
+the URL. Compound close flows report `completed_steps` and the failing step
+without printing multiple machine objects. Human warnings and progress remain
+on stderr, and the process exit code matches `exit_code`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to

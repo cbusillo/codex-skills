@@ -13,6 +13,7 @@ log="$tmpdir/calls.log"
 stderr_log="$tmpdir/stderr.log"
 stdout_log="$tmpdir/stdout.log"
 env_log="$tmpdir/env.log"
+stdin_log="$tmpdir/stdin.log"
 
 assert_helper_envelope() {
 	local file="$1"
@@ -117,6 +118,15 @@ elif [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
 	fi
 	printf 'active:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 	printf 'active-success\n'
+elif [[ "${1:-}" == "api" && "$*" == *"/repos/owner/repo/issues/1/comments"* ]]; then
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		cat >"${GH_ISSUE_STDIN_LOG}.bot"
+		printf 'HTTP/2.0 403 \\r\\ncontent-type: application/json\\r\\n\\r\\n{\"message\":\"API rate limit exceeded\"}\\n'
+		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
+		exit 1
+	fi
+	cat >"$GH_ISSUE_STDIN_LOG"
+	printf '{"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1"}\n'
 elif [[ "${1:-}" == "secret-error-command" ]]; then
 	printf 'transport failed token=synthetic-secret\n' >&2
 	exit 1
@@ -331,6 +341,22 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
+comment_json='{"body":"Line one\\n`literal` ${NOT_EXPANDED}"}'
+printf '%s' "$comment_json" >"$tmpdir/expected-stdin"
+printf '%s' "$comment_json" | PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" GH_ISSUE_STDIN_LOG="$stdin_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method POST \
+	/repos/owner/repo/issues/1/comments --input - \
+	>"$stdout_log" 2>"$stderr_log"
+
+cmp "$tmpdir/expected-stdin" "${stdin_log}.bot"
+cmp "$tmpdir/expected-stdin" "$stdin_log"
+grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
+grep -q '#issuecomment-1' "$stdout_log"
+
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
@@ -501,13 +527,35 @@ assert_helper_envelope "$stdout_log" github.issue.edit edited
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$GH_ISSUE_TEST_LOG"
-if [[ "$4" != "--body-file" ]]; then
-	printf 'missing --body-file: %s\n' "$*" >&2
-	exit 1
+payload=''
+if [[ "$*" == *'--input -'* ]]; then
+	payload="$(cat)"
 fi
-cat "$5" >"$GH_ISSUE_ENV_LOG"
-printf 'https://github.com/owner/repo/issues/42#issuecomment-1\n'
+printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+write_body() {
+	python3 -c 'import json, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(json.load(sys.stdin)["body"], encoding="utf-8")' \
+		"$GH_ISSUE_ENV_LOG" <<<"$payload"
+}
+case "$*" in
+	*'/user'*)
+		printf '{"login":"shiny-code-bot"}\n'
+		;;
+	*'--method GET'*'/repos/owner/repo/issues/42/comments?'*)
+		printf '[{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"shiny-code-bot"},"created_at":"2026-07-16T12:00:00Z"}]\n'
+		;;
+	*'--method PATCH'*'/repos/owner/repo/issues/comments/7'*)
+		write_body
+		printf '{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"shiny-code-bot"}}\n'
+		;;
+	*'--method POST'*'/repos/owner/repo/issues/42/comments'*)
+		write_body
+		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
+		;;
+	*)
+		printf 'unexpected gh args: %s\n' "$*" >&2
+		exit 1
+		;;
+esac
 EOF
 chmod +x "$tmpdir/record-comment-helper-gh"
 
@@ -518,11 +566,14 @@ printf 'Issue comment with `literal markdown`.\n' | \
 	GH_COMMENT_GH="$tmpdir/record-comment-helper-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-comment" issue 42 --repo owner/repo \
 	>"$stdout_log" 2>"$stderr_log"
-grep -q '^issue comment 42 --body-file .* --repo owner/repo$' "$log"
+grep -q '/user' "$log"
+grep -q -- '--method POST' "$log"
+grep -q '/repos/owner/repo/issues/42/comments' "$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Issue comment with `literal markdown`.\n' >"$tmpdir/expected-comment-body"
 cmp "$tmpdir/expected-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.issue 'https://github.com/owner/repo/issues/42#issuecomment-1'
+jq -e '.comment_action == "created" and .actor == "shiny-code-bot"' "$stdout_log" >/dev/null
 
 : >"$log"
 : >"$env_log"
@@ -530,111 +581,111 @@ printf 'Updated PR comment.\n' | \
 	GH_COMMENT_GH="$tmpdir/record-comment-helper-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-comment" pr 42 --repo owner/repo --edit-last --create-if-none \
 	>"$stdout_log" 2>"$stderr_log"
-grep -q '^pr comment 42 --body-file .* --repo owner/repo --edit-last --create-if-none$' "$log"
+grep -q -- '--method GET' "$log"
+grep -q '/repos/owner/repo/issues/42/comments?per_page=100&page=1' "$log"
+grep -q -- '--method PATCH' "$log"
+grep -q '/repos/owner/repo/issues/comments/7' "$log"
 printf 'Updated PR comment.\n' >"$tmpdir/expected-pr-comment-body"
 cmp "$tmpdir/expected-pr-comment-body" "$env_log"
-assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-1'
+assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-7'
+jq -e '.comment_action == "updated" and .comment.id == 7' "$stdout_log" >/dev/null
 
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+payload=''
+if [[ "$*" == *'--input -'* ]]; then
+	payload="$(cat)"
+fi
+printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	'issue close 9 --comment '*' --repo owner/repo --reason completed') printf 'closed\n' ;;
-	'issue close 90 --repo owner/repo --reason completed') printf 'closed\n' ;;
-	'issue close 91 --repo owner/repo --comment caller-supplied') printf 'closed\n' ;;
+	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method POST'*'/comments'*)
+		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
+		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
+		;;
+	issue\ close\ *) printf 'closed\n' ;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
 		exit 1
-		;;
+	;;
 esac
 EOF
 chmod +x "$tmpdir/record-gh"
 
 : >"$log"
-printf '%s' "Closing with \`literal markdown\`." | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+printf '%s' "Closing with \`literal markdown\`." | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 9 --repo owner/repo --reason completed \
 	>"$stdout_log" 2>"$stderr_log"
 
-expected_close_line="issue close 9 --comment Closing with \`literal markdown\`. --repo owner/repo --reason completed"
-grep -Fqx "$expected_close_line" "$log"
+grep -q '/repos/owner/repo/issues/9/comments' "$log"
+grep -q '^issue close 9 --repo owner/repo --reason completed | $' "$log"
+printf '%s' "Closing with \`literal markdown\`." >"$tmpdir/expected-close-comment"
+cmp "$tmpdir/expected-close-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close closed
+jq -e '.completed_steps == ["post_close_comment"]' "$stdout_log" >/dev/null
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 90 --repo owner/repo --reason completed \
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
-grep -qx 'issue close 90 --repo owner/repo --reason completed' "$log"
+grep -q '^issue close 90 --repo owner/repo --reason completed | $' "$log"
+if grep -q '/comments' "$log"; then
+	echo "error: close without a comment must not call the comment REST endpoint" >&2
+	exit 1
+fi
 assert_helper_envelope "$stdout_log" github.issue.close closed
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 91 --repo owner/repo --comment caller-supplied \
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
-grep -qx 'issue close 91 --repo owner/repo --comment caller-supplied' "$log"
+grep -q '/repos/owner/repo/issues/91/comments' "$log"
+grep -q '^issue close 91 --repo owner/repo | $' "$log"
+printf '%s' 'caller-supplied' >"$tmpdir/expected-caller-comment"
+cmp "$tmpdir/expected-caller-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close closed
 
-cat >"$tmpdir/record-bytes-gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1 $2 $3" != "issue close 92" || "$4" != "--comment" ]]; then
-	printf 'unexpected gh args: %s\n' "$*" >&2
-	exit 1
-fi
-printf '%s' "$5" >"$GH_ISSUE_TEST_LOG"
-printf 'closed\n'
-EOF
-chmod +x "$tmpdir/record-bytes-gh"
-
 : >"$log"
-printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-bytes-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 92 --repo owner/repo \
 	>"$stdout_log" 2>"$stderr_log"
 
 printf 'Line one\nLine two\n\n' >"$tmpdir/expected-comment-bytes"
-cmp "$tmpdir/expected-comment-bytes" "$log"
+cmp "$tmpdir/expected-comment-bytes" "$env_log"
+grep -q '^issue close 92 --repo owner/repo | $' "$log"
 assert_helper_envelope "$stdout_log" github.issue.close closed
 
-cat >"$tmpdir/record-comment-gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
-case "$*" in
-	'issue close 10 --comment '*' --repo owner/repo --reason completed') printf 'closed\n' ;;
-	'issue close 11 --comment '*' -Rowner/repo --reason completed') printf 'closed\n' ;;
-	*)
-		printf 'unexpected gh args: %s\n' "$*" >&2
-		exit 1
-		;;
-esac
-EOF
-chmod +x "$tmpdir/record-comment-gh"
-
 : >"$log"
-printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 10 --repo owner/repo \
 	--comment "duplicate comment" --reason completed \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q '^issue close 10 --comment Closing with stdin body only\.[[:space:]]--repo owner/repo --reason completed$' "$log"
+grep -q '^issue close 10 --repo owner/repo --reason completed | $' "$log"
+printf '%s' 'Closing with stdin body only.' >"$tmpdir/expected-stdin-comment"
+cmp "$tmpdir/expected-stdin-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close closed
-if grep -q -- '--comment' "$log"; then
-	comment_count="$(grep -o -- '--comment' "$log" | wc -l | tr -d ' ')"
-	if [[ "$comment_count" != "1" ]]; then
-		echo "error: gh-issue close should strip caller --comment passthrough" >&2
-		exit 1
-	fi
+if grep -q 'duplicate comment' "$log"; then
+	echo "error: gh-issue close should prefer the stdin body over caller --comment" >&2
+	exit 1
 fi
 
 : >"$log"
-printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-comment-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 11 -Rowner/repo \
 	-c"duplicate comment" --reason completed \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q '^issue close 11 --comment Closing with stdin body only\.[[:space:]]-Rowner/repo --reason completed$' "$log"
+grep -q '^issue close 11 -Rowner/repo --reason completed | $' "$log"
+cmp "$tmpdir/expected-stdin-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close closed
 if grep -q -- '-cduplicate comment' "$log"; then
 	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
@@ -644,9 +695,16 @@ fi
 cat >"$tmpdir/failing-close-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+payload=''
+if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
+printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	'issue close 12 --comment '*' --repo owner/repo')
+	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method POST'*'/repos/owner/repo/issues/12/comments'*)
+		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
+		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"shiny-code-bot"}}\n'
+		;;
+	'issue close 12 --repo owner/repo')
 		printf 'close failed\n' >&2
 		exit 1
 		;;
@@ -659,46 +717,30 @@ EOF
 chmod +x "$tmpdir/failing-close-gh"
 
 : >"$log"
-if printf '%s' 'Closing with one atomic close command.' | GH_ISSUE_GH="$tmpdir/failing-close-gh" GH_ISSUE_TEST_LOG="$log" \
+: >"$env_log"
+if printf '%s' 'Closing before a failing close command.' | GH_ISSUE_GH="$tmpdir/failing-close-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 12 --repo owner/repo \
 	>"$stdout_log" 2>"$stderr_log"; then
 	echo "error: gh-issue close should surface close failures" >&2
 	exit 1
 fi
 assert_failure_envelope "$stdout_log" github.issue.close network_provider_failure close_issue unknown
+jq -e '.completed_steps == ["post_close_comment"]' "$stdout_log" >/dev/null
 
-grep -q '^issue close 12 --comment Closing with one atomic close command\.[[:space:]]--repo owner/repo$' "$log"
-if grep -q '^issue comment ' "$log"; then
-	echo "error: gh-issue close should not post a separate pre-close comment" >&2
-	exit 1
-fi
-
-cat >"$tmpdir/large-close-gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
-case "$*" in
-	'issue comment 13 --body-file '*' --repo owner/repo') printf 'commented\n' ;;
-	'issue close 13 --repo owner/repo --reason completed') printf 'closed\n' ;;
-	*)
-		printf 'unexpected gh args: %s\n' "$*" >&2
-		exit 1
-		;;
-esac
-EOF
-chmod +x "$tmpdir/large-close-gh"
+grep -q '/repos/owner/repo/issues/12/comments' "$log"
+grep -q '^issue close 12 --repo owner/repo | $' "$log"
 
 : >"$log"
-GH_ISSUE_GH="$tmpdir/large-close-gh" GH_ISSUE_TEST_LOG="$log" \
-	GH_ISSUE_CLOSE_COMMENT_ARG_MAX=8 \
+: >"$env_log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 13 --repo owner/repo --reason completed \
 	>"$stdout_log" 2>"$stderr_log" <<'EOF'
 Closing with a long streamed body.
 EOF
 
-grep -q '^issue comment 13 --body-file .* --repo owner/repo$' "$log"
-grep -qx 'issue close 13 --repo owner/repo --reason completed' "$log"
-assert_helper_envelope "$stdout_log" github.issue.close $'commented\nclosed'
+grep -q '/repos/owner/repo/issues/13/comments' "$log"
+grep -q '^issue close 13 --repo owner/repo --reason completed | $' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close closed
 python3 - "$stdout_log" <<'PY'
 import json
 import pathlib
@@ -707,17 +749,16 @@ import sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert payload["completed_steps"] == ["post_close_comment"], payload
 PY
-if grep -q -- '--comment' "$log"; then
-	echo "error: large gh-issue close comments should not be inlined into argv" >&2
-	exit 1
-fi
 
 cat >"$tmpdir/failing-large-comment-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+payload=''
+if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
+printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	'issue comment 14 --body-file '*' --repo owner/repo')
+	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method POST'*'/repos/owner/repo/issues/14/comments'*)
 		printf 'comment failed\n' >&2
 		exit 1
 		;;
@@ -731,7 +772,6 @@ chmod +x "$tmpdir/failing-large-comment-gh"
 
 : >"$log"
 if GH_ISSUE_GH="$tmpdir/failing-large-comment-gh" GH_ISSUE_TEST_LOG="$log" \
-	GH_ISSUE_CLOSE_COMMENT_ARG_MAX=8 \
 	"$repo_root/github/scripts/gh-issue" close 14 --repo owner/repo \
 	>"$stdout_log" 2>"$stderr_log" <<'EOF'; then
 Closing with a long streamed body.
@@ -741,7 +781,7 @@ EOF
 fi
 assert_failure_envelope "$stdout_log" github.issue.close network_provider_failure post_close_comment unknown
 
-grep -q '^issue comment 14 --body-file .* --repo owner/repo$' "$log"
+grep -q '/repos/owner/repo/issues/14/comments' "$log"
 if grep -q '^issue close 14' "$log"; then
 	echo "error: gh-issue close should stop before close after comment failure" >&2
 	exit 1

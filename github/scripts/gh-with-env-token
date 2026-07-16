@@ -22,8 +22,10 @@ print_auth_account=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
+stdin_file=$(mktemp)
+stdin_captured=0
 
-trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file"' EXIT INT HUP TERM
+trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
 
 case "${1:-}" in
 --print-auth-account)
@@ -44,6 +46,19 @@ if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
 elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$GITHUB_TOKEN
 fi
+
+if [ ! -t 0 ]; then
+	cat >"$stdin_file"
+	stdin_captured=1
+fi
+
+run_with_input() {
+	if [ "$stdin_captured" -eq 1 ]; then
+		"$@" <"$stdin_file"
+	else
+		"$@"
+	fi
+}
 
 allows_active_auth_fallback() {
 	case "${GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK:-}" in
@@ -285,7 +300,7 @@ retry_with_active_auth() {
 	if [ "$print_auth_account" -eq 1 ]; then
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
-	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
+	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 }
 
 print_account() {
@@ -304,7 +319,7 @@ if [ -z "${GH_TOKEN:-}" ]; then
 		echo "gh auth status (active gh auth):" >&2
 		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
 	fi
-	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
+	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 	exit $?
 fi
 
@@ -317,7 +332,7 @@ fi
 verify_bot_login_for_write "$@"
 
 status=0
-"$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
+run_with_input "$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
 if [ "$status" -eq 0 ]; then
 	cat "$stdout_file"
 	exit 0

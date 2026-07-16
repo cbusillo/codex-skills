@@ -18,6 +18,7 @@ import urllib.parse
 from typing import Any, Optional, Tuple
 
 import github_api as github_api_core
+import github_comment as github_comment_core
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -100,16 +101,31 @@ def main() -> int:
             disposition="stop",
             write_outcome="not_started" if is_write else None,
         )
-        return github_api_core.emit_terminal(
-            github_api_core.terminal_failure(
-                failure,
-                operation=CURRENT_OPERATION,
-                payload=exc.payload,
-                expected_actor=EXPECTED_ACTOR,
-                transport=transport,
-                bucket=bucket,
-                error=str(exc),
+        api_result = exc.payload.get("api_result") if isinstance(exc.payload.get("api_result"), dict) else {}
+        envelope = github_api_core.terminal_failure(
+            failure,
+            operation=CURRENT_OPERATION,
+            payload=exc.payload,
+            actor=api_result.get("actor"),
+            expected_actor=(
+                api_result["expected_actor"]
+                if "expected_actor" in api_result
+                else EXPECTED_ACTOR
             ),
+            host=api_result.get("host") or github_api_core.DEFAULT_HOST,
+            transport=api_result.get("transport") or transport,
+            bucket=api_result.get("bucket") or bucket,
+            status=int(api_result.get("status") or 0),
+            request_id=api_result.get("request_id"),
+            completed_steps=api_result.get("completed_steps") or failure.completed_steps,
+            failed_step=api_result.get("failed_step") or failure.failed_step,
+            error=str(exc),
+        )
+        for key in ("quota", "rate_limit", "retry_at", "retry_after", "write_outcome", "disposition"):
+            if api_result.get(key) is not None:
+                envelope[key] = api_result[key]
+        return github_api_core.emit_terminal(
+            envelope,
             stderr_message=f"error: {exc}",
         )
     except HelperError as exc:
@@ -134,14 +150,17 @@ def main() -> int:
             stderr_message=f"error: {message}",
         )
     actor = payload.get("actor") if isinstance(payload, dict) else None
+    expected_actor = payload.get("expected_actor", EXPECTED_ACTOR) if isinstance(payload, dict) else EXPECTED_ACTOR
+    completed_steps = payload.get("completed_steps") if isinstance(payload, dict) else None
     return github_api_core.emit_terminal(
         github_api_core.terminal_success(
             payload,
             operation=CURRENT_OPERATION,
             actor=actor,
-            expected_actor=EXPECTED_ACTOR,
+            expected_actor=expected_actor,
             transport=transport,
             bucket=bucket,
+            completed_steps=completed_steps if isinstance(completed_steps, list) else None,
         )
     )
 
@@ -205,6 +224,8 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("comment", help="Add a PR timeline comment through the shared REST path.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
+    p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
+    p.add_argument("--create-if-none", action="store_true", help="Create a comment when --edit-last finds none.")
     p.set_defaults(func=cmd_comment)
 
     p = sub.add_parser("checks", help="Show check runs and commit statuses via REST.")
@@ -304,14 +325,62 @@ def cmd_edit(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "operation": "edit", "repo": repo, "pr": args.pr, "stdout": proc.stdout.strip()}
 
 
+def shared_comment(
+    kind: str,
+    repo: str,
+    number: int,
+    body: str,
+    *,
+    operation: str,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: Optional[str] = None,
+    edit_last: bool = False,
+    create_if_none: bool = False,
+) -> dict[str, Any]:
+    try:
+        return github_comment_core.comment(
+            kind,
+            number,
+            body,
+            repo=repo,
+            gh_cmd=GH,
+            expected_actor=EXPECTED_ACTOR,
+            operation=operation,
+            completed_steps=completed_steps,
+            failed_step=failed_step,
+            edit_last=edit_last,
+            create_if_none=create_if_none,
+        )
+    except github_comment_core.CommentError as exc:
+        raise PrHelperError(
+            str(exc),
+            failure=exc.failure,
+            api_result=exc.api_result,
+            **exc.payload,
+        ) from exc
+
+
 def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
     if not body:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
-    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
-    url = comment.get("html_url") if isinstance(comment, dict) else None
-    return {"ok": True, "operation": "comment", "repo": repo, "pr": args.pr, "url": url, "stdout": url or ""}
+    result = shared_comment(
+        "pr",
+        repo,
+        number,
+        body,
+        operation=CURRENT_OPERATION,
+        edit_last=args.edit_last,
+        create_if_none=args.create_if_none,
+    )
+    return {
+        **result,
+        "ok": True,
+        "operation": "comment",
+        "pr": args.pr,
+        "stdout": result.get("url") or "",
+    }
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
@@ -446,7 +515,16 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
     if planned_close and pr.get("state") != "closed":
         close_result = rest_json("PATCH", f"/repos/{repo}/pulls/{number}", {"state": "closed"})
 
-    comment = rest_json("POST", f"/repos/{repo}/issues/{number}/comments", {"body": comment_body})
+    completed_steps = ["close_pull_request"] if close_result is not None else []
+    comment = shared_comment(
+        "pr",
+        repo,
+        number,
+        comment_body,
+        operation=CURRENT_OPERATION,
+        completed_steps=completed_steps,
+        failed_step="post_supersede_comment",
+    )
 
     body_update = None
     body_update_error = None
@@ -476,11 +554,12 @@ def cmd_supersede(args: argparse.Namespace) -> dict[str, Any]:
         "pr": normalize_pr(final_pr),
         "supersededBy": {"repo": winner_repo, "number": winner_number, "url": winner.get("html_url")},
         "bodyUpdated": body_update is not None,
-        "commentUrl": comment.get("html_url") if isinstance(comment, dict) else None,
+        "commentUrl": comment.get("url"),
         "closed": bool(close_result) or pr.get("state") == "closed",
         "deletedBranch": deleted,
         "cleanupWarnings": cleanup_warnings,
         "neutralizedClosingReferences": replacements,
+        "completed_steps": comment.get("completed_steps", []),
     }
 
 

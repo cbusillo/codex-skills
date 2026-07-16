@@ -159,8 +159,8 @@ idempotency = "non_idempotent"
 retry_eligibility = "manual"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; pull request timeline comments use the REST issue-comment endpoint with JSON-stdin body handling."
-source_refs = ["github/scripts/gh-pr.py:cmd_comment"]
-test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+source_refs = ["github/scripts/gh-pr.py:cmd_comment", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_comment.py", "github/scripts/validate-gh-plan.py:test_pr_helper_write_commands_route_through_configured_gh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.pr.checks"
@@ -210,7 +210,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "two_phase_compensating"
 retained_graphql_rationale = "No retained GraphQL transport; the supersede workflow is implemented with explicit REST reads and writes plus compensating warnings for partial success."
-source_refs = ["github/scripts/gh-pr.py:cmd_supersede"]
+source_refs = ["github/scripts/gh-pr.py:cmd_supersede", "github/scripts/github_comment.py:comment"]
 test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_supersede_comments_neutralizes_and_closes", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -382,7 +382,7 @@ intent = "Close a completed durable plan, update planning labels, optionally com
 current_transport = "composite"
 selected_transport = "composite"
 migration_status = "planned"
-current_endpoint_or_command = "gh issue edit/comment/close; optional gh project view/field-list/item-list/item-edit"
+current_endpoint_or_command = "gh issue edit/close; shared REST timeline comment; optional gh project view/field-list/item-list/item-edit"
 current_quota_bucket = "mixed"
 endpoint_or_command = "REST issue label/state updates and timeline comment; optional retained gh project view/field-list/item-list/item-edit"
 quota_bucket = "mixed"
@@ -392,7 +392,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "project_recoverable_warning"
 retained_graphql_rationale = "GraphQL is retained only for optional Project reconciliation; selected issue label, comment, and close steps use REST and Project failures remain non-blocking warnings."
-source_refs = ["github/scripts/gh-plan.py:cmd_close"]
+source_refs = ["github/scripts/gh-plan.py:cmd_close", "github/scripts/github_comment.py:comment"]
 test_refs = ["github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -509,11 +509,11 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 [[operations]]
 id = "github.issue.close"
 entrypoint = "github/scripts/gh-issue close"
-intent = "Close an issue with an optional stdin-backed close comment, streaming large comments before close."
-current_transport = "gh_cli_wrapper"
+intent = "Close an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
+current_transport = "composite"
 selected_transport = "composite"
 migration_status = "planned"
-current_endpoint_or_command = "gh issue comment/close via github/scripts/gh-with-env-token"
+current_endpoint_or_command = "Shared POST /repos/{repo}/issues/{number}/comments; gh issue close via github/scripts/gh-with-env-token"
 current_quota_bucket = "mixed"
 endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed with state_reason; report completed steps on partial success"
 quota_bucket = "rest_core"
@@ -523,48 +523,42 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "two_phase_compensating"
 retained_graphql_rationale = "No retained GraphQL transport; close comments and issue state changes use explicit REST steps with partial-success reporting."
-source_refs = ["github/scripts/gh-issue"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_comment.py", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.comment.issue"
 entrypoint = "github/scripts/gh-comment issue"
 intent = "Post an issue timeline comment from stdin-backed Markdown."
-current_transport = "gh_cli_wrapper"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue comment --body-file via github/scripts/gh-with-env-token"
-current_quota_bucket = "mixed"
 endpoint_or_command = "GET /user; paged GET /repos/{repo}/issues/{number}/comments; POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/comments/{comment_id} for --edit-last"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "comment"
 idempotency = "non_idempotent"
 retry_eligibility = "manual"
-reconciliation_strategy = "operation_marker"
-retained_graphql_rationale = "No retained GraphQL transport; issue comments use REST with JSON-stdin Markdown and an operation-specific reconciliation key."
-source_refs = ["github/scripts/gh-comment"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; issue comments use REST with JSON-stdin Markdown, authenticated-actor selection, and fresh-read reconciliation without modifying user content."
+source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_comment.py", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.comment.pr"
 entrypoint = "github/scripts/gh-comment pr"
 intent = "Post a PR timeline comment from stdin-backed Markdown."
-current_transport = "gh_cli_wrapper"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh pr comment --body-file via github/scripts/gh-with-env-token"
-current_quota_bucket = "mixed"
 endpoint_or_command = "GET /user; paged GET /repos/{repo}/issues/{number}/comments; POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/comments/{comment_id} for --edit-last"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "comment"
 idempotency = "non_idempotent"
 retry_eligibility = "manual"
-reconciliation_strategy = "operation_marker"
-retained_graphql_rationale = "No retained GraphQL transport; PR timeline comments use the shared REST issue-comment endpoint."
-source_refs = ["github/scripts/gh-comment"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; PR timeline comments use the shared REST issue-comment endpoint and actor-aware fresh-read reconciliation."
+source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_comment.py", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.gh_with_env_token"
