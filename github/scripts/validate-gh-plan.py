@@ -144,11 +144,21 @@ def test_project_commands_are_recoverable() -> None:
     )
     with redirect_stdout(StringIO()):
         plan.cmd_project_add(types.SimpleNamespace(repo="owner/repo", issue="1", owner=None, project=None))
-        plan.cmd_project_list(types.SimpleNamespace(owner="owner", limit=30, closed=False))
 
     project_calls = [call for call in calls if call["args"] and call["args"][0] == "project"]
     assert project_calls, calls
     assert all(call["recoverable"] for call in project_calls), project_calls
+    assert all(call["prefer_active"] for call in calls), calls
+
+    calls.clear()
+    with redirect_stdout(StringIO()):
+        plan.cmd_project_list(types.SimpleNamespace(owner="owner", limit=30, closed=False))
+
+    assert len(calls) == 2, calls
+    assert calls[0]["args"][-1] == "rate_limit", calls
+    assert calls[1]["args"][:2] == ["project", "list"], calls
+    assert all(call["prefer_active"] for call in calls), calls
+    assert all(call["recoverable"] for call in calls), calls
 
 
 def test_repo_config_path_skips_missing_home_candidate() -> None:

@@ -45,18 +45,23 @@ nonzero exit code.
 - `uv run scripts/github_api.py rate-limit`: Read and normalize quota metadata;
   the in-process probe is bounded to one live request.
 
+Set `GITHUB_API_GH` only in tests or controlled local diagnostics that need to
+replace the default `scripts/gh-with-env-token` executable.
+
 The result envelope separates failure cause, write-outcome certainty,
 retryability, fallback eligibility, and final disposition. It also carries the
 GitHub request id and rate-limit headers when available. Authentication or quota
 failure never changes the acting account implicitly.
 
-`references/operation-matrix.toml` is the machine-readable source of truth for
+Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor
 policy, idempotency/retry posture, reconciliation strategy, and retained
-GraphQL rationale. A row whose selected transport is not live must set
-`migration_status = "planned"` plus its current command and quota bucket, so
-automation cannot mistake an approved target for checked-in behavior. Validate
-the matrix with `uv run scripts/validate-operation-matrix.py`.
+GraphQL rationale. A row with a pending transport or internal component change
+must set `migration_status = "planned"` plus its current command and quota
+bucket, even when both the current and selected top-level transports are
+`composite`. This prevents automation from mistaking an approved target for
+checked-in behavior. Validate the matrix with
+`uv run scripts/validate-operation-matrix.py`.
 
 ## Common Commands
 
@@ -175,9 +180,12 @@ instead of inlined into argv. For completed durable plan issues, use
 `scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
 in sync.
 
-For timeline comments, use `scripts/gh-comment` or
-`scripts/gh-pr.py comment --body-file`. For PR review feedback, use
-`scripts/gh-with-env-token pr review --body-file`.
+For timeline comments, use `scripts/gh-pr.py comment --body-file` in PR-centric
+workflows that already resolve PR numbers, URLs, or branches. Use
+`scripts/gh-comment issue|pr` for the generic stdin interface and its
+`--edit-last` / `--create-if-none` compatibility surface. The planned comment
+migration will route both entry points through one shared REST implementation.
+For PR review feedback, use `scripts/gh-with-env-token pr review --body-file`.
 
 Raw `gh pr create`, `gh pr edit`, and `gh pr comment` use the active local
 account. Prefer the PR helper write subcommands above so PR creation, PR body
@@ -188,6 +196,8 @@ CLI path until their full option surface is migrated.
 `scripts/gh-issue` routes through `scripts/gh-with-env-token` by default so it
 uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
 special local cases where a different `gh` executable should be used.
+`GH_COMMENT_GH` provides the equivalent test-only override for
+`scripts/gh-comment`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to

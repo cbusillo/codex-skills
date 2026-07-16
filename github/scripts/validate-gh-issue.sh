@@ -377,6 +377,42 @@ printf 'Updated body with `literal markdown`.\n' >"$tmpdir/expected-edit-body"
 cmp "$tmpdir/expected-edit-body" "$log"
 grep -qx 'edited' "$stdout_log"
 
+cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$GH_ISSUE_TEST_LOG"
+if [[ "$4" != "--body-file" ]]; then
+	printf 'missing --body-file: %s\n' "$*" >&2
+	exit 1
+fi
+cat "$5" >"$GH_ISSUE_ENV_LOG"
+printf 'https://github.com/owner/repo/issues/42#issuecomment-1\n'
+EOF
+chmod +x "$tmpdir/record-comment-helper-gh"
+
+: >"$log"
+: >"$env_log"
+# shellcheck disable=SC2016 # literal Markdown backticks are intentional.
+printf 'Issue comment with `literal markdown`.\n' | \
+	GH_COMMENT_GH="$tmpdir/record-comment-helper-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-comment" issue 42 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log"
+grep -q '^issue comment 42 --body-file .* --repo owner/repo$' "$log"
+# shellcheck disable=SC2016 # literal Markdown backticks are intentional.
+printf 'Issue comment with `literal markdown`.\n' >"$tmpdir/expected-comment-body"
+cmp "$tmpdir/expected-comment-body" "$env_log"
+grep -qx 'https://github.com/owner/repo/issues/42#issuecomment-1' "$stdout_log"
+
+: >"$log"
+: >"$env_log"
+printf 'Updated PR comment.\n' | \
+	GH_COMMENT_GH="$tmpdir/record-comment-helper-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-comment" pr 42 --repo owner/repo --edit-last --create-if-none \
+	>"$stdout_log" 2>"$stderr_log"
+grep -q '^pr comment 42 --body-file .* --repo owner/repo --edit-last --create-if-none$' "$log"
+printf 'Updated PR comment.\n' >"$tmpdir/expected-pr-comment-body"
+cmp "$tmpdir/expected-pr-comment-body" "$env_log"
+
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

@@ -225,9 +225,18 @@ def project_failure_payload(
     return payload
 
 
-def ensure_graphql_budget(*, recoverable: bool = False, minimum: int = GRAPHQL_PREFLIGHT_MINIMUM) -> None:
+def ensure_graphql_budget(
+    *,
+    prefer_active: bool = False,
+    recoverable: bool = False,
+    minimum: int = GRAPHQL_PREFLIGHT_MINIMUM,
+) -> None:
     try:
-        actor, data = gh_json(["api", *API_VERSION_ARGS, "rate_limit"], recoverable=recoverable)
+        actor, data = gh_json(
+            ["api", *API_VERSION_ARGS, "rate_limit"],
+            prefer_active=prefer_active,
+            recoverable=recoverable,
+        )
     except PlanError as exc:
         if isinstance(exc, ClassifiedPlanError):
             raise
@@ -837,7 +846,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         try:
             owner = project_config.get("owner") or repo.split("/", 1)[0]
             _, number, _ = resolve_project(owner, project, recoverable=True)
-            ensure_graphql_budget(recoverable=True)
+            ensure_graphql_budget(prefer_active=True, recoverable=True)
             _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"], prefer_active=True, recoverable=True)
             added_item = json.loads(added_stdout) if added_stdout.strip() else {}
             added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
@@ -955,7 +964,7 @@ def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = Fal
     cache_key = ("project", owner, title_or_number)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     actor, data = gh_json(
         ["project", "list", "--owner", owner, "--format", "json", "--limit", "100"],
         prefer_active=True,
@@ -978,7 +987,7 @@ def project_meta(owner: str, title_or_number: str, *, recoverable: bool = False)
     cache_key = ("project", owner, str(number))
     if cache_key in PROJECT_CACHE and PROJECT_CACHE[cache_key][2]:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     actor, data = gh_json(["project", "view", str(number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
     PROJECT_CACHE[cache_key] = (actor, number, data)
     return actor, number, data
@@ -988,7 +997,7 @@ def project_fields(owner: str, project_number: int, *, recoverable: bool = False
     cache_key = ("fields", owner, project_number)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     _, data = gh_json(["project", "field-list", str(project_number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
     fields = {item["name"]: item for item in data.get("fields", [])}
     PROJECT_CACHE[cache_key] = fields
@@ -1006,7 +1015,7 @@ def project_items(
     cache_key = ("items", owner, project_number, query, limit)
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
-    ensure_graphql_budget(recoverable=recoverable)
+    ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
     args = [
         "project",
         "item-list",
@@ -1175,7 +1184,7 @@ def cmd_project_add(args: argparse.Namespace) -> None:
     if not project:
         raise PlanError("Pass --project or set planning.projects.default_project")
     _, number, project_data = resolve_project(owner, project, recoverable=True)
-    ensure_graphql_budget(recoverable=True)
+    ensure_graphql_budget(prefer_active=True, recoverable=True)
     actor, data = gh_json([
         "project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"
     ], prefer_active=True, recoverable=True)
@@ -1278,6 +1287,7 @@ def cmd_close(args: argparse.Namespace) -> None:
 
 def cmd_project_list(args: argparse.Namespace) -> None:
     owner = args.owner
+    ensure_graphql_budget(prefer_active=True, recoverable=True)
     cmd = ["project", "list", "--owner", owner, "--format", "json", "--limit", str(args.limit)]
     if args.closed:
         cmd.append("--closed")

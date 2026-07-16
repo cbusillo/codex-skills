@@ -761,7 +761,7 @@ def call_gh(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-    except (FileNotFoundError, PermissionError, OSError) as exc:
+    except (FileNotFoundError, PermissionError) as exc:
         return ApiResult(
             ok=False,
             status=0,
@@ -775,12 +775,34 @@ def call_gh(
             failure=FailureDetail(
                 cause="network_provider_failure",
                 message=f"Failed to launch GitHub CLI ({type(exc).__name__})",
+                retryable=True,
+                fallback_eligible=False,
+                disposition="retry",
+                write_outcome="not_started" if is_write else None,
+                completed_steps=completed_steps,
+                failed_step=failed_step or "subprocess_launch",
+            ),
+        )
+    except OSError as exc:
+        return ApiResult(
+            ok=False,
+            status=0,
+            body=None,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=host,
+            completed_steps=completed_steps,
+            failed_step=failed_step or "subprocess_execution",
+            failure=FailureDetail(
+                cause="network_provider_failure",
+                message=f"GitHub CLI execution failed ({type(exc).__name__})",
                 retryable=not is_write,
                 fallback_eligible=False,
                 disposition="retry" if not is_write else "stop",
                 write_outcome="unknown" if is_write else None,
                 completed_steps=completed_steps,
-                failed_step=failed_step or "subprocess_launch",
+                failed_step=failed_step or "subprocess_execution",
             ),
         )
 
