@@ -1,14 +1,30 @@
 {
   "name": "fake-gh-issue-body-preserved",
   "model": "gpt-5.1-codex",
-  "prompt": "Create a GitHub issue with literal Markdown body content, then verify fake gh state.",
+  "prompt": "Create a GitHub issue with literal Markdown body content, then verify the captured REST payload.",
   "files": {
-    "README.md": "# Fake gh body fixture\n"
+    "README.md": "# Fake gh body fixture\n",
+    "body.md": "Line one\n\n```sh\necho $(do-not-run)\n```\nTrailing line\n",
+    "validating-gh": "#!/usr/bin/env bash\nset -euo pipefail\nreal_gh=\"$(dirname \"$(dirname \"$CODE_EXEC_HARNESS_GH_STATE\")\")/bin/gh\"\nif [[ \"$*\" == *'--method POST'*'/repos/cbusillo/codex-skills/issues'* ]]; then\n  payload=\"$(cat)\"\n  printf '%s' \"$payload\" > submitted-payload.json\n  printf '%s' \"$payload\" | \"$real_gh\" \"$@\"\nelse\n  exec \"$real_gh\" \"$@\"\nfi\n"
   },
   "gh": {
     "repo": "cbusillo/codex-skills",
     "next_issue": 1001,
-    "issues": []
+    "issues": [],
+    "responses": [
+      {
+        "match": {
+          "contains": ["api", "/user"]
+        },
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues"]
+        },
+        "stdout": "{\"id\":91001,\"number\":1001,\"title\":\"Body preservation check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1001\",\"user\":{\"login\":\"shiny-code-bot\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
+      }
+    ]
   },
   "responses_api": {
     "responses": [
@@ -20,7 +36,7 @@
               "type": "function_call",
               "call_id": "call_issue_create",
               "name": "shell_command",
-              "arguments": "{\"command\": \"printf '%s\\n' 'Line one' '' '```sh' 'echo $(do-not-run)' '```' 'Trailing line' | env GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Body preservation check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"chmod +x validating-gh && cat body.md | env GH_ISSUE_GH=\\\"$PWD/validating-gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Body preservation check' --repo cbusillo/codex-skills --label plan > issue-result.json\", \"timeout_ms\": 30000}"
             }
           }
         ]
@@ -46,7 +62,7 @@
               "type": "function_call",
               "call_id": "call_verify_body",
               "name": "shell_command",
-              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, os, pathlib, sys\\nstate = json.loads(pathlib.Path(os.environ['CODE_EXEC_HARNESS_GH_STATE']).read_text())\\nissue = state['issues']['1001']\\nexpected = '''Line one\\n\\n```sh\\necho $(do-not-run)\\n```\\nTrailing line\\n'''\\nif issue.get('body') != expected:\\n    print(repr(issue.get('body')), file=sys.stderr)\\n    raise SystemExit(1)\\nif issue.get('title') != 'Body preservation check':\\n    raise SystemExit(2)\\nPY\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, pathlib\\nexpected = '''Line one\\n\\n```sh\\necho $(do-not-run)\\n```\\nTrailing line\\n'''\\npayload = json.loads(pathlib.Path('submitted-payload.json').read_text())\\nassert payload['title'] == 'Body preservation check', payload\\nassert payload['body'] == expected, repr(payload['body'])\\nassert payload['labels'] == ['plan'], payload\\nresult = json.loads(pathlib.Path('issue-result.json').read_text())\\nassert result['ok'] is True, result\\nassert result['body'] == 'https://github.com/cbusillo/codex-skills/issues/1001', result\\nassert result['operation_marker']['kind'] == 'request_fingerprint', result\\nPY\", \"timeout_ms\": 30000}"
             }
           }
         ]
@@ -71,7 +87,11 @@
   },
   "expect": {
     "returncode": 0,
-    "gh_contains": ["issue create"],
+    "gh_contains": [
+      "/user",
+      "--method POST",
+      "/repos/cbusillo/codex-skills/issues"
+    ],
     "responses_request_count": 5
   },
   "max_seconds": 45,

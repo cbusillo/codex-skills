@@ -301,8 +301,9 @@ inline threads before deciding what to change.
   `scripts/gh-pr.py comment --body-file`; both use the shared actor-aware REST
   implementation and never pass escaped `\n` through `--body`.
 - For issue close comments, use `scripts/gh-issue close` with stdin. The comment
-  is posted through the shared REST implementation before the guarded close,
-  and the final envelope records partial success if close fails afterward.
+  is posted through the shared REST implementation before the explicit issue
+  state PATCH, and the final envelope records partial success if close fails
+  afterward. Use `scripts/gh-issue reopen` for the equivalent reopen flow.
 - For PR review submissions without a dedicated helper, use
   `scripts/gh-with-env-token pr review --body-file`.
 

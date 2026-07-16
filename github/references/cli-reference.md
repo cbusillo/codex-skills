@@ -169,7 +169,8 @@ the Project sync operation that needs follow-up, and compact
 ## Formatting Tip
 
 For multiline ordinary issue create/edit bodies, prefer `scripts/gh-issue` so
-literal Markdown is read from stdin and passed to `gh` with `--body-file`:
+literal Markdown is read from stdin and serialized through the shared REST
+JSON-stdin transport:
 
 ```bash
 scripts/gh-issue create "Audit repo metadata" --repo OWNER/REPO <<'EOF'
@@ -187,11 +188,25 @@ EOF
 scripts/gh-issue close 123 --repo OWNER/REPO --reason completed <<'EOF'
 Closing with a multiline Markdown comment before closing the issue.
 EOF
+
+scripts/gh-issue reopen 123 --repo OWNER/REPO <<'EOF'
+Reopening with a multiline Markdown comment before changing issue state.
+EOF
 ```
 
-`gh issue close` does not support `--body-file`; `scripts/gh-issue close` reads
-stdin and posts any close comment through the shared JSON-stdin REST comment
-implementation before invoking the guarded close command. The final envelope
+Create supports repeated or comma-separated `--label` and `--assignee` values
+plus milestone titles through `--milestone`. Edit supports body/title changes,
+label and assignee add/remove flags, and milestone set/remove operations. The
+helper resolves milestone titles through paged REST reads before writing.
+Flags that require templates, Projects, issue types, parent/sub-issue or
+dependency relationships, editor/recovery state, or browser interaction remain
+outside this focused REST surface. Route those deliberate exceptions through
+`scripts/gh-with-env-token issue create|edit` with a body file so automation
+identity and literal Markdown remain explicit.
+
+`scripts/gh-issue close` and `scripts/gh-issue reopen` read stdin and post any
+state-change comment through the shared JSON-stdin REST comment implementation
+before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
 the close failed, and comment failure stops before close. For completed durable
 plan issues, use
@@ -215,9 +230,10 @@ edits, and PR timeline comments use the configured automation token. PR
 timeline comments use the shared REST transport; create/edit retain the guarded
 CLI path until their full option surface is migrated.
 
-`scripts/gh-issue` routes through `scripts/gh-with-env-token` by default so it
-uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only in tests or
-special local cases where a different `gh` executable should be used.
+`scripts/gh-issue` routes its REST calls through `scripts/gh-with-env-token` by
+default so it uses the skill's configured GitHub token. Set `GH_ISSUE_GH` only
+in tests or special local cases where a different `gh` executable should be
+used.
 `GH_COMMENT_GH` provides the equivalent test-only override for
 `scripts/gh-comment`.
 
@@ -226,8 +242,10 @@ envelope contract as the Python helpers. Comment results report
 `comment_action` (`created` or `updated`), the authenticated `actor`, normalized
 comment evidence, and the returned URL; the compatibility `body` field remains
 the URL. Compound close flows report `completed_steps` and the failing step
-without printing multiple machine objects. Human warnings and progress remain
-on stderr, and the process exit code matches `exit_code`.
+without printing multiple machine objects. Non-idempotent create results include
+a stable request fingerprint; ambiguous create failures require the documented
+read-after-failure reconciliation before retry. Human warnings and progress
+remain on stderr, and the process exit code matches `exit_code`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to

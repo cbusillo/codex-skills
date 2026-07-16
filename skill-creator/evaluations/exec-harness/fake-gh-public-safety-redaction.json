@@ -3,12 +3,28 @@
   "model": "gpt-5.1-codex",
   "prompt": "Create a public planning issue from private context without leaking the synthetic secret marker.",
   "files": {
-    "README.md": "# Fake gh public safety fixture\n"
+    "README.md": "# Fake gh public safety fixture\n",
+    "public-body.md": "Public summary: private context reviewed and redacted.\nSecret marker: [redacted]\n",
+    "validating-gh": "#!/usr/bin/env bash\nset -euo pipefail\nreal_gh=\"$(dirname \"$(dirname \"$CODE_EXEC_HARNESS_GH_STATE\")\")/bin/gh\"\nif [[ \"$*\" == *'--method POST'*'/repos/cbusillo/codex-skills/issues'* ]]; then\n  payload=\"$(cat)\"\n  printf '%s' \"$payload\" > submitted-payload.json\n  printf '%s' \"$payload\" | \"$real_gh\" \"$@\"\nelse\n  exec \"$real_gh\" \"$@\"\nfi\n"
   },
   "gh": {
     "repo": "cbusillo/codex-skills",
     "next_issue": 1100,
-    "issues": []
+    "issues": [],
+    "responses": [
+      {
+        "match": {
+          "contains": ["api", "/user"]
+        },
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues"]
+        },
+        "stdout": "{\"id\":91100,\"number\":1100,\"title\":\"Public safety redaction check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1100\",\"user\":{\"login\":\"shiny-code-bot\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
+      }
+    ]
   },
   "responses_api": {
     "responses": [
@@ -20,7 +36,7 @@
               "type": "function_call",
               "call_id": "call_safe_issue_create",
               "name": "shell_command",
-              "arguments": "{\"command\": \"printf '%s\\n' 'Public summary: private context reviewed and redacted.' 'Secret marker: [redacted]' | env GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Public safety redaction check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"chmod +x validating-gh && cat public-body.md | env GH_ISSUE_GH=\\\"$PWD/validating-gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Public safety redaction check' --repo cbusillo/codex-skills --label plan > issue-result.json\", \"timeout_ms\": 30000}"
             }
           }
         ]
@@ -33,7 +49,7 @@
               "type": "function_call",
               "call_id": "call_verify_safe_body",
               "name": "shell_command",
-              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, os, pathlib, sys\\nstate = json.loads(pathlib.Path(os.environ['CODE_EXEC_HARNESS_GH_STATE']).read_text())\\nbody = state['issues']['1100'].get('body', '')\\nif 'PRIVATE_SYNTHETIC_SECRET_MARKER' in body:\\n    raise SystemExit(1)\\nif '[redacted]' not in body:\\n    raise SystemExit(2)\\nPY\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"python3 - <<'PY'\\nimport json, pathlib\\npayload = json.loads(pathlib.Path('submitted-payload.json').read_text())\\nbody = payload['body']\\nassert payload['title'] == 'Public safety redaction check', payload\\nassert 'PRIVATE_SYNTHETIC_SECRET_MARKER' not in body\\nassert '[redacted]' in body\\nresult = json.loads(pathlib.Path('issue-result.json').read_text())\\nassert result['ok'] is True, result\\nassert result['body'] == 'https://github.com/cbusillo/codex-skills/issues/1100', result\\nPY\", \"timeout_ms\": 30000}"
             }
           }
         ]
@@ -45,7 +61,11 @@
   },
   "expect": {
     "returncode": 0,
-    "gh_contains": ["issue create"],
+    "gh_contains": [
+      "/user",
+      "--method POST",
+      "/repos/cbusillo/codex-skills/issues"
+    ],
     "responses_request_count": 3
   },
   "max_seconds": 45,
