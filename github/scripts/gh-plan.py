@@ -20,6 +20,7 @@ import time
 from typing import Any, Optional
 
 import github_api as github_api_core
+import github_comment as github_comment_core
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -88,10 +89,12 @@ class PlanError(Exception):
         *,
         failure: Optional[github_api_core.FailureDetail] = None,
         api_result: Optional[dict[str, Any]] = None,
+        payload: Optional[dict[str, Any]] = None,
     ):
         super().__init__(github_api_core.redact_string(message))
         self.failure = failure
         self.api_result = github_api_core.redact_body(api_result) if api_result is not None else None
+        self.payload = github_api_core.redact_body(payload or {})
 
 
 class ClassifiedPlanError(PlanError):
@@ -103,8 +106,9 @@ class ClassifiedPlanError(PlanError):
         retry_at: Optional[int] = None,
         failure: Optional[github_api_core.FailureDetail] = None,
         api_result: Optional[dict[str, Any]] = None,
+        payload: Optional[dict[str, Any]] = None,
     ):
-        super().__init__(message, failure=failure, api_result=api_result)
+        super().__init__(message, failure=failure, api_result=api_result, payload=payload)
         self.code = code
         self.retry_at = retry_at
 
@@ -118,6 +122,7 @@ def die(
     retry_at: int | None = None,
     failure: github_api_core.FailureDetail | None = None,
     api_result: dict[str, Any] | None = None,
+    extra_payload: dict[str, Any] | None = None,
 ) -> None:
     if failure is None:
         failure = github_api_core.FailureDetail(
@@ -128,16 +133,21 @@ def die(
             disposition="stop",
             write_outcome="not_started" if CURRENT_IS_WRITE else None,
         )
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = dict(extra_payload or {})
     if detail:
         payload["detail"] = detail.strip()
     if api_result is not None:
         payload["api_result"] = api_result
+    expected_actor = (
+        api_result["expected_actor"]
+        if api_result is not None and "expected_actor" in api_result
+        else EXPECTED_ACTOR
+    )
     envelope = github_api_core.terminal_failure(
         failure,
         operation=CURRENT_OPERATION,
         payload=payload,
-        expected_actor=EXPECTED_ACTOR,
+        expected_actor=expected_actor,
         transport=CURRENT_TRANSPORT,
         bucket=CURRENT_BUCKET,
         exit_code=code,
@@ -167,14 +177,17 @@ def die(
 
 def emit(payload: Any) -> None:
     actor = payload.get("actor") if isinstance(payload, dict) else None
+    expected_actor = payload.get("expected_actor", EXPECTED_ACTOR) if isinstance(payload, dict) else EXPECTED_ACTOR
+    completed_steps = payload.get("completed_steps") if isinstance(payload, dict) else None
     github_api_core.emit_terminal(
         github_api_core.terminal_success(
             payload,
             operation=CURRENT_OPERATION,
             actor=actor,
-            expected_actor=EXPECTED_ACTOR,
+            expected_actor=expected_actor,
             transport=CURRENT_TRANSPORT,
             bucket=CURRENT_BUCKET,
+            completed_steps=completed_steps if isinstance(completed_steps, list) else None,
         )
     )
 
@@ -194,6 +207,38 @@ def workspace_config_path() -> pathlib.Path:
     return get_runtime_home() / "github-planning.json"
 
 
+def comment_route() -> tuple[str, str, Optional[str]]:
+    """Resolve the same explicit actor route used by plan writes."""
+    skip_bot = os.environ.get("GH_PLAN_SKIP_BOT") == "1"
+    if BOT_GH.exists() and not skip_bot:
+        return "automation-gh", str(BOT_GH), EXPECTED_ACTOR
+    if skip_bot:
+        return "active-gh-user", "gh", None
+
+    failure = github_api_core.FailureDetail(
+        cause="invalid_credentials",
+        message="Automation GitHub helper is unavailable and active auth was not explicitly authorized",
+        retryable=False,
+        fallback_eligible=True,
+        disposition="requires_authorization",
+        write_outcome="not_started",
+        failed_step="auth_selection",
+    )
+    result = github_api_core.ApiResult(
+        ok=False,
+        status=0,
+        body=None,
+        operation=CURRENT_OPERATION,
+        expected_actor=EXPECTED_ACTOR,
+        host=github_api_core.DEFAULT_HOST,
+        transport="rest_api",
+        bucket="rest_core",
+        failure=failure,
+        failed_step="auth_selection",
+    )
+    raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
+
+
 def run_raw(
     args: list[str],
     *,
@@ -205,6 +250,7 @@ def run_raw(
     is_write: bool | None = None,
     bucket: str | None = None,
     graphql_operation: github_api_core.GraphQLOperation | None = None,
+    completed_steps: list[str] | None = None,
     failed_step: str = "gh_invocation",
 ) -> tuple[str, str, str]:
     """Run gh through the configured actor without implicit identity fallback."""
@@ -229,6 +275,7 @@ def run_raw(
             fallback_eligible=True,
             disposition="requires_authorization",
             write_outcome="not_started" if resolved_is_write else None,
+            completed_steps=list(completed_steps or []),
             failed_step="auth_selection",
         )
         result = github_api_core.ApiResult(
@@ -241,6 +288,7 @@ def run_raw(
             transport=inferred.transport,
             bucket=bucket or inferred.bucket,
             graphql_operation=graphql_operation or inferred.graphql_operation,
+            completed_steps=list(completed_steps or []),
             failure=failure,
             failed_step="auth_selection",
         )
@@ -278,6 +326,7 @@ def run_raw(
             transport=inferred.transport,
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps,
             failed_step=failed_step,
         )
         if result.failure and result.failure.cause == "rate_limited_unknown_bucket":
@@ -296,6 +345,7 @@ def run_raw(
                 transport=inferred.transport,
                 bucket=resolved_bucket,
                 graphql_operation=resolved_graphql_operation,
+                completed_steps=completed_steps,
                 failed_step=failed_step,
                 rate_limit_result=probe,
             )
@@ -1498,6 +1548,7 @@ def cmd_close(args: argparse.Namespace) -> None:
     config = load_config(repo)
     issue_repo, number = issue_ref(args.issue, repo)
     _, issue = get_issue(args.issue, repo)
+    close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     edit_args = ["issue", "edit", str(number), "-R", issue_repo]
     if plan_labels.get("active"):
@@ -1505,17 +1556,32 @@ def cmd_close(args: argparse.Namespace) -> None:
     if plan_labels.get("done"):
         edit_args.extend(["--add-label", plan_labels["done"]])
     actor, _, _ = run_raw(edit_args)
+    completed_steps = ["update_labels"]
 
-    close_comment = read_body(args) if args.body is not None or args.body_file else ""
+    comment_result: dict[str, Any] = {}
     if close_comment:
-        tmp_path = write_temp_body(close_comment)
         try:
-            actor, _, _ = run_raw([
-                "issue", "comment", str(number), "-R", issue_repo,
-                "--body-file", str(tmp_path),
-            ])
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            route_actor, gh_cmd, expected_actor = comment_route()
+            comment_result = github_comment_core.comment(
+                "issue",
+                number,
+                close_comment,
+                repo=issue_repo,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=CURRENT_OPERATION,
+                completed_steps=completed_steps,
+                failed_step="post_close_comment",
+            )
+            actor = comment_result.get("actor") or route_actor
+            completed_steps = list(comment_result.get("completed_steps") or completed_steps)
+        except github_comment_core.CommentError as exc:
+            raise PlanError(
+                str(exc),
+                failure=exc.failure,
+                api_result=exc.api_result,
+                payload=exc.payload,
+            ) from exc
 
     project_result: dict[str, Any] = {}
     project_config = config.get("projects") or {}
@@ -1552,15 +1618,32 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation="close_project_sync",
                 non_blocking=True,
             )
+        else:
+            completed_steps.append("sync_project")
 
     close_args = ["issue", "close", str(number), "-R", issue_repo, "--reason", args.reason]
-    actor, _, _ = run_raw(close_args)
+    actor, _, _ = run_raw(
+        close_args,
+        failed_step="close_issue",
+        completed_steps=completed_steps,
+    )
+    completed_steps.append("close_issue")
+
+    public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
+    expected_actor = (
+        comment_result["expected_actor"]
+        if "expected_actor" in comment_result
+        else EXPECTED_ACTOR
+    )
 
     emit({
         "ok": True,
         "actor": actor,
+        "expected_actor": expected_actor,
         "closed": {"repo": issue_repo, "number": number, "reason": args.reason, "url": issue["html_url"]},
+        "comment": public_comment or None,
         "project": project_result,
+        "completed_steps": completed_steps,
     })
 
 
@@ -1729,6 +1812,7 @@ def main() -> None:
             retry_at=exc.retry_at,
             failure=exc.failure,
             api_result=exc.api_result,
+            extra_payload=exc.payload,
         )
     except PlanError as exc:
         error_code = exc.failure.cause if exc.failure else classify_project_error(str(exc))
@@ -1737,6 +1821,7 @@ def main() -> None:
             error_code=error_code,
             failure=exc.failure,
             api_result=exc.api_result,
+            extra_payload=exc.payload,
         )
     except KeyboardInterrupt:
         failure = github_api_core.FailureDetail(

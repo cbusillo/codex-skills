@@ -12,6 +12,7 @@ import ast
 import functools
 import re
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -363,7 +364,11 @@ def validate_static_coverage(
     )
     require_entrypoint_commands(
         "github/scripts/gh-comment",
-        extract_shell_case_choices(repo_root / "github/scripts/gh-comment", "kind", errors),
+        extract_argparse_argument_choices(
+            repo_root / "github/scripts/github_comment.py",
+            "kind",
+            errors,
+        ),
         entrypoints,
         errors,
     )
@@ -409,6 +414,38 @@ def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
         if isinstance(value, str):
             commands.add(value)
     return commands
+
+
+def extract_argparse_argument_choices(path: Path, argument: str, errors: list[str]) -> set[str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except OSError as exc:
+        errors.append(f"unable to read {path}: {exc}")
+        return set()
+    except SyntaxError as exc:
+        errors.append(f"unable to parse {path}: {exc}")
+        return set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "add_argument":
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Constant) or node.args[0].value != argument:
+            continue
+        choices = next((keyword.value for keyword in node.keywords if keyword.arg == "choices"), None)
+        if not isinstance(choices, (ast.Tuple, ast.List, ast.Set)):
+            continue
+        values = {
+            str(element.value)
+            for element in choices.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        }
+        if values:
+            return values
+    errors.append(f"unable to find argparse choices for {argument} in {path}")
+    return set()
 
 
 def extract_shell_case_choices(path: Path, variable: str, errors: list[str]) -> set[str]:
@@ -471,6 +508,7 @@ def run_self_tests() -> int:
         test_missing_python_symbol_reference_fails,
         test_missing_line_reference_fails,
         test_shell_case_extractor_handles_pipe_choices,
+        test_argparse_argument_choice_extractor,
         test_static_command_coverage_reports_missing_entrypoint,
     ]
     try:
@@ -586,6 +624,20 @@ def test_missing_line_reference_fails() -> None:
 def test_shell_case_extractor_handles_pipe_choices() -> None:
     text = 'if true; then\n  case "$kind" in\n    issue|pr) ;;\n    *) exit 2 ;;\n  esac\nfi\n'
     assert extract_shell_case_choices_from_text(text, "kind") == {"issue", "pr"}
+
+
+def test_argparse_argument_choice_extractor() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "helper.py"
+        path.write_text(
+            "import argparse\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('kind', choices=('issue', 'pr'))\n",
+            encoding="utf-8",
+        )
+        errors: list[str] = []
+        assert extract_argparse_argument_choices(path, "kind", errors) == {"issue", "pr"}
+        assert errors == [], errors
 
 
 def test_static_command_coverage_reports_missing_entrypoint() -> None:

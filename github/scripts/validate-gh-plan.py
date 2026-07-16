@@ -605,6 +605,195 @@ def test_close_reports_stale_project_as_non_blocking_warning() -> None:
     assert any(call[:2] == ["issue", "close"] for call in calls), calls
 
 
+def test_close_delegates_comment_to_shared_rest_helper() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[list[str]] = []
+    comment_call: dict[str, Any] = {}
+
+    plan.load_config = lambda repo: {
+        "labels": {"active": "plan:active", "done": "plan:done"},
+        "projects": {},
+    }
+    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+
+    def fake_run_raw(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+        calls.append(args)
+        if args[:2] in (["issue", "edit"], ["issue", "close"]):
+            return "automation-gh", "", ""
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    def fake_comment(kind: str, number: int, body: str, **kwargs: Any) -> dict[str, Any]:
+        comment_call.update({"kind": kind, "number": number, "body": body, **kwargs})
+        return {
+            "kind": kind,
+            "repo": kwargs["repo"],
+            "number": number,
+            "actor": "shiny-code-bot",
+            "expected_actor": "shiny-code-bot",
+            "comment_action": "created",
+            "url": "https://github.com/owner/repo/issues/10#issuecomment-1",
+            "comment": {"id": 1, "url": "https://github.com/owner/repo/issues/10#issuecomment-1"},
+            "completed_steps": ["update_labels", "resolve_actor", "post_close_comment"],
+        }
+
+    plan.run_raw = fake_run_raw
+    original_comment = plan.github_comment_core.comment
+    plan.github_comment_core.comment = fake_comment
+    try:
+        output = StringIO()
+        with redirect_stdout(output):
+            plan.cmd_close(types.SimpleNamespace(
+                repo="owner/repo",
+                issue="10",
+                reason="completed",
+                body="Completed with evidence.\n",
+                body_file=None,
+                owner=None,
+                project=None,
+            ))
+    finally:
+        plan.github_comment_core.comment = original_comment
+
+    payload = json.loads(output.getvalue())
+    assert comment_call["kind"] == "issue", comment_call
+    assert comment_call["number"] == 10, comment_call
+    assert comment_call["body"] == "Completed with evidence.\n", comment_call
+    assert comment_call["gh_cmd"] == "fake-gh", comment_call
+    assert comment_call["completed_steps"] == ["update_labels"], comment_call
+    assert payload["comment"]["comment_action"] == "created", payload
+    assert payload["comment"]["url"].endswith("#issuecomment-1"), payload
+    assert payload["completed_steps"] == [
+        "update_labels",
+        "resolve_actor",
+        "post_close_comment",
+        "close_issue",
+    ], payload
+    assert any(call[:2] == ["issue", "close"] for call in calls), calls
+
+
+def test_comment_route_matches_explicit_auth_policy() -> None:
+    plan = load_plan_module()
+    previous = os.environ.pop("GH_PLAN_SKIP_BOT", None)
+    try:
+        actor, gh_cmd, expected_actor = plan.comment_route()
+        assert actor == "automation-gh", actor
+        assert Path(gh_cmd) == plan.BOT_GH, gh_cmd
+        assert expected_actor == plan.EXPECTED_ACTOR, expected_actor
+
+        os.environ["GH_PLAN_SKIP_BOT"] = "1"
+        actor, gh_cmd, expected_actor = plan.comment_route()
+        assert actor == "active-gh-user", actor
+        assert gh_cmd == "gh", gh_cmd
+        assert expected_actor is None, expected_actor
+    finally:
+        if previous is None:
+            os.environ.pop("GH_PLAN_SKIP_BOT", None)
+        else:
+            os.environ["GH_PLAN_SKIP_BOT"] = previous
+
+
+def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
+    plan = load_plan_module()
+    issue = {
+        "repo": "owner/repo",
+        "number": 10,
+        "id": 1010,
+        "title": "Durable plan",
+        "body": "## Finish Line\n\nShip it.\n",
+        "html_url": "https://github.com/owner/repo/issues/10",
+        "labels": [{"name": "plan"}, {"name": "plan:active"}],
+        "state": "open",
+    }
+    calls: list[list[str]] = []
+    plan.load_config = lambda repo: {
+        "labels": {"active": "plan:active", "done": "plan:done"},
+        "projects": {},
+    }
+    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+
+    def fake_run_raw(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+        calls.append(args)
+        if args[:2] == ["issue", "edit"]:
+            return "automation-gh", "", ""
+        raise AssertionError(f"unexpected run_raw args: {args}")
+
+    failure = plan.github_api_core.FailureDetail(
+        cause="network_provider_failure",
+        message="Comment write outcome is unknown",
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome="unknown",
+        completed_steps=["update_labels", "resolve_actor"],
+        failed_step="create_comment",
+    )
+
+    def fake_comment(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise plan.github_comment_core.CommentError(
+            failure.message,
+            failure=failure,
+            api_result={
+                "status": 0,
+                "completed_steps": failure.completed_steps,
+                "failed_step": failure.failed_step,
+            },
+            payload={
+                "comment_action": "create",
+                "reconciliation": {
+                    "strategy": "list_actor_comments_and_compare_body",
+                    "actor": "shiny-code-bot",
+                },
+            },
+        )
+
+    plan.run_raw = fake_run_raw
+    original_comment = plan.github_comment_core.comment
+    plan.github_comment_core.comment = fake_comment
+    try:
+        try:
+            plan.cmd_close(types.SimpleNamespace(
+                repo="owner/repo",
+                issue="10",
+                reason="completed",
+                body="Completed with evidence.\n",
+                body_file=None,
+                owner=None,
+                project=None,
+            ))
+        except plan.PlanError as exc:
+            assert exc.payload["comment_action"] == "create", exc.payload
+            assert exc.payload["reconciliation"]["strategy"] == "list_actor_comments_and_compare_body", exc.payload
+            assert exc.failure is failure
+        else:
+            raise AssertionError("expected comment failure")
+    finally:
+        plan.github_comment_core.comment = original_comment
+
+    assert calls == [[
+        "issue",
+        "edit",
+        "10",
+        "-R",
+        "owner/repo",
+        "--remove-label",
+        "plan:active",
+        "--add-label",
+        "plan:done",
+    ]], calls
+
+
 def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
     plan = load_plan_module()
     issue = {
@@ -1299,7 +1488,8 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
             "case \"$*\" in\n"
             "  pr\\ create*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
             "  pr\\ edit*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
-            "  *'/repos/owner/repo/issues/9/comments'*) printf '{\"html_url\":\"https://github.com/owner/repo/pull/9#issuecomment-1\"}\\n' ;;\n"
+            "  *'/user'*) printf '{\"login\":\"shiny-code-bot\"}\\n' ;;\n"
+            "  *'/repos/owner/repo/issues/9/comments'*) printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/9#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
             "esac\n"
         )
@@ -1530,7 +1720,10 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/issues/9/comments'* ]]; then\n"
+            "if [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "  exit 0\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/9/comments'* ]]; then\n"
             "  printf 'HTTP/2.0 403 \\r\\n'\n"
             "  printf 'content-type: application/json\\r\\n'\n"
             "  printf 'x-github-request-id: request-123\\r\\n'\n"
@@ -1572,7 +1765,7 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
     assert payload["fallback_eligible"] is True, payload
     assert api_result["failure"]["cause"] == "permission_denied", payload
     assert api_result["failure"]["request_id"] == "request-123", payload
-    assert api_result["body"]["credentials"] == "[REDACTED]", payload
+    assert "body" not in api_result, payload
     assert "[REDACTED]" in api_result["failure"]["message"], payload
 
 
@@ -1603,10 +1796,12 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
             "payload=''\n"
             "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
             "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "if [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  if [[ \"$payload\" != *'superseded by #13'* ]]; then exit 2; fi\n"
             "  if [[ \"$payload\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
             "  printf '[{\"number\":12}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
@@ -1742,6 +1937,78 @@ def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
     ), calls
 
 
+def test_pr_helper_supersede_reports_comment_failure_after_close() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        pr_json = (
+            '{"number":12,"title":"Old","state":"open","draft":false,'
+            '"body":"Refs #144","mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/12",'
+            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        winner_json = (
+            '{"number":13,"title":"New","state":"open","draft":false,'
+            '"body":"Refs #144","mergeable":true,"mergeable_state":"clean",'
+            '"html_url":"https://github.com/owner/repo/pull/13",'
+            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
+            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
+        )
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "payload=''\n"
+            "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
+            "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf 'HTTP/2.0 503 \\r\\ncontent-type: application/json\\r\\n\\r\\n{\"message\":\"upstream unavailable\"}\\n'\n"
+            "  exit 1\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+            "  printf '{\"number\":12,\"state\":\"closed\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '%s\\n' \"$PR_JSON\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+            "  printf '%s\\n' \"$WINNER_JSON\"\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GH_PR_TEST_LOG=str(log_path),
+            PR_JSON=pr_json,
+            WINNER_JSON=winner_json,
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+        calls = log_path.read_text().splitlines()
+
+    assert result.returncode == 1, result
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "github.pr.supersede", payload
+    assert payload["failure"]["cause"] == "network_provider_failure", payload
+    assert payload["write_outcome"] == "unknown", payload
+    assert payload["completed_steps"] == ["close_pull_request", "resolve_actor"], payload
+    assert payload["failed_step"] == "post_supersede_comment", payload
+    assert payload["status"] == 503, payload
+    assert payload["actor"] == "shiny-code-bot", payload
+    close_index = next(index for index, call in enumerate(calls) if "/pulls/12" in call and "--method PATCH" in call)
+    comment_index = next(index for index, call in enumerate(calls) if "/issues/12/comments" in call)
+    assert close_index < comment_index, calls
+
+
 def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -1769,8 +2036,10 @@ def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None
             "payload=''\n"
             "if [[ \"$*\" == *'--input -'* ]]; then payload=\"$(cat)\"; fi\n"
             "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "if [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  if [[ \"$payload\" == *'Refs #144'* ]]; then\n"
             "    printf 'gh: Forbidden (HTTP 403)\\n' >&2\n"
@@ -1839,8 +2108,10 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
             "  printf '[{\"number\":12}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -1922,8 +2193,10 @@ def test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch() 
             "  printf '[{\"number\":12}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"shared-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -1999,8 +2272,10 @@ def test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch() -> 
             "  printf '[{\"number\":12},{\"number\":14}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
+            "elif [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -2067,8 +2342,10 @@ def test_pr_helper_supersede_skips_branch_delete_for_default_branch() -> None:
             "  printf '[{\"number\":12}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
             "  printf '{\"default_branch\":\"release\"}\\n'\n"
+            "elif [[ \"$*\" == *'/user'* ]]; then\n"
+            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\"}\\n'\n"
+            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"release\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
@@ -2313,6 +2590,9 @@ def main() -> None:
         test_create_reports_stale_project_as_non_blocking_warning,
         test_create_reports_project_auth_denied_as_non_blocking_warning,
         test_close_reports_stale_project_as_non_blocking_warning,
+        test_close_delegates_comment_to_shared_rest_helper,
+        test_comment_route_matches_explicit_auth_policy,
+        test_close_preserves_comment_reconciliation_after_partial_failure,
         test_close_reports_project_auth_denied_as_non_blocking_warning,
         test_close_syncs_project_before_closing_issue,
         test_find_project_item_uses_issue_query_and_higher_limit,
@@ -2335,6 +2615,7 @@ def main() -> None:
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_supersede_does_not_comment_when_close_fails,
+        test_pr_helper_supersede_reports_comment_failure_after_close,
         test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close,
         test_pr_helper_supersede_warns_when_branch_delete_fails,
         test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch,

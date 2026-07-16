@@ -664,13 +664,16 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/github_api.py`: Shared JSON-stdin REST transport, response-header
   parsing, diagnostics envelope, legacy command classification, GraphQL
   query/mutation context, redaction, and bounded rate-limit probe.
+- `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
+  pagination, edit-last selection, and deletion-race handling.
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.
 - `scripts/gh-issue`: Safe multiline issue create/edit/close bodies from stdin
   with one versioned terminal JSON envelope, including compound-step evidence.
-- `scripts/gh-comment`: Safe multiline commenting with the same terminal JSON
-  envelope and stderr-only human diagnostics.
+- `scripts/gh-comment`: Safe multiline REST commenting with actor-aware
+  edit-last semantics, the same terminal JSON envelope, and stderr-only human
+  diagnostics.
 
 ## Workflow Loop
 

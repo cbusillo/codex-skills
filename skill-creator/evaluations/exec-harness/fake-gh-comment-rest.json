@@ -1,0 +1,77 @@
+{
+  "name": "fake-gh-comment-rest",
+  "model": "gpt-5.1-codex",
+  "prompt": "Update the automation actor's latest comment on issue #42 using comment.md, creating one only if none exists. Use the GitHub comment helper.",
+  "files": {
+    "README.md": "# Fake gh REST comment fixture\n",
+    "comment.md": "Updated evidence with `literal markdown`.\n"
+  },
+  "gh": {
+    "repo": "owner/repo",
+    "responses": [
+      {
+        "match": {
+          "contains": ["api", "/user"]
+        },
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "GET", "/repos/owner/repo/issues/42/comments?per_page=100&page=1"]
+        },
+        "stdout": "[{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"shiny-code-bot\"},\"created_at\":\"2026-07-16T12:00:00Z\"}]"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "PATCH", "/repos/owner/repo/issues/comments/7"]
+        },
+        "stdout": "{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"shiny-code-bot\"},\"updated_at\":\"2026-07-16T19:00:00Z\"}"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-comment-rest-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_comment_rest",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"GH_COMMENT_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-comment\\\" issue 42 --repo owner/repo --body-file comment.md --edit-last --create-if-none\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-comment-rest-2",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "wait_comment_rest",
+              "name": "wait",
+              "arguments": "{\"call_id\": \"call_comment_rest\", \"timeout_ms\": 600000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-comment-rest-3"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": [
+      "/user",
+      "/repos/owner/repo/issues/42/comments?per_page=100&page=1",
+      "--method PATCH",
+      "/repos/owner/repo/issues/comments/7"
+    ],
+    "responses_request_count": 3
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

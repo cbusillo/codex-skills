@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GH_ISSUE_GH:-$script_dir/gh-with-env-token}"
 classifier="${GH_ISSUE_CLASSIFIER:-$script_dir/github_api.py}"
+comment_helper="${GH_ISSUE_COMMENT_HELPER:-$script_dir/gh-comment}"
 python_command="${GH_ISSUE_PYTHON:-python3}"
 expected_actor="${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}"
 
@@ -31,10 +32,10 @@ Usage:
 Read a GitHub issue body from stdin and pass it to gh with --body-file,
 preserving literal Markdown backticks, newlines, and shell-looking text.
 
-For close, non-empty stdin is passed to gh issue close as the closing comment.
-Empty stdin preserves normal gh issue close behavior and closes without a comment.
-Large close comments are posted with gh issue comment --body-file before the
-issue is closed, because gh issue close does not support --body-file.
+For close, non-empty stdin is posted through the shared REST comment helper
+before the issue is closed. Empty stdin preserves normal gh issue close behavior
+and closes without a comment. This separate comment step is required because
+gh issue close does not support --body-file.
 USAGE
 }
 
@@ -62,8 +63,9 @@ tmp_stdout="$(mktemp)"
 tmp_stderr="$(mktemp)"
 step_stdout="$(mktemp)"
 step_stderr="$(mktemp)"
+comment_payload="$(mktemp)"
 cleanup() {
-	rm -f "$tmp_body" "$tmp_stdout" "$tmp_stderr" "$step_stdout" "$step_stderr"
+	rm -f "$tmp_body" "$tmp_stdout" "$tmp_stderr" "$step_stdout" "$step_stderr" "$comment_payload"
 }
 trap cleanup EXIT
 
@@ -74,6 +76,21 @@ run_step() {
 	"$@" >"$step_stdout" 2>"$step_stderr" || status=$?
 	cat "$step_stdout" >>"$tmp_stdout"
 	cat "$step_stderr" >>"$tmp_stderr"
+	return "$status"
+}
+
+run_comment_step() {
+	: >"$step_stdout"
+	: >"$step_stderr"
+	local status=0
+	GH_COMMENT_GH="$gh_bin" "$comment_helper" issue "$target" --body-file "$tmp_body" "$@" \
+		>"$step_stdout" 2>"$step_stderr" || status=$?
+	cat "$step_stderr" >>"$tmp_stderr"
+	if [[ "$status" -ne 0 ]]; then
+		cat "$step_stdout" >>"$tmp_stdout"
+	else
+		cp "$step_stdout" "$comment_payload"
+	fi
 	return "$status"
 }
 
@@ -95,6 +112,9 @@ emit_result() {
 		--failed-step "$failed_step"
 		--forward-stderr
 	)
+	if [[ -s "$comment_payload" ]]; then
+		args+=(--payload-file "$comment_payload")
+	fi
 	local completed_step
 	for completed_step in "$@"; do
 		args+=(--completed-step "$completed_step")
@@ -129,6 +149,8 @@ edit)
 close)
 	close_args=()
 	comment_args=()
+	provided_comment=""
+	has_provided_comment=0
 	remaining=("$@")
 	idx=0
 	while [[ "$idx" -lt "${#remaining[@]}" ]]; do
@@ -158,9 +180,18 @@ close)
 				terminal_error github.issue.close "$arg requires a value"
 				exit $?
 			fi
+			provided_comment="${remaining[$((idx + 1))]}"
+			has_provided_comment=1
 			idx=$((idx + 2))
 			;;
-		--comment=* | -c*)
+		--comment=*)
+			provided_comment="${arg#*=}"
+			has_provided_comment=1
+			idx=$((idx + 1))
+			;;
+		-c?*)
+			provided_comment="${arg#-c}"
+			has_provided_comment=1
 			idx=$((idx + 1))
 			;;
 		*)
@@ -169,36 +200,24 @@ close)
 			;;
 		esac
 	done
+	if [[ ! -s "$tmp_body" && "$has_provided_comment" -eq 1 ]]; then
+		printf '%s' "$provided_comment" >"$tmp_body"
+	fi
 	if [[ ! -s "$tmp_body" ]]; then
 		status=0
-		run_step "$gh_bin" issue close "$target" "${remaining[@]}" || status=$?
-		emit_result "$status" github.issue.close close_issue
-		exit $?
-	fi
-
-	comment_arg_max="${GH_ISSUE_CLOSE_COMMENT_ARG_MAX:-32768}"
-	if [[ ! "$comment_arg_max" =~ ^[0-9]+$ ]]; then
-		terminal_error github.issue.close "GH_ISSUE_CLOSE_COMMENT_ARG_MAX must be a non-negative integer"
-		exit $?
-	fi
-	body_size="$(wc -c <"$tmp_body" | tr -d '[:space:]')"
-	if [[ "$body_size" -le "$comment_arg_max" ]]; then
-		IFS= read -r -d '' close_comment <"$tmp_body" || true
-		status=0
-		run_step "$gh_bin" issue close "$target" --comment "$close_comment" "${close_args[@]}" || status=$?
-		emit_result "$status" github.issue.close close_issue
-		exit $?
-	else
-		status=0
-		run_step "$gh_bin" issue comment "$target" --body-file "$tmp_body" "${comment_args[@]}" || status=$?
-		if [[ "$status" -ne 0 ]]; then
-			emit_result "$status" github.issue.close post_close_comment
-			exit $?
-		fi
-		status=0
 		run_step "$gh_bin" issue close "$target" "${close_args[@]}" || status=$?
-		emit_result "$status" github.issue.close close_issue post_close_comment
+		emit_result "$status" github.issue.close close_issue
 		exit $?
 	fi
+	status=0
+	run_comment_step "${comment_args[@]}" || status=$?
+	if [[ "$status" -ne 0 ]]; then
+		emit_result "$status" github.issue.close post_close_comment
+		exit $?
+	fi
+	status=0
+	run_step "$gh_bin" issue close "$target" "${close_args[@]}" || status=$?
+	emit_result "$status" github.issue.close close_issue post_close_comment
+	exit $?
 	;;
 esac
