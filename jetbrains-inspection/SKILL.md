@@ -291,6 +291,12 @@ preferred IDE and must clean it up afterward when it owns the open.
   `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`; do not
   inspect raw route, cleanup, wait, or capture diagnostics unless debugging the
   helper itself.
+  Every `UNKNOWN` and cleanup anomaly also carries `inspection_attribution`
+  schema version 1 with a stable classification, code, failure phase, endpoint,
+  HTTP status, helper/plugin provenance, and bounded evidence IDs. The helper
+  supplies one `client_run_id` per invocation and preserves plugin `request_id`
+  values. `unattributed_unknown: true` is a helper/tool failure, not a neutral
+  unknown bucket.
   If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
   `ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
   metadata in `.github/github.json`; do not frame that as merely optional when
@@ -300,7 +306,10 @@ preferred IDE and must clean it up afterward when it owns the open.
   so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
   disable logging, set it to a path to override the log file, or set
   `JB_INSPECT_ROLLOUT_FILE` to include the current rollout/session transcript in
-  the record.
+  the record. Durable unknown/outcome rows hash local paths and project keys,
+  redact token-like fields, and retain helper revision, plugin fingerprint, IDE
+  product/build, failure phase, attribution class, cleanup status/reason, and
+  evidence IDs.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.
