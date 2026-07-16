@@ -540,6 +540,29 @@ def test_classify_subprocess_launch_failure() -> None:
     assert result.failure.failed_step == "subprocess_launch"
 
 
+def test_write_subprocess_launch_failure_is_safe_to_retry() -> None:
+    with patch("subprocess.run", side_effect=FileNotFoundError("/private/path/to/gh")):
+        result = _api.call_gh("POST", "/repos/owner/repo/issues", {"title": "demo"})
+    assert result.ok is False
+    assert result.failure is not None
+    assert result.failure.cause == "network_provider_failure"
+    assert result.failure.retryable is True
+    assert result.failure.disposition == "retry"
+    assert result.failure.write_outcome == "not_started"
+
+
+def test_write_subprocess_oserror_after_launch_is_unknown() -> None:
+    with patch("subprocess.run", side_effect=OSError("I/O failure after process start")):
+        result = _api.call_gh("POST", "/repos/owner/repo/issues", {"title": "demo"})
+    assert result.ok is False
+    assert result.failure is not None
+    assert result.failure.cause == "network_provider_failure"
+    assert result.failure.retryable is False
+    assert result.failure.disposition == "stop"
+    assert result.failure.write_outcome == "unknown"
+    assert result.failure.failed_step == "subprocess_execution"
+
+
 # ---------------------------------------------------------------------------
 # Failure envelope fields (write_outcome, completed_steps, failed_step)
 # ---------------------------------------------------------------------------
@@ -926,6 +949,8 @@ def main() -> None:
         test_classify_no_output_returncode_nonzero,
         test_legacy_graphql_rate_limit_does_not_offer_identity_fallback,
         test_classify_subprocess_launch_failure,
+        test_write_subprocess_launch_failure_is_safe_to_retry,
+        test_write_subprocess_oserror_after_launch_is_unknown,
         # failure envelope fields
         test_failure_envelope_write_outcome_read_request,
         test_failure_envelope_completed_steps_preserved,

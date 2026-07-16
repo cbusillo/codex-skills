@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import re
 import sys
 import tomllib
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MATRIX = ROOT / "github/references/operation-matrix.toml"
 
@@ -30,6 +31,7 @@ REQUIRED_FIELDS = {
     "quota_bucket",
     "actor_policy",
     "mutation_class",
+    "idempotency",
     "retry_eligibility",
     "reconciliation_strategy",
     "retained_graphql_rationale",
@@ -103,6 +105,13 @@ ENUMS = {
         "remote_git_write",
         "update",
     },
+    "idempotency": {
+        "conditional",
+        "delegated",
+        "idempotent",
+        "non_idempotent",
+        "read_only",
+    },
     "retry_eligibility": {"conditional", "manual", "safe"},
     "reconciliation_strategy": {
         "body_file_write",
@@ -128,6 +137,7 @@ ENUMS = {
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 PLACEHOLDER_RE = re.compile(r"^(?:todo|tbd|n/?a|none|unknown)$", re.IGNORECASE)
+PYTHON_REF_ALIASES = {"self-test": "run_self_tests"}
 
 
 def main() -> int:
@@ -224,6 +234,13 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
             if isinstance(value, str) and value not in allowed:
                 errors.append(f"{label}.{field} has unsupported value {value!r}")
 
+        mutation_class = operation.get("mutation_class")
+        idempotency = operation.get("idempotency")
+        if mutation_class == "read" and idempotency != "read_only":
+            errors.append(f"{label}.idempotency must be 'read_only' for read operations")
+        elif idempotency == "read_only" and mutation_class != "read":
+            errors.append(f"{label}.idempotency 'read_only' requires mutation_class 'read'")
+
         current_transport = operation.get("current_transport")
         selected_transport = operation.get("selected_transport")
         transport_changed = (
@@ -231,15 +248,27 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
             and isinstance(selected_transport, str)
             and current_transport != selected_transport
         )
-        if transport_changed:
+        migration_planned = operation.get("migration_status") == "planned"
+        if transport_changed and not migration_planned:
+            errors.append(f"{label}.migration_status must be 'planned' while transports differ")
+        if transport_changed or migration_planned:
             for field in ("migration_status", "current_endpoint_or_command", "current_quota_bucket"):
                 value = operation.get(field)
                 if not isinstance(value, str) or not value.strip():
-                    errors.append(f"{label}.{field} is required while current_transport differs from selected_transport")
-            if operation.get("migration_status") != "planned":
-                errors.append(f"{label}.migration_status must be 'planned' while transports differ")
-        elif operation.get("migration_status") == "planned":
-            errors.append(f"{label}.migration_status cannot be 'planned' when selected transport is already live")
+                    errors.append(f"{label}.{field} is required for a planned migration")
+        if migration_planned:
+            current_endpoint = operation.get("current_endpoint_or_command")
+            selected_endpoint = operation.get("endpoint_or_command")
+            current_quota = operation.get("current_quota_bucket")
+            selected_quota = operation.get("quota_bucket")
+            if (
+                not transport_changed
+                and current_endpoint == selected_endpoint
+                and current_quota == selected_quota
+            ):
+                errors.append(
+                    f"{label}.migration_status is planned but transport, endpoint, and quota evidence are unchanged"
+                )
 
         rationale = operation.get("retained_graphql_rationale")
         if isinstance(rationale, str):
@@ -265,9 +294,36 @@ def validate_refs(label: str, field: str, value: Any, repo_root: Path, errors: l
         if not isinstance(item, str) or not item.strip():
             errors.append(f"{label}.{field} entries must be non-empty strings")
             continue
-        path_text = item.split(":", 1)[0]
-        if path_text and not (repo_root / path_text).exists():
+        path_text, separator, fragment = item.partition(":")
+        path = repo_root / path_text
+        if path_text and not path.exists():
             errors.append(f"{label}.{field} references missing path: {item}")
+            continue
+        if not separator or not fragment:
+            continue
+        if fragment.isdigit():
+            line_number = int(fragment)
+            if line_number < 1 or line_number > file_line_count(path):
+                errors.append(f"{label}.{field} references missing line: {item}")
+            continue
+        python_fragment = PYTHON_REF_ALIASES.get(fragment, fragment)
+        if path.suffix == ".py" and python_fragment not in python_symbols(path):
+            errors.append(f"{label}.{field} references missing Python symbol: {item}")
+
+
+@functools.cache
+def file_line_count(path: Path) -> int:
+    return len(path.read_text(encoding="utf-8").splitlines())
+
+
+@functools.cache
+def python_symbols(path: Path) -> frozenset[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return frozenset(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    )
 
 
 def validate_static_coverage(
@@ -281,6 +337,12 @@ def validate_static_coverage(
         if isinstance(operation.get("entrypoint"), str)
     }
 
+    require_entrypoint_commands(
+        "github/scripts/github_api.py",
+        extract_argparse_subcommands(repo_root / "github/scripts/github_api.py", errors),
+        entrypoints,
+        errors,
+    )
     require_entrypoint_commands(
         "github/scripts/gh-pr.py",
         extract_argparse_subcommands(repo_root / "github/scripts/gh-pr.py", errors),
@@ -362,7 +424,11 @@ def extract_shell_case_choices(path: Path, variable: str, errors: list[str]) -> 
 
 
 def extract_shell_case_choices_from_text(text: str, variable: str) -> set[str]:
-    match = re.search(rf"case\s+\"\${re.escape(variable)}\"\s+in\n(?P<body>.*?)\nesac", text, re.DOTALL)
+    match = re.search(
+        rf"case\s+\"\${re.escape(variable)}\"\s+in\n(?P<body>.*?)\n[ \t]*esac\b",
+        text,
+        re.DOTALL,
+    )
     if not match:
         return set()
 
@@ -396,8 +462,14 @@ def run_self_tests() -> int:
         test_schema_accepts_minimal_operation,
         test_duplicate_ids_fail,
         test_invalid_enum_fails,
+        test_read_operation_requires_read_only_idempotency,
+        test_read_only_idempotency_requires_read_operation,
         test_graphql_rationale_is_required,
         test_planned_migration_requires_current_transport_evidence,
+        test_same_transport_component_migration_is_allowed,
+        test_planned_migration_requires_changed_evidence,
+        test_missing_python_symbol_reference_fails,
+        test_missing_line_reference_fails,
         test_shell_case_extractor_handles_pipe_choices,
         test_static_command_coverage_reports_missing_entrypoint,
     ]
@@ -413,42 +485,106 @@ def run_self_tests() -> int:
 
 def test_schema_accepts_minimal_operation() -> None:
     errors: list[str] = []
-    validate_schema({"schema_version": 1, "operations": [minimal_operation()]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [minimal_operation()]}, ROOT, errors)
     assert errors == [], errors
 
 
 def test_duplicate_ids_fail() -> None:
     errors: list[str] = []
     operation = minimal_operation()
-    validate_schema({"schema_version": 1, "operations": [operation, dict(operation)]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation, dict(operation)]}, ROOT, errors)
     assert any("duplicate operation id" in error for error in errors), errors
 
 
 def test_invalid_enum_fails() -> None:
     errors: list[str] = []
     operation = minimal_operation(retry_eligibility="maybe")
-    validate_schema({"schema_version": 1, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
     assert any("retry_eligibility" in error and "unsupported" in error for error in errors), errors
+
+
+def test_read_operation_requires_read_only_idempotency() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(idempotency="idempotent")
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert any("idempotency must be 'read_only'" in error for error in errors), errors
+
+
+def test_read_only_idempotency_requires_read_operation() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(mutation_class="create")
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert any("requires mutation_class 'read'" in error for error in errors), errors
 
 
 def test_graphql_rationale_is_required() -> None:
     errors: list[str] = []
     operation = minimal_operation(retained_graphql_rationale="REST only.")
-    validate_schema({"schema_version": 1, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
     assert any("retained_graphql_rationale" in error and "GraphQL" in error for error in errors), errors
 
 
 def test_planned_migration_requires_current_transport_evidence() -> None:
     errors: list[str] = []
     operation = minimal_operation(current_transport="gh_cli_wrapper", selected_transport="rest_api")
-    validate_schema({"schema_version": 1, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
     assert any("migration_status" in error and "required" in error for error in errors), errors
     assert any("current_endpoint_or_command" in error and "required" in error for error in errors), errors
     assert any("current_quota_bucket" in error and "required" in error for error in errors), errors
 
 
+def test_same_transport_component_migration_is_allowed() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(
+        current_transport="composite",
+        selected_transport="composite",
+        endpoint_or_command="REST issue reads plus retained Project GraphQL",
+        quota_bucket="mixed",
+        migration_status="planned",
+        current_endpoint_or_command="gh issue list plus retained Project GraphQL",
+        current_quota_bucket="mixed",
+    )
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert errors == [], errors
+
+
+def test_planned_migration_requires_changed_evidence() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(
+        migration_status="planned",
+        current_endpoint_or_command="GET /fixture",
+        current_quota_bucket="rest_core",
+    )
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert any("transport, endpoint, and quota evidence are unchanged" in error for error in errors), errors
+
+
+def test_missing_python_symbol_reference_fails() -> None:
+    errors: list[str] = []
+    validate_refs(
+        "operations[1]",
+        "source_refs",
+        ["github/scripts/gh-pr.py:not_a_real_symbol"],
+        ROOT,
+        errors,
+    )
+    assert any("missing Python symbol" in error for error in errors), errors
+
+
+def test_missing_line_reference_fails() -> None:
+    errors: list[str] = []
+    validate_refs(
+        "operations[1]",
+        "source_refs",
+        ["github/scripts/gh-comment:99999"],
+        ROOT,
+        errors,
+    )
+    assert any("missing line" in error for error in errors), errors
+
+
 def test_shell_case_extractor_handles_pipe_choices() -> None:
-    text = 'case "$kind" in\n  issue|pr) ;;\n  *) exit 2 ;;\nesac\n'
+    text = 'if true; then\n  case "$kind" in\n    issue|pr) ;;\n    *) exit 2 ;;\n  esac\nfi\n'
     assert extract_shell_case_choices_from_text(text, "kind") == {"issue", "pr"}
 
 
@@ -474,6 +610,7 @@ def minimal_operation(**overrides: Any) -> dict[str, Any]:
         "quota_bucket": "rest_core",
         "actor_policy": "automation_required",
         "mutation_class": "read",
+        "idempotency": "read_only",
         "retry_eligibility": "safe",
         "reconciliation_strategy": "fresh_read",
         "retained_graphql_rationale": "No retained GraphQL transport; fixture rationale.",
