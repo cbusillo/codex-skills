@@ -24,6 +24,7 @@ os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
+ATTRIBUTION_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "attribution" / "cases.json"
 SPEC = importlib.util.spec_from_file_location("jb_inspect", SCRIPT_PATH)
 jb_inspect = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -34,6 +35,10 @@ SPEC.loader.exec_module(jb_inspect)
 def write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle)
+
+
+def attribution_cases() -> list[dict]:
+    return json.loads(ATTRIBUTION_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def make_config_dir(home: Path, name: str) -> Path:
@@ -2731,6 +2736,66 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["reason"], "session_drift")
         self.assertTrue(result["cleanup_failed"])
 
+    def test_cleanup_http_500_is_failed_not_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
+            original_private_http = jb_inspect.private_http_get_body
+            os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = tmp
+            try:
+                lease = jb_inspect.create_local_lease(
+                    {
+                        "worktree_root": "/tmp/repo",
+                        "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    },
+                    "prepared",
+                )
+                lease.update(
+                    {
+                        "opened_by_helper": True,
+                        "project_instance_id": "session:1",
+                        "project_key": "path:/tmp/repo",
+                    }
+                )
+                attribution = {
+                    "schema_version": 1,
+                    "source": "plugin",
+                    "classification": "tool_caused",
+                    "code": "inspection_api_http_error",
+                    "phase": "lifecycle_close",
+                    "http_status": 500,
+                    "request_id": "11111111-1111-4111-8111-111111111111",
+                }
+
+                def fake_private_http(port, endpoint, params, timeout=None):
+                    raise jb_inspect.InspectError(
+                        "HTTP 500 from inspection API",
+                        3,
+                        {
+                            "status": "error",
+                            "error_reason": "inspection_api_http_error",
+                            "http_status": 500,
+                            "inspection_attribution": attribution,
+                        },
+                    )
+
+                jb_inspect.private_http_get_body = fake_private_http
+                result = jb_inspect.cleanup_lifecycle(
+                    lease,
+                    {"port": 63342, "project_key": "path:/tmp/repo"},
+                    "token",
+                )
+            finally:
+                jb_inspect.private_http_get_body = original_private_http
+                if original_cache is None:
+                    os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+                else:
+                    os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = original_cache
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["cleanup_failed"])
+        self.assertEqual(result["reason"], "inspection_api_http_error")
+        self.assertEqual(result["inspection_attribution"]["request_id"], "11111111-1111-4111-8111-111111111111")
+
     def test_cleanup_skipped_surfaces_successful_close_response(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_cache = os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR")
@@ -4688,6 +4753,136 @@ class EndpointUtilityTest(unittest.TestCase):
         )
 
 
+class AttributionContractTest(unittest.TestCase):
+    def test_golden_unknown_and_cleanup_cases_have_bounded_attribution(self):
+        for case in attribution_cases():
+            with self.subTest(case=case["name"]):
+                payload = json.loads(json.dumps(case["payload"]))
+                jb_inspect.apply_verdict(payload)
+
+                attribution = payload["inspection_attribution"]
+                expected = case["expected"]
+                self.assertEqual(attribution["schema_version"], 1)
+                self.assertEqual(attribution["classification"], expected["classification"])
+                self.assertEqual(attribution["code"], expected["code"])
+                self.assertEqual(attribution["phase"], expected["phase"])
+                self.assertEqual(payload["bucket"], expected["helper_bucket"])
+                self.assertEqual(payload["attribution_class"], expected["classification"])
+                self.assertEqual(payload["failure_phase"], expected["phase"])
+                self.assertIn("helper_revision", attribution)
+                self.assertNotIn("close_token", json.dumps(payload))
+
+    def test_endpoint_failure_preserves_http_response_attribution(self):
+        case = next(item for item in attribution_cases() if item["name"] == "plugin-http-500")
+        error_payload = dict(case["payload"])
+        error_payload.update(
+            {
+                "endpoint": "status",
+                "http_status": 500,
+                "response_code": "inspection_api_http_error",
+            }
+        )
+
+        result = jb_inspect.inspection_endpoint_failure_result(
+            jb_inspect.InspectError("HTTP 500 from inspection API", 3, error_payload),
+            {"project_key": "path:/repo"},
+            {"run_id": 42},
+            {"inspection_in_progress": False},
+            None,
+        )
+
+        self.assertEqual(result["endpoint"], "status")
+        self.assertEqual(result["http_status"], 500)
+        self.assertEqual(result["response_code"], "inspection_api_http_error")
+        self.assertEqual(result["inspection_attribution"]["request_id"], "11111111-1111-4111-8111-111111111111")
+        self.assertEqual(result["client_run_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    def test_malformed_response_preserves_request_context(self):
+        with self.assertRaises(jb_inspect.InspectError) as raised:
+            jb_inspect.parse_http_json(
+                b"{",
+                "problems",
+                200,
+                "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            )
+
+        payload = raised.exception.payload
+        self.assertEqual(payload["endpoint"], "problems")
+        self.assertEqual(payload["http_status"], 200)
+        self.assertEqual(payload["response_code"], "invalid_api_response")
+        self.assertEqual(payload["client_run_id"], "ffffffff-ffff-4fff-8fff-ffffffffffff")
+
+    def test_unattributed_unknown_is_mechanically_a_tool_failure(self):
+        payload = {"status": "mystery", "command": "get-status"}
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertTrue(payload["unattributed_unknown"])
+        self.assertEqual(payload["inspection_attribution"]["classification"], "unattributed")
+        self.assertEqual(payload["inspection_attribution"]["code"], "unattributed_unknown")
+        self.assertEqual(payload["bucket"], "tool_bug")
+
+    def test_outcome_record_keeps_provenance_without_paths_or_tokens(self):
+        payload = {
+            "status": "error",
+            "error_reason": "inspection_api_http_error",
+            "context": {
+                "repo_path": "/private/repo",
+                "worktree_root": "/private/worktree",
+                "scope": "changed_files",
+                "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            },
+            "route": {
+                "project_name": "fixture",
+                "project_key": "path:/private/worktree",
+                "base_path": "/private/worktree",
+                "project_instance_id": "project-instance-fixture",
+                "session_id": "session-fixture",
+                "ide": {
+                    "name": "IntelliJ IDEA",
+                    "product_code": "IU",
+                    "version": "2026.1.4",
+                    "plugin_version": "1.13.17",
+                    "plugin_build_fingerprint": "fixture-fingerprint",
+                },
+            },
+            "inspection_attribution": {
+                "schema_version": 1,
+                "source": "plugin",
+                "classification": "tool_caused",
+                "code": "inspection_api_http_error",
+                "phase": "status",
+                "request_id": "11111111-1111-4111-8111-111111111111",
+                "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            },
+            "capture_diagnostic": {
+                "scope_directory_requested": "/private/worktree/src",
+            },
+            "close_token": "must-not-leak",
+        }
+        jb_inspect.apply_verdict(payload)
+
+        record = jb_inspect.outcome_log_record(payload, 3)
+        unknown_record = jb_inspect.unknown_log_record(payload)
+        serialized = json.dumps(record, sort_keys=True)
+        unknown_serialized = json.dumps(unknown_record, sort_keys=True)
+
+        self.assertEqual(record["helper_revision"], jb_inspect.helper_revision())
+        self.assertEqual(record["plugin_build_fingerprint"], "fixture-fingerprint")
+        self.assertEqual(record["ide_product_code"], "IU")
+        self.assertEqual(record["ide_version"], "2026.1.4")
+        self.assertEqual(record["failure_phase"], "status")
+        self.assertEqual(record["attribution_class"], "tool_caused")
+        self.assertEqual(record["request_id"], "11111111-1111-4111-8111-111111111111")
+        self.assertIn("repo_path_hash", record)
+        self.assertIn("worktree_root_hash", record)
+        self.assertNotIn("/private/", serialized)
+        self.assertNotIn("/private/", unknown_serialized)
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertIn("scope_directory_requested_hash", unknown_record["capture_diagnostic"])
+
+
 class HumanOutputTest(unittest.TestCase):
     def test_verdict_for_clean_payload_is_green(self):
         payload = {"status": "clean", "clean": True, "total_problems": 0, "problems": []}
@@ -5298,11 +5493,12 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(record["bucket"], "tool_bug")
             self.assertFalse(record["retry"])
             self.assertEqual(record["verdict_reason"], "non_empty_unmapped_tree")
-            self.assertEqual(record["rollout_file"], str(rollout_path))
-            self.assertEqual(record["repo_path"], "/repo")
+            self.assertEqual(record["rollout_file_hash"], jb_inspect.stable_value_hash(str(rollout_path)))
+            self.assertEqual(record["repo_path_hash"], jb_inspect.stable_value_hash("/repo"))
             self.assertEqual(record["ide"], "IntelliJ IDEA")
             self.assertEqual(record["capture_diagnostic"]["exit_reason"], "non_empty_unmapped_tree")
             self.assertNotIn("secret-token", log_path.read_text(encoding="utf-8"))
+            self.assertNotIn("/repo-wt", log_path.read_text(encoding="utf-8"))
 
     def test_rollout_attribution_requires_explicit_session_environment(self):
         with tempfile.TemporaryDirectory() as tmp:

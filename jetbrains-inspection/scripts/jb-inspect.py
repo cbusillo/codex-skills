@@ -13,6 +13,7 @@ completion, fetch results, and classify the outcome for readiness.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -56,6 +57,7 @@ UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_no
 INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
 LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
+INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 RECOVERABLE_HELPER_LEASE_STATES = frozenset(
     {
         "route_resolved",
@@ -109,6 +111,7 @@ VERDICT_SOURCE_KEYS = (
     "inspection_verdict_reason",
     "inspection_verdict_message",
     "inspection_verdict_next_action",
+    "inspection_attribution",
     "proof_failures",
 )
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
@@ -118,6 +121,8 @@ PROJECT_OPEN_BLOCKED_HINT = (
     "in a foreground or background IDE window. Bring the IDE forward, answer the prompt, "
     "then retry inspection."
 )
+_HELPER_REVISION: str | None = None
+_ACTIVE_CLIENT_RUN_ID: str | None = None
 
 
 class InspectError(Exception):
@@ -220,21 +225,25 @@ IDE_PRODUCT_BY_ALIAS = {
 
 
 def main() -> int:
+    global _ACTIVE_CLIENT_RUN_ID
+    previous_client_run_id = _ACTIVE_CLIENT_RUN_ID
     parser = build_parser()
     args = parse_cli_args(parser)
     args.command = canonical_command(args.command)
+    args.client_run_id = str(uuid.uuid4())
+    _ACTIVE_CLIENT_RUN_ID = args.client_run_id
     try:
         if args.command == "list":
             result = command_list(args)
-            return emit(result, args.json, 0, command=args.command_input)
+            return emit(result, args.json, 0, command=args.command_input, assess=False)
         if args.command == "route":
             context = build_context(args)
             result = command_route(args, context)
-            return emit(result, args.json, 0, command=args.command_input)
+            return emit(result, args.json, 0, command=args.command_input, assess=False)
         if args.command == "trigger":
             context = build_context(args)
             result = command_trigger(args, context)
-            return emit(result, args.json, 0, command=args.command_input)
+            return emit(result, args.json, 0, command=args.command_input, assess=False)
         if args.command == "wait":
             context = build_context(args)
             result = command_wait(args, context)
@@ -250,18 +259,20 @@ def main() -> int:
         if args.command == "claim":
             context = build_context(args)
             result = command_claim(args, context)
-            return emit(result, args.json, 0, command=args.command_input)
+            return emit(result, args.json, 0, command=args.command_input, assess=False)
         if args.command == "prepare":
             context = build_context(args)
             result = command_prepare(args, context)
-            return emit(result, args.json, classify_prepare_exit(result), command=args.command_input)
+            exit_code = classify_prepare_exit(result)
+            return emit(result, args.json, exit_code, command=args.command_input, assess=exit_code != 0)
         if args.command == "closeout":
             context = build_context(args)
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
-            return emit(result, args.json, classify_cleanup_leases_exit(result), command=args.command_input)
+            exit_code = classify_cleanup_leases_exit(result)
+            return emit(result, args.json, exit_code, command=args.command_input, assess=exit_code != 0)
         if args.command == "summarize-outcomes":
             result = command_summarize_outcomes(args)
             return emit(result, args.json, 0, command=args.command_input, assess=False)
@@ -272,6 +283,8 @@ def main() -> int:
     except InspectError as error:
         payload = error_payload(error, args)
         return emit(payload, getattr(args, "json", False), error.exit_code, command=getattr(args, "command_input", getattr(args, "command", None)))
+    finally:
+        _ACTIVE_CLIENT_RUN_ID = previous_client_run_id
     return 2
 
 
@@ -292,6 +305,9 @@ def error_payload(error: InspectError, args: argparse.Namespace | None = None) -
     command = getattr(args, "command_input", None) or getattr(args, "command", None)
     if command:
         payload.setdefault("command", preferred_command(str(command)))
+    client_run_id = getattr(args, "client_run_id", None)
+    if client_run_id:
+        payload.setdefault("client_run_id", client_run_id)
     if "hint" not in payload:
         hint = hint_for_error_reason(str(payload.get("error_reason") or ""))
         if hint:
@@ -505,6 +521,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "ide_version": str(ide_version) if ide_version else None,
         "scope": scope,
         "worktree_strategy": worktree_strategy,
+        "client_run_id": getattr(args, "client_run_id", None),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
     selection = resolve_ide_selection(context)
@@ -1074,6 +1091,7 @@ def inspection_run_changed_result(
         "trigger": trigger,
         phase: observed,
     }
+    copy_verdict_evidence(result, observed)
     apply_verdict(result)
     return result
 
@@ -1125,6 +1143,15 @@ def inspection_endpoint_failure_result(
         "trigger": trigger,
         "wait": wait,
     }
+    for key in ("http_status", "response_code", "client_run_id"):
+        if error.payload.get(key) is not None:
+            result[key] = error.payload[key]
+    copy_verdict_evidence(result, error.payload)
+    attribution = result.get("inspection_attribution") if isinstance(result.get("inspection_attribution"), dict) else {}
+    result.setdefault("http_status", attribution.get("http_status"))
+    result.setdefault("response_code", attribution.get("code"))
+    result.setdefault("client_run_id", attribution.get("client_run_id"))
+    result = {key: value for key, value in result.items() if value is not None}
     if cancellation is not None:
         result["cancellation"] = cancellation
     apply_verdict(result)
@@ -2309,6 +2336,7 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
         return {"status": "skipped", "cleanup_skipped": True, "reason": "missing_close_token"}
     try:
         close_params = {
+            "client_run_id": lease.get("client_run_id"),
             "project_key": lease.get("project_key") or route.get("project_key"),
             "project_path": route.get("base_path"),
             "worktree_path": route.get("base_path"),
@@ -2320,11 +2348,16 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
         close_result = call_lifecycle_close(route, close_params)
     except InspectError as error:
         mark_lease_state(lease, "cleanup_failed")
-        return {
+        result = {
             "status": "failed",
             "cleanup_failed": True,
             "reason": public_cleanup_reason(error),
         }
+        for key in ("endpoint", "http_status", "response_code", "client_run_id"):
+            if error.payload.get(key) is not None:
+                result[key] = error.payload[key]
+        copy_verdict_evidence(result, error.payload)
+        return result
     status = str(close_result.get("status") or "")
     mark_lease_state(lease, "closed" if status == "closed" else "cleanup_skipped")
     if status == "closed":
@@ -2338,7 +2371,19 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
         body = private_http_get_body(port, "lifecycle/close", params, timeout=35.0)
     except InspectError as error:
         body = error.payload if isinstance(error.payload, dict) else {}
-        if body.get("session_drift") or not body or "status" not in body:
+        attribution = body.get("inspection_attribution") if isinstance(body.get("inspection_attribution"), dict) else {}
+        try:
+            http_status = int(body.get("http_status") or attribution.get("http_status") or 0)
+        except (TypeError, ValueError):
+            http_status = 0
+        if (
+            body.get("session_drift")
+            or not body
+            or "status" not in body
+            or str(body.get("status") or "") == "error"
+            or http_status >= 500
+            or attribution.get("code") == "inspection_api_http_error"
+        ):
             raise
     status = str(body.get("status") or "closed")
     if status == "closed":
@@ -2366,6 +2411,10 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
         "inspection_run_id",
         "inspection_in_progress",
         "close_attempts",
+        "inspection_attribution",
+        "http_status",
+        "response_code",
+        "client_run_id",
     ):
         if body.get(field) is not None:
             result[field] = body[field]
@@ -2392,25 +2441,12 @@ def route_port(route: dict[str, Any]) -> int:
 
 
 def private_http_get_body(port: int, endpoint: str, params: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-    clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
-    query = urllib.parse.urlencode(clean_params, doseq=True)
-    base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
-    request_url = f"{base_url}?{query}" if query else base_url
-    request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0)) as response:
-            return parse_json(response.read())
-    except urllib.error.HTTPError as error:
-        body = parse_json(error.read())
-        if error.code == 409 and body.get("session_drift"):
-            raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, body)
-        if error.code == 409 and body.get("status") == "inspection_in_progress":
-            return body
-        if error.code == 400:
-            raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
-        raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise inspection_transport_error(port, endpoint, error) from error
+    return http_get(
+        port,
+        endpoint,
+        params,
+        timeout=timeout or max(DEFAULT_TIMEOUT_SECONDS, 10.0),
+    ).body
 
 
 def inspection_transport_error(port: int, endpoint: str, error: BaseException) -> InspectError:
@@ -2540,6 +2576,8 @@ def identity_for_port(port: int) -> dict[str, Any]:
 
 def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> HttpResult:
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
+    if _ACTIVE_CLIENT_RUN_ID and "client_run_id" not in clean_params:
+        clean_params["client_run_id"] = _ACTIVE_CLIENT_RUN_ID
     query = urllib.parse.urlencode(clean_params, doseq=True)
     display_query = urllib.parse.urlencode(redact_payload(clean_params), doseq=True)
     base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
@@ -2548,18 +2586,42 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
     request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return HttpResult(response.status, parse_json(response.read()), display_url)
+            body = parse_http_json(response.read(), endpoint, response.status, clean_params.get("client_run_id"))
+            return HttpResult(response.status, body, display_url)
     except urllib.error.HTTPError as error:
-        body = parse_json(error.read())
-        if error.code == 409 and body.get("session_drift"):
-            raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, body)
+        body = parse_http_json(error.read(), endpoint, error.code, clean_params.get("client_run_id"))
         if error.code == 409 and body.get("status") == "inspection_in_progress":
             return HttpResult(error.code, body, display_url)
+        payload = dict(body)
+        payload.setdefault("endpoint", endpoint)
+        payload.setdefault("http_status", error.code)
+        if clean_params.get("client_run_id"):
+            payload.setdefault("client_run_id", clean_params["client_run_id"])
+        attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+        payload.setdefault(
+            "response_code",
+            attribution.get("code") or payload.get("error_reason") or payload.get("reason") or payload.get("status") or "inspection_api_http_error",
+        )
+        if error.code == 409 and payload.get("session_drift"):
+            raise InspectError("IDE session changed; resolve route and re-trigger before trusting results.", 4, payload)
         if error.code == 400:
-            raise InspectError(body.get("message") or body.get("error") or "Bad inspection request.", 3, body)
-        raise InspectError(f"HTTP {error.code} from inspection API", 3, body)
+            raise InspectError(payload.get("message") or payload.get("error") or "Bad inspection request.", 3, payload)
+        raise InspectError(f"HTTP {error.code} from inspection API", 3, payload)
     except (urllib.error.URLError, TimeoutError) as error:
-        raise inspection_transport_error(port, endpoint, error) from error
+        failure = inspection_transport_error(port, endpoint, error)
+        failure.payload.setdefault("client_run_id", clean_params.get("client_run_id"))
+        raise failure from error
+
+
+def parse_http_json(raw: bytes, endpoint: str, http_status: int, client_run_id: str | None) -> dict[str, Any]:
+    try:
+        return parse_json(raw)
+    except InspectError as error:
+        error.payload.setdefault("endpoint", endpoint)
+        error.payload.setdefault("http_status", http_status)
+        error.payload.setdefault("client_run_id", client_run_id)
+        error.payload.setdefault("response_code", "invalid_api_response")
+        raise
 
 
 def call_endpoint(
@@ -2589,7 +2651,7 @@ def call_contextual_endpoint(
 
 
 def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    return {
+    params = {
         "project_key": args.project_key,
         "project_path": args.project_path or context.get("project_path"),
         "worktree_path": args.worktree_path or lifecycle_target_path(context),
@@ -2598,6 +2660,10 @@ def selector_params(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
         "ide": args.ide or context.get("ide"),
         "session_id": args.session_id,
     }
+    client_run_id = getattr(args, "client_run_id", None) or context.get("client_run_id")
+    if client_run_id:
+        params["client_run_id"] = client_run_id
+    return params
 
 
 def route_params(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
@@ -2610,6 +2676,9 @@ def route_params(args: argparse.Namespace, context: dict[str, Any], route: dict[
         "project": args.project,
         "ide": args.ide or context.get("ide"),
     }
+    client_run_id = getattr(args, "client_run_id", None) or context.get("client_run_id")
+    if client_run_id:
+        params["client_run_id"] = client_run_id
     if route.get("project_instance_id"):
         params["project_instance_id"] = route.get("project_instance_id")
     return params
@@ -2946,8 +3015,221 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     return "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
 
 
+def helper_revision() -> str:
+    global _HELPER_REVISION
+    if _HELPER_REVISION is None:
+        try:
+            digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+            _HELPER_REVISION = f"sha256:{digest}"
+        except OSError:
+            _HELPER_REVISION = "unavailable"
+    return _HELPER_REVISION
+
+
+def stable_value_hash(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+
+
+def attribution_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [payload]
+    for key in ("wait", "status", "problems", "trigger", "cancellation", "cleanup", "last_status"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    return candidates
+
+
+def existing_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
+    for candidate in attribution_payloads(payload):
+        attribution = candidate.get("inspection_attribution")
+        if isinstance(attribution, dict):
+            return dict(attribution)
+    return {}
+
+
+def payload_route(payload: dict[str, Any]) -> dict[str, Any]:
+    for candidate in attribution_payloads(payload):
+        route = candidate.get("route")
+        if isinstance(route, dict):
+            return route
+    return {}
+
+
+def attribution_classification(code: str, payload: dict[str, Any]) -> str:
+    normalized = normalize_reason(code)
+    if normalized in {
+        "inspection_api_http_error",
+        "identity_port_mismatch",
+        "invalid_identity_port",
+        "invalid_api_response",
+        "extractor_failure",
+        "helper_plugin_error",
+        "inspection_proof_failed",
+        "inspection_trigger_empty_model",
+        "non_empty_unmapped_tree",
+        "open_schedule_failed",
+    }:
+        return "tool_caused"
+    if normalized in {
+        "timeout",
+        "inspection_api_timeout",
+        "inspection_api_unavailable",
+        "missing_session_id",
+        "no_project",
+        "ide_selection_required",
+        "ide_config_ambiguous",
+        "ide_config_missing",
+        "implicit_eap_selection",
+        "ide_not_ready_timeout",
+        "ide_open_failed",
+        "project_open_blocked",
+        PROJECT_OPEN_BLOCKED_REASON,
+        "profile_resolution_error",
+        "untrusted_auto_open_root",
+    }:
+        return "configuration_blocked"
+    if normalized in {
+        "ambiguous_route",
+        "already_opening",
+        "capture_incomplete",
+        "cleanup_deferred",
+        "cleanup_failed",
+        "cleanup_skipped",
+        "close_failed",
+        "current_run_psi_churn",
+        "inspection_in_progress",
+        "inspection_still_running",
+        "interrupted",
+        "lease_mismatch",
+        "matching_project_route_unavailable",
+        "no_recent_inspection",
+        "no_results",
+        "not_claimed",
+        "open_state_unknown",
+        "ownership_not_proven",
+        "project_not_open",
+        "project_preexisted",
+        "project_instance_reused",
+        "project_mismatch",
+        "route_missing",
+        "route_mismatch",
+        "run_changed",
+        "scope_mismatch",
+        "scope_not_covered",
+        "session_drift",
+        "stale_results",
+        "target_project_not_open",
+        "token_mismatch",
+        "unreadable_tree",
+        "view_not_ready",
+        "view_updating_unreadable",
+        "worktree_route_mismatch",
+    }:
+        return "legitimate_fail_closed"
+    if payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
+        return "legitimate_fail_closed"
+    return "unattributed"
+
+
+def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, Any], code: str) -> str:
+    phase = clean_optional(attribution.get("phase"))
+    if phase:
+        return phase
+    if payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
+        return "cleanup"
+    normalized = normalize_reason(code)
+    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
+        return "selection"
+    if normalized in {"ide_not_ready_timeout", "project_open_blocked", PROJECT_OPEN_BLOCKED_REASON}:
+        return "readiness_wait"
+    if isinstance(payload.get("wait"), dict) or normalized in {"timeout", "run_changed", "inspection_api_timeout"}:
+        return "wait"
+    endpoint = clean_optional(payload.get("endpoint"))
+    if endpoint:
+        return endpoint.removeprefix("/api/inspection/").replace("/", "_")
+    return canonical_command(str(payload.get("command") or "inspection"))
+
+
+def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("verdict") != "UNKNOWN" and not any(
+        payload.get(key) for key in ("cleanup_failed", "cleanup_skipped", "cleanup_deferred")
+    ):
+        return payload
+    attribution = existing_inspection_attribution(payload)
+    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    route = payload_route(payload)
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    code = str(
+        attribution.get("code")
+        or payload.get("error_reason")
+        or payload.get("verdict_reason")
+        or cleanup.get("reason")
+        or payload.get("status")
+        or "unknown"
+    )
+    classification = str(attribution.get("classification") or attribution_classification(code, payload))
+    phase = attribution_failure_phase(payload, attribution, code)
+    client_run_id = attribution.get("client_run_id") or payload.get("client_run_id") or context.get("client_run_id")
+    request_id = attribution.get("request_id")
+    session_id = attribution.get("session_id") or payload.get("session_id") or route.get("session_id")
+    run_id = attribution.get("inspection_run_id") or inspection_run_id(payload)
+    if run_id is None:
+        for candidate in attribution_payloads(payload):
+            run_id = inspection_run_id(candidate)
+            if run_id is not None:
+                break
+    project_instance_id = attribution.get("project_instance_id") or route.get("project_instance_id")
+    attribution.update(
+        {
+            "schema_version": INSPECTION_ATTRIBUTION_SCHEMA_VERSION,
+            "source": attribution.get("source") or "helper",
+            "observed_by": "helper",
+            "classification": classification,
+            "code": "unattributed_unknown" if classification == "unattributed" else normalize_reason(code),
+            "phase": phase,
+            "endpoint": attribution.get("endpoint") or payload.get("endpoint"),
+            "http_status": attribution.get("http_status") or payload.get("http_status"),
+            "request_id": request_id,
+            "client_run_id": client_run_id,
+            "session_id": session_id,
+            "project_instance_id": project_instance_id,
+            "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
+            "inspection_run_id": run_id,
+            "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+            "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+            "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
+            "ide_version": attribution.get("ide_version") or ide.get("version"),
+            "helper_revision": helper_revision(),
+            "cleanup_status": cleanup.get("status"),
+            "cleanup_reason": cleanup.get("reason"),
+        }
+    )
+    attribution = {key: value for key, value in attribution.items() if value not in (None, "", {}, [])}
+    evidence_ids = {
+        "client_run_id": client_run_id,
+        "request_id": request_id,
+        "session_id": session_id,
+        "project_instance_id": project_instance_id,
+        "inspection_run_id": run_id,
+    }
+    payload["inspection_attribution"] = attribution
+    payload["attribution_class"] = classification
+    payload["failure_phase"] = phase
+    payload["evidence_ids"] = {key: value for key, value in evidence_ids.items() if value not in (None, "")}
+    if classification == "unattributed":
+        payload["unattributed_unknown"] = True
+    return payload
+
+
 def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
     payload.update(verdict_for_payload(payload))
+    apply_inspection_attribution(payload)
     apply_agent_result(payload)
     return payload
 
@@ -2980,23 +3262,30 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "clean"
     if verdict == "RED":
         return "actionable_findings"
+    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+    if payload.get("unattributed_unknown") is True or attribution.get("classification") == "unattributed":
+        return "tool_bug"
+    if attribution.get("classification") == "tool_caused":
+        return "tool_bug"
     normalized = normalize_reason(reason)
-    if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "run_changed", "indexing", "running", "current_run_psi_churn"}:
+    if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "run_changed", "indexing", "running", "current_run_psi_churn", "already_opening", "open_state_unknown"}:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
         return "stale_results"
-    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "inspection_trigger_empty_model"}:
+    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered"}:
         return "capture_not_ready"
-    if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable"}:
+    if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable", "route_mismatch", "project_not_open", "ownership_not_proven"}:
         return "route_not_ready"
     if normalized.startswith("cleanup_") or payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
         return "cleanup_not_clean"
-    if normalized in {"invalid_api_response", "inspection_api_http_error", "extractor_failure", "helper_plugin_error", "non_empty_unmapped_tree", "inspection_proof_failed"}:
+    if normalized in {"invalid_api_response", "inspection_api_http_error", "extractor_failure", "helper_plugin_error", "inspection_trigger_empty_model", "non_empty_unmapped_tree", "inspection_proof_failed"}:
         return "tool_bug"
     if normalized in {"inspection_api_unavailable", "ide_open_failed", "untrusted_auto_open_root", "project_open_blocked", "ide_not_ready_timeout"}:
         return "environment_blocked"
-    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
+    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection", "profile_resolution_error"}:
         return "policy_required"
+    if attribution.get("classification") == "configuration_blocked":
+        return "environment_blocked"
     return "unknown"
 
 
@@ -3142,6 +3431,9 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     route = public.get("route") if isinstance(public.get("route"), dict) else {}
     wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
     cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
+    attribution = public.get("inspection_attribution") if isinstance(public.get("inspection_attribution"), dict) else {}
+    evidence_ids = public.get("evidence_ids") if isinstance(public.get("evidence_ids"), dict) else {}
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
     record: dict[str, Any] = {
         "timestamp": utc_timestamp(),
         "command": preferred_command(str(command)) if command else None,
@@ -3152,13 +3444,29 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
         "verdict_message": public.get("verdict_message"),
         "verdict_next_action": public.get("verdict_next_action"),
         "status": public.get("status"),
-        "repo_path": context.get("repo_path") or public.get("repo_path"),
-        "worktree_root": context.get("worktree_root") or public.get("worktree_root"),
+        "repo_path_hash": stable_value_hash(context.get("repo_path") or public.get("repo_path")),
+        "worktree_root_hash": stable_value_hash(context.get("worktree_root") or public.get("worktree_root")),
         "scope": context.get("scope") or public.get("scope"),
-        "ide": route.get("ide", {}).get("name") if isinstance(route.get("ide"), dict) else public.get("ide"),
+        "ide": ide.get("name") or public.get("ide"),
+        "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
+        "ide_version": attribution.get("ide_version") or ide.get("version"),
         "project_name": route.get("project_name"),
-        "project_key": route.get("project_key"),
-        "base_path": route.get("base_path"),
+        "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
+        "base_path_hash": stable_value_hash(route.get("base_path")),
+        "project_instance_id": evidence_ids.get("project_instance_id") or route.get("project_instance_id"),
+        "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+        "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+        "helper_revision": attribution.get("helper_revision") or helper_revision(),
+        "failure_phase": public.get("failure_phase") or attribution.get("phase"),
+        "attribution_class": public.get("attribution_class") or attribution.get("classification"),
+        "response_code": public.get("response_code") or attribution.get("code"),
+        "http_status": public.get("http_status") or attribution.get("http_status"),
+        "client_run_id": evidence_ids.get("client_run_id") or attribution.get("client_run_id"),
+        "request_id": evidence_ids.get("request_id") or attribution.get("request_id"),
+        "session_id": evidence_ids.get("session_id") or attribution.get("session_id"),
+        "inspection_run_id": evidence_ids.get("inspection_run_id") or attribution.get("inspection_run_id"),
+        "inspection_attribution": attribution,
+        "unattributed_unknown": public.get("unattributed_unknown"),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
         "capture_incomplete_reason": public.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason"),
@@ -3168,11 +3476,12 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     }
     rollout_file = discover_rollout_file()
     if rollout_file:
-        record["rollout_file"] = rollout_file
+        record["rollout_file_hash"] = stable_value_hash(rollout_file)
     for key in ("capture_diagnostic", "route_diagnostic", "blocked_diagnostic"):
         if key in public:
             record[key] = public[key]
-    return {key: value for key, value in record.items() if value not in (None, {}, [])}
+    bounded = {key: value for key, value in record.items() if value not in (None, {}, [])}
+    return redact_durable_log(bounded)
 
 
 def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any]:
@@ -3183,6 +3492,10 @@ def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any
     retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
     agent_result = public.get("agent_result") if isinstance(public.get("agent_result"), dict) else {}
     agent_retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
+    route = payload_route(public)
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    attribution = public.get("inspection_attribution") if isinstance(public.get("inspection_attribution"), dict) else {}
+    evidence_ids = public.get("evidence_ids") if isinstance(public.get("evidence_ids"), dict) else {}
     record: dict[str, Any] = {
         "timestamp": utc_timestamp(),
         "command": public.get("command"),
@@ -3197,12 +3510,30 @@ def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any
         "agent_report": agent_result.get("agent_report") or public.get("agent_report"),
         "status": public.get("status"),
         "scope": context.get("scope") or public.get("scope"),
-        "repo_path": context.get("repo_path") or public.get("repo_path"),
-        "worktree_root": context.get("worktree_root") or public.get("worktree_root"),
+        "repo_path_hash": stable_value_hash(context.get("repo_path") or public.get("repo_path")),
+        "worktree_root_hash": stable_value_hash(context.get("worktree_root") or public.get("worktree_root")),
         "ide": selection.get("product") or context.get("ide") or public.get("ide"),
         "ide_channel": selection.get("channel"),
-        "ide_version": selection.get("version"),
+        "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
+        "ide_version": attribution.get("ide_version") or ide.get("version") or selection.get("version"),
         "eap_explicit": selection.get("explicit_eap"),
+        "project_name": route.get("project_name"),
+        "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
+        "base_path_hash": stable_value_hash(route.get("base_path")),
+        "project_instance_id": evidence_ids.get("project_instance_id") or route.get("project_instance_id"),
+        "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+        "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+        "helper_revision": attribution.get("helper_revision") or helper_revision(),
+        "failure_phase": public.get("failure_phase") or attribution.get("phase"),
+        "attribution_class": public.get("attribution_class") or attribution.get("classification"),
+        "response_code": public.get("response_code") or attribution.get("code"),
+        "http_status": public.get("http_status") or attribution.get("http_status"),
+        "client_run_id": evidence_ids.get("client_run_id") or attribution.get("client_run_id"),
+        "request_id": evidence_ids.get("request_id") or attribution.get("request_id"),
+        "session_id": evidence_ids.get("session_id") or attribution.get("session_id"),
+        "inspection_run_id": evidence_ids.get("inspection_run_id") or attribution.get("inspection_run_id"),
+        "inspection_attribution": attribution,
+        "unattributed_unknown": public.get("unattributed_unknown"),
         "cleanup_status": cleanup.get("status"),
         "cleanup_reason": cleanup.get("reason"),
         "total_problems": public.get("total_problems"),
@@ -3210,8 +3541,9 @@ def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any
     }
     rollout_file = discover_rollout_file()
     if rollout_file:
-        record["rollout_file"] = rollout_file
-    return {key: value for key, value in record.items() if value not in (None, {}, [])}
+        record["rollout_file_hash"] = stable_value_hash(rollout_file)
+    bounded = {key: value for key, value in record.items() if value not in (None, {}, [])}
+    return redact_durable_log(bounded)
 
 
 def command_summarize_outcomes(args: argparse.Namespace) -> dict[str, Any]:
@@ -3706,6 +4038,41 @@ def redact_payload(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [redact_payload(item) for item in value]
+    return value
+
+
+def redact_durable_log(value: Any) -> Any:
+    if isinstance(value, dict):
+        durable: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            lowered = text_key.lower()
+            if is_sensitive_key(text_key):
+                durable[text_key] = REDACTED
+            elif not lowered.endswith("_hash") and (
+                lowered in {
+                    "path",
+                    "file",
+                    "directory",
+                    "cwd",
+                    "project_key",
+                    "repo_path",
+                    "worktree_root",
+                    "base_path",
+                    "rollout_file",
+                    "scope_directory_requested",
+                    "target_worktree",
+                }
+                or lowered.endswith("_path")
+                or lowered.endswith("_root")
+            ):
+                serialized = json.dumps(item, sort_keys=True) if isinstance(item, (dict, list)) else item
+                durable[f"{text_key}_hash"] = stable_value_hash(serialized)
+            else:
+                durable[text_key] = redact_durable_log(item)
+        return durable
+    if isinstance(value, list):
+        return [redact_durable_log(item) for item in value]
     return value
 
 
@@ -4224,6 +4591,7 @@ def now_ms() -> int:
 def create_local_lease(context: dict[str, Any], state: str) -> dict[str, Any]:
     lease = {
         "lease_id": str(uuid.uuid4()),
+        "client_run_id": context.get("client_run_id"),
         "state": state,
         "repo_path": context.get("repo_path"),
         "worktree_root": context.get("worktree_root"),
