@@ -14,6 +14,17 @@
         "state": "OPEN",
         "url": "https://github.com/cbusillo/codex-skills/issues/900"
       }
+    ],
+    "responses": [
+      {
+        "match": {
+          "contains": [
+            "api",
+            "repos/cbusillo/codex-skills/issues?labels=plan&state=open&sort=updated&direction=desc&per_page=100&page=1"
+          ]
+        },
+        "stdout": "[{\"number\":900,\"title\":\"Existing plan\",\"state\":\"open\",\"updated_at\":\"2026-07-17T00:00:00Z\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\",\"labels\":[{\"name\":\"plan\"}],\"milestone\":null}]"
+      }
     ]
   },
   "responses_api": {
@@ -26,7 +37,7 @@
               "type": "function_call",
               "call_id": "call_plan_index",
               "name": "shell_command",
-              "arguments": "{\"command\": \"GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills index --state open --limit 5\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills index --state open --limit 5\", \"timeout_ms\": 30000}"
             }
           }
         ]
@@ -38,7 +49,10 @@
   },
   "expect": {
     "returncode": 0,
-    "gh_contains": ["issue list"],
+    "gh_contains": [
+      "repos/cbusillo/codex-skills/issues?labels=plan&state=open&sort=updated&direction=desc&per_page=100&page=1",
+      "--include"
+    ],
     "responses_request_count": 2
   },
   "max_seconds": 45,

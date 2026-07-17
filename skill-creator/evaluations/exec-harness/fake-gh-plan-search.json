@@ -1,0 +1,52 @@
+{
+  "name": "fake-gh-plan-search",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use the GitHub planning helper to search open issues for roadmap.",
+  "files": {
+    "README.md": "# Fake gh planning search fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "responses": [
+      {
+        "match": {
+          "contains": [
+            "api",
+            "search/issues?q=roadmap+repo%3Acbusillo%2Fcodex-skills+is%3Aissue+is%3Aopen&per_page=100&page=1"
+          ]
+        },
+        "stdout": "{\"total_count\":1,\"incomplete_results\":false,\"items\":[{\"number\":901,\"title\":\"Roadmap plan\",\"state\":\"open\",\"updated_at\":\"2026-07-17T00:00:00Z\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/901\",\"labels\":[{\"name\":\"plan\"}],\"milestone\":null}]}"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-plan-search-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_plan_search",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills search roadmap --state open --limit 5\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-plan-search-2"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": [
+      "search/issues?q=roadmap+repo%3Acbusillo%2Fcodex-skills+is%3Aissue+is%3Aopen&per_page=100&page=1",
+      "--include"
+    ],
+    "responses_request_count": 2
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

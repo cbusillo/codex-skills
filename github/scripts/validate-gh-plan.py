@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import types
+import urllib.parse
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
 from io import StringIO
@@ -114,6 +115,260 @@ def test_issue_body_updates_use_rest_patch() -> None:
         assert "issue" not in gh_args, command
         assert "--input" in gh_args and gh_args[gh_args.index("--input") + 1] == "-", command
         assert json.loads(body or "{}"), command
+
+
+def test_plan_index_paginates_filters_prs_and_honors_limit() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+
+    def issue(number: int, *, pull_request: bool = False) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "number": number,
+            "title": f"Issue {number}",
+            "state": "open",
+            "updated_at": f"2026-07-17T00:{number:02d}:00Z",
+            "html_url": f"https://github.com/owner/repo/issues/{number}",
+            "labels": [{"name": "zeta"}, {"name": "alpha"}],
+            "milestone": {"title": "Wave 1"},
+        }
+        if pull_request:
+            item["pull_request"] = {"url": f"https://api.github.com/repos/owner/repo/pulls/{number}"}
+        return item
+
+    page_one = [issue(1), issue(2)] + [issue(number, pull_request=True) for number in range(100, 198)]
+    assert len(page_one) == 100
+
+    def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+        calls.append({"method": method, "path": path, "query": query, "kwargs": kwargs})
+        assert method == "GET"
+        assert kwargs["bucket"] == "rest_core"
+        page = int(query["page"][0])
+        if page == 1:
+            return "automation-gh", page_one
+        if page == 2:
+            return "automation-gh", [issue(3)]
+        raise AssertionError(f"unexpected page: {page}")
+
+    plan.api_json = fake_api_json
+    plan.gh_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("index must not use gh issue list"))
+    plan.load_config = lambda _repo: {"labels": {"plan": "plan"}}
+    output = StringIO()
+    with redirect_stdout(output):
+        plan.cmd_index(types.SimpleNamespace(repo="owner/repo", state="open", limit=3, label=None))
+
+    payload = json.loads(output.getvalue())
+    assert payload["count"] == 3, payload
+    assert [item["number"] for item in payload["plans"]] == [1, 2, 3], payload
+    assert payload["plans"][0]["state"] == "OPEN", payload
+    assert payload["plans"][0]["labels"] == ["zeta", "alpha"], payload
+    assert payload["plans"][0]["milestone"] == "Wave 1", payload
+    assert len(calls) == 2, calls
+    assert calls[0]["query"] == {
+        "labels": ["plan"],
+        "state": ["open"],
+        "sort": ["updated"],
+        "direction": ["desc"],
+        "per_page": ["100"],
+        "page": ["1"],
+    }, calls[0]
+
+    calls.clear()
+    with redirect_stdout(StringIO()):
+        plan.cmd_index(types.SimpleNamespace(repo="owner/repo", state="all", limit=1, label="priority/high"))
+    assert calls[0]["query"]["labels"] == ["priority/high"], calls[0]
+    assert calls[0]["query"]["state"] == ["all"], calls[0]
+
+
+def test_plan_search_uses_search_bucket_and_conditional_state() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+
+    def issue(number: int, *, state: str = "open") -> dict[str, Any]:
+        return {
+            "number": number,
+            "title": f"Roadmap result {number}",
+            "state": state,
+            "updated_at": f"2026-07-17T00:{number % 60:02d}:00Z",
+            "html_url": f"https://github.com/owner/repo/issues/{number}",
+            "labels": [{"name": "plan"}],
+            "milestone": None,
+        }
+
+    def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+        calls.append({"method": method, "path": path, "query": query, "kwargs": kwargs})
+        assert method == "GET"
+        assert urllib.parse.urlparse(path).path == "/search/issues"
+        assert kwargs["bucket"] == "search"
+        page = int(query["page"][0])
+        query_text = query["q"][0]
+        if "is:open" in query_text:
+            if page == 1:
+                items = [issue(number) for number in range(1, 101)]
+            elif page == 2:
+                assert kwargs["completed_steps"] == ["search_plan_issues_page_1"], kwargs
+                items = [issue(101)]
+            else:
+                raise AssertionError(f"unexpected page: {page}")
+            total_count = 101
+        else:
+            assert page == 1, page
+            items = [issue(42, state="closed")]
+            total_count = 1
+        return "automation-gh", {
+            "total_count": total_count,
+            "incomplete_results": False,
+            "items": items,
+        }
+
+    plan.api_json = fake_api_json
+    plan.gh_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("search must not use gh issue list"))
+
+    open_output = StringIO()
+    with redirect_stdout(open_output):
+        plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="open", limit=101))
+    all_output = StringIO()
+    with redirect_stdout(all_output):
+        plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="all", limit=5))
+
+    open_query = calls[0]["query"]["q"][0]
+    assert open_query == "roadmap repo:owner/repo is:issue is:open", open_query
+    all_query = calls[2]["query"]["q"][0]
+    assert all_query == "roadmap repo:owner/repo is:issue", all_query
+    assert "is:open" not in all_query and "is:closed" not in all_query
+    open_payload = json.loads(open_output.getvalue())
+    assert open_payload["count"] == 101, open_payload
+    assert open_payload["issues"][0]["state"] == "OPEN", open_payload
+    assert open_payload["issues"][-1]["number"] == 101, open_payload
+    all_payload = json.loads(all_output.getvalue())
+    assert all_payload["issues"][0]["state"] == "CLOSED", all_payload
+    assert all_payload["issues"][0]["labels"] == ["plan"], all_payload
+
+
+def test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+    first_page = [{"name": f"other-{number}"} for number in range(100)]
+
+    def fake_api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        parsed_path = urllib.parse.urlparse(path)
+        query = urllib.parse.parse_qs(parsed_path.query)
+        calls.append({"method": method, "path": path, "payload": payload, "kwargs": kwargs})
+        if method == "GET" and parsed_path.path == "/repos/owner/repo/labels":
+            page = int(query["page"][0])
+            return "automation-gh", first_page if page == 1 else [{"name": "Plan"}]
+        if method == "POST" and parsed_path.path == "/repos/owner/repo/labels":
+            assert payload["color"] and payload["description"]
+            if payload["name"] in {"plan:waiting", "team/platform"}:
+                raise plan.PlanError("Validation Failed", api_result={"status": 422})
+            return "automation-gh", {"name": payload["name"]}
+        if method == "GET" and parsed_path.path == "/repos/owner/repo/labels/plan%3Awaiting":
+            return "automation-gh", {"name": "plan:waiting"}
+        if method == "GET" and parsed_path.path == "/repos/owner/repo/labels/team%2Fplatform":
+            return "automation-gh", {"name": "team/platform"}
+        raise AssertionError({"method": method, "path": path, "payload": payload})
+
+    plan.api_json = fake_api_json
+    plan.gh_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("labels must not use gh label list"))
+    plan.run_raw = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("labels must not use gh label create"))
+    config = {
+        "label_defs": {
+            "plan": {"color": "5319e7", "description": "Durable planning issue"},
+            "plan:active": {"color": "0e8a16", "description": "Plan is actionable now"},
+            "plan:waiting": {"color": "fbca04", "description": "Plan is waiting"},
+            "team/platform": {"color": "1d76db", "description": "Platform team"},
+        }
+    }
+    actor, created = plan.ensure_labels(
+        "owner/repo",
+        ["plan", "plan:active", "plan:waiting", "team/platform"],
+        config,
+    )
+
+    assert actor == "automation-gh", actor
+    assert created == ["plan:active"], created
+    label_list_calls = [call for call in calls if call["method"] == "GET" and "/labels?" in call["path"]]
+    assert len(label_list_calls) == 2, calls
+    created_names = [call["payload"]["name"] for call in calls if call["method"] == "POST"]
+    assert created_names == ["plan:active", "plan:waiting", "team/platform"], calls
+    assert any("plan%3Awaiting" in call["path"] for call in calls), calls
+    assert any("team%2Fplatform" in call["path"] for call in calls), calls
+
+
+def test_plan_ensure_labels_skips_existing_case_insensitively() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+
+    def fake_api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        calls.append({"method": method, "path": path, "payload": payload, "kwargs": kwargs})
+        assert method == "GET", calls
+        assert urllib.parse.urlparse(path).path == "/repos/owner/repo/labels", path
+        return "automation-gh", [
+            {"name": "Plan"},
+            {"name": "PLAN:ACTIVE"},
+            {"name": "plan:waiting"},
+        ]
+
+    plan.api_json = fake_api_json
+    plan.gh_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("labels must not use gh label list"))
+    plan.run_raw = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("existing labels must not be created"))
+    actor, created = plan.ensure_labels(
+        "owner/repo",
+        ["plan", "plan:active", "plan:waiting"],
+        {"label_defs": {}},
+    )
+
+    assert actor == "automation-gh", actor
+    assert created == [], created
+    assert len(calls) == 1, calls
+
+
+def test_plan_paged_rest_failure_receives_completed_page_evidence() -> None:
+    plan = load_plan_module()
+    calls: list[dict[str, Any]] = []
+
+    def fake_api_json(method: str, path: str, _payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        calls.append({"method": method, "path": path, "kwargs": kwargs})
+        page = int(urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["page"][0])
+        if page == 1:
+            return "automation-gh", [{"number": number} for number in range(100)]
+        assert kwargs["completed_steps"] == ["search_plan_issues_page_1"], kwargs
+        assert kwargs["failed_step"] == "search_plan_issues_page_2", kwargs
+        assert kwargs["bucket"] == "search", kwargs
+        raise plan.PlanError("provider failure", api_result={"status": 503, "bucket": "search"})
+
+    plan.api_json = fake_api_json
+    try:
+        plan.collect_paged_rest_items(
+            "/search/issues",
+            query={"q": "repo:owner/repo is:issue"},
+            bucket="search",
+            step_prefix="search_plan_issues",
+            limit=101,
+            collection_key=None,
+        )
+    except plan.PlanError as exc:
+        assert plan.plan_error_status(exc) == 503, exc.api_result
+    else:
+        raise AssertionError("second page failure should propagate")
+    assert len(calls) == 2, calls
+
+
+def test_plan_rest_command_context_and_limit_validation() -> None:
+    plan = load_plan_module()
+    assert plan.PLAN_COMMAND_CONTEXT["index"] == ("rest_api", "rest_core", False)
+    assert plan.PLAN_COMMAND_CONTEXT["search"] == ("rest_api", "search", False)
+    assert plan.PLAN_COMMAND_CONTEXT["ensure-labels"] == ("rest_api", "rest_core", True)
+
+    parser = plan.build_parser()
+    for command in (["index", "--limit", "0"], ["search", "query", "--limit", "-1"]):
+        try:
+            parser.parse_args(command)
+        except plan.github_api_core.ArgumentParsingError as exc:
+            assert "invalid limit" in str(exc), exc
+        else:
+            raise AssertionError(f"expected invalid limit failure: {command}")
 
 
 def test_project_commands_are_recoverable() -> None:
@@ -1066,14 +1321,21 @@ def test_label_defs_cover_planning_labels_without_generic_fallback() -> None:
 def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
+    api_calls: list[dict[str, Any]] = []
 
     def fake_gh_json(args: list[str], **_kwargs: Any) -> tuple[str, Any]:
         calls.append(args)
         if args[:2] == ["issue", "list"]:
             return "automation-gh", []
-        if args[:2] == ["label", "list"]:
-            return "automation-gh", []
         raise AssertionError(args)
+
+    def fake_api_json(method: str, path: str, payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
+        api_calls.append({"method": method, "path": path, "payload": payload})
+        if method == "GET" and path.startswith("/repos/owner/repo/labels?"):
+            return "automation-gh", []
+        if method == "POST" and path == "/repos/owner/repo/labels":
+            return "automation-gh", {"name": payload["name"]}
+        raise AssertionError({"method": method, "path": path, "payload": payload})
 
     plan.load_config = lambda repo: {
         "labels": {"plan": "plan", "active": "plan:active"},
@@ -1086,7 +1348,8 @@ def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
         "workflow": {"default_manager": None, "repo_managers": {}},
     }
     plan.gh_json = fake_gh_json
-    plan.run_raw = lambda args, **kwargs: (calls.append(args), ("automation-gh", "", ""))[1]
+    plan.api_json = fake_api_json
+    plan.run_raw = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("label writes must use REST"))
 
     try:
         plan.cmd_create(types.SimpleNamespace(
@@ -1109,7 +1372,7 @@ def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
     else:
         raise AssertionError("missing undocumented extra label should fail")
 
-    created_names = [args[2] for args in calls if args[:2] == ["label", "create"]]
+    created_names = [call["payload"]["name"] for call in api_calls if call["method"] == "POST"]
     assert created_names == ["plan", "plan:active"], created_names
 
 
@@ -1117,6 +1380,7 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
     plan = load_plan_module()
     captured: dict[str, Any] = {}
     calls: list[list[str]] = []
+    api_calls: list[dict[str, Any]] = []
     issue = {
         "repo": "owner/repo",
         "number": 12,
@@ -1132,9 +1396,15 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
         calls.append(args)
         if args[:2] == ["issue", "list"]:
             return "automation-gh", []
-        if args[:2] == ["label", "list"]:
-            return "automation-gh", [{"name": "customer"}]
         raise AssertionError(args)
+
+    def fake_api_json(method: str, path: str, payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
+        api_calls.append({"method": method, "path": path, "payload": payload})
+        if method == "GET" and path.startswith("/repos/owner/repo/labels?"):
+            return "automation-gh", [{"name": "customer"}]
+        if method == "POST" and path == "/repos/owner/repo/labels":
+            return "automation-gh", {"name": payload["name"]}
+        raise AssertionError({"method": method, "path": path, "payload": payload})
 
     plan.load_config = lambda repo: {
         "labels": {"plan": "plan", "active": "plan:active"},
@@ -1147,7 +1417,8 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
         "workflow": {"default_manager": None, "repo_managers": {}},
     }
     plan.gh_json = fake_gh_json
-    plan.run_raw = lambda args, **kwargs: (calls.append(args), ("automation-gh", "", ""))[1]
+    plan.api_json = fake_api_json
+    plan.run_raw = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("label writes must use REST"))
     plan.rest_create_issue = lambda repo, title, body, labels, milestone: (captured.setdefault("labels", labels), ("automation-gh", issue))[1]
 
     output = StringIO()
@@ -1171,7 +1442,7 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
     assert captured["labels"] == ["plan", "plan:active", "customer"], captured
-    created_names = [args[2] for args in calls if args[:2] == ["label", "create"]]
+    created_names = [call["payload"]["name"] for call in api_calls if call["method"] == "POST"]
     assert created_names == ["plan", "plan:active"], created_names
 
 
@@ -2578,6 +2849,12 @@ def test_project_set_accepts_item_id_and_classifies_low_graphql() -> None:
 def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
+        test_plan_index_paginates_filters_prs_and_honors_limit,
+        test_plan_search_uses_search_bucket_and_conditional_state,
+        test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict,
+        test_plan_ensure_labels_skips_existing_case_insensitively,
+        test_plan_paged_rest_failure_receives_completed_page_evidence,
+        test_plan_rest_command_context_and_limit_validation,
         test_project_commands_are_recoverable,
         test_repo_config_path_skips_missing_home_candidate,
         test_manager_for_repo_passes_raw_values_without_people_resolver,
