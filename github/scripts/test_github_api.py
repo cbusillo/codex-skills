@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -386,6 +387,43 @@ def test_call_gh_surfaces_explicit_active_auth_actor() -> None:
     assert result.actor == "octocat"
 
 
+def test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback() -> None:
+    proc = _fake_proc(
+        stdout=_include_output(200, body={"ok": True}),
+        stderr=(
+            "warning: no automation gh token found; explicitly authorized active-auth fallback; "
+            "using the active gh account 'octocat'"
+        ),
+    )
+    with patch("subprocess.run", return_value=proc):
+        result = _api.call_gh(
+            "GET",
+            "/repos/owner/repo",
+            actor="shiny-code-bot",
+            expected_actor=None,
+        )
+    assert result.ok is True, result.as_dict()
+    assert result.actor == "octocat", result.as_dict()
+
+
+def test_call_gh_unannounced_actor_change_fails_closed_after_write() -> None:
+    proc = _fake_proc(
+        stdout=_include_output(201, body={"id": 42}),
+        stderr="warning: routing changed; using the active gh account 'octocat'",
+    )
+    with patch("subprocess.run", return_value=proc):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            actor="shiny-code-bot",
+            expected_actor="shiny-code-bot",
+        )
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "actor_mismatch", result.failure
+    assert result.failure.write_outcome == "unknown", result.failure
+
+
 def test_call_gh_post_sends_body_as_json_stdin() -> None:
     """Verify the body is serialised as JSON bytes on stdin, not in argv."""
     captured_calls: list[dict] = []
@@ -408,6 +446,76 @@ def test_call_gh_post_sends_body_as_json_stdin() -> None:
     # body goes via stdin as JSON
     stdin_data = json.loads(call["input"].decode())
     assert stdin_data["title"] == "my issue"
+
+
+def test_call_gh_timeout_marks_started_write_outcome_unknown() -> None:
+    timeout = subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=0.25)
+    with patch("subprocess.run", side_effect=timeout):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            operation="github.issue.create",
+            timeout_seconds=0.25,
+        )
+    payload = result.as_dict()
+    assert result.ok is False, payload
+    assert result.failure.cause == "deadline_exceeded", result.failure
+    assert result.failure.write_outcome == "unknown", result.failure
+    assert payload["failed_step"] == "subprocess_timeout", payload
+
+
+def test_call_gh_timeout_preserves_authorized_fallback_actor() -> None:
+    stderr = (
+        "warning: no automation gh token found; explicitly authorized active-auth fallback; "
+        "using the active gh account 'octocat'"
+    )
+    timeout = subprocess.TimeoutExpired(
+        cmd=["gh", "api"],
+        timeout=0.25,
+        stderr=stderr.encode(),
+    )
+    with patch("subprocess.run", side_effect=timeout):
+        result = _api.call_gh(
+            "GET",
+            "/repos/owner/repo",
+            actor="shiny-code-bot",
+            expected_actor="shiny-code-bot",
+            timeout_seconds=0.25,
+        )
+    assert result.actor == "octocat", result.as_dict()
+    assert result.expected_actor is None, result.as_dict()
+    assert result.failure.cause == "deadline_exceeded", result.failure
+
+
+def test_call_gh_uses_provider_reported_search_bucket() -> None:
+    stdout = _include_output(
+        200,
+        headers={"x-ratelimit-resource": "search"},
+        body={"items": []},
+    )
+    result = _call("GET", "/search/issues?q=repo%3Aowner%2Frepo", fake_stdout=stdout)
+    assert result.bucket == "search", result.as_dict()
+
+
+def test_retry_fails_closed_on_provider_bucket_mismatch() -> None:
+    stdout = _include_output(
+        200,
+        headers={"x-ratelimit-resource": "search"},
+        body={"items": []},
+    )
+    proc = _fake_proc(stdout=stdout)
+    with tempfile.TemporaryDirectory() as temp_dir, patch("subprocess.run", return_value=proc):
+        result = _api.call_gh_with_retry(
+            "GET",
+            "/search/issues?q=repo%3Aowner%2Frepo",
+            operation="github.api.call",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir), max_attempts=1),
+        )
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "retry_context_changed", result.failure
+    assert result.retry_summary.last_bucket == "search", result.retry_summary
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +662,7 @@ def test_classify_200_graphql_rate_limit() -> None:
         "data": None,
         "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded for viewer."}],
     }
-    stdout = _include_output(200, body=gql_body)
+    stdout = _include_output(200, headers={"x-ratelimit-resource": "graphql"}, body=gql_body)
     result = _call("POST", "/graphql", body={"query": "{ viewer { login } }"}, fake_stdout=stdout)
     assert result.ok is False
     assert result.failure is not None
@@ -715,7 +823,7 @@ def test_partial_success_graphql_rate_limit_carries_completed_steps() -> None:
         "data": None,
         "errors": [{"type": "RATE_LIMITED", "message": "Rate limited"}],
     }
-    stdout = _include_output(200, body=gql_body)
+    stdout = _include_output(200, headers={"x-ratelimit-resource": "graphql"}, body=gql_body)
 
     proc = _fake_proc(stdout=stdout)
     with patch("subprocess.run", return_value=proc):
@@ -738,6 +846,7 @@ def test_partial_success_graphql_rate_limit_carries_completed_steps() -> None:
 def test_graphql_anonymous_query_is_read_only() -> None:
     stdout = _include_output(
         200,
+        headers={"x-ratelimit-resource": "graphql"},
         body={"data": None, "errors": [{"type": "RATE_LIMITED", "message": "Rate limited"}]},
     )
     result = _call("POST", "/graphql", {"query": "{ viewer { login } }"}, fake_stdout=stdout, returncode=1)
@@ -751,6 +860,7 @@ def test_graphql_anonymous_query_is_read_only() -> None:
 def test_graphql_mutation_is_write_aware() -> None:
     stdout = _include_output(
         200,
+        headers={"x-ratelimit-resource": "graphql"},
         body={"data": None, "errors": [{"type": "RATE_LIMITED", "message": "Rate limited"}]},
     )
     result = _call(
@@ -868,6 +978,27 @@ def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
     assert failure.rate_limit == {"resource": "graphql", "remaining": 0, "reset": 1700000000}
 
 
+def test_legacy_provider_bucket_replaces_requested_bucket() -> None:
+    stdout = _include_output(
+        429,
+        headers={
+            "x-ratelimit-resource": "search",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "2000",
+        },
+        body={"message": "API rate limit exceeded"},
+    )
+    result = _api.legacy_process_result(
+        1,
+        stdout,
+        "",
+        operation="github.api.call",
+        is_write=False,
+        bucket="rest_core",
+    )
+    assert result.bucket == "search", result.as_dict()
+
+
 def test_legacy_deadline_and_cancellation_are_distinct() -> None:
     deadline = _api.classify_legacy_failure("request timed out", is_write=True)
     cancelled = _api.classify_legacy_failure("operation cancelled", is_write=False)
@@ -903,7 +1034,21 @@ def test_infer_gh_command_context_distinguishes_project_reads_and_writes() -> No
 
 def test_terminal_envelopes_have_stable_fields_and_redaction() -> None:
     success = _api.terminal_success(
-        {"ok": True, "actor": "automation-gh", "plans": []},
+        {
+            "ok": True,
+            "actor": "automation-gh",
+            "plans": [],
+            "attempts": 2,
+            "elapsed_wait": 3.0,
+            "retry_eligible": True,
+            "last_actor": "automation-gh",
+            "last_bucket": "rest_core",
+            "outcome_certainty": "confirmed",
+            "reconciliation": None,
+            "recommended_next_action": "none",
+            "effective_deadline": 1000.0,
+            "retry_exhausted_reason": None,
+        },
         operation="github.plan.index",
         actor="automation-gh",
         expected_actor="shiny-code-bot",
@@ -914,6 +1059,10 @@ def test_terminal_envelopes_have_stable_fields_and_redaction() -> None:
     assert success["exit_code"] == 0
     assert success["disposition"] == "complete"
     assert success["plans"] == []
+    assert success["attempts"] == 2
+    assert success["elapsed_wait"] == 3.0
+    assert success["last_actor"] == "automation-gh"
+    assert success["recommended_next_action"] == "none"
     assert "body" not in success
 
     failure = _api.FailureDetail(
@@ -1207,6 +1356,22 @@ def test_rate_limit_probe_cache_is_actor_scoped() -> None:
     assert len(calls) == 2
 
 
+def test_rate_limit_probe_cache_ignores_remaining_timeout_budget() -> None:
+    calls: list[float | None] = []
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
+        calls.append(kwargs.get("timeout"))
+        return _fake_proc(stdout=_include_output(200, body={}))
+
+    _api.reset_rate_limit_cache()
+    with patch("subprocess.run", side_effect=fake_run):
+        first = _api.rate_limit_probe(gh_cmd="gh", actor="bot", timeout_seconds=5.0)
+        second = _api.rate_limit_probe(gh_cmd="gh", actor="bot", timeout_seconds=4.0)
+
+    assert calls == [5.0], calls
+    assert first is second
+
+
 # ---------------------------------------------------------------------------
 # Output envelope completeness
 # ---------------------------------------------------------------------------
@@ -1267,6 +1432,1096 @@ def test_asdict_rate_limit_in_failure_when_exhausted() -> None:
     assert failure["rate_limit"]["remaining"] == 0
 
 
+class FakeRetryClock:
+    def __init__(self, current: float = 1000.0) -> None:
+        self.current = current
+        self.sleeps: list[float] = []
+
+    def now(self) -> float:
+        return self.current
+
+    def sleep(self, duration: float) -> None:
+        self.sleeps.append(duration)
+        self.current += duration
+
+
+def retry_policy(state_dir: Path, **overrides: Any) -> Any:
+    values = {
+        "max_wait_seconds": 30.0,
+        "max_attempts": 4,
+        "base_backoff_seconds": 1.0,
+        "max_backoff_seconds": 8.0,
+        "jitter_seconds": 0.0,
+        "progress_interval_seconds": 10.0,
+        "wait_slice_seconds": 1.0,
+        "lock_poll_seconds": 0.1,
+        "drain_seconds": 0.0,
+        "stale_after_seconds": 60.0,
+        "state_dir": state_dir,
+    }
+    values.update(overrides)
+    return _api.RetryPolicy(**values)
+
+
+def retry_runtime(
+    clock: FakeRetryClock,
+    *,
+    cancelled: Any = None,
+    progress: Any = None,
+) -> Any:
+    return _api.RetryRuntime(
+        now=clock.now,
+        sleep=clock.sleep,
+        jitter=lambda _maximum: 0.0,
+        cancelled=cancelled or (lambda: False),
+        progress=progress or (lambda _event: None),
+    )
+
+
+def retry_failure(
+    cause: str,
+    *,
+    retryable: bool,
+    write_outcome: Optional[str] = None,
+    actor: str = "shiny-code-bot",
+    bucket: str = "rest_core",
+    reset: Optional[int] = None,
+    retry_after: Optional[int] = None,
+) -> Any:
+    rate_limit = _api.RateLimitInfo(
+        reset=reset,
+        retry_after=retry_after,
+        resource=bucket,
+    )
+    failure = _api.FailureDetail(
+        cause=cause,
+        message=cause,
+        retryable=retryable,
+        fallback_eligible=False,
+        disposition="retry" if retryable else "stop",
+        write_outcome=write_outcome,
+        rate_limit=rate_limit.as_dict(),
+    )
+    return _api.ApiResult(
+        ok=False,
+        status=429 if "rate_limited" in cause else 503,
+        body={"message": cause},
+        actor=actor,
+        expected_actor=actor,
+        host="github.com",
+        bucket=bucket,
+        rate_limit=rate_limit,
+        failure=failure,
+    )
+
+
+def retry_success(*, actor: str = "shiny-code-bot", bucket: str = "rest_core") -> Any:
+    return _api.ApiResult(
+        ok=True,
+        status=200,
+        body={"ok": True},
+        actor=actor,
+        expected_actor=actor,
+        host="github.com",
+        bucket=bucket,
+    )
+
+
+def test_retry_waits_until_primary_reset_and_succeeds() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "rest_primary_rate_limited",
+                    retryable=True,
+                    reset=1010,
+                )
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            expected_actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is True, payload
+        assert calls == 2, calls
+        assert payload["attempts"] == 2, payload
+        assert payload["elapsed_wait"] == 10.0, payload
+        assert payload["last_actor"] == "shiny-code-bot", payload
+        assert payload["last_bucket"] == "rest_core", payload
+
+
+def test_retry_honors_secondary_retry_after() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "secondary_rate_limited",
+                    retryable=True,
+                    retry_after=4,
+                )
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        assert result.ok is True, result.as_dict()
+        assert sum(clock.sleeps) == 4.0, clock.sleeps
+
+
+def test_retry_idempotent_write_recovers_from_unknown_network_failure() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "network_provider_failure",
+                    retryable=False,
+                    write_outcome="unknown",
+                )
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.issue.edit",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(
+                Path(temp_dir),
+                base_backoff_seconds=0.0,
+                max_backoff_seconds=0.0,
+            ),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is True, payload
+        assert calls == 2, calls
+        assert payload["attempts"] == 2, payload
+        assert payload["outcome_certainty"] == "confirmed", payload
+
+
+def test_retry_outer_deadline_wins_without_second_call() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure(
+                "rest_primary_rate_limited",
+                retryable=True,
+                reset=1010,
+            )
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 1, calls
+        assert result.failure.cause == "deadline_exceeded", result.failure
+        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+        assert payload["effective_deadline"] == 1005.0, payload
+
+
+def test_expired_deadline_blocks_first_write_attempt() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.issue.edit",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=999.0,
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 0, calls
+        assert payload["attempts"] == 0, payload
+        assert payload["write_outcome"] == "not_started", payload
+        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+
+
+def test_precancelled_operation_blocks_first_attempt() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock, cancelled=lambda: True),
+        )
+        payload = result.as_dict()
+        assert calls == 0, calls
+        assert payload["attempts"] == 0, payload
+        assert payload["retry_exhausted_reason"] == "cancelled", payload
+
+
+def test_jitter_is_clamped_to_preserve_feasible_deadline() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "rest_primary_rate_limited",
+                    retryable=True,
+                    reset=1005,
+                )
+            return retry_success()
+
+        runtime = _api.RetryRuntime(
+            now=clock.now,
+            sleep=clock.sleep,
+            jitter=lambda _maximum: 2.0,
+            cancelled=lambda: False,
+            progress=lambda _event: None,
+        )
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1006.0,
+            retry_policy=retry_policy(Path(temp_dir), jitter_seconds=3.0),
+            retry_runtime=runtime,
+        )
+        assert result.ok is True, result.as_dict()
+        assert calls == 2, calls
+        assert clock.current < 1006.0, clock.current
+
+
+def test_retry_timeout_callback_receives_remaining_deadline() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        observed: list[float] = []
+
+        result = _api.run_with_retry(
+            lambda: retry_success(),
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+            attempt_with_timeout=lambda timeout: observed.append(timeout) or retry_success(),
+        )
+        assert result.ok is True, result.as_dict()
+        assert observed == [5.0], observed
+
+
+def test_retry_inherited_deadline_environment_wins() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+
+        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1002"}):
+            result = _api.run_with_retry(
+                lambda: retry_failure(
+                    "rest_primary_rate_limited",
+                    retryable=True,
+                    reset=1010,
+                ),
+                operation="github.api.rate_limit",
+                is_write=False,
+                actor="shiny-code-bot",
+                bucket="rest_core",
+                retry_policy=retry_policy(Path(temp_dir)),
+                retry_runtime=retry_runtime(clock),
+            )
+        payload = result.as_dict()
+        assert result.failure.cause == "deadline_exceeded", result.failure
+        assert payload["effective_deadline"] == 1002.0, payload
+
+
+def test_retry_cancellation_interrupts_wait() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure(
+                "rest_primary_rate_limited",
+                retryable=True,
+                reset=1010,
+            )
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(
+                clock,
+                cancelled=lambda: clock.current >= 1002.0,
+            ),
+        )
+        payload = result.as_dict()
+        assert calls == 1, calls
+        assert result.failure.cause == "cancelled", result.failure
+        assert payload["elapsed_wait"] == 2.0, payload
+        assert payload["recommended_next_action"] == "rerun_when_ready", payload
+
+
+def test_retry_progress_is_periodic_and_stderr_only() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "rest_primary_rate_limited",
+                    retryable=True,
+                    reset=1031,
+                )
+            return retry_success()
+
+        runtime = _api.RetryRuntime(
+            now=clock.now,
+            sleep=clock.sleep,
+            jitter=lambda _maximum: 0.0,
+            cancelled=lambda: False,
+            progress=_api._default_retry_progress,
+        )
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = _api.run_with_retry(
+                attempt,
+                operation="github.api.rate_limit",
+                is_write=False,
+                actor="shiny-code-bot",
+                bucket="rest_core",
+                retry_policy=retry_policy(
+                    Path(temp_dir),
+                    max_wait_seconds=40.0,
+                    wait_slice_seconds=5.0,
+                    progress_interval_seconds=10.0,
+                ),
+                retry_runtime=runtime,
+            )
+        assert result.ok is True, result.as_dict()
+        assert stdout.getvalue() == "", stdout.getvalue()
+        lines = [line for line in stderr.getvalue().splitlines() if line]
+        assert len(lines) == 4, lines
+        assert all(line.startswith("retry: github.api.rate_limit waiting") for line in lines), lines
+
+
+def test_retry_never_repeats_authentication_failure() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure("invalid_credentials", retryable=False)
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        assert calls == 1, calls
+        assert result.as_dict()["retry_eligible"] is False, result.as_dict()
+
+
+def test_authorized_actor_change_starts_distinct_retry_context() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                result = retry_failure(
+                    "secondary_rate_limited",
+                    retryable=True,
+                    actor="octocat",
+                    retry_after=0,
+                )
+                result.expected_actor = None
+                return result
+            result = retry_success(actor="octocat")
+            result.expected_actor = None
+            return result
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            expected_actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is True, payload
+        assert calls == 2, calls
+        assert payload["last_actor"] == "octocat", payload
+        assert payload["attempts"] == 2, payload
+
+
+def test_unknown_operation_fails_closed_without_repeat() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure("network_provider_failure", retryable=True)
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.unknown.operation",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 1, calls
+        assert payload["retry_eligible"] is False, payload
+        assert payload["disposition"] == "stop", payload
+        assert payload["recommended_next_action"] == "add_operation_to_matrix_before_retrying", payload
+
+
+def test_manual_non_idempotent_operation_never_retries() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure(
+                "secondary_rate_limited",
+                retryable=True,
+                write_outcome="rejected",
+                retry_after=1,
+            )
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.pr.create",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="mixed",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 1, calls
+        assert payload["retry_eligible"] is False, payload
+        assert payload["disposition"] == "stop", payload
+
+
+def test_manual_operation_still_rejects_actor_mismatch() -> None:
+    result = _api.run_with_retry(
+        lambda: retry_success(actor="octocat"),
+        operation="github.pr.create",
+        is_write=True,
+        actor="shiny-code-bot",
+        expected_actor="shiny-code-bot",
+        bucket="rest_core",
+    )
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "actor_mismatch", result.failure
+    assert result.as_dict()["retry_eligible"] is False
+
+
+def test_manual_operation_still_rejects_bucket_mismatch() -> None:
+    result = _api.run_with_retry(
+        lambda: retry_success(bucket="search"),
+        operation="github.pr.create",
+        is_write=True,
+        actor="shiny-code-bot",
+        expected_actor="shiny-code-bot",
+        bucket="rest_core",
+    )
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "retry_context_changed", result.failure
+    assert result.as_dict()["retry_eligible"] is False
+
+
+def test_unknown_write_reconciliation_match_prevents_duplicate_call() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure(
+                "network_provider_failure",
+                retryable=False,
+                write_outcome="unknown",
+            )
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.plan.create",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            reconcile=lambda _result, _context: _api.ReconciliationDecision(
+                "matched",
+                body={"number": 42},
+                details={"marker": "abc"},
+            ),
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is True, payload
+        assert result.body == {"number": 42}, result.body
+        assert calls == 1, calls
+        assert payload["outcome_certainty"] == "reconciled_applied", payload
+        assert payload["reconciliation"]["result"] == "matched", payload
+
+
+def test_reconciliation_receives_parent_deadline_context() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        policy = retry_policy(Path(temp_dir))
+        runtime = retry_runtime(clock)
+        observed: list[_api.ReconciliationContext] = []
+
+        result = _api.run_with_retry(
+            lambda: retry_failure(
+                "network_provider_failure",
+                retryable=False,
+                write_outcome="unknown",
+            ),
+            operation="github.comment.issue",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            reconcile=lambda _result, context: observed.append(context)
+            or _api.ReconciliationDecision("no_match"),
+            retry_policy=policy,
+            retry_runtime=runtime,
+        )
+        assert result.ok is False, result.as_dict()
+        assert len(observed) == 1, observed
+        assert observed[0].deadline_at == 1005.0, observed[0]
+        assert observed[0].retry_policy is policy, observed[0]
+        assert observed[0].retry_runtime is runtime, observed[0]
+
+
+def test_reconciliation_does_not_start_after_parent_deadline() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        reconciliations = 0
+
+        def attempt() -> Any:
+            clock.current = 1005.0
+            return retry_failure(
+                "deadline_exceeded",
+                retryable=False,
+                write_outcome="unknown",
+            )
+
+        def reconcile(_result: Any, _context: Any) -> Any:
+            nonlocal reconciliations
+            reconciliations += 1
+            return _api.ReconciliationDecision("matched", body={"id": 1})
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.comment.issue",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            reconcile=reconcile,
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert reconciliations == 0, reconciliations
+        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+        assert payload["reconciliation"]["result"] == "failed", payload
+
+
+def test_reconciliation_releases_matured_outer_cooldown_lease() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(
+            state_dir,
+            max_wait_seconds=5.0,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+        )
+        clock = FakeRetryClock()
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            key,
+            ready_at=1000.0,
+            cause="rest_primary_rate_limited",
+            now=999.0,
+            policy=policy,
+        )
+        nested_calls = 0
+
+        def reconcile(_result: Any, context: _api.ReconciliationContext) -> Any:
+            nonlocal nested_calls
+
+            def nested_attempt() -> Any:
+                nonlocal nested_calls
+                nested_calls += 1
+                return retry_success()
+
+            nested = _api.run_with_retry(
+                nested_attempt,
+                operation="github.api.rate_limit",
+                is_write=False,
+                actor="shiny-code-bot",
+                bucket="rest_core",
+                deadline_at=context.deadline_at,
+                retry_policy=context.retry_policy,
+                retry_runtime=context.retry_runtime,
+            )
+            assert nested.ok is True, nested.as_dict()
+            return _api.ReconciliationDecision("no_match")
+
+        result = _api.run_with_retry(
+            lambda: retry_failure(
+                "network_provider_failure",
+                retryable=False,
+                write_outcome="unknown",
+            ),
+            operation="github.comment.issue",
+            is_write=True,
+            actor="shiny-code-bot",
+            expected_actor="shiny-code-bot",
+            bucket="rest_core",
+            reconcile=reconcile,
+            retry_policy=policy,
+            retry_runtime=retry_runtime(clock),
+        )
+        assert result.ok is False, result.as_dict()
+        assert nested_calls == 1, nested_calls
+        assert result.retry_summary.reconciliation["result"] == "no_match", result.retry_summary
+
+
+def test_unknown_non_idempotent_write_fails_closed_after_no_match() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+        reconciliations = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure(
+                "network_provider_failure",
+                retryable=False,
+                write_outcome="unknown",
+            )
+
+        def reconcile(_result: Any, _context: Any) -> Any:
+            nonlocal reconciliations
+            reconciliations += 1
+            return _api.ReconciliationDecision("no_match", details={"marker": "abc"})
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.plan.create",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            reconcile=reconcile,
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is False, payload
+        assert calls == 1, calls
+        assert reconciliations == 1, reconciliations
+        assert payload["attempts"] == 1, payload
+        assert payload["reconciliation"]["result"] == "no_match", payload
+        assert payload["outcome_certainty"] == "reconciled_not_applied", payload
+        assert payload["retry_eligible"] is False, payload
+
+
+def test_rejected_non_idempotent_write_can_retry_without_reconciliation() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return retry_failure(
+                    "secondary_rate_limited",
+                    retryable=True,
+                    write_outcome="rejected",
+                    retry_after=0,
+                )
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.issue.create",
+            is_write=True,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(Path(temp_dir)),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert result.ok is True, payload
+        assert calls == 2, calls
+        assert payload["attempts"] == 2, payload
+        assert payload["reconciliation"] is None, payload
+
+
+def test_shared_cooldown_blocks_second_process_before_remote_call() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        lease = store._open_lock(key, blocking=True)
+        assert lease is not None
+        script = (
+            "import json, pathlib, sys; "
+            "sys.path.insert(0, 'github/scripts'); "
+            "import github_api; "
+            f"store=github_api.SharedCooldownStore(pathlib.Path({str(state_dir)!r})); "
+            f"policy=github_api.RetryPolicy(state_dir=pathlib.Path({str(state_dir)!r}), lock_poll_seconds=0.25); "
+            f"lease,target,coordinated=store.claim({key!r}, now=1000.0, policy=policy); "
+            "print(json.dumps({'lease': lease is not None, 'target': target, 'coordinated': coordinated}))"
+        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=Path(__file__).resolve().parents[2],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+        finally:
+            store.release(lease)
+        payload = json.loads(proc.stdout)
+        assert payload == {"lease": False, "target": 1000.25, "coordinated": True}, payload
+
+
+def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        clock = FakeRetryClock()
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            key,
+            ready_at=1010.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            retry_policy=policy,
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 0, calls
+        assert payload["attempts"] == 0, payload
+        assert payload["retry_at"] == 1010, payload
+        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+
+
+def test_shared_cooldown_reaching_deadline_blocks_first_remote_call() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        clock = FakeRetryClock()
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            key,
+            ready_at=1005.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_success()
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            deadline_at=1005.0,
+            retry_policy=policy,
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 0, calls
+        assert payload["attempts"] == 0, payload
+        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+        lease, target, coordinated = store.claim(key, now=1005.0, policy=policy)
+        assert lease is not None, (target, coordinated)
+        store.release(lease)
+
+
+def test_shared_cooldown_keys_do_not_block_other_buckets() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        search_key = _api._cooldown_key("github.com", "shiny-code-bot", "search")
+        rest_key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            search_key,
+            ready_at=1010.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        lease, target, coordinated = store.claim(rest_key, now=1000.0, policy=policy)
+        assert lease is None
+        assert target is None
+        assert coordinated is False
+
+
+def test_cooldown_publication_honors_deadline_when_lock_is_busy() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir, lock_poll_seconds=0.1)
+        clock = FakeRetryClock()
+        store = _api.SharedCooldownStore(state_dir)
+        store._open_lock = lambda _key, *, blocking: None  # type: ignore[method-assign]
+        reason = store.publish(
+            _api._cooldown_key("github.com", "shiny-code-bot", "rest_core"),
+            ready_at=1010.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+            deadline=1000.25,
+            runtime=retry_runtime(clock),
+        )
+        assert reason == "deadline_exceeded", reason
+        assert clock.current == 1000.25, clock.current
+
+
+def test_cooldown_publication_never_shortens_existing_reset() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            key,
+            ready_at=1010.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        store.publish(
+            key,
+            ready_at=1005.0,
+            cause="secondary_rate_limited",
+            now=1001.0,
+            policy=policy,
+        )
+        lease, target, coordinated = store.claim(key, now=1001.0, policy=policy)
+        assert lease is None
+        assert coordinated is True
+        assert target == 1010.0, target
+
+
+def test_cooldown_claim_releases_lease_after_state_read_error() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        original_read_state = store._read_state
+
+        def fail_read(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("synthetic state failure")
+
+        store._read_state = fail_read  # type: ignore[method-assign]
+        try:
+            try:
+                store.claim("test-key", now=1000.0, policy=policy)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("state read failure must propagate")
+        finally:
+            store._read_state = original_read_state  # type: ignore[method-assign]
+        lease, target, coordinated = store.claim("test-key", now=1000.0, policy=policy)
+        assert lease is None
+        assert target is None
+        assert coordinated is False
+
+
+def test_unavailable_cooldown_storage_fails_closed_before_repeat() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        blocked = Path(temp_dir) / "not-a-directory"
+        blocked.write_text("blocked", encoding="utf-8")
+        clock = FakeRetryClock()
+        calls = 0
+
+        def attempt() -> Any:
+            nonlocal calls
+            calls += 1
+            return retry_failure("network_provider_failure", retryable=True)
+
+        result = _api.run_with_retry(
+            attempt,
+            operation="github.api.rate_limit",
+            is_write=False,
+            actor="shiny-code-bot",
+            bucket="rest_core",
+            retry_policy=retry_policy(blocked),
+            retry_runtime=retry_runtime(clock),
+        )
+        payload = result.as_dict()
+        assert calls == 1, calls
+        assert payload["retry_eligible"] is False, payload
+        assert payload["retry_exhausted_reason"] == "cooldown_state_unavailable", payload
+        assert payload["recommended_next_action"] == "repair_retry_state_directory", payload
+
+
+def test_stale_cooldown_state_is_ignored() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        store.publish(
+            key,
+            ready_at=1010.0,
+            cause="rest_primary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        _, state_path = store._paths(key)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["expires_at"] = 999.0
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        lease, target, coordinated = store.claim(key, now=1000.0, policy=policy)
+        assert lease is None
+        assert target is None
+        assert coordinated is False
+
+
+def test_malformed_cooldown_state_is_removed() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        _, state_path = store._paths(key)
+        state_path.write_text(
+            json.dumps({"updated_at": "bad", "expires_at": 2000, "ready_at": 1500}),
+            encoding="utf-8",
+        )
+        lease, target, coordinated = store.claim(key, now=1000.0, policy=policy)
+        assert lease is None
+        assert target is None
+        assert coordinated is False
+        assert state_path.exists() is False
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1304,7 +2559,13 @@ def main() -> None:
         test_call_gh_success_extracts_request_id,
         test_call_gh_success_extracts_rate_limit,
         test_call_gh_surfaces_explicit_active_auth_actor,
+        test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback,
+        test_call_gh_unannounced_actor_change_fails_closed_after_write,
         test_call_gh_post_sends_body_as_json_stdin,
+        test_call_gh_timeout_marks_started_write_outcome_unknown,
+        test_call_gh_timeout_preserves_authorized_fallback_actor,
+        test_call_gh_uses_provider_reported_search_bucket,
+        test_retry_fails_closed_on_provider_bucket_mismatch,
         # error classification
         test_classify_401_invalid_credentials,
         test_classify_403_actor_mismatch,
@@ -1342,6 +2603,7 @@ def main() -> None:
         test_legacy_process_result_merges_outer_and_delegated_failure_evidence,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
+        test_legacy_provider_bucket_replaces_requested_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
         test_legacy_html_parse_error_is_summarized_as_provider_failure,
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
@@ -1366,12 +2628,47 @@ def main() -> None:
         test_rate_limit_probe_cache_reset,
         test_rate_limit_probe_error_is_cached,
         test_rate_limit_probe_cache_is_actor_scoped,
+        test_rate_limit_probe_cache_ignores_remaining_timeout_budget,
         # output envelope
         test_success_asdict_no_failure_key,
         test_success_asdict_includes_completed_steps,
         test_error_asdict_has_failure_key,
         test_asdict_rate_limit_present_on_success,
         test_asdict_rate_limit_in_failure_when_exhausted,
+        # reset-aware retries
+        test_retry_waits_until_primary_reset_and_succeeds,
+        test_retry_honors_secondary_retry_after,
+        test_retry_idempotent_write_recovers_from_unknown_network_failure,
+        test_retry_outer_deadline_wins_without_second_call,
+        test_expired_deadline_blocks_first_write_attempt,
+        test_precancelled_operation_blocks_first_attempt,
+        test_jitter_is_clamped_to_preserve_feasible_deadline,
+        test_retry_timeout_callback_receives_remaining_deadline,
+        test_retry_inherited_deadline_environment_wins,
+        test_retry_cancellation_interrupts_wait,
+        test_retry_progress_is_periodic_and_stderr_only,
+        test_retry_never_repeats_authentication_failure,
+        test_authorized_actor_change_starts_distinct_retry_context,
+        test_unknown_operation_fails_closed_without_repeat,
+        test_manual_non_idempotent_operation_never_retries,
+        test_manual_operation_still_rejects_actor_mismatch,
+        test_manual_operation_still_rejects_bucket_mismatch,
+        test_unknown_write_reconciliation_match_prevents_duplicate_call,
+        test_reconciliation_receives_parent_deadline_context,
+        test_reconciliation_does_not_start_after_parent_deadline,
+        test_reconciliation_releases_matured_outer_cooldown_lease,
+        test_unknown_non_idempotent_write_fails_closed_after_no_match,
+        test_rejected_non_idempotent_write_can_retry_without_reconciliation,
+        test_shared_cooldown_blocks_second_process_before_remote_call,
+        test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter,
+        test_shared_cooldown_reaching_deadline_blocks_first_remote_call,
+        test_shared_cooldown_keys_do_not_block_other_buckets,
+        test_cooldown_publication_honors_deadline_when_lock_is_busy,
+        test_cooldown_publication_never_shortens_existing_reset,
+        test_cooldown_claim_releases_lease_after_state_read_error,
+        test_unavailable_cooldown_storage_fails_closed_before_repeat,
+        test_stale_cooldown_state_is_ignored,
+        test_malformed_cooldown_state_is_removed,
     ]
 
     failed: list[str] = []

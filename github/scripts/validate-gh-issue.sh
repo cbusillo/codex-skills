@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GITHUB_RETRY_MAX_ATTEMPTS=1
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
@@ -528,6 +529,7 @@ issue() {
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
 	*'/milestones?'*) printf '[{"number":7,"title":"Sprint 7"}]\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues?state=all'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues'*) issue 100 ;;
 	*'--method PATCH'*'/repos/owner/repo/issues/42'*) issue 42 ;;
 	*'--method POST'*'/repos/owner/repo/issues/42/labels'*) printf '[{"name":"enhancement"}]\n' ;;
@@ -575,6 +577,8 @@ cat >"$tmpdir/create-503-gh" <<'EOF'
 set -euo pipefail
 if [[ "$*" == *'/user'* ]]; then
 	printf '{"login":"shiny-code-bot"}\n'
+elif [[ "$*" == *'--method GET'* && "$*" == *'/repos/owner/repo/issues?state=all'* ]]; then
+	printf '[]\n'
 else
 	cat >/dev/null
 	printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: text/html\r\nx-github-request-id: CREATE-503\r\n\r\n<!DOCTYPE html><title>Unicorn! &middot; GitHub</title><p>Sorry about that.</p>\n'
@@ -686,6 +690,7 @@ printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
+	*'--method GET'*'/comments?'*) printf '[]\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
 		number=''
 		for arg in "$@"; do
@@ -809,6 +814,7 @@ if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/12/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/12/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
 		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"shiny-code-bot"}}\n'
@@ -869,6 +875,7 @@ if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/14/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/14/comments'*)
 		printf 'comment failed\n' >&2
 		exit 1

@@ -32,12 +32,22 @@ from typing import Any, Optional
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 PR_SCRIPT = Path(__file__).with_name("gh-pr.py")
 REAL_SUBPROCESS_RUN = subprocess.run
+os.environ["GITHUB_RETRY_MAX_ATTEMPTS"] = "1"
 
 
 def load_plan_module() -> Any:
     spec = importlib.util.spec_from_file_location("gh_plan_under_test", SCRIPT)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load {SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_pr_module() -> Any:
+    spec = importlib.util.spec_from_file_location("gh_pr_under_test", PR_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load {PR_SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -1939,6 +1949,84 @@ def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
     assert len(calls) == 1, calls
 
 
+def test_run_raw_retries_matrix_approved_graphql_query_on_same_actor() -> None:
+    plan = load_plan_module()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if len(calls) == 1:
+            return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
+        return completed(stdout='{"projects": []}')
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        plan.subprocess.run = fake_run
+        plan.github_api_core.default_retry_policy = lambda: plan.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        actor, stdout, _ = plan.run_raw(
+            ["project", "list"],
+            operation="github.plan.project_list",
+            is_write=False,
+            bucket="graphql",
+            graphql_operation="query",
+        )
+    assert actor == "automation-gh", actor
+    assert json.loads(stdout) == {"projects": []}, stdout
+    assert len(calls) == 2, calls
+    assert all(command[0].endswith("gh-with-env-token") for command in calls), calls
+    assert plan.CURRENT_RETRY_FIELDS["attempts"] == 2, plan.CURRENT_RETRY_FIELDS
+
+
+def test_run_raw_bounds_graphql_subprocess_by_retry_deadline() -> None:
+    plan = load_plan_module()
+    observed_timeouts: list[float | None] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        timeout = kwargs.get("timeout")
+        observed_timeouts.append(timeout)
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout or 0.0,
+            stderr=(
+                "warning: no automation gh token found; explicitly authorized active-auth fallback; "
+                "using the active gh account 'octocat'"
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        plan.subprocess.run = fake_run
+        plan.github_api_core.default_retry_policy = lambda: plan.github_api_core.RetryPolicy(
+            max_wait_seconds=5.0,
+            max_attempts=1,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        try:
+            plan.run_raw(
+                ["project", "list"],
+                operation="github.plan.project_list",
+                is_write=False,
+                bucket="graphql",
+                graphql_operation="query",
+            )
+        except plan.PlanError as exc:
+            payload = exc.api_result
+            assert payload["failure"]["cause"] == "deadline_exceeded", payload
+            assert payload["attempts"] == 1, payload
+            assert payload["actor"] == "octocat", payload
+            assert payload["expected_actor"] is None, payload
+        else:
+            raise AssertionError("timed-out GraphQL command must fail")
+    assert len(observed_timeouts) == 1, observed_timeouts
+    assert 0 < observed_timeouts[0] <= 5.0, observed_timeouts
+
+
 def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
@@ -1954,6 +2042,325 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
     assert actor == "automation-gh", actor
     assert json.loads(stdout) == {"bot": True}, stdout
     assert len(calls) == 1, calls
+
+
+def test_pr_write_retries_idempotent_edit_but_not_manual_create() -> None:
+    pr = load_pr_module()
+    calls: list[list[str]] = []
+
+    def retrying_run(
+        args: list[str],
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del timeout_seconds
+        calls.append(args)
+        if len(calls) == 1:
+            return completed(stderr="HTTP 503: Service Unavailable", returncode=1)
+        return completed(stdout="updated")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.run_gh = retrying_run
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        proc = pr.run_pr_write(
+            ["pr", "edit", "9", "--body-file", "body.md"],
+            operation="edit",
+            repo="owner/repo",
+        )
+    assert proc.stdout == "updated", proc
+    assert len(calls) == 2, calls
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 2, pr.CURRENT_RETRY_FIELDS
+
+    calls.clear()
+
+    def failing_create(
+        args: list[str],
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del timeout_seconds
+        calls.append(args)
+        return completed(stderr="HTTP 503: Service Unavailable", returncode=1)
+
+    pr.run_gh = failing_create
+    try:
+        pr.run_pr_write(
+            ["pr", "create", "--title", "demo", "--body-file", "body.md"],
+            operation="create",
+            repo="owner/repo",
+        )
+    except pr.PrHelperError as exc:
+        api_result = exc.payload["api_result"]
+        assert api_result["retry_eligible"] is False, api_result
+    else:
+        raise AssertionError("manual PR create must not retry")
+    assert len(calls) == 1, calls
+
+
+def test_pr_write_timeout_is_bounded_and_reports_unknown_outcome() -> None:
+    pr = load_pr_module()
+    observed_timeouts: list[float | None] = []
+
+    def timeout_run(
+        args: list[str],
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> subprocess.CompletedProcess[str]:
+        observed_timeouts.append(timeout_seconds)
+        raise subprocess.TimeoutExpired(
+            args,
+            timeout_seconds or 0.0,
+            stderr=(
+                "warning: no automation gh token found; explicitly authorized active-auth fallback; "
+                "using the active gh account 'octocat'"
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.run_gh = timeout_run
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=5.0,
+            max_attempts=1,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        proc, result = pr.run_gh_with_retry(
+            ["pr", "edit", "9", "--body", "updated"],
+            operation="github.pr.edit",
+            is_write=True,
+        )
+    payload = result.as_dict()
+    assert proc.returncode == 124, proc
+    assert payload["failure"]["cause"] == "deadline_exceeded", payload
+    assert payload["write_outcome"] == "unknown", payload
+    assert payload["attempts"] == 1, payload
+    assert payload["actor"] == "octocat", payload
+    assert payload["expected_actor"] is None, payload
+    assert len(observed_timeouts) == 1, observed_timeouts
+    assert 0 < observed_timeouts[0] <= 5.0, observed_timeouts
+
+
+def test_retried_pr_edit_emits_retry_fields_on_stdout() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        gh_path = temp_path / "gh"
+        counter_path = temp_path / "count"
+        body_path = temp_path / "body.md"
+        body_path.write_text("updated body", encoding="utf-8")
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"count_file={str(counter_path)!r}\n"
+            "count=0\n"
+            "[[ ! -f \"$count_file\" ]] || count=$(cat \"$count_file\")\n"
+            "count=$((count + 1))\n"
+            "printf '%s' \"$count\" >\"$count_file\"\n"
+            "if [[ $count -eq 1 ]]; then\n"
+            "  printf 'HTTP 503: Service Unavailable\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf 'updated\\n'\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GITHUB_RETRY_MAX_ATTEMPTS="2",
+            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_JITTER_SECONDS="0",
+            GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [
+                sys.executable,
+                str(PR_SCRIPT),
+                "--repo",
+                "owner/repo",
+                "edit",
+                "9",
+                "--body-file",
+                str(body_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    assert result.returncode == 0, result
+    assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "github.pr.edit", payload
+    assert payload["attempts"] == 2, payload
+    assert payload["retry_eligible"] is True, payload
+    assert payload["outcome_certainty"] == "confirmed", payload
+    assert result.stderr == "", result.stderr
+
+
+def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        gh_path = temp_path / "gh"
+        counter_path = temp_path / "pull-count"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "respond() {\n"
+            "  status=$1\n"
+            "  remaining=$2\n"
+            "  body=$3\n"
+            "  printf 'HTTP/2.0 %s \\n' \"$status\"\n"
+            "  printf 'content-type: application/json\\n'\n"
+            "  printf 'x-ratelimit-limit: 5000\\n'\n"
+            "  printf 'x-ratelimit-remaining: %s\\n' \"$remaining\"\n"
+            "  printf 'x-ratelimit-reset: 0\\n'\n"
+            "  printf 'x-ratelimit-resource: core\\n\\n'\n"
+            "  printf '%s\\n' \"$body\"\n"
+            "}\n"
+            "if [[ \"$*\" == *'/pulls/12'* ]]; then\n"
+            f"  count_file={str(counter_path)!r}\n"
+            "  count=0\n"
+            "  [[ ! -f \"$count_file\" ]] || count=$(cat \"$count_file\")\n"
+            "  count=$((count + 1))\n"
+            "  printf '%s' \"$count\" >\"$count_file\"\n"
+            "  if [[ $count -eq 1 ]]; then\n"
+            "    respond 429 0 '{\"message\":\"API rate limit exceeded\"}'\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  respond 200 4999 '{\"number\":12,\"state\":\"open\",\"title\":\"PR\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"sha\":\"abc\",\"ref\":\"feature\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}},\"user\":{\"login\":\"octocat\"}}'\n"
+            "elif [[ \"$*\" == *'/check-runs'* ]]; then\n"
+            "  respond 200 4998 '{\"check_runs\":[]}'\n"
+            "elif [[ \"$*\" == *'/statuses'* ]]; then\n"
+            "  respond 200 4997 '[]'\n"
+            "elif [[ \"$*\" == *'/status'* ]]; then\n"
+            "  respond 200 4996 '{\"state\":\"success\"}'\n"
+            "else\n"
+            "  printf 'unexpected command: %s\\n' \"$*\" >&2\n"
+            "  exit 1\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GITHUB_RETRY_MAX_ATTEMPTS="2",
+            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_JITTER_SECONDS="0",
+            GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    assert result.returncode == 0, result
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "github.pr.checks", payload
+    assert payload["attempts"] == 5, payload
+    assert payload["retry_eligible"] is True, payload
+    assert payload["diagnostics"]["retry"]["attempts"] == 5, payload
+    assert result.stderr == "", result.stderr
+
+
+def test_plan_and_pr_retry_recorders_aggregate_early_waits() -> None:
+    plan = load_plan_module()
+
+    def summary(attempts: int, elapsed_wait: float) -> Any:
+        return plan.github_api_core.RetrySummary(
+            attempts=attempts,
+            elapsed_wait=elapsed_wait,
+            retry_eligible=True,
+            last_actor="shiny-code-bot",
+            last_bucket="rest_core",
+            outcome_certainty="confirmed",
+            reconciliation=None,
+            recommended_next_action="none",
+            effective_deadline=2000.0,
+        )
+
+    plan.record_retry_fields(
+        plan.github_api_core.ApiResult(ok=True, status=200, body={}, retry_summary=summary(2, 3.0))
+    )
+    plan.record_retry_fields(
+        plan.github_api_core.ApiResult(ok=True, status=200, body={}, retry_summary=summary(1, 0.0))
+    )
+    assert plan.CURRENT_RETRY_FIELDS["attempts"] == 3, plan.CURRENT_RETRY_FIELDS
+    assert plan.CURRENT_RETRY_FIELDS["elapsed_wait"] == 3.0, plan.CURRENT_RETRY_FIELDS
+
+    pr = load_pr_module()
+    pr.record_retry_summary(summary(2, 3.0))
+    pr.record_retry_summary(summary(1, 0.0))
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 3, pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["elapsed_wait"] == 3.0, pr.CURRENT_RETRY_FIELDS
+
+
+def test_retried_project_list_emits_retry_fields_on_stdout() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        gh_path = temp_path / "gh"
+        counter_path = temp_path / "count"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'rate_limit'* ]]; then\n"
+            "  printf '%s\\n' '{\"resources\":{\"graphql\":{\"limit\":5000,\"remaining\":100,\"reset\":0}}}'\n"
+            "  exit 0\n"
+            "fi\n"
+            f"count_file={str(counter_path)!r}\n"
+            "count=0\n"
+            "[[ ! -f \"$count_file\" ]] || count=$(cat \"$count_file\")\n"
+            "count=$((count + 1))\n"
+            "printf '%s' \"$count\" >\"$count_file\"\n"
+            "if [[ $count -eq 1 ]]; then\n"
+            "  printf 'GraphQL: API rate limit already exceeded\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf '%s\\n' '{\"projects\":[]}'\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            PATH=f"{temp_path}:{os.environ['PATH']}",
+            GH_PLAN_SKIP_BOT="1",
+            GH_PLAN_ALLOW_ACTIVE_FIRST="1",
+            CODE_HOME=str(temp_path / ".code"),
+            GITHUB_RETRY_MAX_ATTEMPTS="2",
+            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_JITTER_SECONDS="0",
+            GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
+        )
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(SCRIPT), "project-list", "--owner", "owner"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+    assert result.returncode == 0, result
+    assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "github.plan.project_list", payload
+    assert payload["attempts"] == 3, payload
+    assert payload["retry_eligible"] is True, payload
+    assert payload["outcome_certainty"] == "confirmed", payload
+    assert result.stderr == "", result.stderr
 
 
 def test_plan_cli_emits_shared_terminal_envelope() -> None:
@@ -2024,6 +2431,7 @@ def test_plan_project_query_failure_is_not_a_write() -> None:
             GH_PLAN_SKIP_BOT="1",
             GH_PLAN_ALLOW_ACTIVE_FIRST="1",
             CODE_HOME=str(tmp_path / ".code"),
+            GITHUB_RETRY_MAX_ATTEMPTS="1",
         )
         result = REAL_SUBPROCESS_RUN(
             [sys.executable, str(SCRIPT), "project-list", "--owner", "owner"],
@@ -2216,6 +2624,7 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
             "  pr\\ create*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
             "  pr\\ edit*) printf 'https://github.com/owner/repo/pull/9\\n' ;;\n"
             "  *'/user'*) printf '{\"login\":\"shiny-code-bot\"}\\n' ;;\n"
+            "  *'--method GET'*'/repos/owner/repo/issues/9/comments'*) printf '[]\\n' ;;\n"
             "  *'/repos/owner/repo/issues/9/comments'*) printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/9#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
             "esac\n"
@@ -2394,6 +2803,77 @@ def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
     assert "/repos/owner/repo/git/refs/heads/topic" in calls, calls
 
 
+def test_delete_ref_reconciles_unknown_outcome() -> None:
+    pr = load_pr_module()
+    calls: list[tuple[str, str]] = []
+    original_call = pr.github_api_core.call_gh
+    original_policy = pr.github_api_core.default_retry_policy
+
+    def fake_call(method: str, path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append((method, path))
+        if method == "DELETE":
+            failure = pr.github_api_core.FailureDetail(
+                cause="network_provider_failure",
+                message="connection reset",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="unknown",
+            )
+            return pr.github_api_core.ApiResult(
+                ok=False,
+                status=0,
+                body=None,
+                operation=kwargs.get("operation"),
+                actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR,
+                host=pr.github_api_core.DEFAULT_HOST,
+                bucket="rest_core",
+                failure=failure,
+            )
+        failure = pr.github_api_core.FailureDetail(
+            cause="not_found",
+            message="Not Found",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+        )
+        return pr.github_api_core.ApiResult(
+            ok=False,
+            status=404,
+            body={"message": "Not Found"},
+            operation=kwargs.get("operation"),
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+            failure=failure,
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.github_api_core.call_gh = fake_call
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        try:
+            payload = pr.delete_ref("owner/repo", "heads/topic")
+        finally:
+            pr.github_api_core.call_gh = original_call
+            pr.github_api_core.default_retry_policy = original_policy
+    assert payload["deleted"] is True, payload
+    assert calls == [
+        ("DELETE", "/repos/owner/repo/git/refs/heads/topic"),
+        ("GET", "/repos/owner/repo/git/ref/heads/topic"),
+    ], calls
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 1, pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["reconciliation"]["result"] == "matched", pr.CURRENT_RETRY_FIELDS
+
+
 def test_pr_helper_merge_404_includes_recovery_context() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -2525,6 +3005,8 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
             "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  if [[ \"$payload\" != *'superseded by #13'* ]]; then exit 2; fi\n"
             "  if [[ \"$payload\" != *'Issue-closing references'* ]]; then exit 2; fi\n"
@@ -2691,6 +3173,8 @@ def test_pr_helper_supersede_reports_comment_failure_after_close() -> None:
             "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf 'HTTP/2.0 503 \\r\\ncontent-type: application/json\\r\\n\\r\\n{\"message\":\"upstream unavailable\"}\\n'\n"
             "  exit 1\n"
@@ -2765,6 +3249,8 @@ def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None
             "printf '%s | %s\\n' \"$*\" \"$payload\" >>\"$GH_PR_TEST_LOG\"\n"
             "if [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
@@ -2837,6 +3323,8 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
             "elif [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
@@ -2922,6 +3410,8 @@ def test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch() 
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
             "elif [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
@@ -3001,6 +3491,8 @@ def test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch() -> 
             "  printf '{\"default_branch\":\"main\"}\\n'\n"
             "elif [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
@@ -3071,6 +3563,8 @@ def test_pr_helper_supersede_skips_branch_delete_for_default_branch() -> None:
             "  printf '{\"default_branch\":\"release\"}\\n'\n"
             "elif [[ \"$*\" == *'/user'* ]]; then\n"
             "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
+            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
             "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
@@ -3393,6 +3887,41 @@ def test_project_set_accepts_item_id_and_classifies_low_graphql() -> None:
         raise AssertionError("low GraphQL quota should be classified as rate_limited")
 
 
+def test_graphql_budget_retries_until_matrix_operation_has_capacity() -> None:
+    plan = load_plan_module()
+    plan.CURRENT_OPERATION = "github.plan.project_list"
+    calls = 0
+
+    def fake_gh_json(_args: list[str], **_kwargs: Any) -> tuple[str, Any]:
+        nonlocal calls
+        calls += 1
+        remaining = 0 if calls == 1 else 100
+        return "automation-gh", {
+            "resources": {
+                "graphql": {
+                    "limit": 5000,
+                    "remaining": remaining,
+                    "reset": 0,
+                }
+            }
+        }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        plan.gh_json = fake_gh_json
+        plan.github_api_core.default_retry_policy = lambda: plan.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        plan.ensure_graphql_budget()
+    assert calls == 2, calls
+    assert plan.CURRENT_RETRY_FIELDS["attempts"] == 2, plan.CURRENT_RETRY_FIELDS
+    assert plan.CURRENT_RETRY_FIELDS["last_bucket"] == "graphql", plan.CURRENT_RETRY_FIELDS
+
+
 def main() -> None:
     tests = [
         test_issue_body_updates_use_rest_patch,
@@ -3433,7 +3962,15 @@ def main() -> None:
         test_create_refuses_to_mint_undocumented_extra_labels,
         test_create_allows_existing_extra_labels_without_creating_them,
         test_run_raw_does_not_change_actor_on_graphql_rate_limit,
+        test_run_raw_retries_matrix_approved_graphql_query_on_same_actor,
+        test_run_raw_bounds_graphql_subprocess_by_retry_deadline,
         test_run_raw_is_bot_first_even_when_prefer_active_is_requested,
+        test_pr_write_retries_idempotent_edit_but_not_manual_create,
+        test_pr_write_timeout_is_bounded_and_reports_unknown_outcome,
+        test_retried_pr_edit_emits_retry_fields_on_stdout,
+        test_pr_checks_aggregates_retry_fields_across_reads,
+        test_plan_and_pr_retry_recorders_aggregate_early_waits,
+        test_retried_project_list_emits_retry_fields_on_stdout,
         test_plan_cli_emits_shared_terminal_envelope,
         test_plan_project_query_failure_is_not_a_write,
         test_python_helper_parser_failures_emit_envelopes,
@@ -3442,6 +3979,7 @@ def main() -> None:
         test_pr_helper_write_commands_route_through_configured_gh,
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
+        test_delete_ref_reconciles_unknown_outcome,
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
@@ -3458,6 +3996,7 @@ def main() -> None:
         test_pr_helper_paged_rest_failure_preserves_diagnostics,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,
+        test_graphql_budget_retries_until_matrix_operation_has_capacity,
     ]
     for test in tests:
         test()

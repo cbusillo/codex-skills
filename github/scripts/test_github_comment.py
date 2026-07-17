@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
+import tempfile
 from typing import Any, Callable
 
 import github_api
@@ -39,29 +41,52 @@ def failure(status: int, body: Any, *, is_write: bool) -> github_api.ApiResult:
     )
 
 
-def comment_body(comment_id: int, actor: str = "shiny-code-bot", *, created_at: str = "2026-07-16T12:00:00Z") -> dict[str, Any]:
+def comment_body(
+    comment_id: int,
+    actor: str = "shiny-code-bot",
+    *,
+    created_at: str = "2026-07-16T12:00:00Z",
+    body: str = "body",
+) -> dict[str, Any]:
     return {
         "id": comment_id,
         "html_url": f"https://github.com/owner/repo/issues/42#issuecomment-{comment_id}",
         "user": {"login": actor},
+        "body": body,
         "created_at": created_at,
         "updated_at": created_at,
     }
 
 
-def with_call_stub(callback: Callable[..., github_api.ApiResult], test: Callable[[list[dict[str, Any]]], None]) -> None:
+def with_call_stub(
+    callback: Callable[..., github_api.ApiResult],
+    test: Callable[[list[dict[str, Any]]], None],
+    *,
+    allow_retry: bool = False,
+) -> None:
     calls: list[dict[str, Any]] = []
     original = github_comment.github_api_core.call_gh
+    original_policy = github_comment.github_api_core.default_retry_policy
 
     def stub(method: str, path: str, body: Any = None, **kwargs: Any) -> github_api.ApiResult:
         calls.append({"method": method, "path": path, "body": body, "kwargs": kwargs})
         return callback(method, path, body, **kwargs)
 
-    github_comment.github_api_core.call_gh = stub
-    try:
-        test(calls)
-    finally:
-        github_comment.github_api_core.call_gh = original
+    with tempfile.TemporaryDirectory() as temp_dir:
+        github_comment.github_api_core.call_gh = stub
+        github_comment.github_api_core.default_retry_policy = lambda: github_api.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2 if allow_retry else 1,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=pathlib.Path(temp_dir),
+        )
+        try:
+            test(calls)
+        finally:
+            github_comment.github_api_core.call_gh = original
+            github_comment.github_api_core.default_retry_policy = original_policy
 
 
 def test_create_preserves_markdown_body() -> None:
@@ -70,6 +95,8 @@ def test_create_preserves_markdown_body() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            return success([])
         assert method == "POST"
         assert path == "/repos/owner/repo/issues/42/comments"
         assert body == {"body": markdown}
@@ -80,7 +107,7 @@ def test_create_preserves_markdown_body() -> None:
         assert payload["comment_action"] == "created", payload
         assert payload["url"].endswith("#issuecomment-1001"), payload
         assert payload["completed_steps"] == ["resolve_actor", "create_comment"], payload
-        assert len(calls) == 2, calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST"], calls
 
     with_call_stub(callback, run)
 
@@ -243,6 +270,8 @@ def test_explicit_active_fallback_accepts_and_reports_actual_actor() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "cbusillo"})
+        if method == "GET":
+            return success([])
         assert method == "POST"
         return success(comment_body(8, "cbusillo"))
 
@@ -266,6 +295,8 @@ def test_active_fallback_reports_response_actor_after_route_switch() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            return success([])
         assert method == "POST"
         return success(comment_body(9, "cbusillo"))
 
@@ -284,6 +315,237 @@ def test_active_fallback_reports_response_actor_after_route_switch() -> None:
         assert payload["expected_actor"] is None, payload
 
     with_call_stub(callback, run)
+
+
+def test_unknown_create_no_match_fails_closed_without_repeat() -> None:
+    post_calls = 0
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            assert path.startswith("/repos/owner/repo/issues/42/comments?"), path
+            return success([])
+        post_calls += 1
+        return failure(503, "Unicorn!", is_write=True)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_comment.comment(
+                "issue",
+                42,
+                "retry-safe body",
+                repo="owner/repo",
+                gh_cmd="fake-gh",
+            )
+        except github_comment.CommentError as exc:
+            assert exc.failure.write_outcome == "unknown", exc.failure
+            assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
+            assert exc.payload["retry_eligible"] is False, exc.payload
+        else:
+            raise AssertionError("unknown comment create must fail closed after no-match reconciliation")
+        assert post_calls == 1, post_calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST", "GET"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_rejected_create_retries_without_reconciliation() -> None:
+    post_calls = 0
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            return success([])
+        assert method == "POST", (method, path)
+        post_calls += 1
+        if post_calls == 1:
+            return failure(429, "API rate limit exceeded", is_write=True)
+        return success(comment_body(1010, body=str(body["body"])))
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_comment.comment(
+            "issue",
+            42,
+            "retry-safe body",
+            repo="owner/repo",
+            gh_cmd="fake-gh",
+        )
+        assert payload["attempts"] == 4, payload
+        assert payload["reconciliation"] is None, payload
+        assert payload["operation_marker"]["kind"] == "request_fingerprint", payload
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST", "POST"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> None:
+    original_now = github_comment._utc_now
+    github_comment._utc_now = lambda: github_comment.dt.datetime(
+        2026,
+        7,
+        17,
+        18,
+        30,
+        tzinfo=github_comment.dt.timezone.utc,
+    )
+    post_calls = 0
+    get_calls = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls, post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "POST":
+            post_calls += 1
+            return failure(503, "Unicorn!", is_write=True)
+        get_calls += 1
+        if get_calls == 1:
+            return success([])
+        return success([
+            comment_body(
+                1011,
+                created_at="2026-07-17T18:29:58Z",
+                body="reconciled body",
+            )
+        ])
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            payload = github_comment.comment(
+                "pr",
+                42,
+                "reconciled body",
+                repo="owner/repo",
+                gh_cmd="fake-gh",
+                operation="github.pr.comment",
+            )
+        finally:
+            github_comment._utc_now = original_now
+        assert post_calls == 1, post_calls
+        assert payload["attempts"] == 4, payload
+        assert payload["outcome_certainty"] == "reconciled_applied", payload
+        assert payload["reconciliation"]["result"] == "matched", payload
+        assert payload["completed_steps"][-1] == "reconcile_create_comment", payload
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST", "GET"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
+    original_now = github_comment._utc_now
+    original_fallback = os.environ.get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK")
+    github_comment._utc_now = lambda: github_comment.dt.datetime(
+        2026,
+        7,
+        17,
+        18,
+        45,
+        tzinfo=github_comment.dt.timezone.utc,
+    )
+    os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = "1"
+    post_calls = 0
+    get_calls = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls, post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "POST":
+            post_calls += 1
+            result = failure(503, "Unicorn!", is_write=True)
+            result.actor = "cbusillo"
+            result.expected_actor = None
+            return result
+        get_calls += 1
+        if get_calls == 1:
+            return success([])
+        return success([
+            comment_body(
+                1012,
+                actor="cbusillo",
+                created_at="2026-07-17T18:45:01Z",
+                body="fallback body",
+            )
+        ])
+
+    def run(_calls: list[dict[str, Any]]) -> None:
+        try:
+            payload = github_comment.comment(
+                "issue",
+                42,
+                "fallback body",
+                repo="owner/repo",
+                gh_cmd="fake-gh",
+            )
+        finally:
+            github_comment._utc_now = original_now
+            if original_fallback is None:
+                os.environ.pop("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK", None)
+            else:
+                os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = original_fallback
+        assert post_calls == 1, post_calls
+        assert payload["actor"] == "cbusillo", payload
+        assert payload["expected_actor"] is None, payload
+        assert payload["reconciliation"]["result"] == "matched", payload
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_create_reconciliation_excludes_preexisting_same_second_comment() -> None:
+    original_now = github_comment._utc_now
+    github_comment._utc_now = lambda: github_comment.dt.datetime(
+        2026,
+        7,
+        17,
+        19,
+        0,
+        tzinfo=github_comment.dt.timezone.utc,
+    )
+    existing = comment_body(
+        1013,
+        created_at="2026-07-17T19:00:00Z",
+        body="original body",
+    )
+    post_calls = 0
+    get_calls = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls, post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "POST":
+            post_calls += 1
+            return failure(503, "Unicorn!", is_write=True)
+        get_calls += 1
+        if get_calls > 1:
+            return success([{**existing, "body": "same-second body"}])
+        return success([existing])
+
+    def run(_calls: list[dict[str, Any]]) -> None:
+        try:
+            try:
+                github_comment.comment(
+                    "issue",
+                    42,
+                    "same-second body",
+                    repo="owner/repo",
+                    gh_cmd="fake-gh",
+                )
+            except github_comment.CommentError as exc:
+                reconciliation = exc.payload["reconciliation"]
+                assert reconciliation["result"] == "no_match", reconciliation
+                assert reconciliation["preexisting_comment_ids"] == [1013], reconciliation
+            else:
+                raise AssertionError("pre-existing same-second comment must not satisfy reconciliation")
+        finally:
+            github_comment._utc_now = original_now
+        assert post_calls == 1, post_calls
+
+    with_call_stub(callback, run, allow_retry=True)
 
 
 def test_repo_resolution_launch_failure_is_structured() -> None:
@@ -321,6 +583,11 @@ TESTS = [
     test_create_if_none_requires_edit_last,
     test_explicit_active_fallback_accepts_and_reports_actual_actor,
     test_active_fallback_reports_response_actor_after_route_switch,
+    test_unknown_create_no_match_fails_closed_without_repeat,
+    test_rejected_create_retries_without_reconciliation,
+    test_create_unknown_outcome_returns_reconciled_comment_without_retry,
+    test_create_reconciliation_uses_explicit_fallback_actor_context,
+    test_create_reconciliation_excludes_preexisting_same_second_comment,
     test_repo_resolution_launch_failure_is_structured,
 ]
 

@@ -129,6 +129,7 @@ ENUMS = {
         "project_recoverable_warning",
         "quota_snapshot",
         "read_after_write",
+        "read_ref_after_delete",
         "relationship_read",
         "restore_remote_url",
         "sha_guarded_merge",
@@ -237,10 +238,23 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
 
         mutation_class = operation.get("mutation_class")
         idempotency = operation.get("idempotency")
+        retry_eligibility = operation.get("retry_eligibility")
+        reconciliation_strategy = operation.get("reconciliation_strategy")
         if mutation_class == "read" and idempotency != "read_only":
             errors.append(f"{label}.idempotency must be 'read_only' for read operations")
         elif idempotency == "read_only" and mutation_class != "read":
             errors.append(f"{label}.idempotency 'read_only' requires mutation_class 'read'")
+        if retry_eligibility == "safe" and idempotency != "read_only":
+            errors.append(f"{label}.retry_eligibility 'safe' requires read_only idempotency")
+        if (
+            retry_eligibility == "conditional"
+            and idempotency == "non_idempotent"
+            and reconciliation_strategy not in {"dedupe_then_create", "operation_marker"}
+        ):
+            errors.append(
+                f"{label}.reconciliation_strategy must provide a stable create key "
+                "for conditionally retried non-idempotent writes"
+            )
 
         current_transport = operation.get("current_transport")
         selected_transport = operation.get("selected_transport")
@@ -501,6 +515,8 @@ def run_self_tests() -> int:
         test_invalid_enum_fails,
         test_read_operation_requires_read_only_idempotency,
         test_read_only_idempotency_requires_read_operation,
+        test_safe_retry_requires_read_only_idempotency,
+        test_conditional_non_idempotent_retry_requires_stable_key,
         test_graphql_rationale_is_required,
         test_planned_migration_requires_current_transport_evidence,
         test_same_transport_component_migration_is_allowed,
@@ -553,6 +569,29 @@ def test_read_only_idempotency_requires_read_operation() -> None:
     operation = minimal_operation(mutation_class="create")
     validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
     assert any("requires mutation_class 'read'" in error for error in errors), errors
+
+
+def test_safe_retry_requires_read_only_idempotency() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(
+        mutation_class="update",
+        idempotency="idempotent",
+        retry_eligibility="safe",
+    )
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert any("'safe' requires read_only" in error for error in errors), errors
+
+
+def test_conditional_non_idempotent_retry_requires_stable_key() -> None:
+    errors: list[str] = []
+    operation = minimal_operation(
+        mutation_class="create",
+        idempotency="non_idempotent",
+        retry_eligibility="conditional",
+        reconciliation_strategy="fresh_read",
+    )
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    assert any("stable create key" in error for error in errors), errors
 
 
 def test_graphql_rationale_is_required() -> None:

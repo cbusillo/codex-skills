@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
@@ -89,6 +90,149 @@ def test_request_diagnostics_include_quota_and_request_id() -> None:
     assert diagnostics["requests"][0]["requestId"] == "READ:123"
     assert diagnostics["quota"]["remaining"] == 4999
     assert diagnostics["degraded"] is False
+
+
+def test_matrix_approved_reader_retries_and_reports_attempts() -> None:
+    responses = [
+        process(
+            include_output(
+                {"message": "API rate limit exceeded"},
+                status=429,
+                headers={
+                    "x-ratelimit-remaining": "0",
+                    "x-ratelimit-reset": "0",
+                },
+            ),
+            returncode=1,
+        ),
+        process(include_output({"full_name": "o/r", "default_branch": "main"})),
+    ]
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.read.repository")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        policy = github_read.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        with (
+            patch("subprocess.run", side_effect=responses) as run,
+            patch.object(github_read.github_api_core, "default_retry_policy", return_value=policy),
+        ):
+            data = github_read.repository(reader, "o/r")
+    diagnostics = reader.diagnostics()
+    request = diagnostics["requests"][0]
+    assert data["nameWithOwner"] == "o/r", data
+    assert run.call_count == 2, run.call_count
+    assert request["attempts"] == 2, request
+    assert request["retryEligible"] is True, request
+    assert request["outcomeCertainty"] == "confirmed", request
+    assert diagnostics["retry"]["attempts"] == 2, diagnostics
+
+
+def test_reader_aggregates_retry_summary_across_requests() -> None:
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.ci_diagnose")
+    reader.results = [
+        github_read.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body={},
+            retry_summary=github_read.github_api_core.RetrySummary(
+                attempts=2,
+                elapsed_wait=3.0,
+                retry_eligible=True,
+                last_actor="shiny-code-bot",
+                last_bucket="rest_core",
+                outcome_certainty="confirmed",
+                reconciliation=None,
+                recommended_next_action="none",
+                effective_deadline=1100.0,
+            ),
+        ),
+        github_read.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body={},
+            retry_summary=github_read.github_api_core.RetrySummary(
+                attempts=1,
+                elapsed_wait=0.0,
+                retry_eligible=True,
+                last_actor="shiny-code-bot",
+                last_bucket="rest_core",
+                outcome_certainty="confirmed",
+                reconciliation=None,
+                recommended_next_action="none",
+                effective_deadline=1090.0,
+            ),
+        ),
+    ]
+    summary = reader.retry_summary()
+    assert summary is not None
+    assert summary.attempts == 3, summary
+    assert summary.elapsed_wait == 3.0, summary
+    assert summary.effective_deadline == 1090.0, summary
+
+
+def test_reader_cli_operations_are_matrix_approved() -> None:
+    operations = (
+        "github.read.pulls",
+        "github.read.pull_checks",
+        "github.read.issues",
+        "github.read.workflow_runs",
+        "github.read.workflow_run",
+        "github.read.workflow_jobs",
+        "github.read.job_log",
+        "github.read.repository",
+    )
+    for operation in operations:
+        rule, error = github_read.github_api_core.operation_retry_rule(operation)
+        assert error is None, (operation, error)
+        assert rule is not None and rule.retry_eligibility == "safe", (operation, rule)
+
+
+def test_reader_failed_request_dominates_aggregate_certainty() -> None:
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.ci_diagnose")
+    successful = github_read.github_api_core.ApiResult(
+        ok=True,
+        status=200,
+        body={},
+        retry_summary=github_read.github_api_core.RetrySummary(
+            attempts=1,
+            elapsed_wait=0.0,
+            retry_eligible=True,
+            last_actor="shiny-code-bot",
+            last_bucket="rest_core",
+            outcome_certainty="confirmed",
+            reconciliation=None,
+            recommended_next_action="none",
+            effective_deadline=1100.0,
+        ),
+    )
+    failed = github_read.github_api_core.ApiResult(
+        ok=False,
+        status=403,
+        body={},
+        retry_summary=github_read.github_api_core.RetrySummary(
+            attempts=1,
+            elapsed_wait=0.0,
+            retry_eligible=False,
+            last_actor="shiny-code-bot",
+            last_bucket="rest_core",
+            outcome_certainty="not_applicable",
+            reconciliation=None,
+            recommended_next_action="inspect_last_failure",
+            effective_deadline=1090.0,
+            exhausted_reason="not_retryable",
+        ),
+    )
+    reader.results = [successful, failed]
+    reader.failed_results = [failed]
+    summary = reader.retry_summary()
+    assert summary is not None
+    assert summary.outcome_certainty == "not_applicable", summary
+    assert summary.recommended_next_action == "inspect_last_failure", summary
 
 
 def test_explicit_active_auth_actor_is_visible_and_degraded() -> None:
@@ -286,6 +430,10 @@ def main() -> None:
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
+        test_matrix_approved_reader_retries_and_reports_attempts,
+        test_reader_aggregates_retry_summary_across_requests,
+        test_reader_cli_operations_are_matrix_approved,
+        test_reader_failed_request_dominates_aggregate_certainty,
         test_explicit_active_auth_actor_is_visible_and_degraded,
         test_permission_failure_is_explicit_and_degraded,
         test_rate_limit_failure_preserves_reset_metadata,

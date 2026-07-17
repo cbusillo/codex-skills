@@ -10,6 +10,9 @@ Provides:
 - Body-safe gh api --include REST command construction (body via JSON stdin, never on command line)
 - HTTP status/headers/body parsing from gh --include output
 - Versioned ApiResult / FailureDetail envelope
+- Matrix-gated reset-aware retries with inherited deadlines and stderr-only progress
+- Lock-safe cross-process cooldowns keyed by GitHub host, actor, and quota bucket
+- Write-safe reconciliation callbacks for unknown non-idempotent outcomes
 - Error classification: invalid_credentials, actor_mismatch, permission_denied,
   rest_primary_rate_limited, graphql_primary_rate_limited,
   secondary_rate_limited, not_found, validation_error, conflict,
@@ -22,23 +25,37 @@ Provides:
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import html as html_lib
 import json
+import math
 import os
 import pathlib
+import random
 import re
 import subprocess
 import sys
+import tempfile
+import time
+import tomllib
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 SCHEMA_VERSION = 1
 DEFAULT_API_VERSION = "2022-11-28"
 TRANSPORT = "gh_api"
 DEFAULT_GH = os.environ.get("GITHUB_API_GH") or str(pathlib.Path(__file__).with_name("gh-with-env-token"))
 DEFAULT_HOST = os.environ.get("GH_HOST") or "github.com"
+DEFAULT_OPERATION_MATRIX = pathlib.Path(__file__).resolve().parents[1] / "references/operation-matrix.toml"
+DEFAULT_RETRY_MAX_WAIT_SECONDS = 3900.0
+DEFAULT_RETRY_MAX_ATTEMPTS = 8
+DEFAULT_RETRY_PROGRESS_SECONDS = 30.0
+DEFAULT_RETRY_JITTER_SECONDS = 3.0
+FLEXIBLE_RETRY_BUCKETS = frozenset({"delegated", "mixed", "unknown"})
 
 GraphQLOperation = Literal["query", "mutation", "subscription", "unknown"]
+ReconciliationOutcome = Literal["matched", "no_match", "ambiguous", "failed"]
 
 
 @dataclass(frozen=True)
@@ -47,6 +64,204 @@ class CommandContext:
     transport: str
     bucket: str
     graphql_operation: Optional[GraphQLOperation] = None
+
+
+def _default_retry_state_dir() -> pathlib.Path:
+    code_home = os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME")
+    root = pathlib.Path(code_home).expanduser() if code_home else pathlib.Path.home() / ".code"
+    return root / "state" / "github-retry"
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.environ.get(name, default))
+        return max(minimum, value) if math.isfinite(value) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_optional_float(name: str) -> Optional[float]:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class OperationRetryRule:
+    operation: str
+    idempotency: str
+    retry_eligibility: str
+    reconciliation_strategy: str
+    quota_bucket: str
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_wait_seconds: float = DEFAULT_RETRY_MAX_WAIT_SECONDS
+    max_attempts: int = DEFAULT_RETRY_MAX_ATTEMPTS
+    base_backoff_seconds: float = 1.0
+    max_backoff_seconds: float = 60.0
+    jitter_seconds: float = DEFAULT_RETRY_JITTER_SECONDS
+    progress_interval_seconds: float = DEFAULT_RETRY_PROGRESS_SECONDS
+    wait_slice_seconds: float = 1.0
+    lock_poll_seconds: float = 0.25
+    drain_seconds: float = 2.0
+    stale_after_seconds: float = 7200.0
+    state_dir: pathlib.Path = field(default_factory=_default_retry_state_dir)
+
+    @classmethod
+    def from_env(cls) -> "RetryPolicy":
+        state_dir = pathlib.Path(
+            os.environ.get("GITHUB_RETRY_STATE_DIR") or _default_retry_state_dir()
+        ).expanduser()
+        return cls(
+            max_wait_seconds=_env_float(
+                "GITHUB_RETRY_MAX_WAIT_SECONDS",
+                DEFAULT_RETRY_MAX_WAIT_SECONDS,
+            ),
+            max_attempts=_env_int("GITHUB_RETRY_MAX_ATTEMPTS", DEFAULT_RETRY_MAX_ATTEMPTS),
+            base_backoff_seconds=_env_float("GITHUB_RETRY_BASE_BACKOFF_SECONDS", 1.0),
+            max_backoff_seconds=_env_float("GITHUB_RETRY_MAX_BACKOFF_SECONDS", 60.0),
+            jitter_seconds=_env_float("GITHUB_RETRY_JITTER_SECONDS", DEFAULT_RETRY_JITTER_SECONDS),
+            progress_interval_seconds=_env_float(
+                "GITHUB_RETRY_PROGRESS_SECONDS",
+                DEFAULT_RETRY_PROGRESS_SECONDS,
+            ),
+            wait_slice_seconds=_env_float("GITHUB_RETRY_WAIT_SLICE_SECONDS", 1.0, minimum=0.01),
+            lock_poll_seconds=_env_float("GITHUB_RETRY_LOCK_POLL_SECONDS", 0.25, minimum=0.01),
+            drain_seconds=_env_float("GITHUB_RETRY_DRAIN_SECONDS", 2.0),
+            stale_after_seconds=_env_float("GITHUB_RETRY_STALE_SECONDS", 7200.0, minimum=1.0),
+            state_dir=state_dir,
+        )
+
+
+def _default_retry_progress(event: dict[str, Any]) -> None:
+    remaining = max(0.0, float(event.get("remaining_seconds") or 0.0))
+    print(
+        "retry: "
+        f"{event.get('operation')} waiting {remaining:.0f}s "
+        f"for {event.get('cause')} "
+        f"(attempt {event.get('attempt')}/{event.get('max_attempts')})",
+        file=sys.stderr,
+    )
+
+
+@dataclass
+class RetryRuntime:
+    now: Callable[[], float] = time.time
+    sleep: Callable[[float], None] = time.sleep
+    jitter: Callable[[float], float] = field(
+        default_factory=lambda: lambda maximum: random.SystemRandom().uniform(0.0, max(0.0, maximum))
+    )
+    cancelled: Callable[[], bool] = field(default_factory=lambda: lambda: False)
+    progress: Callable[[dict[str, Any]], None] = _default_retry_progress
+
+
+@dataclass(frozen=True)
+class ReconciliationDecision:
+    outcome: ReconciliationOutcome
+    body: Any = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReconciliationContext:
+    deadline_at: float
+    retry_policy: RetryPolicy
+    retry_runtime: RetryRuntime
+
+
+@dataclass
+class RetrySummary:
+    attempts: int
+    elapsed_wait: float
+    retry_eligible: bool
+    last_actor: Optional[str]
+    last_bucket: Optional[str]
+    outcome_certainty: str
+    reconciliation: Optional[dict[str, Any]]
+    recommended_next_action: str
+    effective_deadline: float
+    exhausted_reason: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "attempts": self.attempts,
+            "elapsed_wait": round(self.elapsed_wait, 3),
+            "retry_eligible": self.retry_eligible,
+            "last_actor": self.last_actor,
+            "last_bucket": self.last_bucket,
+            "outcome_certainty": self.outcome_certainty,
+            "reconciliation": self.reconciliation,
+            "recommended_next_action": self.recommended_next_action,
+            "effective_deadline": self.effective_deadline,
+            "retry_exhausted_reason": self.exhausted_reason,
+        }
+
+
+def aggregate_retry_summaries(
+    summaries: list[RetrySummary],
+    *,
+    failed: bool = False,
+) -> Optional[RetrySummary]:
+    if not summaries:
+        return None
+    reconciliation = next(
+        (summary.reconciliation for summary in reversed(summaries) if summary.reconciliation is not None),
+        None,
+    )
+    exhausted_reason = next(
+        (summary.exhausted_reason for summary in reversed(summaries) if summary.exhausted_reason is not None),
+        None,
+    )
+    recommended_next_action = next(
+        (
+            summary.recommended_next_action
+            for summary in reversed(summaries)
+            if summary.recommended_next_action != "none"
+        ),
+        summaries[-1].recommended_next_action,
+    )
+    certainty_priority = {
+        "unknown": 4,
+        "reconciled_not_applied": 3,
+        "reconciled_applied": 2,
+        "confirmed_not_applied": 1,
+        "not_applicable": 0,
+        "confirmed": 0,
+    }
+    outcome_certainty = (
+        "not_applicable"
+        if failed
+        else max(
+            summaries,
+            key=lambda summary: certainty_priority.get(summary.outcome_certainty, 0),
+        ).outcome_certainty
+    )
+    return RetrySummary(
+        attempts=sum(summary.attempts for summary in summaries),
+        elapsed_wait=sum(summary.elapsed_wait for summary in summaries),
+        retry_eligible=all(summary.retry_eligible for summary in summaries),
+        last_actor=summaries[-1].last_actor,
+        last_bucket=summaries[-1].last_bucket,
+        outcome_certainty=outcome_certainty,
+        reconciliation=reconciliation,
+        recommended_next_action=recommended_next_action,
+        effective_deadline=min(summary.effective_deadline for summary in summaries),
+        exhausted_reason=exhausted_reason,
+    )
 
 
 class ArgumentParsingError(Exception):
@@ -212,6 +427,7 @@ class ApiResult:
     graphql_operation: Optional[GraphQLOperation] = None
     completed_steps: list[str] = field(default_factory=list)
     failed_step: Optional[str] = None
+    retry_summary: Optional[RetrySummary] = None
     schema_version: int = SCHEMA_VERSION
 
     def as_dict(self) -> dict[str, Any]:
@@ -248,7 +464,23 @@ class ApiResult:
             d["rate_limit"] = rate_limit
         if failure:
             d["failure"] = failure.as_dict()
+        if self.retry_summary is not None:
+            d.update(self.retry_summary.as_dict())
         return d
+
+
+RETRY_TERMINAL_KEYS = frozenset({
+    "attempts",
+    "elapsed_wait",
+    "retry_eligible",
+    "last_actor",
+    "last_bucket",
+    "outcome_certainty",
+    "reconciliation",
+    "recommended_next_action",
+    "effective_deadline",
+    "retry_exhausted_reason",
+})
 
 
 _TERMINAL_RESERVED_KEYS = frozenset({
@@ -276,6 +508,7 @@ _TERMINAL_RESERVED_KEYS = frozenset({
     "graphql_operation",
     "failure",
     "body",
+    *RETRY_TERMINAL_KEYS,
 })
 
 
@@ -295,6 +528,8 @@ def terminal_envelope(
         for key, value in redact_body(payload).items():
             if key == "operation" and value != envelope.get("operation"):
                 envelope.setdefault("action", value)
+            elif key in RETRY_TERMINAL_KEYS:
+                envelope[key] = value
             elif key not in _TERMINAL_RESERVED_KEYS:
                 envelope[key] = value
     elif payload is not None:
@@ -416,6 +651,10 @@ _ACTIVE_AUTH_ACTOR_RE = re.compile(
 def actor_from_gh_stderr(stderr: str) -> Optional[str]:
     matches = _ACTIVE_AUTH_ACTOR_RE.findall(stderr)
     return matches[-1].strip() if matches and matches[-1].strip() else None
+
+
+def active_fallback_was_authorized(stderr: str) -> bool:
+    return "explicitly authorized active-auth fallback" in stderr.casefold()
 
 
 def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:
@@ -544,6 +783,26 @@ def _is_graphql_rate_limit_body(body: Any) -> bool:
 def is_graphql_path(path: str) -> bool:
     normalized = path.split("?", 1)[0].rstrip("/").lower()
     return normalized == "graphql" or normalized.endswith("/graphql")
+
+
+def infer_api_bucket(path: str) -> str:
+    if is_graphql_path(path):
+        return "graphql"
+    normalized = path.split("?", 1)[0].rstrip("/").lower()
+    if re.search(r"(?:^|/)search(?:/|$)", normalized):
+        return "search"
+    return "rest_core"
+
+
+def normalized_provider_bucket(resource: Optional[str]) -> Optional[str]:
+    if not isinstance(resource, str):
+        return None
+    return {
+        "core": "rest_core",
+        "graphql": "graphql",
+        "rest_core": "rest_core",
+        "search": "search",
+    }.get(resource.casefold())
 
 
 def infer_graphql_operation_type(body: Any) -> GraphQLOperation:
@@ -1112,6 +1371,17 @@ def legacy_process_result(
     status, headers, body = parse_gh_include_output(stdout) if stdout else (0, {}, None)
     request_id = headers.get("x-github-request-id")
     rate_limit = RateLimitInfo.from_headers(headers)
+    provider_resource = rate_limit.resource
+    if provider_resource is None and isinstance(failure.rate_limit, dict):
+        candidate = failure.rate_limit.get("resource")
+        provider_resource = candidate if isinstance(candidate, str) else None
+    if provider_resource is None and rate_limit_result is not None:
+        provider_resource = (
+            rate_limit_result.rate_limit.resource
+            if rate_limit_result.rate_limit is not None
+            else rate_limit_result.bucket
+        )
+    result_bucket = normalized_provider_bucket(provider_resource) or bucket
     return ApiResult(
         ok=False,
         status=status,
@@ -1125,7 +1395,7 @@ def legacy_process_result(
         expected_actor=expected_actor,
         host=host or DEFAULT_HOST,
         transport=transport,
-        bucket=bucket,
+        bucket=result_bucket,
         graphql_operation=graphql_operation,
         completed_steps=resolved_completed_steps,
         failed_step=failed_step,
@@ -1245,6 +1515,1189 @@ def build_gh_command(
     return cmd
 
 
+_operation_rule_cache: dict[pathlib.Path, tuple[int, dict[str, OperationRetryRule]]] = {}
+
+
+def reset_operation_rule_cache() -> None:
+    _operation_rule_cache.clear()
+
+
+def operation_retry_rule(
+    operation: Optional[str],
+    *,
+    matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+) -> tuple[Optional[OperationRetryRule], Optional[str]]:
+    if not operation:
+        return None, "operation key is missing"
+    resolved = matrix_path.resolve()
+    try:
+        modified = resolved.stat().st_mtime_ns
+        cached = _operation_rule_cache.get(resolved)
+        if cached is None or cached[0] != modified:
+            with resolved.open("rb") as handle:
+                data = tomllib.load(handle)
+            if data.get("schema_version") != 2 or not isinstance(data.get("operations"), list):
+                return None, "operation matrix schema is invalid"
+            rules: dict[str, OperationRetryRule] = {}
+            for item in data["operations"]:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    continue
+                rules[item["id"]] = OperationRetryRule(
+                    operation=item["id"],
+                    idempotency=str(item.get("idempotency") or "unknown"),
+                    retry_eligibility=str(item.get("retry_eligibility") or "manual"),
+                    reconciliation_strategy=str(item.get("reconciliation_strategy") or "fail_closed_write"),
+                    quota_bucket=str(item.get("quota_bucket") or "unknown"),
+                )
+            _operation_rule_cache[resolved] = (modified, rules)
+        rule = _operation_rule_cache[resolved][1].get(operation)
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
+        return None, f"operation matrix could not be loaded ({type(exc).__name__})"
+    if rule is None:
+        return None, f"operation '{operation}' is absent from the accepted matrix"
+    return rule, None
+
+
+def default_retry_policy() -> RetryPolicy:
+    return RetryPolicy.from_env()
+
+
+def default_retry_runtime() -> RetryRuntime:
+    return RetryRuntime()
+
+
+def remaining_retry_timeout_seconds(
+    *,
+    retry_policy: Optional[RetryPolicy] = None,
+    retry_runtime: Optional[RetryRuntime] = None,
+    deadline_at: Optional[float] = None,
+) -> float:
+    policy = retry_policy or default_retry_policy()
+    runtime = retry_runtime or default_retry_runtime()
+    now = runtime.now()
+    inherited_deadline = deadline_at if deadline_at is not None else _env_optional_float(
+        "GITHUB_RETRY_DEADLINE_AT"
+    )
+    effective_deadline = min(
+        now + max(0.0, policy.max_wait_seconds),
+        inherited_deadline if inherited_deadline is not None else float("inf"),
+    )
+    return max(0.0, effective_deadline - now)
+
+
+@dataclass
+class _CooldownLease:
+    key: str
+    handle: Any
+    state_path: pathlib.Path
+
+
+class SharedCooldownStore:
+    def __init__(self, state_dir: pathlib.Path) -> None:
+        self.state_dir = state_dir
+
+    def _paths(self, key: str) -> tuple[pathlib.Path, pathlib.Path]:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return self.state_dir / f"{digest}.lock", self.state_dir / f"{digest}.json"
+
+    def _prepare(self) -> None:
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            self.state_dir.chmod(0o700)
+        except OSError:
+            pass
+
+    def _open_lock(self, key: str, *, blocking: bool) -> Optional[_CooldownLease]:
+        self._prepare()
+        lock_path, state_path = self._paths(key)
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            lock_path.chmod(0o600)
+        except OSError:
+            pass
+        flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(handle.fileno(), flags)
+        except BlockingIOError:
+            handle.close()
+            return None
+        except OSError:
+            handle.close()
+            raise
+        return _CooldownLease(key=key, handle=handle, state_path=state_path)
+
+    def _read_state(
+        self,
+        lease: _CooldownLease,
+        *,
+        now: float,
+        stale_after_seconds: float,
+    ) -> Optional[dict[str, Any]]:
+        try:
+            raw = json.loads(lease.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            try:
+                lease.state_path.unlink()
+            except FileNotFoundError:
+                pass
+            return None
+        if not isinstance(raw, dict):
+            try:
+                lease.state_path.unlink()
+            except FileNotFoundError:
+                pass
+            return None
+        try:
+            updated_at = float(raw.get("updated_at") or 0.0)
+            expires_at = float(raw.get("expires_at") or 0.0)
+            ready_at = float(raw.get("ready_at") or 0.0)
+        except (TypeError, ValueError):
+            try:
+                lease.state_path.unlink()
+            except FileNotFoundError:
+                pass
+            return None
+        if expires_at <= now or updated_at + stale_after_seconds <= now:
+            try:
+                lease.state_path.unlink()
+            except FileNotFoundError:
+                pass
+            return None
+        raw["ready_at"] = ready_at
+        return raw
+
+    def _write_state(self, lease: _CooldownLease, state: dict[str, Any]) -> None:
+        self._prepare()
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=self.state_dir,
+            prefix=f".{lease.state_path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(state, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = pathlib.Path(handle.name)
+        try:
+            temporary.chmod(0o600)
+            os.replace(temporary, lease.state_path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def release(self, lease: Optional[_CooldownLease]) -> None:
+        if lease is None:
+            return
+        try:
+            fcntl.flock(lease.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lease.handle.close()
+
+    def claim(
+        self,
+        key: str,
+        *,
+        now: float,
+        policy: RetryPolicy,
+    ) -> tuple[Optional[_CooldownLease], Optional[float], bool]:
+        lease = self._open_lock(key, blocking=False)
+        if lease is None:
+            return None, now + policy.lock_poll_seconds, True
+        try:
+            state = self._read_state(lease, now=now, stale_after_seconds=policy.stale_after_seconds)
+        except OSError:
+            self.release(lease)
+            raise
+        if state is None:
+            self.release(lease)
+            return None, None, False
+        ready_at = float(state.get("ready_at") or 0.0)
+        if ready_at > now:
+            self.release(lease)
+            return None, ready_at, True
+        return lease, None, True
+
+    def publish(
+        self,
+        key: str,
+        *,
+        ready_at: float,
+        cause: str,
+        now: float,
+        policy: RetryPolicy,
+        lease: Optional[_CooldownLease] = None,
+        deadline: Optional[float] = None,
+        runtime: Optional[RetryRuntime] = None,
+    ) -> Optional[str]:
+        if lease is not None and lease.key != key:
+            self.release(lease)
+            lease = None
+        active = lease
+        if active is None and deadline is None:
+            active = self._open_lock(key, blocking=True)
+        while active is None and deadline is not None and runtime is not None:
+            if runtime.cancelled():
+                return "cancelled"
+            current = runtime.now()
+            if current >= deadline:
+                return "deadline_exceeded"
+            active = self._open_lock(key, blocking=False)
+            if active is not None:
+                break
+            duration = min(policy.lock_poll_seconds, deadline - current)
+            if duration <= 0:
+                return "deadline_exceeded"
+            try:
+                runtime.sleep(duration)
+            except KeyboardInterrupt:
+                return "cancelled"
+        if active is None:
+            return "deadline_exceeded"
+        written_at = runtime.now() if runtime is not None else now
+        try:
+            existing = self._read_state(
+                active,
+                now=written_at,
+                stale_after_seconds=policy.stale_after_seconds,
+            )
+            existing_ready_at = float(existing.get("ready_at") or 0.0) if existing else 0.0
+            published_ready_at = max(ready_at, existing_ready_at)
+            published_cause = (
+                str(existing.get("cause") or cause)
+                if existing is not None and existing_ready_at > ready_at
+                else cause
+            )
+            self._write_state(
+                active,
+                {
+                    "schema_version": 1,
+                    "key": key,
+                    "cause": published_cause,
+                    "ready_at": published_ready_at,
+                    "updated_at": written_at,
+                    "expires_at": max(published_ready_at, written_at) + policy.stale_after_seconds,
+                },
+            )
+        finally:
+            self.release(active)
+        return None
+
+    def finish(
+        self,
+        *,
+        now: float,
+        policy: RetryPolicy,
+        lease: Optional[_CooldownLease],
+    ) -> None:
+        if lease is None:
+            return
+        drain = max(0.0, policy.drain_seconds)
+        try:
+            self._write_state(
+                lease,
+                {
+                    "schema_version": 1,
+                    "key": lease.key,
+                    "cause": "post_cooldown_drain",
+                    "ready_at": now + drain,
+                    "updated_at": now,
+                    "expires_at": now + max(5.0, drain * 4.0),
+                },
+            )
+        finally:
+            self.release(lease)
+
+
+def _cooldown_key(host: str, actor: Optional[str], bucket: str) -> str:
+    return json.dumps(
+        {
+            "host": host.casefold(),
+            "actor": (actor or "unresolved").casefold(),
+            "bucket": bucket.casefold(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _retry_target(
+    result: ApiResult,
+    *,
+    attempt: int,
+    now: float,
+    deadline: float,
+    policy: RetryPolicy,
+    runtime: RetryRuntime,
+) -> float:
+    failure = result.failure
+    cause = failure.cause if failure else "unknown"
+    rate_limit = result.rate_limit.as_dict() if result.rate_limit and result.rate_limit.is_populated() else {}
+    if not rate_limit and failure and failure.rate_limit:
+        rate_limit = failure.rate_limit
+    reset = rate_limit.get("reset")
+    retry_after = rate_limit.get("retry_after")
+    if cause in {
+        "rest_primary_rate_limited",
+        "graphql_primary_rate_limited",
+        "rate_limited_unknown_bucket",
+    } and isinstance(reset, (int, float)):
+        base = max(now, float(reset))
+    elif isinstance(retry_after, (int, float)):
+        base = now + max(0.0, float(retry_after))
+    elif cause == "secondary_rate_limited" and isinstance(reset, (int, float)):
+        base = max(now, float(reset))
+    else:
+        exponent = max(0, attempt - 1)
+        base = now + min(
+            max(policy.base_backoff_seconds, 0.0) * (2 ** exponent),
+            max(policy.max_backoff_seconds, policy.base_backoff_seconds, 0.0),
+        )
+    try:
+        raw_jitter = float(runtime.jitter(policy.jitter_seconds))
+    except (TypeError, ValueError):
+        raw_jitter = 0.0
+    jitter_limit = min(
+        max(0.0, policy.jitter_seconds),
+        max(0.0, deadline - base - 0.001),
+    )
+    jitter = (
+        min(max(0.0, raw_jitter), jitter_limit)
+        if math.isfinite(raw_jitter)
+        else 0.0
+    )
+    return base + jitter
+
+
+def _wait_until(
+    target: float,
+    *,
+    deadline: float,
+    operation: str,
+    cause: str,
+    attempt: int,
+    policy: RetryPolicy,
+    runtime: RetryRuntime,
+) -> tuple[bool, float, Optional[str]]:
+    now = runtime.now()
+    if target > deadline:
+        return False, 0.0, "deadline_exceeded"
+    if runtime.cancelled():
+        return False, 0.0, "cancelled"
+    elapsed = 0.0
+    next_progress = now
+    should_report = target - now >= policy.progress_interval_seconds > 0
+    while now < target:
+        if runtime.cancelled():
+            return False, elapsed, "cancelled"
+        if now >= deadline:
+            return False, elapsed, "deadline_exceeded"
+        if should_report and now >= next_progress:
+            runtime.progress(
+                {
+                    "operation": operation,
+                    "cause": cause,
+                    "attempt": attempt,
+                    "max_attempts": policy.max_attempts,
+                    "remaining_seconds": target - now,
+                    "deadline": deadline,
+                }
+            )
+            next_progress = now + policy.progress_interval_seconds
+        duration = min(policy.wait_slice_seconds, target - now, deadline - now)
+        if duration <= 0:
+            return False, elapsed, "deadline_exceeded"
+        try:
+            runtime.sleep(duration)
+        except KeyboardInterrupt:
+            return False, elapsed, "cancelled"
+        elapsed += duration
+        updated = runtime.now()
+        now = updated if updated > now else now + duration
+    return True, elapsed, None
+
+
+def _retry_failure_result(
+    result: ApiResult,
+    *,
+    cause: str,
+    message: str,
+    is_write: bool,
+) -> ApiResult:
+    previous = result.failure
+    result.ok = False
+    result.failure = FailureDetail(
+        cause=cause,
+        message=message,
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome=previous.write_outcome if previous else ("unknown" if is_write else None),
+        completed_steps=list(result.completed_steps),
+        failed_step=result.failed_step or "retry_wait",
+        request_id=result.request_id,
+        rate_limit=(
+            result.rate_limit.as_dict()
+            if result.rate_limit and result.rate_limit.is_populated()
+            else previous.rate_limit if previous else None
+        ),
+    )
+    return result
+
+
+def _local_retry_failure(
+    *,
+    operation: str,
+    actor: Optional[str],
+    expected_actor: Optional[str],
+    host: str,
+    bucket: str,
+    is_write: bool,
+    cause: str,
+    message: str,
+    retry_at: Optional[float] = None,
+) -> ApiResult:
+    rate_limit = RateLimitInfo(reset=int(retry_at), resource=bucket) if retry_at is not None else None
+    failure = FailureDetail(
+        cause=cause,
+        message=message,
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome="not_started" if is_write else None,
+        failed_step="retry_wait",
+        rate_limit=rate_limit.as_dict() if rate_limit else None,
+    )
+    return ApiResult(
+        ok=False,
+        status=0,
+        body=None,
+        operation=operation,
+        actor=actor,
+        expected_actor=expected_actor,
+        host=host,
+        bucket=bucket,
+        rate_limit=rate_limit,
+        failed_step="retry_wait",
+        failure=failure,
+    )
+
+
+def subprocess_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def subprocess_timeout_result(
+    *,
+    operation: str,
+    is_write: bool,
+    actor: Optional[str],
+    expected_actor: Optional[str],
+    host: Optional[str],
+    transport: str,
+    bucket: str,
+    graphql_operation: Optional[GraphQLOperation] = None,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: str = "subprocess_timeout",
+    stderr: Any = None,
+) -> ApiResult:
+    steps = list(completed_steps or [])
+    timeout_stderr = subprocess_output_text(stderr)
+    reported_actor = actor_from_gh_stderr(timeout_stderr)
+    authorized_actor_change = active_fallback_was_authorized(timeout_stderr)
+    resolved_actor = reported_actor or actor
+    resolved_expected_actor = None if authorized_actor_change else expected_actor
+    failure = FailureDetail(
+        cause="deadline_exceeded",
+        message="GitHub CLI call exceeded the effective retry deadline",
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome="unknown" if is_write else None,
+        completed_steps=steps,
+        failed_step=failed_step,
+    )
+    return ApiResult(
+        ok=False,
+        status=0,
+        body=None,
+        operation=operation,
+        actor=resolved_actor,
+        expected_actor=resolved_expected_actor,
+        host=host or DEFAULT_HOST,
+        transport=transport,
+        bucket=bucket,
+        graphql_operation=graphql_operation,
+        completed_steps=steps,
+        failed_step=failed_step,
+        failure=failure,
+    )
+
+
+def _outcome_certainty(
+    result: ApiResult,
+    *,
+    is_write: bool,
+    reconciliation: Optional[dict[str, Any]],
+) -> str:
+    if result.ok:
+        return "reconciled_applied" if reconciliation and reconciliation.get("result") == "matched" else "confirmed"
+    if not is_write:
+        return "not_applicable"
+    write_outcome = result.failure.write_outcome if result.failure else None
+    if write_outcome in {"not_started", "rejected"}:
+        return "confirmed_not_applied"
+    if reconciliation and reconciliation.get("result") == "no_match":
+        return "reconciled_not_applied"
+    return "unknown"
+
+
+def _attach_retry_summary(
+    result: ApiResult,
+    *,
+    attempts: int,
+    elapsed_wait: float,
+    retry_eligible: bool,
+    actor: Optional[str],
+    bucket: str,
+    is_write: bool,
+    reconciliation: Optional[dict[str, Any]],
+    recommended_next_action: str,
+    effective_deadline: float,
+    exhausted_reason: Optional[str] = None,
+) -> ApiResult:
+    result.retry_summary = RetrySummary(
+        attempts=attempts,
+        elapsed_wait=elapsed_wait,
+        retry_eligible=retry_eligible,
+        last_actor=result.actor or actor,
+        last_bucket=result.bucket or bucket,
+        outcome_certainty=_outcome_certainty(
+            result,
+            is_write=is_write,
+            reconciliation=reconciliation,
+        ),
+        reconciliation=reconciliation,
+        recommended_next_action=recommended_next_action,
+        effective_deadline=effective_deadline,
+        exhausted_reason=exhausted_reason,
+    )
+    return result
+
+
+def run_with_retry(
+    attempt_call: Callable[[], ApiResult],
+    *,
+    operation: str,
+    is_write: bool,
+    actor: Optional[str] = None,
+    expected_actor: Optional[str] = None,
+    host: Optional[str] = None,
+    bucket: Optional[str] = None,
+    reconcile: Optional[
+        Callable[[ApiResult, ReconciliationContext], ReconciliationDecision]
+    ] = None,
+    retry_policy: Optional[RetryPolicy] = None,
+    retry_runtime: Optional[RetryRuntime] = None,
+    deadline_at: Optional[float] = None,
+    matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+    attempt_with_timeout: Optional[Callable[[float], ApiResult]] = None,
+) -> ApiResult:
+    policy = retry_policy or default_retry_policy()
+    runtime = retry_runtime or default_retry_runtime()
+    resolved_host = host or DEFAULT_HOST
+    resolved_bucket = bucket or "unknown"
+    started_at = runtime.now()
+    inherited_deadline = deadline_at if deadline_at is not None else _env_optional_float(
+        "GITHUB_RETRY_DEADLINE_AT"
+    )
+    effective_deadline = min(
+        started_at + max(0.0, policy.max_wait_seconds),
+        inherited_deadline if inherited_deadline is not None else float("inf"),
+    )
+    rule, rule_error = operation_retry_rule(operation, matrix_path=matrix_path)
+    if bucket is None and rule is not None:
+        resolved_bucket = rule.quota_bucket
+    eligible = rule is not None and rule.retry_eligibility in {"safe", "conditional"}
+    initial_reason = "cancelled" if runtime.cancelled() else (
+        "deadline_exceeded" if runtime.now() >= effective_deadline else None
+    )
+    if initial_reason is not None:
+        result = _local_retry_failure(
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=resolved_host,
+            bucket=resolved_bucket,
+            is_write=is_write,
+            cause=initial_reason,
+            message=(
+                "GitHub operation was cancelled before the first attempt"
+                if initial_reason == "cancelled"
+                else "GitHub retry deadline expired before the first attempt"
+            ),
+        )
+        return _attach_retry_summary(
+            result,
+            attempts=0,
+            elapsed_wait=0.0,
+            retry_eligible=eligible,
+            actor=actor,
+            bucket=resolved_bucket,
+            is_write=is_write,
+            reconciliation=None,
+            recommended_next_action=(
+                "rerun_when_ready" if initial_reason == "cancelled" else "retry_after_reported_reset"
+            ),
+            effective_deadline=effective_deadline,
+            exhausted_reason=initial_reason,
+        )
+
+    def execute_attempt() -> ApiResult:
+        if attempt_with_timeout is None:
+            return attempt_call()
+        remaining = max(0.0, effective_deadline - runtime.now())
+        return attempt_with_timeout(remaining)
+
+    if not eligible:
+        result = execute_attempt()
+        context_actor = expected_actor or actor
+        if (
+            result.actor
+            and context_actor
+            and result.actor.casefold() != context_actor.casefold()
+            and result.expected_actor is not None
+        ):
+            result = _retry_failure_result(
+                result,
+                cause="actor_mismatch",
+                message=(
+                    f"GitHub actor changed during operation context from '{context_actor}' "
+                    f"to '{result.actor}'"
+                ),
+                is_write=is_write,
+            )
+            return _attach_retry_summary(
+                result,
+                attempts=1,
+                elapsed_wait=0.0,
+                retry_eligible=False,
+                actor=context_actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=None,
+                recommended_next_action="start_new_authorized_actor_context",
+                effective_deadline=effective_deadline,
+                exhausted_reason="actor_changed",
+            )
+        if result.bucket and result.bucket.casefold() != resolved_bucket.casefold():
+            if resolved_bucket.casefold() in FLEXIBLE_RETRY_BUCKETS:
+                resolved_bucket = result.bucket
+            else:
+                result = _retry_failure_result(
+                    result,
+                    cause="retry_context_changed",
+                    message=(
+                        f"GitHub quota bucket changed during operation context from '{resolved_bucket}' "
+                        f"to '{result.bucket}'"
+                    ),
+                    is_write=is_write,
+                )
+                return _attach_retry_summary(
+                    result,
+                    attempts=1,
+                    elapsed_wait=0.0,
+                    retry_eligible=False,
+                    actor=context_actor or actor,
+                    bucket=resolved_bucket,
+                    is_write=is_write,
+                    reconciliation=None,
+                    recommended_next_action="start_new_bucket_context",
+                    effective_deadline=effective_deadline,
+                    exhausted_reason="bucket_changed",
+                )
+        if result.failure is not None:
+            result.failure.disposition = "stop"
+        recommendation = (
+            "add_operation_to_matrix_before_retrying"
+            if rule is None
+            else "follow_operation_reconciliation_strategy"
+        )
+        if rule_error and result.failure is not None:
+            result.failure.message = f"{result.failure.message}; automatic retry disabled: {rule_error}"
+        return _attach_retry_summary(
+            result,
+            attempts=1,
+            elapsed_wait=0.0,
+            retry_eligible=False,
+            actor=actor,
+            bucket=resolved_bucket,
+            is_write=is_write,
+            reconciliation=None,
+            recommended_next_action="none" if result.ok else recommendation,
+            effective_deadline=effective_deadline,
+        )
+
+    store = SharedCooldownStore(policy.state_dir)
+    attempts = 0
+    elapsed_wait = 0.0
+    reconciliation: Optional[dict[str, Any]] = None
+    context_actor = expected_actor
+    last_result: Optional[ApiResult] = None
+    cooldown_error: Optional[str] = None
+
+    def finish_cooldown(lease: Optional[_CooldownLease]) -> None:
+        try:
+            store.finish(now=runtime.now(), policy=policy, lease=lease)
+        except OSError:
+            pass
+
+    def release_cooldown(lease: Optional[_CooldownLease]) -> None:
+        try:
+            store.release(lease)
+        except OSError:
+            pass
+
+    while True:
+        key_actor = context_actor or actor
+        key = _cooldown_key(resolved_host, key_actor, resolved_bucket)
+        try:
+            lease, wait_target, coordinated = store.claim(key, now=runtime.now(), policy=policy)
+        except OSError as exc:
+            lease, wait_target, coordinated = None, None, False
+            cooldown_error = f"shared cooldown state is unavailable ({type(exc).__name__})"
+        if wait_target is not None:
+            completed, waited, reason = _wait_until(
+                wait_target,
+                deadline=effective_deadline,
+                operation=operation,
+                cause="shared_cooldown" if coordinated else "retry_backoff",
+                attempt=max(1, attempts + 1),
+                policy=policy,
+                runtime=runtime,
+            )
+            elapsed_wait += waited
+            if not completed:
+                result = last_result or _local_retry_failure(
+                    operation=operation,
+                    actor=context_actor or actor,
+                    expected_actor=expected_actor,
+                    host=resolved_host,
+                    bucket=resolved_bucket,
+                    is_write=is_write,
+                    cause=reason or "deadline_exceeded",
+                    message="GitHub retry wait did not complete before the effective deadline",
+                    retry_at=wait_target,
+                )
+                if last_result is not None:
+                    result = _retry_failure_result(
+                        result,
+                        cause=reason or "deadline_exceeded",
+                        message="GitHub retry wait did not complete before the effective deadline",
+                        is_write=is_write,
+                    )
+                return _attach_retry_summary(
+                    result,
+                    attempts=attempts,
+                    elapsed_wait=elapsed_wait,
+                    retry_eligible=True,
+                    actor=context_actor or actor,
+                    bucket=resolved_bucket,
+                    is_write=is_write,
+                    reconciliation=reconciliation,
+                    recommended_next_action=(
+                        "rerun_when_ready" if reason == "cancelled" else "retry_after_reported_reset"
+                    ),
+                    effective_deadline=effective_deadline,
+                    exhausted_reason=reason,
+                )
+            continue
+
+        pre_attempt_reason = "cancelled" if runtime.cancelled() else (
+            "deadline_exceeded" if runtime.now() >= effective_deadline else None
+        )
+        if pre_attempt_reason is not None:
+            release_cooldown(lease)
+            result = last_result or _local_retry_failure(
+                operation=operation,
+                actor=context_actor or actor,
+                expected_actor=expected_actor,
+                host=resolved_host,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                cause=pre_attempt_reason,
+                message=(
+                    "GitHub operation was cancelled before the next attempt"
+                    if pre_attempt_reason == "cancelled"
+                    else "GitHub retry deadline expired before the next attempt"
+                ),
+            )
+            result = _retry_failure_result(
+                result,
+                cause=pre_attempt_reason,
+                message=(
+                    "GitHub operation was cancelled before the next attempt"
+                    if pre_attempt_reason == "cancelled"
+                    else "GitHub retry deadline expired before the next attempt"
+                ),
+                is_write=is_write,
+            )
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=True,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action=(
+                    "rerun_when_ready"
+                    if pre_attempt_reason == "cancelled"
+                    else "retry_after_reported_reset"
+                ),
+                effective_deadline=effective_deadline,
+                exhausted_reason=pre_attempt_reason,
+            )
+
+        attempts += 1
+        result = execute_attempt()
+        last_result = result
+        actual_actor = result.actor
+        if context_actor is None and actual_actor:
+            context_actor = actual_actor
+        elif actual_actor and context_actor and actual_actor.casefold() != context_actor.casefold():
+            if attempts == 1 and result.expected_actor is None:
+                context_actor = actual_actor
+            else:
+                finish_cooldown(lease)
+                result = _retry_failure_result(
+                    result,
+                    cause="actor_mismatch",
+                    message=(
+                        f"GitHub actor changed during retry context from '{context_actor}' "
+                        f"to '{actual_actor}'"
+                    ),
+                    is_write=is_write,
+                )
+                return _attach_retry_summary(
+                    result,
+                    attempts=attempts,
+                    elapsed_wait=elapsed_wait,
+                    retry_eligible=False,
+                    actor=context_actor,
+                    bucket=resolved_bucket,
+                    is_write=is_write,
+                    reconciliation=reconciliation,
+                    recommended_next_action="start_new_authorized_actor_context",
+                    effective_deadline=effective_deadline,
+                    exhausted_reason="actor_changed",
+                )
+        if result.bucket and result.bucket.casefold() != resolved_bucket.casefold():
+            if resolved_bucket.casefold() in FLEXIBLE_RETRY_BUCKETS and attempts == 1:
+                resolved_bucket = result.bucket
+                release_cooldown(lease)
+                lease = None
+            else:
+                finish_cooldown(lease)
+                result = _retry_failure_result(
+                    result,
+                    cause="retry_context_changed",
+                    message=(
+                        f"GitHub quota bucket changed during retry context from '{resolved_bucket}' "
+                        f"to '{result.bucket}'"
+                    ),
+                    is_write=is_write,
+                )
+                return _attach_retry_summary(
+                    result,
+                    attempts=attempts,
+                    elapsed_wait=elapsed_wait,
+                    retry_eligible=False,
+                    actor=context_actor or actor,
+                    bucket=resolved_bucket,
+                    is_write=is_write,
+                    reconciliation=reconciliation,
+                    recommended_next_action="start_new_bucket_context",
+                    effective_deadline=effective_deadline,
+                    exhausted_reason="bucket_changed",
+                )
+        if result.ok:
+            finish_cooldown(lease)
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=True,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action="none",
+                effective_deadline=effective_deadline,
+            )
+
+        failure = result.failure
+        can_retry = bool(failure and failure.retryable and not is_write)
+        if is_write and failure and failure.write_outcome in {"not_started", "rejected"}:
+            can_retry = failure.retryable
+        if is_write and failure and failure.write_outcome == "unknown":
+            can_retry = (
+                rule.idempotency == "idempotent"
+                and failure.cause in {
+                    "network_provider_failure",
+                    "deadline_exceeded",
+                    "graphql_primary_rate_limited",
+                    "rest_primary_rate_limited",
+                    "rate_limited_unknown_bucket",
+                }
+            )
+            if reconcile is not None:
+                release_cooldown(lease)
+                lease = None
+                reconciliation_stop = "cancelled" if runtime.cancelled() else (
+                    "deadline_exceeded" if runtime.now() >= effective_deadline else None
+                )
+                if reconciliation_stop is not None:
+                    finish_cooldown(lease)
+                    reconciliation = {
+                        "strategy": rule.reconciliation_strategy,
+                        "result": "failed",
+                        "failure": {
+                            "cause": reconciliation_stop,
+                            "failed_step": "reconciliation",
+                        },
+                    }
+                    result = _retry_failure_result(
+                        result,
+                        cause=reconciliation_stop,
+                        message=(
+                            "GitHub write outcome could not be reconciled before cancellation"
+                            if reconciliation_stop == "cancelled"
+                            else "GitHub write outcome could not be reconciled before the effective deadline"
+                        ),
+                        is_write=is_write,
+                    )
+                    return _attach_retry_summary(
+                        result,
+                        attempts=attempts,
+                        elapsed_wait=elapsed_wait,
+                        retry_eligible=True,
+                        actor=context_actor or actor,
+                        bucket=resolved_bucket,
+                        is_write=is_write,
+                        reconciliation=reconciliation,
+                        recommended_next_action="reconcile_or_retry_manually",
+                        effective_deadline=effective_deadline,
+                        exhausted_reason=reconciliation_stop,
+                    )
+                try:
+                    decision = reconcile(
+                        result,
+                        ReconciliationContext(
+                            deadline_at=effective_deadline,
+                            retry_policy=policy,
+                            retry_runtime=runtime,
+                        ),
+                    )
+                except Exception as exc:
+                    decision = ReconciliationDecision(
+                        "failed",
+                        details={"error": f"reconciliation failed ({type(exc).__name__})"},
+                    )
+                if not isinstance(decision, ReconciliationDecision):
+                    decision = ReconciliationDecision(
+                        "failed",
+                        details={"error": "reconciliation returned an invalid decision"},
+                    )
+                reconciliation = {
+                    "strategy": rule.reconciliation_strategy,
+                    "result": decision.outcome,
+                    **redact_body(decision.details),
+                }
+                if decision.outcome == "matched":
+                    result.ok = True
+                    result.status = result.status if 200 <= result.status < 300 else 200
+                    result.body = decision.body
+                    result.failure = None
+                    finish_cooldown(lease)
+                    return _attach_retry_summary(
+                        result,
+                        attempts=attempts,
+                        elapsed_wait=elapsed_wait,
+                        retry_eligible=True,
+                        actor=context_actor or actor,
+                        bucket=resolved_bucket,
+                        is_write=is_write,
+                        reconciliation=reconciliation,
+                        recommended_next_action="none",
+                        effective_deadline=effective_deadline,
+                    )
+                can_retry = decision.outcome == "no_match" and rule.idempotency != "non_idempotent"
+
+        if not can_retry:
+            finish_cooldown(lease)
+            if result.failure is not None:
+                result.failure.disposition = "stop"
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=False,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action=(
+                    "reconcile_or_retry_manually"
+                    if is_write and failure and failure.write_outcome == "unknown"
+                    else "inspect_last_failure"
+                ),
+                effective_deadline=effective_deadline,
+                exhausted_reason="not_retryable",
+            )
+        if cooldown_error is not None:
+            finish_cooldown(lease)
+            if result.failure is not None:
+                result.failure.disposition = "stop"
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=False,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action="repair_retry_state_directory",
+                effective_deadline=effective_deadline,
+                exhausted_reason="cooldown_state_unavailable",
+            )
+        if attempts >= policy.max_attempts:
+            finish_cooldown(lease)
+            if result.failure is not None:
+                result.failure.disposition = "stop"
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=True,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action="inspect_last_failure",
+                effective_deadline=effective_deadline,
+                exhausted_reason="attempt_budget",
+            )
+
+        now = runtime.now()
+        target = _retry_target(
+            result,
+            attempt=attempts,
+            now=now,
+            deadline=effective_deadline,
+            policy=policy,
+            runtime=runtime,
+        )
+        publish_actor = context_actor or actual_actor or actor
+        publish_key = _cooldown_key(resolved_host, publish_actor, resolved_bucket)
+        try:
+            publish_stop = store.publish(
+                publish_key,
+                ready_at=target,
+                cause=failure.cause if failure else "retryable_failure",
+                now=now,
+                policy=policy,
+                lease=lease,
+                deadline=effective_deadline,
+                runtime=runtime,
+            )
+        except OSError:
+            if result.failure is not None:
+                result.failure.disposition = "stop"
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=False,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action="repair_retry_state_directory",
+                effective_deadline=effective_deadline,
+                exhausted_reason="cooldown_state_unavailable",
+            )
+        if publish_stop is not None:
+            result = _retry_failure_result(
+                result,
+                cause=publish_stop,
+                message=(
+                    "GitHub retry coordination was cancelled before cooldown publication"
+                    if publish_stop == "cancelled"
+                    else "GitHub retry deadline expired before cooldown publication"
+                ),
+                is_write=is_write,
+            )
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=True,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action=(
+                    "rerun_when_ready" if publish_stop == "cancelled" else "retry_after_reported_reset"
+                ),
+                effective_deadline=effective_deadline,
+                exhausted_reason=publish_stop,
+            )
+        completed, waited, reason = _wait_until(
+            target,
+            deadline=effective_deadline,
+            operation=operation,
+            cause=failure.cause if failure else "retryable_failure",
+            attempt=attempts + 1,
+            policy=policy,
+            runtime=runtime,
+        )
+        elapsed_wait += waited
+        if not completed:
+            result = _retry_failure_result(
+                result,
+                cause=reason or "deadline_exceeded",
+                message="GitHub retry wait did not complete before the effective deadline",
+                is_write=is_write,
+            )
+            return _attach_retry_summary(
+                result,
+                attempts=attempts,
+                elapsed_wait=elapsed_wait,
+                retry_eligible=True,
+                actor=context_actor or actor,
+                bucket=resolved_bucket,
+                is_write=is_write,
+                reconciliation=reconciliation,
+                recommended_next_action=(
+                    "rerun_when_ready" if reason == "cancelled" else "retry_after_reported_reset"
+                ),
+                effective_deadline=effective_deadline,
+                exhausted_reason=reason,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -1267,6 +2720,7 @@ def call_gh(
     host: Optional[str] = None,
     bucket: Optional[str] = None,
     graphql_operation: Optional[GraphQLOperation] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -1299,10 +2753,10 @@ def call_gh(
         explicit_is_write=is_write,
         graphql_operation=resolved_graphql_operation,
     )
-    resolved_bucket = bucket or ("graphql" if is_graphql_path(path) else "rest_core")
+    resolved_bucket = bucket or infer_api_bucket(path)
     resolved_host = host or DEFAULT_HOST
 
-    if expected_actor and actor and expected_actor != actor:
+    if expected_actor and actor and expected_actor.casefold() != actor.casefold():
         failure = classify_error(
             0,
             {},
@@ -1348,6 +2802,21 @@ def call_gh(
             input=stdin_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess_timeout_result(
+            operation=operation or "github.api.call",
+            is_write=is_write,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=resolved_host,
+            transport=TRANSPORT,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps,
+            failed_step=failed_step or "subprocess_timeout",
+            stderr=exc.stderr,
         )
     except (FileNotFoundError, PermissionError) as exc:
         return ApiResult(
@@ -1400,7 +2869,39 @@ def call_gh(
 
     raw_stdout = proc.stdout.decode("utf-8", errors="replace")
     raw_stderr = proc.stderr.decode("utf-8", errors="replace").strip()
-    actor = actor or actor_from_gh_stderr(raw_stderr)
+    reported_actor = actor_from_gh_stderr(raw_stderr)
+    if reported_actor:
+        actor = reported_actor
+    authorized_actor_change = active_fallback_was_authorized(raw_stderr)
+    if expected_actor and actor and expected_actor.casefold() != actor.casefold() and not authorized_actor_change:
+        failure = classify_error(
+            0,
+            {},
+            None,
+            is_write=is_write,
+            expected_actor=expected_actor,
+            actual_actor=actor,
+        )
+        if is_write:
+            failure.write_outcome = "unknown"
+        failure.completed_steps = completed_steps
+        failure.failed_step = failed_step or "actor_verification"
+        return ApiResult(
+            ok=False,
+            status=0,
+            body=None,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=resolved_host,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps,
+            failed_step=failure.failed_step,
+            failure=failure,
+        )
+    if authorized_actor_change:
+        expected_actor = None
 
     # gh printed nothing (network failure before HTTP response)
     if not raw_stdout and proc.returncode != 0:
@@ -1427,6 +2928,7 @@ def call_gh(
         status = 200
     request_id = headers.get("x-github-request-id")
     rate_limit = RateLimitInfo.from_headers(headers)
+    response_bucket = normalized_provider_bucket(rate_limit.resource) or resolved_bucket
 
     # HTTP-200 GraphQL error (rate limit embedded in success response)
     if status == 200 and _is_graphql_rate_limit_body(parsed_body):
@@ -1451,7 +2953,7 @@ def call_gh(
             actor=actor,
             expected_actor=expected_actor,
             host=resolved_host,
-            bucket=resolved_bucket,
+            bucket=response_bucket,
             graphql_operation=resolved_graphql_operation,
             completed_steps=completed_steps,
             failed_step=failure.failed_step,
@@ -1484,7 +2986,7 @@ def call_gh(
             actor=actor,
             expected_actor=expected_actor,
             host=resolved_host,
-            bucket=resolved_bucket,
+            bucket=response_bucket,
             graphql_operation=resolved_graphql_operation,
             completed_steps=completed_steps,
             failed_step=failure.failed_step,
@@ -1502,9 +3004,83 @@ def call_gh(
         actor=actor,
         expected_actor=expected_actor,
         host=resolved_host,
-        bucket=resolved_bucket,
+        bucket=response_bucket,
         graphql_operation=resolved_graphql_operation,
         completed_steps=completed_steps,
+    )
+
+
+def call_gh_with_retry(
+    method: str,
+    path: str,
+    body: Any = None,
+    *,
+    gh_cmd: str = DEFAULT_GH,
+    api_version: str = DEFAULT_API_VERSION,
+    extra_headers: Optional[dict[str, str]] = None,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: Optional[str] = None,
+    is_write: Optional[bool] = None,
+    operation: Optional[str] = None,
+    actor: Optional[str] = None,
+    expected_actor: Optional[str] = None,
+    host: Optional[str] = None,
+    bucket: Optional[str] = None,
+    graphql_operation: Optional[GraphQLOperation] = None,
+    reconcile: Optional[
+        Callable[[ApiResult, ReconciliationContext], ReconciliationDecision]
+    ] = None,
+    retry_policy: Optional[RetryPolicy] = None,
+    retry_runtime: Optional[RetryRuntime] = None,
+    deadline_at: Optional[float] = None,
+    matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+) -> ApiResult:
+    resolved_graphql_operation = graphql_operation
+    if is_graphql_path(path) and resolved_graphql_operation is None:
+        resolved_graphql_operation = infer_graphql_operation_type(body)
+    resolved_is_write = infer_is_write(
+        method,
+        path,
+        body,
+        explicit_is_write=is_write,
+        graphql_operation=resolved_graphql_operation,
+    )
+    resolved_bucket = bucket or infer_api_bucket(path)
+    resolved_operation = operation or "github.api.call"
+    def attempt(timeout_seconds: Optional[float]) -> ApiResult:
+        return call_gh(
+            method,
+            path,
+            body,
+            gh_cmd=gh_cmd,
+            api_version=api_version,
+            extra_headers=extra_headers,
+            completed_steps=completed_steps,
+            failed_step=failed_step,
+            is_write=resolved_is_write,
+            operation=resolved_operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            host=host,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            timeout_seconds=timeout_seconds,
+        )
+
+    return run_with_retry(
+        lambda: attempt(None),
+        operation=resolved_operation,
+        is_write=resolved_is_write,
+        actor=actor,
+        expected_actor=expected_actor,
+        host=host,
+        bucket=resolved_bucket,
+        reconcile=reconcile,
+        retry_policy=retry_policy,
+        retry_runtime=retry_runtime,
+        deadline_at=deadline_at,
+        matrix_path=matrix_path,
+        attempt_with_timeout=lambda timeout: attempt(timeout),
     )
 
 
@@ -1512,7 +3088,10 @@ def call_gh(
 # Rate-limit probe (bounded: at most one live call per process)
 # ---------------------------------------------------------------------------
 
-_rate_limit_cache: dict[tuple[str, str, Optional[str], Optional[str], Optional[str], str], ApiResult] = {}
+_rate_limit_cache: dict[
+    tuple[str, str, Optional[str], Optional[str], Optional[str], str],
+    ApiResult,
+] = {}
 
 
 def rate_limit_probe(
@@ -1523,6 +3102,7 @@ def rate_limit_probe(
     expected_actor: Optional[str] = None,
     host: Optional[str] = None,
     operation: str = "rate_limit.probe",
+    timeout_seconds: Optional[float] = None,
 ) -> ApiResult:
     """
     Fetch ``/rate_limit`` from GitHub.  At most one live call is made per
@@ -1546,6 +3126,7 @@ def rate_limit_probe(
         actor=actor,
         expected_actor=expected_actor,
         host=host,
+        timeout_seconds=timeout_seconds,
     )
     _rate_limit_cache[cache_key] = result
     return result
@@ -1654,7 +3235,7 @@ def main() -> int:
             else:
                 body = None
             explicit_is_write = True if args.write else False if args.read else None
-            result = call_gh(
+            result = call_gh_with_retry(
                 args.method,
                 args.path,
                 body,

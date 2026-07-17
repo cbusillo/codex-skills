@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import tempfile
 from typing import Any, Callable
 
 import github_api
@@ -70,19 +72,35 @@ def issue_body(
     }
 
 
-def with_call_stub(callback: Callable[..., github_api.ApiResult], test: Callable[[list[dict[str, Any]]], None]) -> None:
+def with_call_stub(
+    callback: Callable[..., github_api.ApiResult],
+    test: Callable[[list[dict[str, Any]]], None],
+    *,
+    allow_retry: bool = False,
+) -> None:
     calls: list[dict[str, Any]] = []
     original = github_issue.github_api_core.call_gh
+    original_policy = github_issue.github_api_core.default_retry_policy
 
     def stub(method: str, path: str, body: Any = None, **kwargs: Any) -> github_api.ApiResult:
         calls.append({"method": method, "path": path, "body": body, "kwargs": kwargs})
         return callback(method, path, body, **kwargs)
 
-    github_issue.github_api_core.call_gh = stub
-    try:
-        test(calls)
-    finally:
-        github_issue.github_api_core.call_gh = original
+    with tempfile.TemporaryDirectory() as temp_dir:
+        github_issue.github_api_core.call_gh = stub
+        github_issue.github_api_core.default_retry_policy = lambda: github_api.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2 if allow_retry else 1,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=pathlib.Path(temp_dir),
+        )
+        try:
+            test(calls)
+        finally:
+            github_issue.github_api_core.call_gh = original
+            github_issue.github_api_core.default_retry_policy = original_policy
 
 
 def test_create_preserves_fields_and_emits_operation_marker() -> None:
@@ -93,6 +111,8 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
             return success({"login": "shiny-code-bot"})
         if "/milestones?" in path:
             return success([{"number": 7, "title": "Sprint 7"}])
+        if method == "GET":
+            return success([])
         assert method == "POST"
         assert path == "/repos/owner/repo/issues"
         assert body == {
@@ -120,7 +140,7 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
         assert payload["actor"] == "shiny-code-bot", payload
         assert payload["updated_at"] == "2026-07-17T03:20:00Z", payload
         assert payload["completed_steps"] == ["resolve_actor", "resolve_milestone", "create_issue"], payload
-        assert [call["method"] for call in calls] == ["GET", "GET", "POST"], calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "GET", "POST"], calls
 
     with_call_stub(callback, run)
 
@@ -132,7 +152,8 @@ def test_create_unknown_outcome_requires_reconciliation_before_retry() -> None:
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
         assert method == "GET"
-        assert "creator=shiny-code-bot" in path
+        if "creator=" in path:
+            assert "creator=shiny-code-bot" in path
         return success([])
 
     def run(calls: list[dict[str, Any]]) -> None:
@@ -149,11 +170,12 @@ def test_create_unknown_outcome_requires_reconciliation_before_retry() -> None:
             reconciliation = exc.payload["reconciliation"]
             assert reconciliation["required_before_retry"] is True, reconciliation
             assert len(reconciliation["request_fingerprint"]) == 64, reconciliation
-            assert reconciliation["attempted"] is True, reconciliation
             assert reconciliation["result"] == "no_match", reconciliation
+            assert exc.payload["attempts"] == 4, exc.payload
+            assert exc.payload["recommended_next_action"] == "reconcile_or_retry_manually", exc.payload
         else:
             raise AssertionError("expected unknown create outcome")
-        assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST", "GET"], calls
 
     with_call_stub(callback, run)
 
@@ -169,12 +191,18 @@ def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
         tzinfo=github_issue.dt.timezone.utc,
     )
 
+    get_calls = 0
+
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls
         if path == "/user":
             return success({"login": "shiny-code-bot"})
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
-        matched = issue_body(body="body", created_at="2026-07-16T22:00:01Z")
+        get_calls += 1
+        if get_calls == 1:
+            return success([])
+        matched = issue_body(body="body", created_at="2026-07-16T21:59:58Z")
         matched["labels"] = []
         matched["assignees"] = []
         matched["milestone"] = None
@@ -194,7 +222,7 @@ def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
         assert payload["reconciliation"]["result"] == "matched", payload
         assert payload["completed_steps"] == ["resolve_actor", "reconcile_create"], payload
         assert payload["url"].endswith("/issues/42"), payload
-        assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "POST", "GET"], calls
 
     with_call_stub(callback, run)
 
@@ -212,12 +240,22 @@ def test_create_reconciliation_survives_explicit_actor_fallback() -> None:
     )
     os.environ["GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK"] = "1"
 
+    get_calls = 0
+
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls
         if path == "/user":
             return success({"login": "shiny-code-bot"})
         if method == "POST":
-            return failure(503, "Unicorn!", is_write=True)
-        assert "creator=" not in path, path
+            result = failure(503, "Unicorn!", is_write=True)
+            result.actor = "cbusillo"
+            result.expected_actor = None
+            return result
+        get_calls += 1
+        if get_calls == 1:
+            assert "creator=" not in path, path
+            return success([])
+        assert "creator=cbusillo" in path, path
         matched = issue_body(
             actor="cbusillo",
             body="body",
@@ -288,6 +326,125 @@ def test_create_reconciliation_rejects_preexisting_identical_issue() -> None:
             github_issue._utc_now = original_now
 
     with_call_stub(callback, run)
+
+
+def test_create_reconciliation_excludes_preexisting_same_second_issue() -> None:
+    original_now = github_issue._utc_now
+    github_issue._utc_now = lambda: github_issue.dt.datetime(
+        2026,
+        7,
+        16,
+        22,
+        0,
+        tzinfo=github_issue.dt.timezone.utc,
+    )
+    preexisting = issue_body(body="original body", created_at="2026-07-16T22:00:00Z")
+    preexisting["labels"] = []
+    preexisting["assignees"] = []
+    preexisting["milestone"] = None
+    post_calls = 0
+    get_calls = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal get_calls, post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "POST":
+            post_calls += 1
+            return failure(503, "Unicorn!", is_write=True)
+        get_calls += 1
+        if get_calls > 1:
+            return success([{**preexisting, "body": "body"}])
+        return success([preexisting])
+
+    def run(_calls: list[dict[str, Any]]) -> None:
+        try:
+            try:
+                github_issue.create_issue(
+                    "Issue title",
+                    "body",
+                    repo="owner/repo",
+                    gh_cmd="fake-gh",
+                )
+            except github_issue.IssueError as exc:
+                reconciliation = exc.payload["reconciliation"]
+                assert reconciliation["result"] == "no_match", reconciliation
+                assert reconciliation["preexisting_issue_ids"] == [9042], reconciliation
+            else:
+                raise AssertionError("pre-existing same-second issue must not satisfy reconciliation")
+        finally:
+            github_issue._utc_now = original_now
+        assert post_calls == 1, post_calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_unknown_retry_enabled_issue_create_fails_closed_after_no_match() -> None:
+    for operation in ("github.issue.create", "github.plan.create"):
+        post_calls = 0
+
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            nonlocal post_calls
+            if path == "/user":
+                return success({"login": "shiny-code-bot"})
+            if method == "GET":
+                if "creator=" in path:
+                    assert "creator=shiny-code-bot" in path, path
+                return success([])
+            post_calls += 1
+            return failure(503, "Unicorn!", is_write=True)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_issue.create_issue(
+                    "Issue title",
+                    "body",
+                    repo="owner/repo",
+                    gh_cmd="fake-gh",
+                    operation=operation,
+                )
+            except github_issue.IssueError as exc:
+                assert exc.failure.write_outcome == "unknown", exc.failure
+                assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
+                assert exc.payload["retry_eligible"] is False, exc.payload
+            else:
+                raise AssertionError(f"{operation} must fail closed after no-match reconciliation")
+            assert post_calls == 1, post_calls
+            assert [call["method"] for call in calls] == ["GET", "GET", "POST", "GET"], calls
+
+        with_call_stub(callback, run, allow_retry=True)
+
+
+def test_rejected_retry_enabled_issue_create_can_retry() -> None:
+    for operation in ("github.issue.create", "github.plan.create"):
+        post_calls = 0
+
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            nonlocal post_calls
+            if path == "/user":
+                return success({"login": "shiny-code-bot"})
+            if method == "GET":
+                return success([])
+            assert method == "POST", (method, path)
+            post_calls += 1
+            if post_calls == 1:
+                return failure(429, "API rate limit exceeded", is_write=True)
+            return success(issue_body(), status=201)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            payload = github_issue.create_issue(
+                "Issue title",
+                "body",
+                repo="owner/repo",
+                gh_cmd="fake-gh",
+                operation=operation,
+            )
+            assert payload["attempts"] == 4, payload
+            assert payload["reconciliation"] is None, payload
+            assert payload["operation_marker"]["kind"] == "request_fingerprint", payload
+            assert [call["method"] for call in calls] == ["GET", "GET", "POST", "POST"], calls
+
+        with_call_stub(callback, run, allow_retry=True)
 
 
 def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
@@ -413,6 +570,46 @@ def test_close_partial_failure_preserves_comment_step() -> None:
         assert [call["method"] for call in calls] == ["GET", "PATCH"], calls
 
     with_call_stub(callback, run)
+
+
+def test_reopen_comment_uses_non_idempotent_comment_retry_policy() -> None:
+    post_calls = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal post_calls
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "GET" and "/comments?" in path:
+            return success([])
+        if method == "POST" and path.endswith("/comments"):
+            post_calls += 1
+            return failure(503, "Unicorn!", is_write=True)
+        raise AssertionError(f"unexpected call: {method} {path}")
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.set_issue_state(
+                42,
+                state="open",
+                state_reason="reopened",
+                repo="owner/repo",
+                comment_body="reopening",
+                gh_cmd="fake-gh",
+            )
+        except github_issue.IssueError as exc:
+            assert exc.failure.write_outcome == "unknown", exc.failure
+            assert exc.payload["reconciliation"]["result"] == "no_match", exc.payload
+        else:
+            raise AssertionError("unknown reopen comment must fail closed")
+        comment_calls = [call for call in calls if "/comments" in call["path"]]
+        assert all(
+            call["kwargs"]["operation"] == "github.comment.issue"
+            for call in comment_calls
+        ), comment_calls
+        assert post_calls == 1, post_calls
+        assert not any(call["method"] == "PATCH" for call in calls), calls
+
+    with_call_stub(callback, run, allow_retry=True)
 
 
 def test_close_and_reopen_use_explicit_state_reasons() -> None:
@@ -562,9 +759,13 @@ TESTS = [
     test_create_unknown_outcome_returns_unique_reconciled_issue,
     test_create_reconciliation_survives_explicit_actor_fallback,
     test_create_reconciliation_rejects_preexisting_identical_issue,
+    test_create_reconciliation_excludes_preexisting_same_second_issue,
+    test_unknown_retry_enabled_issue_create_fails_closed_after_no_match,
+    test_rejected_retry_enabled_issue_create_can_retry,
     test_edit_uses_rest_membership_endpoints_and_reads_after_write,
     test_edit_partial_failure_preserves_completed_steps_and_guidance,
     test_close_partial_failure_preserves_comment_step,
+    test_reopen_comment_uses_non_idempotent_comment_retry_policy,
     test_close_and_reopen_use_explicit_state_reasons,
     test_duplicate_close_resolves_database_id,
     test_invalid_duplicate_target_does_not_post_comment,
