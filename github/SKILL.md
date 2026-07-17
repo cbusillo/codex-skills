@@ -10,6 +10,9 @@ resources:
   - path: scripts/gh-pr.py
     kind: script
     description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.
+  - path: scripts/reconcile-runtime-checkout.py
+    kind: script
+    description: Safely fast-forward a runtime-bound checkout after a confirmed repository landing while preserving remote/local outcome separation.
   - path: scripts/gh-issue
     kind: script
     description: Safe issue create, edit, and close helper for multiline Markdown bodies.
@@ -106,6 +109,22 @@ commands:
         "--delete-branch",
       ]
     purpose: Merges pull requests through the helper with normalized defaults.
+  - name: github-reconcile-runtime-checkout
+    source: skill
+    resource_path: scripts/reconcile-runtime-checkout.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/reconcile-runtime-checkout.py",
+        "--merged-worktree",
+        ".",
+        "--repo",
+        "OWNER/REPO",
+        "--landing-sha",
+        "<full-landing-sha>",
+      ]
+    purpose: Reconciles a runtime-bound checkout from landed repo-local source without switching, stashing, resetting, or overwriting unsafe local state.
   - name: github-issue-create
     source: skill
     resource_path: scripts/gh-issue
@@ -594,6 +613,19 @@ invocation rules.
   task context says Launchplane owns the merge train. In Launchplane-managed
   trains, do not hand-collapse stacks in GitHub; delegate stack handling to the
   `launchplane` workflow.
+- **Runtime-Bound Checkout Reconciliation**: After GitHub confirms a merge, keep
+  the remote merge result separate from local runtime reconciliation. If the
+  repository is bound into the active skills runtime, invoke the landed
+  repo-local `scripts/reconcile-runtime-checkout.py` helper with the source
+  worktree and full landing SHA. Use `merge.sha` from a successful direct merge
+  or `mergeCommitOid` from a fresh merged-PR view; never substitute the PR head
+  SHA. The helper may only fast-forward the resolved
+  runtime checkout when it is clean, already on the configured default branch,
+  and shares Git identity with the merged worktree. A blocked or failed local
+  reconciliation never changes a confirmed remote merge into a failed merge and
+  must never cause the merge to be retried. Report both outcomes and treat stale
+  runtime-dependent evidence as unavailable until reconciliation or explicit
+  source-revision verification succeeds.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
   releasable, or otherwise clean, check background auto-review evidence when it
   is available in the session context or repo tooling. First match each review
@@ -722,6 +754,9 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.
+- `scripts/reconcile-runtime-checkout.py`: Runtime-binding reconciliation after
+  a confirmed landing, with structured fast-forward, blocked, retryable, and
+  not-applicable receipts.
 - `scripts/gh-issue`: Safe multiline REST issue create/edit/close/reopen flows
   from stdin with one versioned terminal JSON envelope, including compound-step
   and reconciliation evidence.

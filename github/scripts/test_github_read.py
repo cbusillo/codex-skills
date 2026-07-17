@@ -290,6 +290,24 @@ def test_rate_limit_failure_preserves_reset_metadata() -> None:
             raise AssertionError("expected GitHubReadError")
 
 
+def test_pull_request_normalization_preserves_final_merge_identity() -> None:
+    normalized = github_read.normalize_pull_request(
+        {
+            "number": 42,
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-07-17T19:00:00Z",
+            "merge_commit_sha": "a" * 40,
+            "head": {"ref": "feature", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+            "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        }
+    )
+
+    assert normalized["mergedAt"] == "2026-07-17T19:00:00Z"
+    assert normalized["mergeCommitOid"] == "a" * 40
+    assert normalized["headRefOid"] == "b" * 40
+
+
 def test_pull_checks_share_paged_readers_and_ids() -> None:
     pull = {
         "number": 7,
@@ -437,6 +455,7 @@ def main() -> None:
         test_explicit_active_auth_actor_is_visible_and_degraded,
         test_permission_failure_is_explicit_and_degraded,
         test_rate_limit_failure_preserves_reset_metadata,
+        test_pull_request_normalization_preserves_final_merge_identity,
         test_pull_checks_share_paged_readers_and_ids,
         test_pull_checks_keep_only_latest_status_per_context,
         test_pull_checks_preserve_check_runs_when_status_permission_is_missing,

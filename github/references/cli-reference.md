@@ -147,7 +147,8 @@ checked-in behavior. Validate the matrix with
 terminal failure. Human-readable failure text stays on stderr; REST failures
 also include the shared `api_result` diagnostics envelope.
 
-- `scripts/gh-pr.py view <pr>`: Show PR metadata.
+- `scripts/gh-pr.py view <pr>`: Show PR metadata, including `mergedAt` and
+  `mergeCommitOid` when GitHub reports a completed merge.
 - `scripts/gh-pr.py list --state open --limit 20`: List PR metadata.
 - `scripts/gh-pr.py create --title TITLE --body-file BODY.md`:
   Create a PR through the automation-token wrapper.
@@ -184,6 +185,38 @@ the canonical PR link, neutralizes `Closes`/`Fixes`/`Resolves` references in the
 stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
+
+### Runtime Checkout Reconciliation
+
+Run the reconciler from landed repo-local source after GitHub confirms the final
+landing commit. Use `merge.sha` from the successful direct-merge result or
+`mergeCommitOid` from a fresh merged-PR view; never use the PR head SHA:
+
+```sh
+uv run github/scripts/reconcile-runtime-checkout.py \
+  --merged-worktree "$PWD" \
+  --repo OWNER/REPO \
+  --landing-sha <full-landing-sha>
+```
+
+The helper resolves the active runtime skills path using `CODE_HOME`, then
+`CODEX_HOME`, then `~/.code`. It acts only when that path belongs to the same Git
+repository as `--merged-worktree` and its `origin` identifies `--repo`. It
+requires a clean runtime checkout already on the configured default branch,
+fetches only that branch from the captured origin URL, requires the landing
+SHA on the fetched tip's first-parent history, and verifies the executing helper
+against both the landing and fetched-tip Git blobs. It fast-forwards to the
+immutable fetched commit with autostash disabled, ignored-file overwrite
+disabled, and repository hooks disabled. It never switches branches, resets,
+stashes, cleans, or overwrites unsafe local state.
+
+The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
+`blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/
+after SHAs. Successful or not-applicable results exit `0`, blocked local state
+exits `2`, and retryable or failed reconciliation exits `1`. These exit codes
+describe local reconciliation only. A confirmed GitHub merge remains successful
+when reconciliation is blocked or fails; report both outcomes and never retry a
+merge because of the local result.
 
 ### Planning: Orientation
 

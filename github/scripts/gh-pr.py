@@ -28,6 +28,7 @@ EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-co
 CURRENT_OPERATION = "github.pr.unknown"
 CURRENT_RETRY_FIELDS: dict[str, Any] = {}
 CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
+FULL_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 PR_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "view": ("rest_api", "rest_core", False),
@@ -495,6 +496,57 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             hint=merge_failure_hint(str(exc)),
             api_result=api_result,
         ) from exc
+    if not result.get("merged"):
+        message = str(result.get("message") or "GitHub did not merge the pull request")
+        raise PrHelperError(
+            "PR merge was not completed",
+            failure=github_api_core.FailureDetail(
+                cause="merge_rejected",
+                message=message,
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="rejected",
+                failed_step="merge_pull_request",
+            ),
+            operation="merge",
+            repo=repo,
+            pr=number,
+            merge=result,
+        )
+    merge_sha = str(result.get("sha") or "")
+    if not FULL_SHA_PATTERN.fullmatch(merge_sha):
+        refreshed_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+        refreshed_sha = str(refreshed_pr.get("merge_commit_sha") or "")
+        refreshed_merged = bool(refreshed_pr.get("merged")) or bool(refreshed_pr.get("merged_at"))
+        if not refreshed_merged or not FULL_SHA_PATTERN.fullmatch(refreshed_sha):
+            raise PrHelperError(
+                "PR merge succeeded without a trustworthy final merge commit SHA",
+                failure=github_api_core.FailureDetail(
+                    cause="merge_identity_unavailable",
+                    message="Re-read the merged PR before any post-merge reconciliation; do not retry the merge.",
+                    retryable=False,
+                    fallback_eligible=False,
+                    disposition="stop",
+                    write_outcome="unknown",
+                    completed_steps=["merge_pull_request"],
+                    failed_step="confirm_merge_commit",
+                ),
+                operation="merge",
+                repo=repo,
+                pr=number,
+                merge=result,
+                refreshedPr=normalize_pr(refreshed_pr),
+            )
+        pr = refreshed_pr
+        merge_sha = refreshed_sha
+        result["sha"] = merge_sha
+    pr = {
+        **pr,
+        "state": "closed",
+        "merged": True,
+        "merge_commit_sha": merge_sha,
+    }
     deleted = None
     if args.delete_branch and result.get("merged"):
         head_repo = pr.get("head", {}).get("repo") or {}
@@ -504,10 +556,11 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         if head_full_name == repo and head_ref and head_ref != base_ref:
             deleted = delete_ref(repo, f"heads/{head_ref}")
     return {
-        "ok": bool(result.get("merged")),
+        "ok": True,
         "repo": repo,
         "pr": normalize_pr(pr),
         "merge": result,
+        "mergeCommitOid": merge_sha,
         "deletedBranch": deleted,
     }
 
@@ -802,6 +855,8 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
         "draft": pr.get("draft"),
         "isDraft": pr.get("draft"),
         "merged": merged,
+        "mergedAt": pr.get("merged_at"),
+        "mergeCommitOid": pr.get("merge_commit_sha"),
         "mergeable": pr.get("mergeable"),
         "mergeable_state": mergeable_state,
         "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,
