@@ -15,6 +15,14 @@ reviews, Actions, deploys, or cleanup.
 ~/.code/skills/github/scripts/github-repo-snapshot.sh --fetch --json
 ```
 
+The snapshot keeps local git evidence local, but reads issues, Actions runs,
+repository settings, and PR fallbacks through shared paged REST helpers. JSON
+output includes `github.diagnostics.components` with request IDs, quota headers,
+observed/expected actor identity when active-auth fallback occurs, and explicit
+degraded components. A missing or unauthorized GitHub component
+does not erase the rest of the snapshot; do not treat an unavailable component
+as an empty authoritative result.
+
 Summarize only actionable state:
 
 - current branch and current branch PR
@@ -281,6 +289,18 @@ Classify failures before acting:
 - likely flaky/infra: runner provisioning, registry/network outages, provider
   incidents, or timeouts without code-specific evidence
 - ambiguous: inspect once manually and report what evidence is missing
+
+The diagnosis helper uses the same paged REST check reader as `gh-pr.py`, then
+reads workflow-run metadata, latest-attempt jobs, and individual job logs over
+REST. JSON output preserves the existing count and check fields and adds
+`diagnostics.requests`, quota/reset metadata, and named `degradedComponents`.
+Missing run metadata or log permission remains explicit while any independently
+available check and log evidence is still returned. `countsComplete: false`
+means the numeric counts are lower bounds because one check source was
+unavailable; `null` counts mean no authoritative check source was available.
+Transient provider failures
+are classified with retry metadata, but this read path does not silently switch
+actors or automatically retry outside the shared retry policy.
 
 Do not paste long logs into chat. Include the short snippet, the run link, and
 the exact local command that should reproduce the failure when one is obvious.

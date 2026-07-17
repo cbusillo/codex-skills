@@ -610,10 +610,7 @@ entrypoint = "github/scripts/github-ci-diagnose.py diagnose"
 intent = "Diagnose PR checks, fetch relevant workflow run metadata and logs, and summarize failing snippets."
 current_transport = "composite"
 selected_transport = "composite"
-migration_status = "planned"
-current_endpoint_or_command = "gh pr checks; gh run view --json/--log-failed/--log; gh api /repos/{repo}/actions/jobs/{job_id}/logs"
-current_quota_bucket = "mixed"
-endpoint_or_command = "github/scripts/gh-pr.py checks plus REST workflow run/job metadata and log endpoints"
+endpoint_or_command = "Shared GET /pulls/{number}, paged /commits/{sha}/check-runs and /statuses, GET /commits/{sha}/status, GET /actions/runs/{run_id}, paged /actions/runs/{run_id}/jobs?filter=latest, and GET /actions/jobs/{job_id}/logs"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -621,8 +618,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_diagnosis"
 retained_graphql_rationale = "No retained GraphQL transport is required in the selected path; PR checks and workflow/job evidence have REST equivalents."
-source_refs = ["github/scripts/github-ci-diagnose.py:main", "github/scripts/github-ci-diagnose.py:fetch_checks", "github/scripts/github-ci-diagnose.py:fetch_logs"]
-test_refs = [".github/github.json:qualityGate.syntax.python", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/github-ci-diagnose.py:main", "github/scripts/github-ci-diagnose.py:DiagnosisClient", "github/scripts/github_read.py:pull_request_checks", "github/scripts/github_read.py:workflow_run", "github/scripts/github_read.py:workflow_jobs", "github/scripts/github_read.py:job_log", "github/scripts/github_api.py:parse_gh_include_output", "github/scripts/gh-pr.py:cmd_checks"]
+test_refs = ["github/scripts/test_github_api.py", "github/scripts/test_github_ci_diagnose.py", "github/scripts/test_github_read.py", ".github/github.json:qualityGate.syntax.python", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.repo_snapshot"
@@ -630,10 +627,7 @@ entrypoint = "github/scripts/github-repo-snapshot.sh snapshot"
 intent = "Capture compact local git, PR, issue, workflow, repository setting, cleanup, and optional health state."
 current_transport = "composite"
 selected_transport = "composite"
-migration_status = "planned"
-current_endpoint_or_command = "git status/branch/log; optional git fetch; gh-pr.py view/list or gh pr view/list; gh issue list; gh run list; gh repo view"
-current_quota_bucket = "mixed"
-endpoint_or_command = "git status/branch/log; optional git fetch; REST-first gh-pr.py view/list; paged REST issue list; REST workflow and repository metadata"
+endpoint_or_command = "Local git status/branch/worktree/remote reads and optional fetch; REST-first gh-pr.py view/list; shared paged GET /issues, /pulls, and /actions/runs; GET /repos/{repo}"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -641,8 +635,8 @@ idempotency = "read_only"
 retry_eligibility = "conditional"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "No retained GraphQL transport is required in the selected path; degraded output remains available when REST evidence is unavailable."
-source_refs = ["github/scripts/github-repo-snapshot.sh"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/github-repo-snapshot.sh:capture_read_json", "github/scripts/github_read.py:list_issues", "github/scripts/github_read.py:list_workflow_runs", "github/scripts/github_read.py:list_pull_requests", "github/scripts/github_read.py:repository"]
+test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/test_github_read.py", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.work_evidence"

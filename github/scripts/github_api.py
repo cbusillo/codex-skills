@@ -407,6 +407,17 @@ def _try_parse_json(text: str) -> Any:
         return text
 
 
+_ACTIVE_AUTH_ACTOR_RE = re.compile(
+    r"(?:using|retrying with) the active gh account '([^']+)'",
+    re.IGNORECASE,
+)
+
+
+def actor_from_gh_stderr(stderr: str) -> Optional[str]:
+    matches = _ACTIVE_AUTH_ACTOR_RE.findall(stderr)
+    return matches[-1].strip() if matches and matches[-1].strip() else None
+
+
 def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:
     """
     Parse the combined stdout of `gh api --include`.
@@ -431,28 +442,47 @@ def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:
         body_str = raw.strip()
         return 0, {}, _try_parse_json(body_str) if body_str else None
 
-    # Proxies and redirects can emit multiple response blocks. The final block
-    # is authoritative; earlier 1xx/3xx headers must not replace the result.
-    i = status_indices[-1]
-
-    # Parse status line: "HTTP/2.0 200 OK" or "HTTP/2.0 200 "
-    parts = lines[i].split(None, 2)
-    try:
-        status = int(parts[1]) if len(parts) >= 2 else 0
-    except (ValueError, IndexError):
-        status = 0
-    i += 1
-
-    # Parse headers until blank line
-    while i < len(lines):
-        line = lines[i].rstrip()
-        if not line:
-            i += 1
-            break
-        if ":" in line:
-            name, _, value = line.partition(":")
-            headers[name.strip().lower()] = value.strip()
+    # Parse sequential 1xx/3xx response blocks only. Once a final response is
+    # reached, HTTP-looking body lines belong to the body (not another block).
+    i = status_indices[0]
+    carried_diagnostics: dict[str, str] = {}
+    while i < len(lines) and lines[i].startswith("HTTP/"):
+        status_line = lines[i]
+        parts = status_line.split(None, 2)
+        try:
+            status = int(parts[1]) if len(parts) >= 2 else 0
+        except (ValueError, IndexError):
+            status = 0
         i += 1
+        block_headers: dict[str, str] = {}
+        while i < len(lines):
+            line = lines[i].rstrip()
+            if not line:
+                i += 1
+                break
+            if ":" in line:
+                name, _, value = line.partition(":")
+                block_headers[name.strip().lower()] = value.strip()
+            i += 1
+        for name, value in block_headers.items():
+            if name == "x-github-request-id" or name == "retry-after" or name.startswith("x-ratelimit-"):
+                carried_diagnostics[name] = value
+        headers = block_headers
+        next_index = i
+        while next_index < len(lines) and not lines[next_index]:
+            next_index += 1
+        is_interim = (
+            100 <= status < 200
+            or 300 <= status < 400
+            or "connection established" in status_line.casefold()
+        )
+        if is_interim and next_index < len(lines) and lines[next_index].startswith("HTTP/"):
+            i = next_index
+            continue
+        break
+
+    for name, value in carried_diagnostics.items():
+        headers.setdefault(name, value)
 
     body_str = "\n".join(lines[i:]).strip()
     if not body_str:
@@ -1370,6 +1400,7 @@ def call_gh(
 
     raw_stdout = proc.stdout.decode("utf-8", errors="replace")
     raw_stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    actor = actor or actor_from_gh_stderr(raw_stderr)
 
     # gh printed nothing (network failure before HTTP response)
     if not raw_stdout and proc.returncode != 0:
