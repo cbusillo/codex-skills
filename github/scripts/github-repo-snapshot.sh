@@ -12,6 +12,8 @@ cleanup_paths=()
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
+read_helper="${GITHUB_REPO_SNAPSHOT_READ_HELPER:-$script_dir/github_read.py}"
+python_bin="${GITHUB_REPO_SNAPSHOT_PYTHON:-python3}"
 
 cleanup() {
   local path
@@ -107,23 +109,121 @@ capture_lines_json() {
     '{exitCode: $exitCode, ok: ($exitCode == 0), lines: ($output | split("\n") | if .[-1] == "" then .[:-1] else . end)}'
 }
 
-capture_gh_json() {
+capture_read_json() {
   local stdout stderr status
   stdout="$(mktemp)"
   stderr="$(mktemp)"
   cleanup_paths+=("$stdout" "$stderr")
-  if "$@" >"$stdout" 2>"$stderr"; then
+  if GITHUB_READ_GH="$gh_bin" "$python_bin" "$read_helper" --gh "$gh_bin" --repo-root "$repo_root" "$@" >"$stdout" 2>"$stderr"; then
     if jq -e . "$stdout" >/dev/null 2>&1; then
       cat "$stdout"
     else
       jq -n --arg message "$(cat "$stdout")" --arg stderr "$(cat "$stderr")" \
-        '{error: {exitCode: 0, message: $message, stderr: $stderr}}'
+        '{ok: false, exit_code: 1, helperExitCode: 0, error: $message, diagnostics: {degraded: true, degradedComponents: ["response"], degradedReasons: [{component: "response", code: "invalid_json", message: $stderr}]}}'
     fi
     return
   fi
   status=$?
-  jq -n --argjson exitCode "$status" --arg message "$(cat "$stderr")" --arg stdout "$(cat "$stdout")" \
-    '{error: {exitCode: $exitCode, message: $message, stdout: $stdout}}'
+  if jq -e . "$stdout" >/dev/null 2>&1; then
+    cat "$stdout"
+  else
+    jq -n --argjson exitCode "$status" --arg message "$(cat "$stderr")" --arg stdout "$(cat "$stdout")" \
+      '{ok: false, exit_code: $exitCode, error: $message, stdout: $stdout, diagnostics: {degraded: true, degradedComponents: ["transport"], degradedReasons: [{component: "transport", code: "helper_failed", message: $message}]}}'
+  fi
+}
+
+extract_read_data() {
+  jq '
+    if .ok == true and has("data") then
+      .data
+    else
+      {
+        error: {
+          exitCode: (.exit_code // 1),
+          status: (.status // 0),
+          message: (.error // .failure.message // "GitHub REST read failed"),
+          cause: (.error_code // .failure.cause // "helper_error"),
+          requestId: (.request_id // null),
+          quota: (.quota // null),
+          retryable: (.retryable // false)
+        },
+        diagnostics: (.diagnostics // null)
+      }
+    end
+  '
+}
+
+read_unavailable_json() {
+  local component="$1"
+  local message="$2"
+  jq -n --arg component "$component" --arg message "$message" '
+    {
+      ok: false,
+      exit_code: 127,
+      status: 0,
+      error: $message,
+      diagnostics: {
+        transport: "rest_api",
+        bucket: "rest_core",
+        requestCount: 0,
+        requests: [],
+        quota: null,
+        degraded: true,
+        degradedComponents: [$component],
+        degradedReasons: [{component: $component, code: "helper_unavailable", message: $message}]
+      }
+    }
+  '
+}
+
+render_pull_read() {
+  jq -r '
+    if .ok != true then
+      "warning: pull request metadata unavailable - " + (.error // .failure.message // "GitHub REST read failed")
+    elif (.data | length) == 0 then
+      "no pull request associated with the current branch"
+    else
+      .data[0] |
+      "#\(.number) [\(.state)] \(.title)\nbase/head: \(.baseRefName) <- \(.headRefName)\n\(.url)"
+    end
+  '
+}
+
+render_pulls_read() {
+  jq -r '
+    if .ok != true then
+      "warning: open pull requests unavailable - " + (.error // .failure.message // "GitHub REST read failed")
+    elif (.data | length) == 0 then
+      "no open pull requests"
+    else
+      .data[] | "#\(.number) [\(.state)] \(.title) - \(.url)"
+    end
+  '
+}
+
+render_issues_read() {
+  jq -r '
+    if .ok != true then
+      "warning: open issues unavailable - " + (.error // .failure.message // "GitHub REST read failed")
+    elif (.data | length) == 0 then
+      "no open issues"
+    else
+      .data[] | "#\(.number) [\(.state)] \(.title) - \(.url)"
+    end
+  '
+}
+
+render_runs_read() {
+  jq -r '
+    if .ok != true then
+      "warning: workflow runs unavailable - " + (.error // .failure.message // "GitHub REST read failed")
+    elif (.data | length) == 0 then
+      "no workflow runs"
+    else
+      .data[] |
+      "\(.databaseId) \(.workflowName // "workflow") [\(.conclusion // .status // "unknown")] \(.displayTitle // "") - \(.url)"
+    end
+  '
 }
 
 capture_pr_helper_json() {
@@ -337,31 +437,48 @@ if [[ "$json_output" -eq 1 ]]; then
     if [[ -n "$current_branch" ]]; then
       if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
         capture_pr_helper_json view >"$tmpdir/current-pr.json"
+        jq -n 'null' >"$tmpdir/current-pr-read.json"
       else
-        capture_gh_json "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url \
+        capture_read_json pulls --state open --limit 1 --head-branch "$current_branch" >"$tmpdir/current-pr-read.json"
+        extract_read_data <"$tmpdir/current-pr-read.json" \
+          | jq 'if type == "array" then .[0] // null else . end' \
           | normalize_raw_pr_snapshot_json >"$tmpdir/current-pr.json"
       fi
-      capture_gh_json "$gh_bin" run list --branch "$current_branch" --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/branch-runs.json"
+      capture_read_json workflow-runs --branch "$current_branch" --limit 10 >"$tmpdir/branch-runs-read.json"
+      extract_read_data <"$tmpdir/branch-runs-read.json" >"$tmpdir/branch-runs.json"
     else
       jq -n 'null' >"$tmpdir/current-pr.json"
+      jq -n 'null' >"$tmpdir/current-pr-read.json"
       jq -n '[]' >"$tmpdir/branch-runs.json"
+      jq -n 'null' >"$tmpdir/branch-runs-read.json"
     fi
     if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
       capture_pr_helper_json list --state open --limit 20 >"$tmpdir/open-prs.json"
+      jq -n 'null' >"$tmpdir/open-prs-read.json"
     else
-      capture_gh_json "$gh_bin" pr list --state open --limit 20 --json number,title,state,isDraft,headRefName,baseRefName,labels,url \
+      capture_read_json pulls --state open --limit 20 >"$tmpdir/open-prs-read.json"
+      extract_read_data <"$tmpdir/open-prs-read.json" \
         | normalize_raw_pr_snapshot_json >"$tmpdir/open-prs.json"
     fi
-    capture_gh_json "$gh_bin" issue list --state open --limit 30 --json number,title,state,labels,url,updatedAt >"$tmpdir/open-issues.json"
-    capture_gh_json "$gh_bin" run list --limit 10 --json databaseId,workflowName,displayTitle,status,conclusion,headBranch,headSha,event,createdAt,url >"$tmpdir/recent-runs.json"
-    capture_gh_json "$gh_bin" repo view --json nameWithOwner,defaultBranchRef,deleteBranchOnMerge >"$tmpdir/repo-settings-raw.json"
+    capture_read_json issues --state open --limit 30 >"$tmpdir/open-issues-read.json"
+    extract_read_data <"$tmpdir/open-issues-read.json" >"$tmpdir/open-issues.json"
+    capture_read_json workflow-runs --limit 10 >"$tmpdir/recent-runs-read.json"
+    extract_read_data <"$tmpdir/recent-runs-read.json" >"$tmpdir/recent-runs.json"
+    capture_read_json repository >"$tmpdir/repository-read.json"
+    extract_read_data <"$tmpdir/repository-read.json" >"$tmpdir/repo-settings-raw.json"
   else
     jq -n 'null' >"$tmpdir/current-pr.json"
+    read_unavailable_json currentBranchPullRequest "gh not found" >"$tmpdir/current-pr-read.json"
     jq -n '[]' >"$tmpdir/open-prs.json"
+    read_unavailable_json openPullRequests "gh not found" >"$tmpdir/open-prs-read.json"
     jq -n '[]' >"$tmpdir/open-issues.json"
+    read_unavailable_json openIssues "gh not found" >"$tmpdir/open-issues-read.json"
     jq -n '[]' >"$tmpdir/branch-runs.json"
+    read_unavailable_json currentBranchRuns "gh not found" >"$tmpdir/branch-runs-read.json"
     jq -n '[]' >"$tmpdir/recent-runs.json"
+    read_unavailable_json recentRuns "gh not found" >"$tmpdir/recent-runs-read.json"
     jq -n '{error: {message: "gh not found"}}' >"$tmpdir/repo-settings-raw.json"
+    read_unavailable_json repositorySettings "gh not found" >"$tmpdir/repository-read.json"
   fi
   build_repo_settings_json "$tmpdir/repo-settings-raw.json" "$tmpdir/config.json" >"$tmpdir/repo-settings.json"
 
@@ -395,9 +512,36 @@ if [[ "$json_output" -eq 1 ]]; then
     --slurpfile branchRuns "$tmpdir/branch-runs.json" \
     --slurpfile recentRuns "$tmpdir/recent-runs.json" \
     --slurpfile repoSettings "$tmpdir/repo-settings.json" \
+    --slurpfile currentPrRead "$tmpdir/current-pr-read.json" \
+    --slurpfile openPrsRead "$tmpdir/open-prs-read.json" \
+    --slurpfile openIssuesRead "$tmpdir/open-issues-read.json" \
+    --slurpfile branchRunsRead "$tmpdir/branch-runs-read.json" \
+    --slurpfile recentRunsRead "$tmpdir/recent-runs-read.json" \
+    --slurpfile repositoryRead "$tmpdir/repository-read.json" \
     --slurpfile health "$tmpdir/health.json" \
     '
     def present($value): ($value | type == "string" and length > 0);
+    def read_component($value; $source; $applicable):
+      if $applicable == false then
+        {source: $source, applicable: false, available: false, degraded: false}
+      elif $value == null then
+        {source: $source, applicable: true, available: true, degraded: false}
+      else
+        {
+          source: $source,
+          applicable: true,
+          available: ($value.ok == true),
+          degraded: (($value.ok != true) or ($value.diagnostics.degraded // false)),
+          status: ($value.status // 0),
+          requestId: ($value.request_id // null),
+          quota: ($value.quota // null),
+          actor: ($value.actor // $value.diagnostics.actor // null),
+          expectedActor: ($value.expected_actor // $value.diagnostics.expectedActor // null),
+          retryable: ($value.retryable // false),
+          error: ($value.error // $value.failure.message // null),
+          diagnostics: ($value.diagnostics // null)
+        }
+      end;
     def cleanup_summary($config):
       if $config == null then
         {
@@ -515,7 +659,22 @@ if [[ "$json_output" -eq 1 ]]; then
         openIssues: $openIssues[0],
         currentBranchRuns: $branchRuns[0],
         recentRuns: $recentRuns[0],
-        repositorySettings: $repoSettings[0]
+        repositorySettings: $repoSettings[0],
+        diagnostics: (
+          {
+            transport: "rest_api",
+            components: {
+              currentBranchPullRequest: read_component($currentPrRead[0]; (if $currentPrRead[0] == null then "gh-pr" else "shared-rest" end); ($currentBranch | length) > 0),
+              openPullRequests: read_component($openPrsRead[0]; (if $openPrsRead[0] == null then "gh-pr" else "shared-rest" end); true),
+              openIssues: read_component($openIssuesRead[0]; "shared-rest"; true),
+              currentBranchRuns: read_component($branchRunsRead[0]; "shared-rest"; ($currentBranch | length) > 0),
+              recentRuns: read_component($recentRunsRead[0]; "shared-rest"; true),
+              repositorySettings: read_component($repositoryRead[0]; "shared-rest"; true)
+            }
+          }
+          | .degradedComponents = ([.components | to_entries[] | select(.value.degraded == true) | .key])
+          | .degraded = ((.degradedComponents | length) > 0)
+        )
       },
       deployHealth: $health[0]
     }'
@@ -599,38 +758,55 @@ fi
 
 if [[ -x "$gh_bin" ]] || command -v "$gh_bin" >/dev/null 2>&1; then
   section "Current Branch Pull Request"
-  if [[ -n "$current_branch" ]] && [[ -x "$pr_helper" ]] && GH_PR_GH="$gh_bin" "$pr_helper" view 2>/dev/null; then
-    :
-  elif [[ -n "$current_branch" ]] && "$gh_bin" pr view --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,labels,url 2>/dev/null; then
+  if [[ -z "$current_branch" ]]; then
+    echo "no pull request associated with a detached HEAD"
+  elif { [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; } && GH_PR_GH="$gh_bin" "$pr_helper" view 2>/dev/null; then
     :
   else
-    echo "no pull request associated with the current branch"
+    current_pr_tmp="$(mktemp)"
+    cleanup_paths+=("$current_pr_tmp")
+    capture_read_json pulls --state open --limit 1 --head-branch "$current_branch" >"$current_pr_tmp"
+    render_pull_read <"$current_pr_tmp"
   fi
 
   section "Open Pull Requests"
   if [[ -x "$pr_helper" ]] || command -v "$pr_helper" >/dev/null 2>&1; then
     run_or_note "gh-pr list" env GH_PR_GH="$gh_bin" "$pr_helper" list --state open --limit 20
   else
-    run_or_note "gh pr list" "$gh_bin" pr list --state open --limit 20
+    open_prs_tmp="$(mktemp)"
+    cleanup_paths+=("$open_prs_tmp")
+    capture_read_json pulls --state open --limit 20 >"$open_prs_tmp"
+    render_pulls_read <"$open_prs_tmp"
   fi
 
   section "Open Issues"
-  run_or_note "gh issue list" "$gh_bin" issue list --state open --limit 30
+  open_issues_tmp="$(mktemp)"
+  cleanup_paths+=("$open_issues_tmp")
+  capture_read_json issues --state open --limit 30 >"$open_issues_tmp"
+  render_issues_read <"$open_issues_tmp"
 
   if [[ -n "$current_branch" ]]; then
     section "Recent Actions for Current Branch"
-    run_or_note "gh run list for current branch" "$gh_bin" run list --branch "$current_branch" --limit 10
+    branch_runs_tmp="$(mktemp)"
+    cleanup_paths+=("$branch_runs_tmp")
+    capture_read_json workflow-runs --branch "$current_branch" --limit 10 >"$branch_runs_tmp"
+    render_runs_read <"$branch_runs_tmp"
   fi
 
   section "Recent Actions"
-  run_or_note "gh run list" "$gh_bin" run list --limit 10
+  recent_runs_tmp="$(mktemp)"
+  cleanup_paths+=("$recent_runs_tmp")
+  capture_read_json workflow-runs --limit 10 >"$recent_runs_tmp"
+  render_runs_read <"$recent_runs_tmp"
 
   if [[ -n "$config_path" ]] && jq -e '.githubSettings.expected // empty' "$effective_config_path" >/dev/null 2>&1; then
     section "Repository Settings"
     settings_tmp="$(mktemp)"
     raw_settings_tmp="$(mktemp)"
-    cleanup_paths+=("$settings_tmp" "$raw_settings_tmp")
-    capture_gh_json "$gh_bin" repo view --json nameWithOwner,defaultBranchRef,deleteBranchOnMerge >"$raw_settings_tmp"
+    repository_read_tmp="$(mktemp)"
+    cleanup_paths+=("$settings_tmp" "$raw_settings_tmp" "$repository_read_tmp")
+    capture_read_json repository >"$repository_read_tmp"
+    extract_read_data <"$repository_read_tmp" >"$raw_settings_tmp"
     jq -n --arg path "$config_path" --slurpfile data "$effective_config_path" '{path: $path, data: $data[0]}' >"$settings_tmp.config"
     cleanup_paths+=("$settings_tmp.config")
     build_repo_settings_json "$raw_settings_tmp" "$settings_tmp.config" >"$settings_tmp"
@@ -644,7 +820,7 @@ else
   echo "gh not found; skipping GitHub state."
 fi
 
-if [[ -n "${health_urls[*]-}" ]]; then
+if [[ ${#health_urls[@]} -gt 0 ]]; then
   section "Deploy Health"
   for health_url in ${health_urls[@]+"${health_urls[@]}"}; do
     printf '%s\n' "$health_url"

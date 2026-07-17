@@ -19,6 +19,7 @@ from typing import Any, Optional, Tuple
 
 import github_api as github_api_core
 import github_comment as github_comment_core
+import github_read as github_read_core
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -385,35 +386,58 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
-    pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
-    sha = pr["head"]["sha"]
-    check_runs = paged_rest_json("GET", f"/repos/{repo}/commits/{sha}/check-runs")
-    statuses = paged_rest_json("GET", f"/repos/{repo}/commits/{sha}/statuses")
-    combined = rest_json("GET", f"/repos/{repo}/commits/{sha}/status")
-    checks = [normalize_check_run(item) for item in check_runs]
-    status_checks = [normalize_status(item) for item in statuses]
-    failing = [item for item in checks if item.get("conclusion") in FAILURE_CONCLUSIONS]
-    pending = [item for item in checks if item.get("status") != "completed"]
-    failed_statuses = [item for item in status_checks if item.get("state") in {"failure", "error"}]
-    pending_statuses = [item for item in status_checks if item.get("state") == "pending"]
-    combined_state = combined.get("state")
-    return {
+    reader = github_read_core.GitHubReader(
+        gh_cmd=GH,
+        expected_actor=EXPECTED_ACTOR,
+        operation=CURRENT_OPERATION,
+    )
+    try:
+        payload = github_read_core.pull_request_checks(reader, repo, number)
+    except github_read_core.GitHubReadError as exc:
+        raise PrHelperError(
+            str(exc),
+            failure=exc.result.failure,
+            api_result=exc.result.as_dict(),
+            diagnostics=exc.diagnostics,
+            repo=repo,
+            pr=number,
+        ) from exc
+    except github_read_core.GitHubReadShapeError as exc:
+        last_result = reader.last_result
+        raise PrHelperError(
+            str(exc),
+            api_result=last_result.as_dict() if last_result else None,
+            diagnostics=reader.diagnostics(),
+            repo=repo,
+            pr=number,
+        ) from exc
+    last_result = reader.last_result
+    result_payload = {
+        **payload,
         "ok": True,
-        "repo": repo,
-        "pr": normalize_pr(pr),
-        "headSha": sha,
-        "summary": {
-            "checkRunCount": len(checks),
-            "statusCount": len(status_checks),
-            "failingCount": len(failing) + len(failed_statuses),
-            "pendingCount": len(pending) + len(pending_statuses),
-            "combinedState": combined_state if status_checks else None,
-            "combinedStateRaw": combined_state,
-            "legacyStatusesPresent": bool(status_checks),
-        },
-        "checkRuns": checks,
-        "statuses": status_checks,
+        "actor": reader.actor,
+        "expected_actor": EXPECTED_ACTOR,
+        "completed_steps": reader.completed_steps,
+        "diagnostics": reader.diagnostics(),
     }
+    if reader.diagnostics()["degraded"]:
+        failed_result = reader.failed_results[0] if reader.failed_results else None
+        failure = failed_result.failure if failed_result else github_api_core.FailureDetail(
+            cause="degraded_read",
+            message="PR check evidence is incomplete",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            completed_steps=list(reader.completed_steps),
+            failed_step=(reader.diagnostics().get("degradedComponents") or ["checks"])[0],
+        )
+        raise PrHelperError(
+            "PR check evidence is incomplete",
+            failure=failure,
+            api_result=(failed_result or last_result).as_dict() if failed_result or last_result else None,
+            **result_payload,
+        )
+    return result_payload
 
 
 def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
@@ -711,8 +735,6 @@ def cleanup_warnings_for_deleted_branch(deleted: Optional[dict[str, Any]]) -> li
     ]
 
 
-FAILURE_CONCLUSIONS = {"failure", "startup_failure", "timed_out", "cancelled", "action_required"}
-
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
     "blocked": "BLOCKED",
@@ -766,29 +788,6 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_check_run(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": item.get("name"),
-        "status": item.get("status"),
-        "conclusion": item.get("conclusion"),
-        "detailsUrl": item.get("details_url") or item.get("html_url"),
-        "startedAt": item.get("started_at"),
-        "completedAt": item.get("completed_at"),
-        "workflowName": ((item.get("app") or {}).get("name")),
-    }
-
-
-def normalize_status(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "context": item.get("context"),
-        "state": item.get("state"),
-        "description": item.get("description"),
-        "targetUrl": item.get("target_url"),
-        "createdAt": item.get("created_at"),
-        "updatedAt": item.get("updated_at"),
-    }
-
-
 def resolve_repo(explicit: Optional[str]) -> str:
     if explicit:
         return explicit
@@ -808,7 +807,7 @@ def resolve_pr(explicit_repo: Optional[str], value: Optional[str]) -> Tuple[str,
     if url_ref:
         return url_ref
     repo = resolve_repo(explicit_repo)
-    return repo, resolve_pr_number(repo, value)
+    return resolve_pr_target(repo, value)
 
 
 def parse_pr_url(value: Optional[str]):
@@ -820,27 +819,44 @@ def parse_pr_url(value: Optional[str]):
     return f"{match.group(1)}/{match.group(2)}", int(match.group(3))
 
 
-def resolve_pr_number(repo: str, value: Optional[str]) -> int:
+def resolve_pr_target(repo: str, value: Optional[str]) -> Tuple[str, int]:
     if value:
         if value.isdigit():
-            return int(value)
-        pulls = rest_json(
+            return repo, int(value)
+        branch = value
+        missing_message = f"No open PR found for branch {branch}; pass a PR number"
+    else:
+        branch = run_git(["branch", "--show-current"]).strip()
+        if not branch:
+            raise HelperError("Current branch is detached; pass a PR number")
+        missing_message = f"No open PR found for current branch {branch}; pass a PR number"
+
+    try:
+        origin_repo = github_read_core.resolve_repo_from_remote(pathlib.Path.cwd(), "origin")
+    except ValueError:
+        origin_repo = repo
+    candidate_repos = [repo]
+    try:
+        upstream_repo = github_read_core.resolve_repo_from_remote(pathlib.Path.cwd(), "upstream")
+    except ValueError:
+        upstream_repo = None
+    if upstream_repo and upstream_repo not in candidate_repos:
+        candidate_repos.append(upstream_repo)
+
+    head = f"{origin_repo.split('/', 1)[0]}:{branch}"
+    for candidate_repo in candidate_repos:
+        candidate_pulls = rest_json(
             "GET",
-            f"/repos/{repo}/pulls",
-            params={"head": f"{repo.split('/')[0]}:{value}", "state": "open"},
+            f"/repos/{candidate_repo}/pulls",
+            params={"head": head, "state": "open"},
         )
-        if isinstance(pulls, list) and len(pulls) == 1:
-            return int(pulls[0]["number"])
-        if isinstance(pulls, list) and len(pulls) > 1:
-            raise HelperError(f"Multiple open PRs found for branch {value}; pass a PR number")
-        raise HelperError(f"No open PR found for branch {value}; pass a PR number")
-    branch = run_git(["branch", "--show-current"]).strip()
-    if not branch:
-        raise HelperError("Current branch is detached; pass a PR number")
-    pulls = rest_json("GET", f"/repos/{repo}/pulls", params={"head": f"{repo.split('/')[0]}:{branch}", "state": "open"})
-    if isinstance(pulls, list) and pulls:
-        return int(pulls[0]["number"])
-    raise HelperError(f"No open PR found for current branch {branch}; pass a PR number")
+        if isinstance(candidate_pulls, list):
+            pulls = [item for item in candidate_pulls if isinstance(item, dict)]
+            if len(pulls) == 1:
+                return candidate_repo, int(pulls[0]["number"])
+            if len(pulls) > 1:
+                raise HelperError(f"Multiple open PRs found for branch {branch}; pass a PR number")
+    raise HelperError(missing_message)
 
 
 def rest_json(

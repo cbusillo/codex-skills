@@ -13,9 +13,12 @@ import subprocess
 import sys
 from pathlib import Path
 from shutil import which
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
-FAILURE_VALUES = {"failure", "error", "cancelled", "timed_out", "action_required"}
+import github_read as github_read_core
+
+
+FAILURE_VALUES = {"failure", "error", "cancelled", "timed_out", "action_required", "startup_failure"}
 FAILURE_BUCKETS = {"fail"}
 PENDING_VALUES = {"pending", "queued", "in_progress", "waiting", "requested"}
 FAILURE_MARKERS = (
@@ -32,10 +35,7 @@ FAILURE_MARKERS = (
 )
 SCRIPT_DIR = Path(__file__).resolve().parent
 GH_COMMAND = os.environ.get("GITHUB_CI_DIAGNOSE_GH") or str(SCRIPT_DIR / "gh-with-env-token")
-LOG_PENDING_MARKERS = (
-    "still in progress",
-    "log will be available when it is complete",
-)
+EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
 
 
 def main() -> int:
@@ -49,36 +49,62 @@ def main() -> int:
         print("error: gh is not installed or not on PATH", file=sys.stderr)
         return 1
 
-    auth_result = run_gh(["auth", "status"], repo_root)
-    if auth_result.returncode != 0:
-        print((auth_result.stderr or auth_result.stdout or "gh auth status failed").strip(), file=sys.stderr)
+    url_ref = parse_pr_url(args.pr)
+    try:
+        default_repo = url_ref[0] if url_ref else github_read_core.resolve_repo(repo_root, args.github_repo)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    pr = resolve_pr(args.pr, repo_root)
-    if pr is None:
-        return 1
+    reader = github_read_core.GitHubReader(
+        gh_cmd=GH_COMMAND,
+        expected_actor=EXPECTED_ACTOR,
+        operation="github.ci_diagnose",
+    )
+    try:
+        repo, pr_number, display_pr = resolve_pr(args.pr, default_repo, repo_root, reader)
+        checks_payload = github_read_core.pull_request_checks(reader, repo, pr_number)
+    except github_read_core.GitHubReadError as exc:
+        reader.mark_degraded("pullRequestChecks", exc.result.failure.cause if exc.result.failure else "read_failed", str(exc))
+        return emit_failure(args, args.pr or "current", reader, str(exc))
+    except (github_read_core.GitHubReadShapeError, ValueError) as exc:
+        reader.mark_degraded("pullRequestChecks", "invalid_response", str(exc))
+        return emit_failure(args, args.pr or "current", reader, str(exc))
 
-    checks = fetch_checks(pr, repo_root)
-    if checks is None:
-        return 1
-
-    analyzed = [analyze_check(check, repo_root, args.max_lines, args.context) for check in checks]
+    client = DiagnosisClient(reader, repo)
+    checks = combined_checks(checks_payload)
+    analyzed = [analyze_check(check, client, args.max_lines, args.context) for check in checks]
     interesting = [item for item in analyzed if item["classification"] in {"failing", "pending", "external"}]
+    summary = checks_payload.get("summary") or {}
+    availability = summary.get("availability") or {}
+    counts_complete = bool(summary.get("countsComplete", True))
+    checks_available = bool(availability.get("checkRuns", True) or availability.get("commitStatuses", True))
+    failing_count = sum(1 for item in analyzed if item["classification"] == "failing") if checks_available else None
+    pending_count = sum(1 for item in analyzed if item["classification"] == "pending") if checks_available else None
+    external_count = sum(1 for item in analyzed if item["classification"] == "external") if checks_available else None
 
     payload = {
-        "pr": pr,
-        "failingCount": sum(1 for item in analyzed if item["classification"] == "failing"),
-        "pendingCount": sum(1 for item in analyzed if item["classification"] == "pending"),
-        "externalCount": sum(1 for item in analyzed if item["classification"] == "external"),
+        "pr": display_pr,
+        "repo": repo,
+        "failingCount": failing_count,
+        "pendingCount": pending_count,
+        "externalCount": external_count,
+        "countsComplete": counts_complete,
+        "unavailableCheckComponents": summary.get("unavailableComponents") or [],
+        "actor": reader.actor,
+        "expectedActor": EXPECTED_ACTOR,
         "checks": interesting if args.only_interesting else analyzed,
+        "diagnostics": reader.diagnostics(),
     }
+    if not checks_available:
+        payload["error"] = "PR check data is unavailable; counts are unknown."
 
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         render(payload)
 
-    return 1 if payload["failingCount"] else 0
+    return 1 if failing_count is None or failing_count else 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +113,7 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--repo", default=".", help="Path inside the target git repository.")
+    parser.add_argument("--github-repo", help="Repository in OWNER/REPO form. Defaults to the origin remote.")
     parser.add_argument("--pr", default=None, help="PR number or URL. Defaults to the current branch PR.")
     parser.add_argument("--json", action="store_true", help="Emit JSON for agent/tool consumption.")
     parser.add_argument("--max-lines", type=int, default=140, help="Maximum snippet/tail lines per failing check.")
@@ -101,89 +128,190 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-class CommandResult:
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def run_command(command: Sequence[str], cwd: Path, *, text: bool = True) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    return subprocess.run(command, cwd=cwd, capture_output=True, text=text)
-
-
-def run_gh(args: Sequence[str], cwd: Path) -> CommandResult:
-    process = run_command([GH_COMMAND, *args], cwd=cwd)
-    assert isinstance(process.stdout, str)
-    assert isinstance(process.stderr, str)
-    return CommandResult(process.returncode, process.stdout, process.stderr)
-
-
-def run_gh_raw(args: Sequence[str], cwd: Path) -> tuple[int, bytes, str]:
-    process = run_command([GH_COMMAND, *args], cwd=cwd, text=False)
-    assert isinstance(process.stdout, bytes)
-    assert isinstance(process.stderr, bytes)
-    return process.returncode, process.stdout, process.stderr.decode(errors="replace")
+def run_command(command: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=cwd, capture_output=True, text=True)
 
 
 def find_git_root(start: Path) -> Path | None:
     process = run_command(["git", "rev-parse", "--show-toplevel"], cwd=start)
     if process.returncode != 0:
         return None
-    assert isinstance(process.stdout, str)
     return Path(process.stdout.strip())
 
 
-def resolve_pr(pr: str | None, repo_root: Path) -> str | None:
-    if pr:
-        return pr
-    result = run_gh(["pr", "view", "--json", "number"], repo_root)
-    if result.returncode != 0:
-        print((result.stderr or result.stdout or "unable to resolve current branch PR").strip(), file=sys.stderr)
-        return None
+def current_branch(repo_root: Path) -> str:
+    process = run_command(["git", "branch", "--show-current"], cwd=repo_root)
+    if process.returncode != 0 or not process.stdout.strip():
+        raise ValueError("current branch is detached; pass --pr")
+    return process.stdout.strip()
+
+
+def resolve_pr(
+    value: Optional[str],
+    default_repo: str,
+    repo_root: Path,
+    reader: github_read_core.GitHubReader,
+) -> tuple[str, int, str]:
+    if value:
+        if value.isdigit():
+            return default_repo, int(value), value
+        url_ref = parse_pr_url(value)
+        if url_ref:
+            return url_ref[0], url_ref[1], value
+        raise ValueError("--pr must be a PR number or URL")
+
+    branch = current_branch(repo_root)
     try:
-        data = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        print("error: unable to parse gh pr view JSON", file=sys.stderr)
+        head_repo = github_read_core.resolve_repo_from_remote(repo_root, "origin")
+    except ValueError:
+        head_repo = default_repo
+    candidate_repos = [default_repo]
+    try:
+        upstream_repo = github_read_core.resolve_repo_from_remote(repo_root, "upstream")
+    except ValueError:
+        upstream_repo = None
+    if upstream_repo and upstream_repo not in candidate_repos:
+        candidate_repos.append(upstream_repo)
+    for candidate_repo in candidate_repos:
+        candidate_pulls = github_read_core.list_pull_requests(
+            reader,
+            candidate_repo,
+            head_branch=branch,
+            head_owner=head_repo.split("/", 1)[0],
+            limit=2,
+        )
+        if len(candidate_pulls) > 1:
+            raise ValueError(f"multiple open PRs found for current branch {branch}; pass --pr")
+        if len(candidate_pulls) == 1:
+            number = candidate_pulls[0].get("number")
+            if not isinstance(number, int):
+                raise github_read_core.GitHubReadShapeError("GitHub pull request lookup did not return a number")
+            return candidate_repo, number, str(number)
+    raise ValueError(f"no open PR found for current branch {branch}")
+
+
+def parse_pr_url(value: Optional[str]) -> Optional[tuple[str, int]]:
+    if not value:
         return None
-    number = data.get("number")
-    if not number:
-        print("error: no PR found for current branch", file=sys.stderr)
+    match = re.search(r"^(?:https?://)?[^/]+/([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)(?:[/?#].*)?$", value)
+    if not match:
         return None
-    return str(number)
+    return f"{match.group(1)}/{match.group(2)}", int(match.group(3))
 
 
-def fetch_checks(pr: str, repo_root: Path) -> list[dict[str, Any]] | None:
-    field_sets = [
-        ["name", "state", "conclusion", "detailsUrl", "startedAt", "completedAt"],
-        ["name", "state", "bucket", "link", "startedAt", "completedAt", "workflow"],
-    ]
-    last_message = ""
-    for fields in field_sets:
-        result = run_gh(["pr", "checks", pr, "--json", ",".join(fields)], repo_root)
-        if result.returncode == 0:
-            try:
-                data = json.loads(result.stdout or "[]")
-            except json.JSONDecodeError:
-                print("error: unable to parse gh pr checks JSON", file=sys.stderr)
-                return None
-            if isinstance(data, list):
-                return data
-            print("error: unexpected gh pr checks JSON shape", file=sys.stderr)
-            return None
-        last_message = (result.stderr or result.stdout or "gh pr checks failed").strip()
-    print(last_message, file=sys.stderr)
-    return None
+def combined_checks(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for item in payload.get("checkRuns") or []:
+        if not isinstance(item, dict):
+            continue
+        checks.append({
+            "name": item.get("name"),
+            "state": item.get("status"),
+            "conclusion": item.get("conclusion"),
+            "bucket": "",
+            "detailsUrl": item.get("detailsUrl"),
+            "startedAt": item.get("startedAt"),
+            "completedAt": item.get("completedAt"),
+            "runId": item.get("runId"),
+            "jobId": item.get("jobId"),
+            "source": "check_run",
+        })
+    for item in payload.get("statuses") or []:
+        if not isinstance(item, dict):
+            continue
+        checks.append({
+            "name": item.get("context"),
+            "state": item.get("state"),
+            "conclusion": item.get("state"),
+            "bucket": "",
+            "detailsUrl": item.get("targetUrl"),
+            "startedAt": item.get("createdAt"),
+            "completedAt": item.get("updatedAt"),
+            "runId": None,
+            "jobId": None,
+            "source": "commit_status",
+        })
+    return checks
 
 
-def analyze_check(check: dict[str, Any], repo_root: Path, max_lines: int, context: int) -> dict[str, Any]:
+class DiagnosisClient:
+    def __init__(self, reader: github_read_core.GitHubReader, repo: str) -> None:
+        self.reader = reader
+        self.repo = repo
+        self.run_cache: dict[int, Optional[dict[str, Any]]] = {}
+        self.jobs_cache: dict[int, Optional[list[dict[str, Any]]]] = {}
+        self.log_cache: dict[int, tuple[str, str, str]] = {}
+
+    def run_metadata(self, run_id: int) -> Optional[dict[str, Any]]:
+        if run_id in self.run_cache:
+            return self.run_cache[run_id]
+        try:
+            value = github_read_core.workflow_run(self.reader, self.repo, run_id)
+        except github_read_core.GitHubReadError as exc:
+            code = exc.result.failure.cause if exc.result.failure else "read_failed"
+            self.reader.mark_degraded("workflowRun", code, str(exc))
+            value = None
+        except github_read_core.GitHubReadShapeError as exc:
+            self.reader.mark_degraded("workflowRun", "invalid_response", str(exc))
+            value = None
+        self.run_cache[run_id] = value
+        return value
+
+    def jobs(self, run_id: int) -> Optional[list[dict[str, Any]]]:
+        if run_id in self.jobs_cache:
+            return self.jobs_cache[run_id]
+        try:
+            value = github_read_core.workflow_jobs(self.reader, self.repo, run_id)
+        except github_read_core.GitHubReadError as exc:
+            code = exc.result.failure.cause if exc.result.failure else "read_failed"
+            self.reader.mark_degraded("workflowJobs", code, str(exc))
+            value = None
+        except github_read_core.GitHubReadShapeError as exc:
+            self.reader.mark_degraded("workflowJobs", "invalid_response", str(exc))
+            value = None
+        self.jobs_cache[run_id] = value
+        return value
+
+    def resolve_job_id(self, run_id: int, check_name: str) -> tuple[Optional[int], str]:
+        jobs = self.jobs(run_id)
+        if jobs is None:
+            return None, "Workflow jobs are unavailable."
+        matches = [job for job in jobs if normalize(job.get("name")) == normalize(check_name)]
+        if len(matches) == 1 and isinstance(matches[0].get("id"), int):
+            return int(matches[0]["id"]), ""
+        if len(matches) > 1:
+            message = f"Multiple workflow jobs matched check name {check_name!r}."
+            self.reader.mark_degraded("workflowJobs", "ambiguous_job_mapping", message)
+            return None, message
+        message = f"No workflow job matched check name {check_name!r}."
+        self.reader.mark_degraded("workflowJobs", "job_not_found", message)
+        return None, message
+
+    def log(self, job_id: int, *, run_pending: bool) -> tuple[str, str, str]:
+        if job_id in self.log_cache:
+            return self.log_cache[job_id]
+        try:
+            value = (github_read_core.job_log(self.reader, self.repo, job_id), "", "ok")
+        except github_read_core.GitHubReadError as exc:
+            code = exc.result.failure.cause if exc.result.failure else "read_failed"
+            status = "pending" if run_pending and exc.result.status in {404, 409} else "error"
+            self.reader.mark_degraded("workflowLog", code, str(exc))
+            value = ("", str(exc), status)
+        except github_read_core.GitHubReadShapeError as exc:
+            self.reader.mark_degraded("workflowLog", "unsupported_log_response", str(exc))
+            value = ("", str(exc), "error")
+        self.log_cache[job_id] = value
+        return value
+
+
+def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int, context: int) -> dict[str, Any]:
     name = str(check.get("name") or "")
     state = normalize(check.get("state") or check.get("status"))
     conclusion = normalize(check.get("conclusion"))
     bucket = normalize(check.get("bucket"))
     details_url = str(check.get("detailsUrl") or check.get("link") or "")
-    run_id = extract_run_id(details_url)
-    job_id = extract_job_id(details_url)
+    run_id = int(check["runId"]) if isinstance(check.get("runId"), int) else extract_run_id(details_url)
+    job_id = int(check["jobId"]) if isinstance(check.get("jobId"), int) else extract_job_id(details_url)
 
     item: dict[str, Any] = {
         "name": name,
@@ -191,8 +319,9 @@ def analyze_check(check: dict[str, Any], repo_root: Path, max_lines: int, contex
         "conclusion": conclusion,
         "bucket": bucket,
         "detailsUrl": details_url,
-        "runId": run_id,
-        "jobId": job_id,
+        "runId": str(run_id) if run_id is not None else None,
+        "jobId": str(job_id) if job_id is not None else None,
+        "source": check.get("source"),
     }
 
     if conclusion in FAILURE_VALUES or state in FAILURE_VALUES or bucket in FAILURE_BUCKETS:
@@ -203,12 +332,12 @@ def analyze_check(check: dict[str, Any], repo_root: Path, max_lines: int, contex
         item["classification"] = "passing"
         return item
 
-    if not run_id:
+    if run_id is None:
         item["classification"] = "external"
         item["note"] = "No GitHub Actions run id was found in the details URL."
         return item
 
-    metadata = fetch_run_metadata(run_id, repo_root)
+    metadata = client.run_metadata(run_id)
     if metadata:
         item["run"] = metadata
 
@@ -216,7 +345,15 @@ def analyze_check(check: dict[str, Any], repo_root: Path, max_lines: int, contex
         item["note"] = "Check is still pending; logs may not be available yet."
         return item
 
-    log_text, log_error, log_status = fetch_logs(run_id, job_id, repo_root)
+    if job_id is None:
+        job_id, job_error = client.resolve_job_id(run_id, name)
+        if job_id is None:
+            item["error"] = job_error
+            return item
+        item["jobId"] = str(job_id)
+
+    run_pending = normalize((metadata or {}).get("status")) in PENDING_VALUES
+    log_text, log_error, log_status = client.log(job_id, run_pending=run_pending)
     if log_status == "pending":
         item["note"] = log_error or "Logs are not available yet."
         return item
@@ -233,83 +370,20 @@ def normalize(value: Any) -> str:
     return "" if value is None else str(value).strip().lower()
 
 
-def extract_run_id(url: str) -> str | None:
+def extract_run_id(url: str) -> Optional[int]:
     for pattern in (r"/actions/runs/(\d+)", r"/runs/(\d+)"):
         match = re.search(pattern, url)
         if match:
-            return match.group(1)
+            return int(match.group(1))
     return None
 
 
-def extract_job_id(url: str) -> str | None:
+def extract_job_id(url: str) -> Optional[int]:
     for pattern in (r"/actions/runs/\d+/job/(\d+)", r"/job/(\d+)"):
         match = re.search(pattern, url)
         if match:
-            return match.group(1)
+            return int(match.group(1))
     return None
-
-
-def fetch_run_metadata(run_id: str, repo_root: Path) -> dict[str, Any] | None:
-    fields = "conclusion,status,workflowName,name,event,headBranch,headSha,url"
-    result = run_gh(["run", "view", run_id, "--json", fields], repo_root)
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def fetch_logs(run_id: str, job_id: str | None, repo_root: Path) -> tuple[str, str, str]:
-    failed_result = run_gh(["run", "view", run_id, "--log-failed"], repo_root)
-    if failed_result.returncode == 0 and failed_result.stdout:
-        return failed_result.stdout, "", "ok"
-
-    full_result = run_gh(["run", "view", run_id, "--log"], repo_root)
-    if full_result.returncode == 0 and full_result.stdout:
-        return full_result.stdout, "", "ok"
-
-    error = (failed_result.stderr or failed_result.stdout or full_result.stderr or full_result.stdout or "").strip()
-    if job_id and is_pending_log_message(error):
-        job_log, job_error = fetch_job_log(job_id, repo_root)
-        if job_log:
-            return job_log, "", "ok"
-        if job_error and is_pending_log_message(job_error):
-            return "", job_error, "pending"
-        return "", job_error or error, "error"
-    if is_pending_log_message(error):
-        return "", error, "pending"
-    return "", error or "unable to fetch logs", "error"
-
-
-def fetch_job_log(job_id: str, repo_root: Path) -> tuple[str, str]:
-    repo_slug = fetch_repo_slug(repo_root)
-    if not repo_slug:
-        return "", "unable to resolve repository slug for job log lookup"
-    returncode, stdout, stderr = run_gh_raw(["api", f"/repos/{repo_slug}/actions/jobs/{job_id}/logs"], repo_root)
-    if returncode != 0:
-        return "", (stderr or stdout.decode(errors="replace") or "gh api job logs failed").strip()
-    if stdout.startswith(b"PK"):
-        return "", "job logs returned a zip archive; unable to parse directly"
-    return stdout.decode(errors="replace"), ""
-
-
-def fetch_repo_slug(repo_root: Path) -> str | None:
-    result = run_gh(["repo", "view", "--json", "nameWithOwner"], repo_root)
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return None
-    value = data.get("nameWithOwner")
-    return str(value) if value else None
-
-
-def is_pending_log_message(message: str) -> bool:
-    lowered = message.lower()
-    return any(marker in lowered for marker in LOG_PENDING_MARKERS)
 
 
 def extract_failure_snippet(log_text: str, max_lines: int, context: int) -> str:
@@ -339,11 +413,46 @@ def tail_lines(text: str, max_lines: int) -> str:
     return "\n".join(text.splitlines()[-max_lines:])
 
 
+def emit_failure(
+    args: argparse.Namespace,
+    pr: str,
+    reader: github_read_core.GitHubReader,
+    message: str,
+) -> int:
+    payload = {
+        "pr": pr,
+        "failingCount": None,
+        "pendingCount": None,
+        "externalCount": None,
+        "countsComplete": False,
+        "unavailableCheckComponents": ["pullRequestChecks"],
+        "checks": [],
+        "error": message,
+        "diagnostics": reader.diagnostics(),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"error: {message}", file=sys.stderr)
+        render(payload)
+    return 1
+
+
 def render(payload: dict[str, Any]) -> None:
+    def count(value: Any) -> str:
+        return "unknown" if value is None else str(value)
+
     print(
-        f"PR {payload['pr']}: {payload['failingCount']} failing, "
-        f"{payload['pendingCount']} pending, {payload['externalCount']} external checks."
+        f"PR {payload['pr']}: {count(payload['failingCount'])} failing, "
+        f"{count(payload['pendingCount'])} pending, {count(payload['externalCount'])} external checks."
     )
+    if not payload.get("countsComplete", True):
+        unavailable = ", ".join(payload.get("unavailableCheckComponents") or []) or "check data"
+        print(f"Check counts are partial or unknown: {unavailable} unavailable.")
+    diagnostics = payload.get("diagnostics") or {}
+    if diagnostics.get("degraded"):
+        components = ", ".join(diagnostics.get("degradedComponents") or []) or "GitHub metadata"
+        print(f"Diagnosis degraded: {components} unavailable or incomplete.")
     checks: Iterable[dict[str, Any]] = payload["checks"]
     for check in checks:
         print("-" * 72)

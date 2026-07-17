@@ -208,6 +208,58 @@ def test_parse_uses_final_http_response_block() -> None:
     assert body == {"ok": True}
 
 
+def test_parse_final_text_body_can_contain_http_status_lines() -> None:
+    raw = (
+        "HTTP/2.0 200 OK\r\n"
+        "content-type: text/plain\r\n"
+        "x-github-request-id: log-request\r\n"
+        "\r\n"
+        "setup\n"
+        "HTTP/1.1 503 from application output\n"
+        "failure"
+    )
+    status, headers, body = _api.parse_gh_include_output(raw)
+    assert status == 200, status
+    assert headers["x-github-request-id"] == "log-request"
+    assert body == "setup\nHTTP/1.1 503 from application output\nfailure"
+
+
+def test_parse_final_text_body_can_start_with_http_status_line() -> None:
+    raw = (
+        "HTTP/2.0 200 OK\r\n"
+        "content-type: text/plain\r\n"
+        "x-github-request-id: log-request\r\n"
+        "\r\n"
+        "HTTP/1.1 503 from application output\n"
+        "failure"
+    )
+    status, headers, body = _api.parse_gh_include_output(raw)
+    assert status == 200, status
+    assert headers["x-github-request-id"] == "log-request"
+    assert body == "HTTP/1.1 503 from application output\nfailure"
+
+
+def test_parse_redirect_retains_github_diagnostic_headers() -> None:
+    raw = (
+        "HTTP/2.0 302 Found\r\n"
+        "x-github-request-id: github-request\r\n"
+        "x-ratelimit-limit: 5000\r\n"
+        "x-ratelimit-remaining: 4998\r\n"
+        "x-ratelimit-reset: 1700000000\r\n"
+        "location: https://storage.example.invalid/log\r\n"
+        "\r\n"
+        "HTTP/2.0 200 OK\r\n"
+        "content-type: text/plain\r\n"
+        "\r\n"
+        "job log"
+    )
+    status, headers, body = _api.parse_gh_include_output(raw)
+    assert status == 200, status
+    assert headers["x-github-request-id"] == "github-request"
+    assert headers["x-ratelimit-remaining"] == "4998"
+    assert body == "job log"
+
+
 # ---------------------------------------------------------------------------
 # build_gh_command (body-safety)
 # ---------------------------------------------------------------------------
@@ -321,6 +373,17 @@ def test_call_gh_success_extracts_rate_limit() -> None:
     assert result.rate_limit is not None
     assert result.rate_limit.remaining == 4321
     assert result.rate_limit.limit == 5000
+
+
+def test_call_gh_surfaces_explicit_active_auth_actor() -> None:
+    stdout = _include_output(200, body={"ok": True})
+    result = _call(
+        "GET",
+        "/repos/owner/repo",
+        fake_stdout=stdout,
+        fake_stderr="warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account 'octocat'",
+    )
+    assert result.actor == "octocat"
 
 
 def test_call_gh_post_sends_body_as_json_stdin() -> None:
@@ -1221,6 +1284,9 @@ def main() -> None:
         test_parse_bare_json_without_status_line,
         test_parse_rate_limit_headers_extracted,
         test_parse_uses_final_http_response_block,
+        test_parse_final_text_body_can_contain_http_status_lines,
+        test_parse_final_text_body_can_start_with_http_status_line,
+        test_parse_redirect_retains_github_diagnostic_headers,
         # build_gh_command (body safety)
         test_build_get_command_no_stdin_flag,
         test_build_post_command_uses_stdin,
@@ -1237,6 +1303,7 @@ def main() -> None:
         test_call_gh_result_asdict_has_version,
         test_call_gh_success_extracts_request_id,
         test_call_gh_success_extracts_rate_limit,
+        test_call_gh_surfaces_explicit_active_auth_actor,
         test_call_gh_post_sends_body_as_json_stdin,
         # error classification
         test_classify_401_invalid_credentials,

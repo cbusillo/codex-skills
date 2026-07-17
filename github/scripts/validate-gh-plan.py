@@ -3179,6 +3179,97 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     assert "--paginate" not in calls
 
 
+def test_pr_helper_current_branch_resolves_upstream_fork() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        REAL_SUBPROCESS_RUN(["git", "init", "-q"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "checkout", "-q", "-b", "feature"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "remote", "add", "origin", "git@github.com:fork/r.git"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "remote", "add", "upstream", "git@github.com:base/r.git"], cwd=repo_path, check=True)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/fork/r/pulls?head=fork%3Afeature&state=open'* ]]; then\n"
+            "  printf '[]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/base/r/pulls?head=fork%3Afeature&state=open'* ]]; then\n"
+            "  printf '[{\"number\":7}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/base/r/pulls/7'* ]]; then\n"
+            "  printf '{\"number\":7,\"title\":\"Fork PR\",\"state\":\"open\",\"draft\":false,\"html_url\":\"https://github.com/base/r/pull/7\",\"head\":{\"ref\":\"feature\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"fork/r\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"base/r\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "view"],
+            cwd=repo_path,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0, result.stderr
+    assert payload["repo"] == "base/r", payload
+    assert payload["pr"]["number"] == 7, payload
+    assert "/repos/fork/r/pulls?head=fork%3Afeature&state=open" in calls
+    assert "/repos/base/r/pulls?head=fork%3Afeature&state=open" in calls
+    assert "/repos/base/r/pulls/7" in calls
+
+
+def test_pr_helper_primary_match_skips_inaccessible_upstream() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        REAL_SUBPROCESS_RUN(["git", "init", "-q"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "checkout", "-q", "-b", "feature"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "remote", "add", "origin", "git@github.com:fork/r.git"], cwd=repo_path, check=True)
+        REAL_SUBPROCESS_RUN(["git", "remote", "add", "upstream", "git@github.com:private/r.git"], cwd=repo_path, check=True)
+        log_path = tmp_path / "calls.log"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/fork/r/pulls?head=fork%3Afeature&state=open'* ]]; then\n"
+            "  printf '[{\"number\":8}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/private/r/pulls'* ]]; then\n"
+            "  printf 'inaccessible upstream queried\\n' >&2\n"
+            "  exit 2\n"
+            "elif [[ \"$*\" == *'/repos/fork/r/pulls/8'* ]]; then\n"
+            "  printf '{\"number\":8,\"title\":\"Origin PR\",\"state\":\"open\",\"draft\":false,\"html_url\":\"https://github.com/fork/r/pull/8\",\"head\":{\"ref\":\"feature\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"fork/r\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"fork/r\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "view"],
+            cwd=repo_path,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        calls = log_path.read_text()
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0, result.stderr
+    assert payload["repo"] == "fork/r", payload
+    assert payload["pr"]["number"] == 8, payload
+    assert "/repos/private/r/pulls" not in calls
+
+
 def test_pr_helper_paged_rest_failure_preserves_diagnostics() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -3362,6 +3453,8 @@ def main() -> None:
         test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch,
         test_pr_helper_supersede_skips_branch_delete_for_default_branch,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
+        test_pr_helper_current_branch_resolves_upstream_fork,
+        test_pr_helper_primary_match_skips_inaccessible_upstream,
         test_pr_helper_paged_rest_failure_preserves_diagnostics,
         test_pr_helper_accepts_enterprise_pr_urls,
         test_project_set_accepts_item_id_and_classifies_low_graphql,

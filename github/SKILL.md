@@ -162,12 +162,12 @@ commands:
     source: skill
     resource_path: scripts/github-ci-diagnose.py
     example_argv: ["uv", "run", "scripts/github-ci-diagnose.py", "--pr", "<pr>"]
-    purpose: Diagnoses failing PR checks and summarizes relevant logs.
+    purpose: Diagnoses PR checks through shared REST readers, summarizes relevant job logs, and reports quota or degraded components explicitly.
   - name: github-repo-snapshot
     source: skill
     resource_path: scripts/github-repo-snapshot.sh
     example_argv: ["scripts/github-repo-snapshot.sh", "--json"]
-    purpose: Captures compact repo and GitHub state for orientation.
+    purpose: Captures compact local-git and paged REST GitHub state with per-component request, quota, and degradation evidence.
   - name: github-work-evidence
     source: skill
     resource_path: scripts/github-work-evidence.py

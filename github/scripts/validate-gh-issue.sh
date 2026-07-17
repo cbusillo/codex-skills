@@ -966,19 +966,29 @@ fi
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'warning: automation gh token failed; retrying with active gh auth; GitHub writes may appear as the active account\n' >&2
+printf "warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account 'ok'\n" >&2
+emit() {
+	printf 'HTTP/2.0 200 \n'
+	printf 'content-type: application/json\n'
+	printf 'x-github-request-id: SNAPSHOT:123\n'
+	printf 'x-ratelimit-limit: 5000\n'
+	printf 'x-ratelimit-remaining: 4999\n'
+	printf 'x-ratelimit-reset: 1784304000\n'
+	printf 'x-ratelimit-used: 1\n'
+	printf 'x-ratelimit-resource: core\n\n'
+	printf '%s\n' "$1"
+}
 case "${1:-} ${2:-}" in
 	'api --method')
 		case "$*" in
-			*'/pulls?state=open'*) printf '[{"number":1,"title":"open"}]\n' ;;
-			*) printf '[]\n' ;;
+			*'/pulls?'*'head='*) emit '[{"number":123,"title":"demo","state":"open","draft":false,"html_url":"https://github.com/owner/repo/pull/123","labels":[],"head":{"ref":"feature","sha":"abc","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}]' ;;
+			*'/pulls?'*) emit '[{"number":1,"title":"open","state":"open","draft":false,"html_url":"https://github.com/owner/repo/pull/1","labels":[],"head":{"ref":"feature","sha":"abc","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}]' ;;
+			*'/issues?'*) emit '[{"number":2,"title":"issue","state":"open","labels":[],"html_url":"https://github.com/owner/repo/issues/2","updated_at":"2026-07-17T00:00:00Z"}]' ;;
+			*'/actions/runs?'*) emit '{"workflow_runs":[{"id":3,"name":"ci","display_title":"CI run","status":"completed","conclusion":"success","head_branch":"main","head_sha":"abc","event":"push","created_at":"2026-07-17T00:00:00Z","html_url":"https://github.com/owner/repo/actions/runs/3"}]}' ;;
+			*'/repos/'*) emit '{"full_name":"owner/repo","default_branch":"main","delete_branch_on_merge":false,"html_url":"https://github.com/owner/repo"}' ;;
+			*) emit '[]' ;;
 		esac
 		;;
-	'pr view') printf '{"number":123,"title":"demo","isDraft":false}\n' ;;
-	'pr list') printf '[{"number":1,"title":"open","isDraft":false}]\n' ;;
-	'issue list') printf '[{"number":2,"title":"issue"}]\n' ;;
-	'repo view') printf '{"nameWithOwner":"owner/repo","defaultBranchRef":{"name":"main"},"deleteBranchOnMerge":false}\n' ;;
-	'run list') printf '[{"databaseId":3,"workflowName":"ci"}]\n' ;;
 	*) printf '[]\n' ;;
 esac
 EOF
@@ -995,6 +1005,17 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.github.openPullRequests[0].mergeStateStatus == null and
 		.github.openPullRequests[0].snapshotReadiness.degraded == true and
 		.github.openPullRequests[0].snapshotReadiness.mergeReadinessAvailable == false and
+		.github.openIssues[0].number == 2 and
+		.github.openIssues[0].updatedAt == "2026-07-17T00:00:00Z" and
+		.github.recentRuns[0].databaseId == 3 and
+		.github.recentRuns[0].workflowName == "ci" and
+		.github.diagnostics.degraded == true and
+		([.github.diagnostics.degradedComponents[]] | index("openIssues")) != null and
+		.github.diagnostics.components.openIssues.requestId == "SNAPSHOT:123" and
+		.github.diagnostics.components.openIssues.quota.remaining == 4999 and
+		.github.diagnostics.components.openIssues.actor == "ok" and
+		.github.diagnostics.components.openIssues.expectedActor == "shiny-code-bot" and
+		([.github.diagnostics.components.openIssues.diagnostics.degradedComponents[]] | index("actor")) != null and
 		.launchplane.status == "configured" and
 		.launchplane.service.contextUrlEnv == "LAUNCHPLANE_CONTEXT_URL" and
 		.launchplane.service.operatorUrlEnv == "LAUNCHPLANE_OPERATOR_URL" and
@@ -1016,6 +1037,62 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 grep -qx 'status: configured' "$tmpdir/cleanup-section.txt"
 grep -q '^routineCommands: git status, worktree list, merged local branches$' "$tmpdir/cleanup-section.txt"
 grep -q '^handoffDurableSurface: GitHub issue or PR comment$' "$tmpdir/cleanup-section.txt"
+
+cat >"$tmpdir/gh-snapshot-rate-limited" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+emit() {
+	local status="$1"
+	local body="$2"
+	printf 'HTTP/2.0 %s \n' "$status"
+	printf 'content-type: application/json\n'
+	printf 'x-github-request-id: SNAPSHOT:RATE\n'
+	printf 'x-ratelimit-limit: 5000\n'
+	printf 'x-ratelimit-remaining: %s\n' "${3:-4999}"
+	printf 'x-ratelimit-reset: 1784304999\n'
+	printf 'x-ratelimit-used: 1\n'
+	printf 'x-ratelimit-resource: core\n'
+	if [[ "$status" -eq 429 ]]; then
+		printf 'retry-after: 60\n'
+	fi
+	printf '\n%s\n' "$body"
+}
+case "${1:-} ${2:-}" in
+	'api --method')
+		case "$*" in
+			*'/pulls?'*) emit 200 '[]' ;;
+			*'/issues?'*)
+				emit 429 '{"message":"API rate limit exceeded"}' 0
+				exit 1
+				;;
+			*'/actions/runs?'*) emit 200 '{"workflow_runs":[]}' ;;
+			*'/repos/'*) emit 200 '{"full_name":"owner/repo","default_branch":"main","delete_branch_on_merge":false}' ;;
+			*) emit 200 '[]' ;;
+		esac
+		;;
+	*) emit 200 '[]' ;;
+esac
+EOF
+chmod +x "$tmpdir/gh-snapshot-rate-limited"
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-snapshot-rate-limited" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json |
+	jq -e '
+		.github.openIssues.error.cause == "secondary_rate_limited" and
+		.github.openIssues.error.retryable == true and
+		.github.diagnostics.degraded == true and
+		([.github.diagnostics.degradedComponents[]] | index("openIssues")) != null and
+		.github.diagnostics.components.openIssues.status == 429 and
+		.github.diagnostics.components.openIssues.retryable == true and
+		.github.diagnostics.components.openIssues.diagnostics.requests[0].retryAfter == 60 and
+		(.github.recentRuns | type) == "array"
+	' >/dev/null
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-snapshot-rate-limited" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" >"$tmpdir/rate-limited-snapshot.txt"
+grep -q '^warning: open issues unavailable - ' "$tmpdir/rate-limited-snapshot.txt"
 
 cat >"$tmpdir/cleanup-policy.json" <<'EOF'
 {
@@ -1120,12 +1197,33 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 cat >"$tmpdir/gh-repo-view-fails" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+emit() {
+	local status="$1"
+	local body="$2"
+	printf 'HTTP/2.0 %s \n' "$status"
+	printf 'content-type: application/json\n'
+	printf 'x-github-request-id: SNAPSHOT:DENIED\n'
+	printf 'x-ratelimit-limit: 5000\n'
+	printf 'x-ratelimit-remaining: 4998\n'
+	printf 'x-ratelimit-reset: 1784304000\n'
+	printf 'x-ratelimit-used: 2\n'
+	printf 'x-ratelimit-resource: core\n\n'
+	printf '%s\n' "$body"
+}
 case "${1:-} ${2:-}" in
-	'repo view')
-		printf 'repo settings unavailable\n' >&2
-		exit 1
+	'api --method')
+		case "$*" in
+			*'/pulls?'*) emit 200 '[]' ;;
+			*'/issues?'*) emit 200 '[]' ;;
+			*'/actions/runs?'*) emit 200 '{"workflow_runs":[]}' ;;
+			*'/repos/'*)
+				emit 403 '{"message":"Resource not accessible by integration"}'
+				exit 1
+				;;
+			*) emit 200 '[]' ;;
+		esac
 		;;
-	*) printf '[]\n' ;;
+	*) emit 200 '[]' ;;
 esac
 EOF
 chmod +x "$tmpdir/gh-repo-view-fails"
@@ -1134,5 +1232,17 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-repo-view-fails" \
 	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
 	"$repo_root/github/scripts/github-repo-snapshot.sh" --config "$snapshot_config" |
 	grep -q 'warning: repositorySettings - Repository settings could not be read; do not treat configured expectations as verified.'
+
+GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-repo-view-fails" \
+	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
+	"$repo_root/github/scripts/github-repo-snapshot.sh" --json --config "$snapshot_config" |
+	jq -e '
+		.github.repositorySettings.available == false and
+		.github.repositorySettings.error.cause == "permission_denied" and
+		.github.diagnostics.degraded == true and
+		([.github.diagnostics.degradedComponents[]] | index("repositorySettings")) != null and
+		.github.diagnostics.components.repositorySettings.status == 403 and
+		.github.diagnostics.components.repositorySettings.requestId == "SNAPSHOT:DENIED"
+	' >/dev/null
 
 echo "ok validate-gh-issue"
