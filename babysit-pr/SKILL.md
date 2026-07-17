@@ -65,6 +65,13 @@ This skill never merges a PR. Merge execution belongs to the `github` skill and
 requires explicit user approval plus a fresh PR/readiness check. If the watcher
 reports `ready_to_merge`, read that as `ready_for_merge_decision`.
 
+This skill also does not reconcile or mutate a local runtime checkout. When a
+watcher first confirms `merged`, delegate runtime-bound checkout reconciliation
+to `github` with the repository worktree and the watcher's final
+`merge_commit_sha`; never substitute `head_sha`. Keep the watcher observational
+for this local Git mutation, preserve the confirmed remote merge as successful
+if reconciliation is blocked, and do nothing for a merely closed, unmerged PR.
+
 When `.github/github.json` exists, use it as repo workflow metadata for gates,
 important workflows, post-merge signals, cleanup policy, and any repo-specific
 merge/release policy. Do not infer release intent from package metadata or PR

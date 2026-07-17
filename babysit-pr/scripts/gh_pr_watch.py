@@ -152,7 +152,7 @@ def parse_pr_spec(pr_spec):
 
 def pr_view_fields():
     return (
-        "number,url,state,mergedAt,closedAt,headRefName,headRefOid,"
+        "number,url,state,mergedAt,closedAt,mergeCommit,baseRefName,headRefName,headRefOid,"
         "headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision"
     )
 
@@ -172,9 +172,14 @@ def resolve_pr(pr_spec, repo_override=None):
         raise GhCommandError("Unexpected PR payload from `gh pr view`")
 
     pr_url = str(data.get("url") or "")
+    url_repo = extract_repo_from_pr_url(pr_url)
+    if repo_override and url_repo and repo_override.casefold() != url_repo.casefold():
+        raise GhCommandError(
+            f"PR URL repository {url_repo} does not match --repo {repo_override}"
+        )
     repo = (
         repo_override
-        or extract_repo_from_pr_url(pr_url)
+        or url_repo
         or extract_repo_from_pr_view(data)
     )
     if not repo:
@@ -183,6 +188,8 @@ def resolve_pr(pr_spec, repo_override=None):
     state = str(data.get("state") or "")
     merged = bool(data.get("mergedAt"))
     closed = bool(data.get("closedAt")) or state.upper() == "CLOSED"
+    merge_commit = data.get("mergeCommit")
+    merge_commit_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else ""
 
     return {
         "number": int(data["number"]),
@@ -190,6 +197,8 @@ def resolve_pr(pr_spec, repo_override=None):
         "repo": repo,
         "head_sha": str(data.get("headRefOid") or ""),
         "head_branch": str(data.get("headRefName") or ""),
+        "base_branch": str(data.get("baseRefName") or ""),
+        "merge_commit_sha": str(merge_commit_sha or ""),
         "state": state,
         "merged": merged,
         "closed": closed,

@@ -315,6 +315,8 @@ def normalize_pull_request(item: dict[str, Any]) -> dict[str, Any]:
         "draft": item.get("draft"),
         "isDraft": item.get("draft"),
         "merged": merged,
+        "mergedAt": item.get("merged_at"),
+        "mergeCommitOid": item.get("merge_commit_sha"),
         "mergeable": item.get("mergeable"),
         "mergeable_state": mergeable_state,
         "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,

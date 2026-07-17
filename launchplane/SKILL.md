@@ -401,6 +401,13 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   commit, landing-plan record id, each landed PR number and merge commit, managed
   feedback delivery status, and post-merge checks on the target repository's
   default branch.
+- **Runtime Checkout Handoff**: After the controller confirms a final landing
+  commit, delegate any runtime-bound local checkout reconciliation to `github`
+  and its landed repo-local reconciler. Do not reconcile from candidate,
+  admission, observation, landing-plan, queued, or other nonterminal controller
+  responses. Preserve Launchplane landing success independently when local
+  reconciliation is blocked or fails, and block only claims that installed
+  runtime behavior is current.
 - **Recovery Evidence**: If Launchplane patches are needed during rollout,
   verify their PR checks, post-merge CI/Security/CodeQL, and Deploy Launchplane
   before retrying mutation. Record the failing workflow run id and trace id that

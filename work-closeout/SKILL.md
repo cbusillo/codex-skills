@@ -63,11 +63,20 @@ Leave the user with a truthful closeout answer:
    git worktree list
    ```
 
-   If the active branch is clean and behind its configured upstream, run
-   `git pull --ff-only` before final closeout and re-check status. Do this only
-   for clean fast-forwardable branches. If the branch is dirty, ahead, diverged,
-   lacks an upstream, or the fast-forward fails, do not pull further; report the
-   state and the next safe action instead.
+   First determine whether the active checkout is bound into the active local
+   runtime for merged work. If it is, do not update it with generic `git pull`;
+   use `github` and its landed repo-local runtime reconciler as the idempotent
+   closeout backstop. Pass the confirmed final landing SHA; do not substitute a PR
+   head, candidate, or pre-merge base SHA. Keep remote merge success separate
+   from local reconciliation. A blocked or failed reconciliation prevents a
+   claim that installed runtime behavior or provenance-sensitive evidence is
+   current, but it does not reclassify or retry the confirmed merge.
+
+   For a checkout that is not runtime-bound, if the active branch is clean and
+   behind its configured upstream, run `git pull --ff-only` before final
+   closeout and re-check status. Do this only for clean fast-forwardable
+   branches. If the branch is dirty, ahead, diverged, lacks an upstream, or the
+   fast-forward fails, do not pull further; report the state and next safe action.
 
    If the shared Launchplane context helper is present and configured, call it
    once as optional closeout context for the repo/workstream:
@@ -293,10 +302,12 @@ handoff.
 - Preserve unrelated user changes.
 - Do not run destructive git commands.
 - Do not force-delete branches or worktrees.
-- If `git status --short --branch` shows a clean branch behind its upstream,
-  fast-forward it with `git pull --ff-only` before saying the checkout is tidy.
-  Treat dirty, ahead, diverged, missing-upstream, or failed fast-forward states
-  as report-only unless the user explicitly asks for a specific git action.
+- If `git status --short --branch` shows a clean non-runtime-bound branch behind
+  its upstream, fast-forward it with `git pull --ff-only` before saying the
+  checkout is tidy. Runtime-bound checkouts must use the landed repo-local
+  reconciler instead. Treat dirty, ahead, diverged, missing-upstream, or failed
+  fast-forward states as report-only unless the user explicitly asks for a
+  specific git action.
 - When the user asks to delete or remove a worktree, first preserve or confirm
   disposal of any uncommitted changes. Removing a worktree is not approval to
   lose its branch or local edits.

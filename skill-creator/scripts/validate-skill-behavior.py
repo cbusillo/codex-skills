@@ -1033,6 +1033,48 @@ def test_github_merges_land_through_prs() -> None:
     )
 
 
+def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
+    github_text = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
+    babysit_text = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
+    launchplane_text = " ".join((ROOT / "launchplane" / "SKILL.md").read_text().lower().split())
+    closeout_text = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
+    inspection_text = " ".join((ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower().split())
+    watcher_text = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text().lower()
+
+    require(
+        "keep the remote merge result separate from local runtime reconciliation" in github_text,
+        "GitHub must preserve remote merge success independently of runtime reconciliation",
+    )
+    require(
+        "must never cause the merge to be retried" in github_text,
+        "Runtime reconciliation failure must not retry a confirmed merge",
+    )
+    require(
+        "does not reconcile or mutate a local runtime checkout" in babysit_text,
+        "babysit-pr must not mutate the runtime checkout",
+    )
+    require(
+        "merge_commit_sha" in watcher_text and '"mergecommit"' in watcher_text,
+        "babysit-pr must surface the final merge commit instead of only the PR head",
+    )
+    require(
+        "do nothing for a merely closed, unmerged pr" in babysit_text,
+        "babysit-pr must not reconcile closed-unmerged PRs",
+    )
+    require(
+        "after the controller confirms a final landing commit" in launchplane_text,
+        "Launchplane must delegate reconciliation only after final landing",
+    )
+    require(
+        "idempotent closeout backstop" in closeout_text,
+        "work-closeout must provide runtime reconciliation as a backstop",
+    )
+    require(
+        "a missing or mismatched revision makes the installed-runtime claim `unknown`" in inspection_text,
+        "JetBrains evidence must reject stale installed helper provenance",
+    )
+
+
 def test_repo_readiness_and_work_closeout_share_handoff_contract() -> None:
     readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
     closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
@@ -1435,6 +1477,7 @@ def main() -> None:
         test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
+        test_runtime_checkout_reconciliation_is_safe_and_delegated,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_safe_exit_requires_love_gate_closeout,
         test_launchplane_delegates_github_surfaces,
