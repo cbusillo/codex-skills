@@ -1029,6 +1029,7 @@ def set_issue_state(
             "reconciliation": reconciliation,
         },
     )
+    steps.append(mutation_step)
     return _issue_payload(
         result.body,
         operation=operation,
@@ -1053,7 +1054,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("-m", "--milestone")
 
     edit = sub.add_parser("edit")
-    edit.add_argument("number", type=int)
+    edit.add_argument("number")
     edit.add_argument("-R", "--repo")
     edit.add_argument("-t", "--title")
     edit.add_argument("--add-label", action="append", default=[])
@@ -1065,14 +1066,15 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_group.add_argument("--remove-milestone", action="store_true")
 
     close = sub.add_parser("close")
-    close.add_argument("number", type=int)
+    close.add_argument("number")
     close.add_argument("-R", "--repo")
     close.add_argument("-c", "--comment")
-    close.add_argument("-r", "--reason", default="completed")
-    close.add_argument("--duplicate-of")
+    close_mode = close.add_mutually_exclusive_group()
+    close_mode.add_argument("-r", "--reason", default="completed")
+    close_mode.add_argument("--duplicate-of")
 
     reopen = sub.add_parser("reopen")
-    reopen.add_argument("number", type=int)
+    reopen.add_argument("number")
     reopen.add_argument("-R", "--repo")
     reopen.add_argument("-c", "--comment")
     return parser
@@ -1127,6 +1129,13 @@ def _close_reason(value: str) -> str:
     return mapping[normalized]
 
 
+def _resolve_cli_target(value: str, repo: Optional[str], *, operation: str) -> tuple[str, int]:
+    target_repo, target_number = _issue_reference(value, "")
+    if target_repo:
+        return target_repo, target_number
+    return _resolve_repo(repo, gh_cmd=DEFAULT_GH, operation=operation), target_number
+
+
 def main() -> int:
     operation = "github.issue.unknown"
     try:
@@ -1173,12 +1182,13 @@ def main() -> int:
                 expected_actor=expected_actor,
             )
         elif args.command == "edit":
+            target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             stdin_body = _read_stdin(optional=True)
             payload = edit_issue(
-                args.number,
+                target_number,
                 body=stdin_body if stdin_body else None,
                 title=args.title,
-                repo=args.repo,
+                repo=target_repo,
                 add_labels=args.add_label,
                 remove_labels=args.remove_label,
                 add_assignees=args.add_assignee,
@@ -1188,27 +1198,29 @@ def main() -> int:
                 expected_actor=expected_actor,
             )
         elif args.command == "close":
+            target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             stdin_comment = _read_stdin(optional=True)
             comment_body = stdin_comment if stdin_comment else args.comment
             reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
             payload = set_issue_state(
-                args.number,
+                target_number,
                 state="closed",
                 state_reason=reason,
-                repo=args.repo,
+                repo=target_repo,
                 comment_body=comment_body,
                 duplicate_of=args.duplicate_of,
                 expected_actor=expected_actor,
                 operation=operation,
             )
         else:
+            target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             stdin_comment = _read_stdin(optional=True)
             comment_body = stdin_comment if stdin_comment else args.comment
             payload = set_issue_state(
-                args.number,
+                target_number,
                 state="open",
                 state_reason="reopened",
-                repo=args.repo,
+                repo=target_repo,
                 comment_body=comment_body,
                 expected_actor=expected_actor,
                 operation=operation,

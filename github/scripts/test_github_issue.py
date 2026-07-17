@@ -443,6 +443,8 @@ def test_close_and_reopen_use_explicit_state_reasons() -> None:
         )
         assert closed["state_reason"] == "not_planned", closed
         assert reopened["state_reason"] == "reopened", reopened
+        assert closed["completed_steps"] == ["close_issue"], closed
+        assert reopened["completed_steps"] == ["reopen_issue"], reopened
         assert [call["method"] for call in calls] == ["GET", "PATCH", "GET", "PATCH"], calls
 
     with_call_stub(callback, run)
@@ -471,10 +473,45 @@ def test_duplicate_close_resolves_database_id() -> None:
             duplicate_of="41",
             gh_cmd="fake-gh",
         )
-        assert payload["completed_steps"] == ["resolve_duplicate_issue"], payload
+        assert payload["completed_steps"] == ["resolve_duplicate_issue", "close_issue"], payload
         assert [call["method"] for call in calls] == ["GET", "GET", "PATCH"], calls
 
     with_call_stub(callback, run)
+
+
+def test_mutation_parsers_accept_self_contained_targets_without_repo_resolution() -> None:
+    parser = github_issue.build_parser()
+    targets = (
+        "https://github.example.test/owner/repo/issues/42",
+        "owner/repo#42",
+    )
+    original_resolve_repo = github_issue._resolve_repo
+
+    def fail_repo_resolution(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("self-contained targets must not resolve an ambient repository")
+
+    github_issue._resolve_repo = fail_repo_resolution
+    try:
+        for command in ("edit", "close", "reopen"):
+            for target in targets:
+                args = parser.parse_args([command, target])
+                assert args.number == target, args
+                assert github_issue._resolve_cli_target(
+                    args.number,
+                    args.repo,
+                    operation=f"github.issue.{command}",
+                ) == ("owner/repo", 42)
+    finally:
+        github_issue._resolve_repo = original_resolve_repo
+
+
+def test_close_reason_and_duplicate_target_are_mutually_exclusive() -> None:
+    parser = github_issue.build_parser()
+    try:
+        parser.parse_args(["close", "42", "--reason", "not_planned", "--duplicate-of", "41"])
+    except github_api.ArgumentParsingError:
+        return
+    raise AssertionError("close must reject --reason with --duplicate-of")
 
 
 def test_invalid_duplicate_target_does_not_post_comment() -> None:
@@ -528,6 +565,8 @@ TESTS = [
     test_close_and_reopen_use_explicit_state_reasons,
     test_duplicate_close_resolves_database_id,
     test_invalid_duplicate_target_does_not_post_comment,
+    test_mutation_parsers_accept_self_contained_targets_without_repo_resolution,
+    test_close_reason_and_duplicate_target_are_mutually_exclusive,
 ]
 
 

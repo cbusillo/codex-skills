@@ -189,6 +189,8 @@ scripts/gh-issue close 123 --repo OWNER/REPO --reason completed <<'EOF'
 Closing with a multiline Markdown comment before closing the issue.
 EOF
 
+scripts/gh-issue close 123 --repo OWNER/REPO --duplicate-of 456
+
 scripts/gh-issue reopen 123 --repo OWNER/REPO <<'EOF'
 Reopening with a multiline Markdown comment before changing issue state.
 EOF
@@ -198,6 +200,9 @@ Create supports repeated or comma-separated `--label` and `--assignee` values
 plus milestone titles through `--milestone`. Edit supports body/title changes,
 label and assignee add/remove flags, and milestone set/remove operations. The
 helper resolves milestone titles through paged REST reads before writing.
+Edit, close, and reopen accept issue numbers, `#NUMBER`, `OWNER/REPO#NUMBER`, or
+full issue URLs; a repository encoded in the target takes precedence over
+`--repo`.
 Flags that require templates, Projects, issue types, parent/sub-issue or
 dependency relationships, editor/recovery state, or browser interaction remain
 outside this focused REST surface. Route those deliberate exceptions through
@@ -208,7 +213,11 @@ identity and literal Markdown remain explicit.
 state-change comment through the shared JSON-stdin REST comment implementation
 before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
-the close failed, and comment failure stops before close. For completed durable
+the close failed, and comment failure stops before close. Successful state
+changes append `close_issue` or `reopen_issue` to `completed_steps`.
+`--duplicate-of` accepts the same issue-reference forms, resolves the target's
+REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`
+in the close PATCH. It is mutually exclusive with `--reason`. For completed durable
 plan issues, use
 `scripts/gh-plan.py close --comment-file` so plan labels and Project focus stay
 in sync.

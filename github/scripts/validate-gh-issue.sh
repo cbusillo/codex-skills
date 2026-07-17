@@ -686,6 +686,16 @@ printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/'*)
+		number=''
+		for arg in "$@"; do
+			case "$arg" in
+			/repos/owner/repo/issues/*) number="${arg##*/}" ;;
+			esac
+		done
+		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+			"$number" "$number" "$number"
+		;;
 	*'--method POST'*'/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
 		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
@@ -722,7 +732,7 @@ grep -q '"state": "closed".*"state_reason": "completed"' "$log"
 printf '%s' "Closing with \`literal markdown\`." >"$tmpdir/expected-close-comment"
 cmp "$tmpdir/expected-close-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/9'
-jq -e '.completed_steps == ["post_close_comment"]' "$stdout_log" >/dev/null
+jq -e '.completed_steps == ["post_close_comment", "close_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
@@ -735,6 +745,7 @@ if grep -q '/comments' "$log"; then
 	exit 1
 fi
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/90'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 : >"$env_log"
@@ -847,7 +858,7 @@ import pathlib
 import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-assert payload["completed_steps"] == ["post_close_comment"], payload
+assert payload["completed_steps"] == ["post_close_comment", "close_issue"], payload
 PY
 
 cat >"$tmpdir/failing-large-comment-gh" <<'EOF'
@@ -894,6 +905,7 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/15' "$log"
 grep -q '"state": "open".*"state_reason": "reopened"' "$log"
 assert_helper_envelope "$stdout_log" github.issue.reopen 'https://github.com/owner/repo/issues/15'
+jq -e '.completed_steps == ["reopen_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
@@ -903,6 +915,7 @@ grep -q -- '--method GET.* /repos/owner/repo/issues/41' "$log"
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/16' "$log"
 grep -q '"state_reason": "duplicate".*"duplicate_issue_id": 9041' "$log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/16'
+jq -e '.completed_steps == ["resolve_duplicate_issue", "close_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
@@ -911,6 +924,44 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/17' "$log"
 grep -q '"state_reason": "not_planned"' "$log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/17'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close https://github.com/owner/repo/issues/18 \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/18' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/18'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" edit https://github.com/owner/repo/issues/19 --title 'URL target edit' \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/19' "$log"
+grep -q -- '--method GET.* /repos/owner/repo/issues/19' "$log"
+assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/19'
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" reopen 'owner/repo#20' \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/20' "$log"
+assert_helper_envelope "$stdout_log" github.issue.reopen 'https://github.com/owner/repo/issues/20'
+jq -e '.completed_steps == ["reopen_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close 21 --repo owner/repo --reason not_planned --duplicate-of 41 \
+	>"$stdout_log" 2>"$stderr_log" </dev/null; then
+	echo "error: gh-issue close must reject --reason with --duplicate-of" >&2
+	exit 1
+fi
+assert_failure_envelope "$stdout_log" github.issue.close validation_error argument_parsing not_started
+if [[ -s "$log" ]]; then
+	echo "error: conflicting close modes must fail before calling GitHub" >&2
+	exit 1
+fi
 
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
