@@ -234,41 +234,35 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 id = "github.plan.index"
 entrypoint = "github/scripts/gh-plan.py index"
 intent = "List compact durable planning issues by label and state."
-current_transport = "gh_cli_graphql"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue list --json via github/scripts/gh-with-env-token"
-current_quota_bucket = "graphql"
 endpoint_or_command = "Paged GET /repos/{repo}/issues?labels={label}&state={state}&sort=updated&direction=desc; exclude pull_request entries and honor --limit"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
-reconciliation_strategy = "fresh_read"
+reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issues endpoint supplies the planning index fields and avoids routine GraphQL pressure."
-source_refs = ["github/scripts/gh-plan.py:cmd_index"]
-test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_index", "github/scripts/gh-plan.py:collect_paged_rest_items"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_plan_index_paginates_filters_prs_and_honors_limit", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-index.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.search"
 entrypoint = "github/scripts/gh-plan.py search"
 intent = "Search issues and return compact normalized planning results."
-current_transport = "gh_cli_graphql"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue list --search --json via github/scripts/gh-with-env-token"
-current_quota_bucket = "graphql"
-endpoint_or_command = "Paged GET /search/issues?q={query}+repo:{repo}+is:issue+state:{state}; honor --limit"
+endpoint_or_command = "Paged GET /search/issues?q={query}+repo:{repo}+is:issue with conditional is:open/is:closed qualifier; honor --limit"
 quota_bucket = "search"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
-reconciliation_strategy = "fresh_read"
+reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issue search endpoint preserves planning discovery while using the search bucket explicitly."
-source_refs = ["github/scripts/gh-plan.py:cmd_search"]
-test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_search", "github/scripts/gh-plan.py:collect_paged_rest_items"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-search.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.show"
@@ -294,7 +288,7 @@ intent = "Create a durable planning issue with configured labels and optional Pr
 current_transport = "composite"
 selected_transport = "composite"
 migration_status = "planned"
-current_endpoint_or_command = "gh issue list dedupe; gh label list/create; POST /repos/{repo}/issues; optional gh project item-add/item-edit"
+current_endpoint_or_command = "gh issue list dedupe; paged REST label ensure; POST /repos/{repo}/issues; optional gh project item-add/item-edit"
 current_quota_bucket = "mixed"
 endpoint_or_command = "REST issue-search dedupe; REST label ensure; POST /repos/{repo}/issues; optional retained gh project item-add/item-edit"
 quota_bucket = "mixed"
@@ -450,12 +444,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 id = "github.plan.ensure_labels"
 entrypoint = "github/scripts/gh-plan.py ensure-labels"
 intent = "Ensure configured planning labels exist, creating documented missing labels."
-current_transport = "gh_cli_wrapper"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh label list/create via github/scripts/gh-with-env-token"
-current_quota_bucket = "rest_core"
-endpoint_or_command = "GET /repos/{repo}/labels; POST /repos/{repo}/labels"
+endpoint_or_command = "Paged GET /repos/{repo}/labels; POST /repos/{repo}/labels; GET /repos/{repo}/labels/{name} to reconcile concurrent create conflicts"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "label_write"
@@ -463,8 +454,8 @@ idempotency = "idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "ensure_missing"
 retained_graphql_rationale = "No retained GraphQL transport; gh label commands map to label listing and creation without ProjectV2 GraphQL requirements."
-source_refs = ["github/scripts/gh-plan.py:cmd_ensure_labels"]
-test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_ensure_labels", "github/scripts/gh-plan.py:ensure_labels", "github/scripts/gh-plan.py:collect_paged_rest_items"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_plan_ensure_labels_uses_paged_rest_and_reconciles_conflict", "github/scripts/validate-gh-plan.py:test_plan_ensure_labels_skips_existing_case_insensitively", "github/scripts/validate-gh-plan.py:test_create_refuses_to_mint_undocumented_extra_labels", "github/scripts/validate-gh-plan.py:test_create_allows_existing_extra_labels_without_creating_them", "skill-creator/evaluations/exec-harness/fake-gh-plan-ensure-labels.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.create"

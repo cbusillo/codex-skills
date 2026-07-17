@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from typing import Any, Optional
 
 import github_api as github_api_core
@@ -34,8 +35,8 @@ CURRENT_BUCKET = "unknown"
 CURRENT_IS_WRITE = False
 
 PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
-    "index": ("gh_cli_graphql", "graphql", False),
-    "search": ("gh_cli_graphql", "graphql", False),
+    "index": ("rest_api", "rest_core", False),
+    "search": ("rest_api", "search", False),
     "show": ("rest_api", "rest_core", False),
     "create": ("composite", "mixed", True),
     "update-section": ("rest_api", "rest_core", True),
@@ -46,7 +47,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
-    "ensure-labels": ("composite", "mixed", True),
+    "ensure-labels": ("rest_api", "rest_core", True),
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -515,6 +516,7 @@ def api_json(
     *,
     operation: str | None = None,
     is_write: bool | None = None,
+    bucket: str | None = None,
     graphql_operation: github_api_core.GraphQLOperation | None = None,
     completed_steps: list[str] | None = None,
     failed_step: str | None = None,
@@ -529,7 +531,7 @@ def api_json(
         explicit_is_write=is_write,
         graphql_operation=resolved_graphql_operation,
     )
-    bucket = "graphql" if github_api_core.is_graphql_path(path) else "rest_core"
+    resolved_bucket = bucket or ("graphql" if github_api_core.is_graphql_path(path) else "rest_core")
     args = [
         "api",
         *API_VERSION_ARGS,
@@ -547,8 +549,9 @@ def api_json(
         input_text=input_text,
         operation=operation or CURRENT_OPERATION,
         is_write=resolved_is_write,
-        bucket=bucket,
+        bucket=resolved_bucket,
         graphql_operation=resolved_graphql_operation,
+        completed_steps=completed_steps,
         failed_step=failed_step or "gh_invocation",
     )
     status, headers, body = github_api_core.parse_gh_include_output(stdout)
@@ -571,14 +574,96 @@ def api_json(
             actor=actor,
             expected_actor=EXPECTED_ACTOR,
             host=github_api_core.DEFAULT_HOST,
-            transport="graphql_api" if bucket == "graphql" else "rest_api",
-            bucket=bucket,
+            transport="graphql_api" if resolved_bucket == "graphql" else "rest_api",
+            bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
             completed_steps=completed_steps or [],
             failed_step=failure.failed_step,
         )
         raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
     return actor, body
+
+
+def positive_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid limit: {value}") from exc
+    if limit <= 0:
+        raise argparse.ArgumentTypeError(f"invalid limit: {value}")
+    return limit
+
+
+def path_with_query(path: str, params: dict[str, Any]) -> str:
+    return f"{path}?{urllib.parse.urlencode(params)}"
+
+
+def collect_paged_rest_items(
+    path: str,
+    *,
+    query: dict[str, Any],
+    bucket: str,
+    step_prefix: str,
+    limit: int | None = None,
+    collection_key: str | None = None,
+    issue_only: bool = False,
+) -> tuple[str, list[dict[str, Any]]]:
+    actor = ""
+    items: list[dict[str, Any]] = []
+    completed_steps: list[str] = []
+    page = 1
+    while limit is None or len(items) < limit:
+        page_path = path_with_query(path, {**query, "per_page": 100, "page": page})
+        page_actor, payload = api_json(
+            "GET",
+            page_path,
+            bucket=bucket,
+            completed_steps=completed_steps,
+            failed_step=f"{step_prefix}_page_{page}",
+        )
+        if not actor:
+            actor = page_actor
+        if collection_key:
+            page_items = payload.get(collection_key) if isinstance(payload, dict) else None
+        else:
+            page_items = payload
+        if not isinstance(page_items, list):
+            raise PlanError(f"GitHub {step_prefix} response did not contain a list")
+        for item in page_items:
+            if not isinstance(item, dict):
+                raise PlanError(f"GitHub {step_prefix} response contained a non-object item")
+            if issue_only and item.get("pull_request") is not None:
+                continue
+            items.append(item)
+            if limit is not None and len(items) >= limit:
+                break
+        completed_steps.append(f"{step_prefix}_page_{page}")
+        if len(page_items) < 100:
+            break
+        page += 1
+    return actor, items
+
+
+def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
+    milestone = issue.get("milestone") or {}
+    state = issue.get("state")
+    return {
+        "repo": repo,
+        "number": issue.get("number"),
+        "title": issue.get("title"),
+        "state": state.upper() if isinstance(state, str) else state,
+        "updated_at": issue.get("updated_at") or issue.get("updatedAt"),
+        "url": issue.get("html_url") or issue.get("url"),
+        "labels": normalize_labels(issue.get("labels")),
+        "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
+    }
+
+
+def plan_error_status(error: PlanError) -> int | None:
+    if not isinstance(error.api_result, dict):
+        return None
+    status = error.api_result.get("status")
+    return status if isinstance(status, int) else None
 
 
 def git_root(start: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -979,13 +1064,24 @@ def ensure_labels(
     *,
     create_unknown: bool = True,
 ) -> tuple[str, list[str]]:
-    actor, existing = gh_json(["label", "list", "-R", repo, "--json", "name", "--limit", "500"])
-    existing_names = {item["name"] for item in existing or []}
+    actor, existing = collect_paged_rest_items(
+        f"/repos/{repo}/labels",
+        query={},
+        bucket="rest_core",
+        step_prefix="list_labels",
+    )
+    existing_names = {
+        item["name"].casefold()
+        for item in existing
+        if isinstance(item.get("name"), str)
+    }
     created: list[str] = []
+    completed_steps: list[str] = []
     defs = config.get("label_defs", {})
     missing_without_defs: list[str] = []
     for name in wanted:
-        if name in existing_names:
+        normalized_name = name.casefold()
+        if normalized_name in existing_names:
             continue
         info = defs.get(name)
         if info is None and not create_unknown:
@@ -993,18 +1089,38 @@ def ensure_labels(
             continue
         if info is None:
             info = {"color": "ededed", "description": "Planning label"}
-        run_raw([
-            "label",
-            "create",
-            name,
-            "-R",
-            repo,
-            "--color",
-            info.get("color", "ededed"),
-            "--description",
-            info.get("description", "Planning label"),
-        ])
+        try:
+            api_json(
+                "POST",
+                f"/repos/{repo}/labels",
+                {
+                    "name": name,
+                    "color": info.get("color", "ededed"),
+                    "description": info.get("description", "Planning label"),
+                },
+                completed_steps=completed_steps,
+                failed_step="create_label",
+            )
+        except PlanError as create_error:
+            if plan_error_status(create_error) != 422:
+                raise
+            try:
+                _, reconciled = api_json(
+                    "GET",
+                    f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}",
+                    completed_steps=completed_steps,
+                    failed_step="reconcile_label_create",
+                )
+            except PlanError:
+                raise create_error
+            reconciled_name = reconciled.get("name") if isinstance(reconciled, dict) else None
+            if not isinstance(reconciled_name, str) or reconciled_name.casefold() != normalized_name:
+                raise create_error
+            existing_names.add(normalized_name)
+            continue
         created.append(name)
+        existing_names.add(normalized_name)
+        completed_steps.append("create_label")
     if missing_without_defs:
         missing = ", ".join(sorted(missing_without_defs))
         raise PlanError(
@@ -1018,63 +1134,38 @@ def cmd_index(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
     label = args.label or config["labels"]["plan"]
-    fields = "number,title,state,updatedAt,labels,milestone,url"
-    actor, data = gh_json([
-        "issue",
-        "list",
-        "-R",
-        repo,
-        "--state",
-        args.state,
-        "--limit",
-        str(args.limit),
-        "--label",
-        label,
-        "--json",
-        fields,
-    ])
-    items = []
-    for item in data or []:
-        items.append({
-            "repo": repo,
-            "number": item["number"],
-            "title": item["title"],
-            "state": item["state"],
-            "updated_at": item["updatedAt"],
-            "url": item["url"],
-            "labels": normalize_labels(item.get("labels")),
-            "milestone": (item.get("milestone") or {}).get("title"),
-        })
+    actor, data = collect_paged_rest_items(
+        f"/repos/{repo}/issues",
+        query={
+            "labels": label,
+            "state": args.state,
+            "sort": "updated",
+            "direction": "desc",
+        },
+        bucket="rest_core",
+        step_prefix="list_plan_issues",
+        limit=args.limit,
+        issue_only=True,
+    )
+    items = [compact_list_issue(repo, item) for item in data]
     emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "plans": items})
 
 
 def cmd_search(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    query = args.query
-    actor, data = gh_json([
-        "issue",
-        "list",
-        "-R",
-        repo,
-        "--state",
-        args.state,
-        "--limit",
-        str(args.limit),
-        "--search",
-        query,
-        "--json",
-        "number,title,state,updatedAt,labels,milestone,url",
-    ])
-    items = [{
-        "repo": repo,
-        "number": item["number"],
-        "title": item["title"],
-        "state": item["state"],
-        "updated_at": item["updatedAt"],
-        "url": item["url"],
-        "labels": normalize_labels(item.get("labels")),
-        "milestone": (item.get("milestone") or {}).get("title"),
-    } for item in data or []]
+    query_parts = [args.query.strip(), f"repo:{repo}", "is:issue"]
+    if args.state != "all":
+        query_parts.append(f"is:{args.state}")
+    actor, data = collect_paged_rest_items(
+        "/search/issues",
+        query={"q": " ".join(part for part in query_parts if part)},
+        bucket="search",
+        step_prefix="search_plan_issues",
+        limit=args.limit,
+        collection_key="items",
+        issue_only=True,
+    )
+    items = [compact_list_issue(repo, item) for item in data]
     emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "issues": items})
 
 
@@ -1680,14 +1771,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("index", help="Compact plan issue index, no bodies")
     p.add_argument("--state", default="open", choices=["open", "closed", "all"])
-    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--limit", type=positive_limit, default=20)
     p.add_argument("--label")
     p.set_defaults(func=cmd_index)
 
     p = sub.add_parser("search", help="Compact issue search, no bodies")
     p.add_argument("query")
     p.add_argument("--state", default="all", choices=["open", "closed", "all"])
-    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--limit", type=positive_limit, default=20)
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("show", help="Show compact issue sections by default")

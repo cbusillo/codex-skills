@@ -131,8 +131,15 @@ Use these through the `github-plan` skill when the user is asking for durable
 work tracking, roadmap state, parent/sub-issues, blockers, stale plan cleanup,
 or Project focus state.
 
-- `index`: List compact plan issues (no bodies).
-- `search <query>`: Search for issues.
+- `index`: List compact plan issues through paged REST reads, excluding pull
+  requests and ordering by most recently updated. Supports `--state`, `--label`,
+  and an exact positive `--limit`. Compact states remain normalized as uppercase
+  `OPEN` or `CLOSED` values.
+- `search <query>`: Search issues through the REST search endpoint with fixed
+  `repo:` and `is:issue` constraints. `--state open|closed` adds the matching
+  search qualifier, `--state all` omits it, and quota evidence uses the search
+  bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
+  values.
 - `show <issue>`: Show selected sections. Use `--full` for the entire body.
 - `deps <issue>`: Show dependencies and sub-issues.
 
@@ -144,6 +151,9 @@ or Project focus state.
 - `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or
   `subissue` relationships.
 - `close <issue>`: Mark plan as done, update labels, and clear Project focus.
+- `ensure-labels`: Page through repository labels and create documented missing
+  planning labels through REST. Concurrent-create conflicts are reconciled by
+  reading the requested label instead of blindly retrying the write.
 
 ### Planning: Projects
 

@@ -1,0 +1,52 @@
+{
+  "name": "fake-gh-plan-ensure-labels",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use the GitHub planning helper to ensure the planning labels exist.",
+  "files": {
+    "README.md": "# Fake gh planning labels fixture\n"
+  },
+  "gh": {
+    "repo": "cbusillo/codex-skills",
+    "responses": [
+      {
+        "match": {
+          "contains": [
+            "api",
+            "repos/cbusillo/codex-skills/labels?per_page=100&page=1"
+          ]
+        },
+        "stdout": "[{\"name\":\"plan\"},{\"name\":\"plan:active\"},{\"name\":\"plan:blocked\"},{\"name\":\"plan:waiting\"},{\"name\":\"plan:stale\"},{\"name\":\"plan:done\"}]"
+      }
+    ]
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-fake-gh-plan-ensure-labels-1",
+        "events": [
+          {
+            "item": {
+              "type": "function_call",
+              "call_id": "call_plan_ensure_labels",
+              "name": "shell_command",
+              "arguments": "{\"command\": \"CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills ensure-labels\", \"timeout_ms\": 30000}"
+            }
+          }
+        ]
+      },
+      {
+        "response_id": "resp-fake-gh-plan-ensure-labels-2"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "gh_contains": [
+      "repos/cbusillo/codex-skills/labels?per_page=100&page=1",
+      "--include"
+    ],
+    "responses_request_count": 2
+  },
+  "max_seconds": 45,
+  "timeout_seconds": 120
+}

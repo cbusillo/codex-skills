@@ -844,8 +844,8 @@ def test_terminal_envelopes_have_stable_fields_and_redaction() -> None:
         operation="github.plan.index",
         actor="automation-gh",
         expected_actor="shiny-code-bot",
-        transport="gh_cli_graphql",
-        bucket="graphql",
+        transport="rest_api",
+        bucket="rest_core",
     )
     assert success["schema_version"] == _api.SCHEMA_VERSION
     assert success["exit_code"] == 0

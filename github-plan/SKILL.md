@@ -7,7 +7,7 @@ commands:
   - name: github-plan-index
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
-    purpose: Lists durable planning issues with compact status and relationship fields.
+    purpose: Lists durable planning issues through paged REST reads with compact status, label, and milestone fields.
   - name: github-plan-search
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "search", "<query>"]
@@ -34,12 +34,12 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "list"]
       action: require_preferred
-      message: Raw `gh issue list` misses the planning helper's compact fields, label defaults, and dependency summaries. Use the GitHub plan helper for planning issue indexes.
+      message: Raw `gh issue list` misses the planning helper's compact fields, label defaults, issue-only filtering, and stable REST pagination. Use the GitHub plan helper for planning issue indexes.
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
-          purpose: Lists durable planning issues with compact status, labels, dependency, and sub-issue fields.
+          purpose: Lists durable planning issues with compact status, label, and milestone fields while excluding pull requests.
     - id: prefer-gh-plan-search-for-issue-search
       match:
         argv_prefix: ["gh", "search", "issues"]
@@ -303,6 +303,14 @@ public safety.
 
 Prefer the installed `github/scripts/gh-plan.py` helper for planning state. It
 returns compact JSON and avoids loading issue bodies unless needed.
+
+`index` uses paged repository-issue REST reads and explicitly excludes pull
+requests. `search` uses paged REST issue search with `repo:` and `is:issue`
+constraints plus the dedicated search quota bucket. Use `show` or `deps` when
+relationship, dependency, or sub-issue details are required; index and search
+intentionally preserve their smaller legacy result shape. Label maintenance
+uses paged REST label reads and reconciles concurrent creates without retrying
+the write blindly.
 
 Project v2, native sub-issues, and native dependency operations may require
 GraphQL. Before batching those operations, check rate limits when failures look
