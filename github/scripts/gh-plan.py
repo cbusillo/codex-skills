@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from dataclasses import replace
 from typing import Any, Optional
 
 import github_api as github_api_core
@@ -34,6 +35,8 @@ CURRENT_OPERATION = "github.plan.unknown"
 CURRENT_TRANSPORT = "helper"
 CURRENT_BUCKET = "unknown"
 CURRENT_IS_WRITE = False
+CURRENT_RETRY_FIELDS: dict[str, Any] = {}
+CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
 
 PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "index": ("rest_api", "rest_core", False),
@@ -115,6 +118,20 @@ class ClassifiedPlanError(PlanError):
         self.retry_at = retry_at
 
 
+def record_retry_fields(result: github_api_core.ApiResult) -> None:
+    record_retry_summary(result.retry_summary)
+
+
+def record_retry_summary(summary: Optional[github_api_core.RetrySummary]) -> None:
+    global CURRENT_RETRY_FIELDS, CURRENT_RETRY_SUMMARY
+    if summary is None:
+        return
+    CURRENT_RETRY_SUMMARY = github_api_core.aggregate_retry_summaries(
+        [item for item in (CURRENT_RETRY_SUMMARY, summary) if item is not None]
+    )
+    CURRENT_RETRY_FIELDS = CURRENT_RETRY_SUMMARY.as_dict() if CURRENT_RETRY_SUMMARY else {}
+
+
 def die(
     message: str,
     *,
@@ -168,16 +185,21 @@ def die(
             "graphql_operation",
             "completed_steps",
             "failed_step",
+            *github_api_core.RETRY_TERMINAL_KEYS,
         ):
             if api_result.get(key) is not None:
                 envelope[key] = api_result[key]
     if retry_at is not None:
         envelope["retry_at"] = retry_at
+    if CURRENT_RETRY_FIELDS:
+        envelope.update(CURRENT_RETRY_FIELDS)
     github_api_core.emit_terminal(envelope, stderr_message=f"error: {message}")
     raise SystemExit(code)
 
 
 def emit(payload: Any) -> None:
+    if isinstance(payload, dict) and CURRENT_RETRY_FIELDS:
+        payload = {**payload, **CURRENT_RETRY_FIELDS}
     actor = payload.get("actor") if isinstance(payload, dict) else None
     expected_actor = payload.get("expected_actor", EXPECTED_ACTOR) if isinstance(payload, dict) else EXPECTED_ACTOR
     completed_steps = payload.get("completed_steps") if isinstance(payload, dict) else None
@@ -326,54 +348,137 @@ def run_raw(
         )
         raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
 
-    for actor, command in commands:
-        proc = subprocess.run(
-            command,
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        tried.append((actor, proc))
-        if proc.returncode == 0:
-            return actor, proc.stdout, proc.stderr
+    route_actor, command = commands[-1]
+    inferred = github_api_core.infer_gh_command_context(args, input_text=input_text)
+    resolved_is_write = inferred.is_write if is_write is None else is_write
+    resolved_bucket = bucket or inferred.bucket
+    resolved_graphql_operation = graphql_operation or inferred.graphql_operation
+    resolved_operation = operation or CURRENT_OPERATION
+    initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
+    initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
+    retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
+    probe_allowed = bool(
+        retry_rule and retry_rule.retry_eligibility in {"safe", "conditional"}
+    )
 
-    actor, proc = tried[-1]
-    if check:
-        detail = "\n".join(
-            f"[{name}] exit={p.returncode}\n{p.stderr.strip()}" for name, p in tried if p.stderr.strip()
-        )
-        inferred = github_api_core.infer_gh_command_context(args, input_text=input_text)
-        resolved_is_write = inferred.is_write if is_write is None else is_write
-        resolved_bucket = bucket or inferred.bucket
-        resolved_graphql_operation = graphql_operation or inferred.graphql_operation
+    if not check:
+        timeout_seconds = github_api_core.remaining_retry_timeout_seconds()
+        if timeout_seconds <= 0:
+            return route_actor, "", "GitHub command skipped because the retry deadline expired"
+        try:
+            proc = subprocess.run(
+                command,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return route_actor, "", "GitHub command exceeded the effective retry deadline"
+        return route_actor, proc.stdout, proc.stderr
+
+    last_proc: subprocess.CompletedProcess[str] | None = None
+    last_display_actor = route_actor
+
+    def attempt(timeout_seconds: Optional[float] = None) -> github_api_core.ApiResult:
+        nonlocal last_proc, last_display_actor
+        attempt_started = time.monotonic()
+        try:
+            proc = subprocess.run(
+                command,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            partial_stderr = github_api_core.subprocess_output_text(exc.stderr).strip()
+            timeout_message = "GitHub command exceeded the effective retry deadline"
+            proc = subprocess.CompletedProcess(
+                args=command,
+                returncode=124,
+                stdout="",
+                stderr="\n".join(part for part in (partial_stderr, timeout_message) if part),
+            )
+            last_proc = proc
+            tried.append((route_actor, proc))
+            result = github_api_core.subprocess_timeout_result(
+                operation=resolved_operation,
+                is_write=resolved_is_write,
+                actor=initial_retry_actor,
+                expected_actor=initial_expected_actor,
+                host=github_api_core.DEFAULT_HOST,
+                transport=inferred.transport,
+                bucket=resolved_bucket,
+                graphql_operation=resolved_graphql_operation,
+                completed_steps=completed_steps,
+                failed_step=failed_step,
+                stderr=exc.stderr,
+            )
+            last_display_actor = result.actor or route_actor
+            return result
+        last_proc = proc
+        tried.append((route_actor, proc))
+        reported_actor = github_api_core.actor_from_gh_stderr(proc.stderr)
+        authorized_fallback = github_api_core.active_fallback_was_authorized(proc.stderr)
+        actual_actor = reported_actor or initial_retry_actor
+        expected_context_actor = None if authorized_fallback else initial_expected_actor
+        last_display_actor = reported_actor or route_actor
+        if proc.returncode == 0:
+            return github_api_core.ApiResult(
+                ok=True,
+                status=0,
+                body=None,
+                operation=resolved_operation,
+                actor=actual_actor,
+                expected_actor=expected_context_actor,
+                host=github_api_core.DEFAULT_HOST,
+                transport=inferred.transport,
+                bucket=resolved_bucket,
+                graphql_operation=resolved_graphql_operation,
+                completed_steps=list(completed_steps or []),
+            )
         result = github_api_core.legacy_process_result(
             proc.returncode,
             proc.stdout,
             proc.stderr,
-            operation=operation or CURRENT_OPERATION,
+            operation=resolved_operation,
             is_write=resolved_is_write,
-            actor=actor,
-            expected_actor=EXPECTED_ACTOR,
+            actor=actual_actor,
+            expected_actor=expected_context_actor,
             transport=inferred.transport,
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
             completed_steps=completed_steps,
             failed_step=failed_step,
         )
-        if result.failure and result.failure.cause == "rate_limited_unknown_bucket":
+        if (
+            probe_allowed
+            and result.failure
+            and result.failure.cause in github_api_core.PRIMARY_RATE_LIMIT_CAUSES
+            and not result.failure.rate_limit
+        ):
+            probe_timeout = timeout_seconds
+            if probe_timeout is not None:
+                probe_timeout -= time.monotonic() - attempt_started
+                if probe_timeout <= 0:
+                    return result
             probe = github_api_core.rate_limit_probe(
-                gh_cmd=commands[-1][1][0],
-                expected_actor=EXPECTED_ACTOR,
+                gh_cmd=command[0],
+                actor=actual_actor,
+                expected_actor=expected_context_actor,
+                timeout_seconds=probe_timeout,
             )
             result = github_api_core.legacy_process_result(
                 proc.returncode,
                 proc.stdout,
                 proc.stderr,
-                operation=operation or CURRENT_OPERATION,
+                operation=resolved_operation,
                 is_write=resolved_is_write,
-                actor=actor,
-                expected_actor=EXPECTED_ACTOR,
+                actor=actual_actor,
+                expected_actor=expected_context_actor,
                 transport=inferred.transport,
                 bucket=resolved_bucket,
                 graphql_operation=resolved_graphql_operation,
@@ -381,13 +486,33 @@ def run_raw(
                 failed_step=failed_step,
                 rate_limit_result=probe,
             )
-        message = result.failure.message if result.failure else detail or proc.stdout or "gh command failed"
-        raise PlanError(
-            f"gh command failed: {message}",
-            failure=result.failure,
-            api_result=result.as_dict(),
-        )
-    return actor, proc.stdout, proc.stderr
+        return result
+
+    result = github_api_core.run_with_retry(
+        lambda: attempt(None),
+        operation=resolved_operation,
+        is_write=resolved_is_write,
+        actor=initial_retry_actor,
+        expected_actor=initial_expected_actor,
+        bucket=resolved_bucket,
+        attempt_with_timeout=lambda timeout: attempt(timeout),
+    )
+    record_retry_fields(result)
+    if last_proc is None:
+        raise PlanError("gh command did not execute", failure=result.failure, api_result=result.as_dict())
+    if result.ok:
+        return last_display_actor, last_proc.stdout, last_proc.stderr
+    detail = "\n".join(
+        f"[{name}] exit={proc.returncode}\n{proc.stderr.strip()}"
+        for name, proc in tried
+        if proc.stderr.strip()
+    )
+    message = result.failure.message if result.failure else detail or last_proc.stdout or "gh command failed"
+    raise PlanError(
+        f"gh command failed: {message}",
+        failure=result.failure,
+        api_result=result.as_dict(),
+    )
 
 
 PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}
@@ -484,31 +609,102 @@ def ensure_graphql_budget(
     recoverable: bool = False,
     minimum: int = GRAPHQL_PREFLIGHT_MINIMUM,
 ) -> None:
-    try:
-        actor, data = gh_json(
-            ["api", *API_VERSION_ARGS, "rate_limit"],
-            prefer_active=prefer_active,
-            recoverable=recoverable,
-        )
-    except PlanError as exc:
-        if isinstance(exc, ClassifiedPlanError):
+    def probe() -> github_api_core.ApiResult:
+        try:
+            actor, data = gh_json(
+                ["api", *API_VERSION_ARGS, "rate_limit"],
+                prefer_active=prefer_active,
+                recoverable=recoverable,
+            )
+        except PlanError as exc:
+            if isinstance(exc, ClassifiedPlanError):
+                raise
+            if recoverable:
+                raise project_error(f"rate_limit preflight failed: {exc}", source=exc) from exc
             raise
-        if recoverable:
-            raise project_error(f"rate_limit preflight failed: {exc}", source=exc) from exc
-        raise
-    del actor
-    resources = data.get("resources") if isinstance(data, dict) else None
-    graphql = resources.get("graphql") if isinstance(resources, dict) else None
-    if not isinstance(graphql, dict):
-        return
-    remaining = graphql.get("remaining")
-    reset = graphql.get("reset")
-    if isinstance(remaining, int) and remaining < minimum:
-        raise ClassifiedPlanError(
-            "rate_limited",
-            f"GraphQL quota too low for Project operation: remaining={remaining}, minimum={minimum}",
-            retry_at=reset if isinstance(reset, int) else None,
+        resources = data.get("resources") if isinstance(data, dict) else None
+        graphql = resources.get("graphql") if isinstance(resources, dict) else None
+        if not isinstance(graphql, dict):
+            return github_api_core.ApiResult(
+                ok=True,
+                status=200,
+                body=data,
+                operation=CURRENT_OPERATION,
+                actor=actor,
+                host=github_api_core.DEFAULT_HOST,
+                transport="rest_api",
+                bucket="graphql",
+            )
+        remaining = graphql.get("remaining")
+        reset = graphql.get("reset")
+        rate_limit = github_api_core.RateLimitInfo(
+            limit=graphql.get("limit") if isinstance(graphql.get("limit"), int) else None,
+            remaining=remaining if isinstance(remaining, int) else None,
+            reset=reset if isinstance(reset, int) else None,
+            resource="graphql",
         )
+        if not isinstance(remaining, int) or remaining >= minimum:
+            return github_api_core.ApiResult(
+                ok=True,
+                status=200,
+                body=data,
+                operation=CURRENT_OPERATION,
+                actor=actor,
+                host=github_api_core.DEFAULT_HOST,
+                transport="rest_api",
+                bucket="graphql",
+                rate_limit=rate_limit,
+            )
+        failure = github_api_core.FailureDetail(
+            cause="graphql_primary_rate_limited",
+            message=(
+                f"GraphQL quota too low for Project operation: "
+                f"remaining={remaining}, minimum={minimum}"
+            ),
+            retryable=True,
+            fallback_eligible=False,
+            disposition="retry",
+            rate_limit=rate_limit.as_dict(),
+        )
+        return github_api_core.ApiResult(
+            ok=False,
+            status=200,
+            body=data,
+            operation=CURRENT_OPERATION,
+            actor=actor,
+            host=github_api_core.DEFAULT_HOST,
+            transport="rest_api",
+            bucket="graphql",
+            rate_limit=rate_limit,
+            failure=failure,
+            failed_step="graphql_preflight",
+        )
+
+    attempts_before = CURRENT_RETRY_SUMMARY.attempts if CURRENT_RETRY_SUMMARY is not None else 0
+    result = github_api_core.run_with_retry(
+        probe,
+        operation=CURRENT_OPERATION,
+        is_write=False,
+        bucket="graphql",
+    )
+    attempts_after_nested = CURRENT_RETRY_SUMMARY.attempts if CURRENT_RETRY_SUMMARY is not None else 0
+    nested_attempts = max(0, attempts_after_nested - attempts_before)
+    summary = result.retry_summary
+    if summary is not None:
+        record_retry_summary(
+            replace(summary, attempts=max(0, summary.attempts - nested_attempts))
+        )
+    if result.ok:
+        return
+    payload = result.as_dict()
+    reset = payload.get("retry_at")
+    raise ClassifiedPlanError(
+        "rate_limited",
+        result.failure.message if result.failure else "GraphQL quota preflight failed",
+        retry_at=int(reset) if isinstance(reset, (int, float)) else None,
+        failure=result.failure,
+        api_result=payload,
+    )
 
 
 def gh_json(
@@ -1990,6 +2186,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     global CURRENT_OPERATION, CURRENT_TRANSPORT, CURRENT_BUCKET, CURRENT_IS_WRITE
+    global CURRENT_RETRY_FIELDS, CURRENT_RETRY_SUMMARY
+    CURRENT_RETRY_FIELDS = {}
+    CURRENT_RETRY_SUMMARY = None
     parser = build_parser()
     try:
         args = parser.parse_args()

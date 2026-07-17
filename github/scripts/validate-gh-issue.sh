@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GITHUB_RETRY_MAX_ATTEMPTS=1
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
@@ -56,6 +57,26 @@ assert payload["operation"] == sys.argv[2], payload
 assert payload["failure"]["cause"] == sys.argv[3], payload
 assert payload["failed_step"] == sys.argv[4], payload
 assert payload["write_outcome"] == sys.argv[5], payload
+PY
+}
+
+assert_marked_body() {
+	local expected_file="$1"
+	local actual_file="$2"
+	python3 - "$expected_file" "$actual_file" <<'PY'
+import pathlib
+import re
+import sys
+
+expected = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+actual = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+assert actual.startswith(expected), (expected, actual)
+suffix = actual[len(expected):]
+separator = "" if expected.endswith("\n") else "\n"
+assert re.fullmatch(
+    rf"{re.escape(separator)}\n<!-- github-skill-operation:[0-9a-f]{{32}} -->\n",
+    suffix,
+), suffix
 PY
 }
 
@@ -528,6 +549,7 @@ issue() {
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
 	*'/milestones?'*) printf '[{"number":7,"title":"Sprint 7"}]\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues?state=all'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues'*) issue 100 ;;
 	*'--method PATCH'*'/repos/owner/repo/issues/42'*) issue 42 ;;
 	*'--method POST'*'/repos/owner/repo/issues/42/labels'*) printf '[{"name":"enhancement"}]\n' ;;
@@ -548,10 +570,11 @@ printf 'Body with `literal markdown` and $(do-not-run).\n' | \
 	--label plan --assignee @me --milestone 'Sprint 7' \
 	>"$stdout_log" 2>"$stderr_log"
 assert_helper_envelope "$stdout_log" github.issue.create 'https://github.com/owner/repo/issues/100'
-jq -e '.transport == "rest_api" and .operation_marker.kind == "request_fingerprint" and (.operation_marker.value | length) == 64' "$stdout_log" >/dev/null
+jq -e '.transport == "rest_api" and .operation_marker.kind == "request_fingerprint" and (.operation_marker.value | length) == 64 and (.operation_marker.operation_id | length) == 32' "$stdout_log" >/dev/null
 python3 - "$log" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 calls = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
@@ -561,13 +584,12 @@ create = next(
     if "--method POST" in line and "/repos/owner/repo/issues --input - |" in line
 )
 payload = json.loads(create.split(" | ", 1)[1])
-assert payload == {
-    "title": "Issue title",
-    "body": "Body with `literal markdown` and $(do-not-run).\n",
-    "labels": ["plan"],
-    "assignees": ["shiny-code-bot"],
-    "milestone": 7,
-}, payload
+assert payload["title"] == "Issue title", payload
+assert payload["body"].startswith("Body with `literal markdown` and $(do-not-run).\n"), payload
+assert re.search(r"<!-- github-skill-operation:[0-9a-f]{32} -->", payload["body"]), payload
+assert payload["labels"] == ["plan"], payload
+assert payload["assignees"] == ["shiny-code-bot"], payload
+assert payload["milestone"] == 7, payload
 PY
 
 cat >"$tmpdir/create-503-gh" <<'EOF'
@@ -575,6 +597,8 @@ cat >"$tmpdir/create-503-gh" <<'EOF'
 set -euo pipefail
 if [[ "$*" == *'/user'* ]]; then
 	printf '{"login":"shiny-code-bot"}\n'
+elif [[ "$*" == *'--method GET'* && "$*" == *'/repos/owner/repo/issues?state=all'* ]]; then
+	printf '[]\n'
 else
 	cat >/dev/null
 	printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: text/html\r\nx-github-request-id: CREATE-503\r\n\r\n<!DOCTYPE html><title>Unicorn! &middot; GitHub</title><p>Sorry about that.</p>\n'
@@ -591,7 +615,7 @@ if printf 'Body\n' | GH_ISSUE_GH="$tmpdir/create-503-gh" \
 	exit 1
 fi
 assert_failure_envelope "$stdout_log" github.issue.create network_provider_failure create_issue unknown
-jq -e '.request_id == "CREATE-503" and .reconciliation.required_before_retry == true and (.operation_marker.value | length) == 64' "$stdout_log" >/dev/null
+jq -e '.request_id == "CREATE-503" and .reconciliation.required_before_retry == true and (.operation_marker.value | length) == 64 and (.operation_marker.operation_id | length) == 32' "$stdout_log" >/dev/null
 
 : >"$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
@@ -656,7 +680,7 @@ grep -q -- '--method POST' "$log"
 grep -q '/repos/owner/repo/issues/42/comments' "$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
 printf 'Issue comment with `literal markdown`.\n' >"$tmpdir/expected-comment-body"
-cmp "$tmpdir/expected-comment-body" "$env_log"
+assert_marked_body "$tmpdir/expected-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.issue 'https://github.com/owner/repo/issues/42#issuecomment-1'
 jq -e '.comment_action == "created" and .actor == "shiny-code-bot"' "$stdout_log" >/dev/null
 
@@ -686,6 +710,7 @@ printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
+	*'--method GET'*'/comments?'*) printf '[]\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
 		number=''
 		for arg in "$@"; do
@@ -730,7 +755,7 @@ grep -q '/repos/owner/repo/issues/9/comments' "$log"
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/9' "$log"
 grep -q '"state": "closed".*"state_reason": "completed"' "$log"
 printf '%s' "Closing with \`literal markdown\`." >"$tmpdir/expected-close-comment"
-cmp "$tmpdir/expected-close-comment" "$env_log"
+assert_marked_body "$tmpdir/expected-close-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/9'
 jq -e '.completed_steps == ["post_close_comment", "close_issue"]' "$stdout_log" >/dev/null
 
@@ -756,7 +781,7 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 grep -q '/repos/owner/repo/issues/91/comments' "$log"
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/91' "$log"
 printf '%s' 'caller-supplied' >"$tmpdir/expected-caller-comment"
-cmp "$tmpdir/expected-caller-comment" "$env_log"
+assert_marked_body "$tmpdir/expected-caller-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/91'
 
 : >"$log"
@@ -766,7 +791,7 @@ printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_
 	>"$stdout_log" 2>"$stderr_log"
 
 printf 'Line one\nLine two\n\n' >"$tmpdir/expected-comment-bytes"
-cmp "$tmpdir/expected-comment-bytes" "$env_log"
+assert_marked_body "$tmpdir/expected-comment-bytes" "$env_log"
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/92' "$log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/92'
 
@@ -779,7 +804,7 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH
 
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/10' "$log"
 printf '%s' 'Closing with stdin body only.' >"$tmpdir/expected-stdin-comment"
-cmp "$tmpdir/expected-stdin-comment" "$env_log"
+assert_marked_body "$tmpdir/expected-stdin-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/10'
 if grep -q 'duplicate comment' "$log"; then
 	echo "error: gh-issue close should prefer the stdin body over caller --comment" >&2
@@ -794,7 +819,7 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/11' "$log"
-cmp "$tmpdir/expected-stdin-comment" "$env_log"
+assert_marked_body "$tmpdir/expected-stdin-comment" "$env_log"
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/11'
 if grep -q -- '-cduplicate comment' "$log"; then
 	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
@@ -809,6 +834,7 @@ if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/12/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/12/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
 		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"shiny-code-bot"}}\n'
@@ -869,6 +895,7 @@ if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/14/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/14/comments'*)
 		printf 'comment failed\n' >&2
 		exit 1

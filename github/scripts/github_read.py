@@ -69,12 +69,13 @@ class GitHubReader:
         self.request_actor = actor
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
+        self.results: list[github_api_core.ApiResult] = []
         self.failed_results: list[github_api_core.ApiResult] = []
         self.degraded_reasons: list[dict[str, str]] = []
         self.last_result: Optional[github_api_core.ApiResult] = None
 
     def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
-        result = github_api_core.call_gh(
+        result = github_api_core.call_gh_with_retry(
             method,
             path,
             gh_cmd=self.gh_cmd,
@@ -101,6 +102,7 @@ class GitHubReader:
                 )
             self.actor = result.actor
         self.last_result = result
+        self.results.append(result)
         self.requests.append(request_diagnostic(result, method=method, path=path, step=step))
         if not result.ok:
             self.failed_results.append(result)
@@ -191,6 +193,7 @@ class GitHubReader:
             for reason in self.degraded_reasons
             if reason.get("component")
         })
+        retry_summary = self.retry_summary()
         return {
             "transport": "rest_api",
             "bucket": "rest_core",
@@ -202,7 +205,19 @@ class GitHubReader:
             "degraded": bool(self.degraded_reasons),
             "degradedComponents": failed_components,
             "degradedReasons": self.degraded_reasons,
+            "retry": retry_summary.as_dict() if retry_summary is not None else None,
         }
+
+    def retry_summary(self) -> Optional[github_api_core.RetrySummary]:
+        summaries = [
+            result.retry_summary
+            for result in self.results
+            if result.retry_summary is not None
+        ]
+        return github_api_core.aggregate_retry_summaries(
+            summaries,
+            failed=bool(self.failed_results),
+        )
 
 
 def request_diagnostic(
@@ -227,6 +242,16 @@ def request_diagnostic(
         "retryable": payload.get("retryable", False),
         "retryAt": payload.get("retry_at"),
         "retryAfter": payload.get("retry_after"),
+        "attempts": payload.get("attempts"),
+        "elapsedWait": payload.get("elapsed_wait"),
+        "retryEligible": payload.get("retry_eligible"),
+        "outcomeCertainty": payload.get("outcome_certainty"),
+        "recommendedNextAction": payload.get("recommended_next_action"),
+        "lastActor": payload.get("last_actor"),
+        "lastBucket": payload.get("last_bucket"),
+        "reconciliation": payload.get("reconciliation"),
+        "effectiveDeadline": payload.get("effective_deadline"),
+        "retryExhaustedReason": payload.get("retry_exhausted_reason"),
     }
     if result.failure:
         diagnostic["cause"] = result.failure.cause

@@ -8,13 +8,15 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import github_api as github_api_core
 
@@ -24,6 +26,7 @@ DEFAULT_GH = os.environ.get("GH_COMMENT_GH") or str(SCRIPT_DIR / "gh-with-env-to
 EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
 PER_PAGE = 100
 MAX_PAGES = 1000
+RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 
 
 class CommentError(Exception):
@@ -103,6 +106,19 @@ def _local_error(
     )
 
 
+def _enrich_error_with_retry_summaries(
+    error: CommentError,
+    retry_summaries: list[github_api_core.RetrySummary],
+) -> None:
+    summary = github_api_core.aggregate_retry_summaries(retry_summaries)
+    if summary is None:
+        return
+    retry_fields = summary.as_dict()
+    error.payload = github_api_core.redact_body({**retry_fields, **error.payload})
+    if error.api_result is not None:
+        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result})
+
+
 def _raise_api_failure(
     result: github_api_core.ApiResult,
     *,
@@ -111,6 +127,11 @@ def _raise_api_failure(
     write_not_started: bool = False,
     payload: Optional[dict[str, Any]] = None,
 ) -> None:
+    if result.retry_summary is not None:
+        retry_payload = result.retry_summary.as_dict()
+        if retry_payload.get("reconciliation") is None and payload and "reconciliation" in payload:
+            retry_payload.pop("reconciliation")
+        payload = {**(payload or {}), **retry_payload}
     failure = result.failure or github_api_core.FailureDetail(
         cause="unknown_error",
         message="GitHub comment request failed",
@@ -237,8 +258,16 @@ def _call_api(
     failed_step: str,
     is_write: bool,
     failure_payload: Optional[dict[str, Any]] = None,
+    reconcile: Optional[
+        Callable[
+            [github_api_core.ApiResult, github_api_core.ReconciliationContext],
+            github_api_core.ReconciliationDecision,
+        ]
+    ] = None,
+    retry_context: Optional[github_api_core.ReconciliationContext] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> github_api_core.ApiResult:
-    result = github_api_core.call_gh(
+    result = github_api_core.call_gh_with_retry(
         method,
         path,
         payload,
@@ -250,7 +279,14 @@ def _call_api(
         completed_steps=completed_steps,
         failed_step=failed_step,
         is_write=is_write,
+        reconcile=reconcile,
+        retry_policy=retry_context.retry_policy if retry_context is not None else None,
+        retry_runtime=retry_context.retry_runtime if retry_context is not None else None,
+        deadline_at=retry_context.deadline_at if retry_context is not None else None,
     )
+    if retry_summaries is not None and result.retry_summary is not None:
+        retry_summaries.append(result.retry_summary)
+        result.retry_summary = github_api_core.aggregate_retry_summaries(retry_summaries)
     result.transport = "rest_api"
     if not result.ok:
         _raise_api_failure(
@@ -268,6 +304,7 @@ def authenticated_actor(
     gh_cmd: str,
     operation: str,
     expected_actor: Optional[str],
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> str:
     result = _call_api(
         "GET",
@@ -280,6 +317,7 @@ def authenticated_actor(
         completed_steps=[],
         failed_step="resolve_actor",
         is_write=False,
+        retry_summaries=retry_summaries,
     )
     login = result.body.get("login") if isinstance(result.body, dict) else None
     if not isinstance(login, str) or not login:
@@ -335,6 +373,8 @@ def list_comments(
     actor: str,
     expected_actor: Optional[str],
     completed_steps: list[str],
+    retry_context: Optional[github_api_core.ReconciliationContext] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     comments: list[dict[str, Any]] = []
     steps = list(completed_steps)
@@ -351,6 +391,8 @@ def list_comments(
             completed_steps=steps,
             failed_step=step,
             is_write=False,
+            retry_context=retry_context,
+            retry_summaries=retry_summaries,
         )
         if not isinstance(result.body, list):
             raise _local_error(
@@ -395,6 +437,108 @@ def _latest_actor_comment(comments: list[dict[str, Any]], actor: str) -> Optiona
     )
 
 
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def _format_timestamp(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_timestamp(value: Any) -> Optional[dt.datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+    except ValueError:
+        return None
+
+
+def _comment_fingerprint(repo: str, number: int, actor: str, body: str) -> str:
+    canonical = json.dumps(
+        {"repo": repo, "number": number, "actor": actor.casefold(), "body": body},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def reconcile_created_comment(
+    repo: str,
+    number: int,
+    actor: str,
+    started_at: str,
+    *,
+    gh_cmd: str,
+    operation: str,
+    expected_actor: Optional[str],
+    completed_steps: list[str],
+    fingerprint: str,
+    operation_id: str,
+    existing_comment_ids: set[int],
+    retry_context: github_api_core.ReconciliationContext,
+    retry_summaries: list[github_api_core.RetrySummary],
+) -> github_api_core.ReconciliationDecision:
+    try:
+        comments, _ = list_comments(
+            repo,
+            number,
+            gh_cmd=gh_cmd,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            completed_steps=completed_steps,
+            retry_context=retry_context,
+            retry_summaries=retry_summaries,
+        )
+    except CommentError as exc:
+        return github_api_core.ReconciliationDecision(
+            "failed",
+            details={
+                "request_fingerprint": fingerprint,
+                "failure": exc.api_result or {"cause": exc.failure.cause},
+            },
+        )
+    threshold = _parse_timestamp(started_at)
+    if threshold is None:
+        return github_api_core.ReconciliationDecision(
+            "failed",
+            details={
+                "request_fingerprint": fingerprint,
+                "failure": {"cause": "invalid_reconciliation_timestamp"},
+            },
+        )
+    threshold -= dt.timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)
+    matches: list[dict[str, Any]] = []
+    for item in comments:
+        item_actor = (item.get("user") or {}).get("login") if isinstance(item.get("user"), dict) else None
+        created_at = _parse_timestamp(item.get("created_at"))
+        comment_id = item.get("id")
+        if not isinstance(comment_id, int) or comment_id in existing_comment_ids:
+            continue
+        if not isinstance(item_actor, str) or item_actor.casefold() != actor.casefold():
+            continue
+        if not github_api_core.body_has_operation_marker(item.get("body"), operation_id):
+            continue
+        if created_at is None or created_at < threshold:
+            continue
+        matches.append(item)
+    details = {
+        "request_fingerprint": fingerprint,
+        "operation_id": operation_id,
+        "started_at": started_at,
+        "clock_skew_seconds": RECONCILIATION_CLOCK_SKEW_SECONDS,
+        "preexisting_comment_ids": sorted(existing_comment_ids),
+        "matching_comment_ids": [item.get("id") for item in matches],
+    }
+    if len(matches) == 1:
+        return github_api_core.ReconciliationDecision("matched", body=matches[0], details=details)
+    if len(matches) > 1:
+        return github_api_core.ReconciliationDecision("ambiguous", details=details)
+    return github_api_core.ReconciliationDecision("no_match", details=details)
+
+
 def _comment_payload(
     comment: Any,
     *,
@@ -406,6 +550,8 @@ def _comment_payload(
     expected_actor: Optional[str],
     comment_action: str,
     completed_steps: list[str],
+    operation_marker: Optional[dict[str, Any]] = None,
+    retry_summary: Optional[github_api_core.RetrySummary] = None,
 ) -> dict[str, Any]:
     if not isinstance(comment, dict) or not isinstance(comment.get("html_url"), str):
         raise _local_error(
@@ -451,7 +597,7 @@ def _comment_payload(
         "created_at": comment.get("created_at"),
         "updated_at": comment.get("updated_at"),
     }
-    return {
+    payload = {
         "kind": kind,
         "repo": repo,
         "number": number,
@@ -462,9 +608,14 @@ def _comment_payload(
         "comment": normalized,
         "completed_steps": completed_steps,
     }
+    if operation_marker is not None:
+        payload["operation_marker"] = operation_marker
+    if retry_summary is not None:
+        payload.update(retry_summary.as_dict())
+    return payload
 
 
-def comment(
+def _comment_impl(
     kind: str,
     number: int,
     body: str,
@@ -477,6 +628,7 @@ def comment(
     operation: Optional[str] = None,
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -514,9 +666,16 @@ def comment(
         )
 
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-    actor = authenticated_actor(gh_cmd=gh_cmd, operation=operation, expected_actor=expected_actor)
+    collected_retry_summaries = retry_summaries if retry_summaries is not None else []
+    actor = authenticated_actor(
+        gh_cmd=gh_cmd,
+        operation=operation,
+        expected_actor=expected_actor,
+        retry_summaries=collected_retry_summaries,
+    )
     steps = list(completed_steps or [])
     steps.append("resolve_actor")
+    existing_comments: Optional[list[dict[str, Any]]] = None
 
     if edit_last:
         comments, steps = list_comments(
@@ -527,7 +686,9 @@ def comment(
             actor=actor,
             expected_actor=expected_actor,
             completed_steps=steps,
+            retry_summaries=collected_retry_summaries,
         )
+        existing_comments = comments
         selected = _latest_actor_comment(comments, actor)
         if selected is not None:
             selected_id = selected.get("id")
@@ -553,6 +714,7 @@ def comment(
                 completed_steps=steps,
                 failed_step=update_step,
                 is_write=True,
+                retry_summaries=collected_retry_summaries,
                 failure_payload={
                     "kind": kind,
                     "repo": resolved_repo,
@@ -576,6 +738,7 @@ def comment(
                 expected_actor=expected_actor,
                 comment_action="updated",
                 completed_steps=steps,
+                retry_summary=result.retry_summary,
             )
         if not create_if_none:
             raise _local_error(
@@ -594,11 +757,45 @@ def comment(
                 },
             )
 
+    if existing_comments is None:
+        existing_comments, _ = list_comments(
+            resolved_repo,
+            number,
+            gh_cmd=gh_cmd,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            completed_steps=steps,
+            retry_summaries=collected_retry_summaries,
+        )
+    existing_comment_ids = {
+        comment_id
+        for item in existing_comments
+        if isinstance((comment_id := item.get("id")), int)
+    }
     create_step = failed_step or "create_comment"
+    started_at = _format_timestamp(_utc_now())
+    fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
+    operation_id = github_api_core.new_operation_id()
+    provider_body = github_api_core.body_with_operation_marker(body, operation_id)
+    marker = {
+        "kind": "request_fingerprint",
+        "value": fingerprint,
+        "started_at": started_at,
+        "operation_id": operation_id,
+    }
+    reconciliation = {
+        "strategy": "list_recent_actor_comments_and_match_operation_id",
+        "required_before_retry": True,
+        "request_fingerprint": fingerprint,
+        "operation_id": operation_id,
+        "started_at": started_at,
+        "actor": actor,
+    }
     result = _call_api(
         "POST",
         f"/repos/{resolved_repo}/issues/{number}/comments",
-        {"body": body},
+        {"body": provider_body},
         gh_cmd=gh_cmd,
         operation=operation,
         actor=actor,
@@ -611,13 +808,32 @@ def comment(
             "repo": resolved_repo,
             "number": number,
             "comment_action": "create",
-            "reconciliation": {
-                "strategy": "list_actor_comments_and_compare_body",
-                "actor": actor,
-            },
+            "operation_marker": marker,
+            "reconciliation": reconciliation,
         },
+        reconcile=lambda failed_result, retry_context: reconcile_created_comment(
+            resolved_repo,
+            number,
+            failed_result.actor or actor,
+            started_at,
+            gh_cmd=gh_cmd,
+            operation=operation,
+            expected_actor=expected_actor,
+            completed_steps=steps,
+            fingerprint=fingerprint,
+            operation_id=operation_id,
+            existing_comment_ids=existing_comment_ids,
+            retry_context=retry_context,
+            retry_summaries=collected_retry_summaries,
+        ),
+        retry_summaries=collected_retry_summaries,
     )
-    steps.append(create_step)
+    reconciled = bool(
+        result.retry_summary
+        and result.retry_summary.reconciliation
+        and result.retry_summary.reconciliation.get("result") == "matched"
+    )
+    steps.append("reconcile_create_comment" if reconciled else create_step)
     return _comment_payload(
         result.body,
         operation=operation,
@@ -628,7 +844,45 @@ def comment(
         expected_actor=expected_actor,
         comment_action="created",
         completed_steps=steps,
+        operation_marker=marker,
+        retry_summary=result.retry_summary,
     )
+
+
+def comment(
+    kind: str,
+    number: int,
+    body: str,
+    *,
+    repo: Optional[str] = None,
+    edit_last: bool = False,
+    create_if_none: bool = False,
+    gh_cmd: str = DEFAULT_GH,
+    expected_actor: Optional[str] = EXPECTED_ACTOR,
+    operation: Optional[str] = None,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: Optional[str] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+) -> dict[str, Any]:
+    collected_retry_summaries = retry_summaries if retry_summaries is not None else []
+    try:
+        return _comment_impl(
+            kind,
+            number,
+            body,
+            repo=repo,
+            edit_last=edit_last,
+            create_if_none=create_if_none,
+            gh_cmd=gh_cmd,
+            expected_actor=expected_actor,
+            operation=operation,
+            completed_steps=completed_steps,
+            failed_step=failed_step,
+            retry_summaries=collected_retry_summaries,
+        )
+    except CommentError as error:
+        _enrich_error_with_retry_summaries(error, collected_retry_summaries)
+        raise
 
 
 def read_body(path: str) -> str:

@@ -745,7 +745,8 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/github-ci-diagnose.py`: CI log analysis.
 - `scripts/github_api.py`: Shared JSON-stdin REST transport, response-header
   parsing, diagnostics envelope, legacy command classification, GraphQL
-  query/mutation context, redaction, and bounded rate-limit probe.
+  query/mutation context, redaction, bounded rate-limit probe, matrix-gated
+  reset-aware retries, inherited deadlines, and lock-safe shared cooldowns.
 - `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
   pagination, edit-last selection, and deletion-race handling.
 - `scripts/github_issue.py`: Shared actor-aware REST issue create, edit,
@@ -762,6 +763,24 @@ consistent auth/retry behavior, and safe formatting:
 - `scripts/gh-comment`: Safe multiline REST commenting with actor-aware
   edit-last semantics, the same terminal JSON envelope, and stderr-only human
   diagnostics.
+
+Retry behavior is owned by `scripts/github_api.py` and
+`references/operation-matrix.toml`. Do not add ad hoc helper loops. A matrix
+row marked `safe` or `conditional` may retry only when the shared failure
+contract permits it; an absent or `manual` row performs one remote call and
+fails closed. Primary exhaustion waits for the reported reset plus bounded
+jitter, secondary throttling honors `Retry-After`, and all waits honor the
+earlier of the configured maximum and inherited request deadline. Concurrent
+helpers share `$CODE_HOME/state/github-retry` cooldowns by host, actor, and
+bucket. That same deadline bounds subprocesses, cooldown-lock acquisition, and
+reconciliation reads. Progress stays on stderr, provider bucket evidence is
+validated, actor changes require explicit authorization and begin a distinct
+retry context, and unknown non-idempotent outcomes must reconcile by operation
+marker plus a pre-write candidate snapshot. Create markers are unique per
+invocation and provider-visible in hidden HTML comments, so concurrent
+identical writes cannot claim one another; a unique new match is recovered and
+every other unknown outcome fails closed without replay. Legacy GraphQL
+failures lacking reset metadata use one bounded quota probe before waiting.
 
 ## Workflow Loop
 

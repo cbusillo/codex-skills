@@ -62,6 +62,69 @@ legacy short operation names are exposed as `action` when needed.
 Argument-validation failures use the same envelope with `exit_code: 2` instead
 of bypassing machine output through argparse-only usage text.
 
+Matrix-approved operations also report `attempts`, `elapsed_wait`,
+`retry_eligible`, `last_actor`, `last_bucket`, `outcome_certainty`,
+`reconciliation`, `recommended_next_action`, `effective_deadline`, and
+`retry_exhausted_reason`. Progress is concise and stderr-only, so stdout remains
+one parseable terminal envelope even while a helper waits.
+`gh-pr checks` aggregates those fields across all REST subrequests instead of
+reporting only the final status read. Composite diagnostic tools that do not use
+the terminal-envelope CLI contract expose the same aggregate under
+`diagnostics.retry` and per-request evidence under `diagnostics.requests`.
+
+### Shared Retry Policy
+
+`scripts/github_api.py` loads retry eligibility, idempotency, quota bucket, and
+reconciliation strategy from `references/operation-matrix.toml`. Operations
+absent from the accepted matrix and rows marked `manual` execute at most one
+remote call and return `retry_eligible: false`. Authentication, actor mismatch,
+and permission failures never enter the quota retry path.
+
+The production defaults allow one primary GitHub reset window:
+
+- `GITHUB_RETRY_MAX_WAIT_SECONDS=3900`: Maximum elapsed policy window.
+- `GITHUB_RETRY_MAX_ATTEMPTS=8`: Initial call plus bounded retries.
+- `GITHUB_RETRY_PROGRESS_SECONDS=30`: Stderr progress cadence during long waits.
+- `GITHUB_RETRY_JITTER_SECONDS=3`: Maximum non-negative reset/backoff jitter.
+- `GITHUB_RETRY_DEADLINE_AT`: Optional inherited absolute Unix deadline. The
+  effective deadline is the earlier of this value and the configured maximum.
+- `GITHUB_RETRY_STATE_DIR`: Optional shared-state override. The default is
+  `$CODE_HOME/state/github-retry`, then `$CODEX_HOME/state/github-retry`, then
+  `~/.code/state/github-retry`.
+
+Advanced bounded-backoff and state-lifecycle controls are
+`GITHUB_RETRY_BASE_BACKOFF_SECONDS`, `GITHUB_RETRY_MAX_BACKOFF_SECONDS`,
+`GITHUB_RETRY_WAIT_SLICE_SECONDS`, `GITHUB_RETRY_LOCK_POLL_SECONDS`,
+`GITHUB_RETRY_DRAIN_SECONDS`, and `GITHUB_RETRY_STALE_SECONDS`.
+
+Primary REST and GraphQL exhaustion waits until the reported reset plus bounded
+jitter when that reset is inside the effective deadline. Secondary throttling
+uses `Retry-After`, then reported reset metadata, then bounded increasing
+backoff. Shared cooldown state uses advisory locking and atomic replacement,
+is keyed by GitHub host, actor, and quota bucket, expires stale records, and
+briefly serializes post-reset calls to avoid a stampede. Subprocess execution,
+cooldown-lock acquisition, and any reconciliation reads share the same
+effective deadline; none starts a fresh retry window after the parent request
+expires or is cancelled.
+
+Read calls may retry provider-classified transient failures. Writes marked
+idempotent in the accepted matrix may also retry transient unknown outcomes.
+Other writes retry only when the shared result marks the write `not_started` or
+`rejected`; an `unknown` non-idempotent outcome requires an operation-specific
+reconciliation callback. Issue and comment creates use a stable request
+fingerprint, a unique provider-visible ID embedded in a hidden HTML comment,
+start time, and a pre-write snapshot of matching object IDs. Reconciliation
+requires the unique ID, so concurrent identical requests cannot claim one
+another's object; pre-existing or ambiguous matches are rejected, and an
+unknown no-match result fails closed without a second create. Provider-confirmed
+`not_started` or `rejected` creates may retry without reconciliation. Explicitly authorized
+actor changes are announced before execution and start a new actor-keyed
+context; timeout results retain any announced fallback actor. Provider
+`x-ratelimit-resource` values are normalized to the supported bucket taxonomy,
+and an unannounced actor or bucket change fails closed. Legacy GraphQL failures
+without reset metadata perform one bounded `/rate_limit` probe for accepted
+retry operations and then wait on the reported GraphQL reset.
+
 GraphQL requests carry `graphql_operation` as `query`, `mutation`,
 `subscription`, or conservative `unknown`. A GraphQL POST query is read-only;
 only mutations and unknown documents receive write-outcome semantics. Direct
@@ -100,7 +163,10 @@ also include the shared `api_result` diagnostics envelope.
   `--create-if-none` only when a missing prior comment should create one.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
-- `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR. The expected head
+  SHA guards retries; an unknown response is reconciled by re-reading the PR,
+  recovering only a trustworthy final merge SHA and failing closed on head
+  drift or ambiguous state.
 - `scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
   superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
   `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo
@@ -300,9 +366,10 @@ envelope contract as the Python helpers. Comment results report
 comment evidence, and the returned URL; the compatibility `body` field remains
 the URL. Compound close flows report `completed_steps` and the failing step
 without printing multiple machine objects. Non-idempotent create results include
-a stable request fingerprint; ambiguous create failures require the documented
-read-after-failure reconciliation before retry. Human warnings and progress
-remain on stderr, and the process exit code matches `exit_code`.
+a stable request fingerprint and unique hidden operation ID; ambiguous create
+failures require the documented read-after-failure reconciliation before retry.
+Human warnings and progress remain on stderr, and the process exit code matches
+`exit_code`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
