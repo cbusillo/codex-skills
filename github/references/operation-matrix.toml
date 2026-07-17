@@ -146,7 +146,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "body_file_write"
 retained_graphql_rationale = "GraphQL may be used internally by gh pr edit; the helper retains gh CLI to preserve supported PR edit flags while enforcing automation auth."
 source_refs = ["github/scripts/gh-pr.py:cmd_edit", "github/scripts/gh-pr.py:run_gh_with_retry"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempotent_edit_but_not_manual_create", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempotent_edit_but_not_manual_create", "github/scripts/validate-gh-plan.py:test_pr_legacy_graphql_rate_limit_uses_reset_probe", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
 id = "github.pr.comment"
@@ -163,7 +163,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; pull request timeline comments use the REST issue-comment endpoint with JSON-stdin body handling."
 source_refs = ["github/scripts/gh-pr.py:cmd_comment", "github/scripts/github_comment.py:comment", "github/scripts/github_comment.py:reconcile_created_comment"]
-test_refs = ["github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/validate-gh-plan.py:test_pr_helper_write_commands_route_through_configured_gh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/validate-gh-plan.py:test_pr_helper_write_commands_route_through_configured_gh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.pr.checks"
@@ -197,7 +197,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "sha_guarded_merge"
 retained_graphql_rationale = "No retained GraphQL transport; REST merge accepts an expected head SHA and gives the helper a concrete merge guard."
 source_refs = ["github/scripts/gh-pr.py:cmd_merge"]
-test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_merge_reconciles_accepted_unknown_outcome_to_final_sha", "github/scripts/validate-gh-plan.py:test_merge_reconciliation_rejects_head_drift", "github/scripts/validate-gh-plan.py:test_merge_identity_reread_rejects_head_drift", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
 id = "github.pr.delete_ref"
@@ -639,7 +639,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; issue creation uses REST with JSON-stdin body handling and an operation-specific reconciliation key."
 source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:create_issue", "github/scripts/github_issue.py:_matching_created_issues", "github/scripts/github_issue.py:reconcile_created_issue"]
-test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_and_emits_operation_marker", "github/scripts/test_github_issue.py:test_create_unknown_outcome_requires_reconciliation_before_retry", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_rejects_preexisting_identical_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_excludes_preexisting_same_second_issue", "github/scripts/test_github_issue.py:test_unknown_retry_enabled_issue_create_fails_closed_after_no_match", "github/scripts/test_github_issue.py:test_rejected_retry_enabled_issue_create_can_retry", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_and_emits_operation_marker", "github/scripts/test_github_issue.py:test_create_unknown_outcome_requires_reconciliation_before_retry", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_rejects_concurrent_identical_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_rejects_preexisting_identical_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_excludes_preexisting_same_second_issue", "github/scripts/test_github_issue.py:test_unknown_retry_enabled_issue_create_fails_closed_after_no_match", "github/scripts/test_github_issue.py:test_rejected_retry_enabled_issue_create_can_retry", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.edit"
@@ -705,9 +705,9 @@ mutation_class = "comment"
 idempotency = "non_idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
-retained_graphql_rationale = "No retained GraphQL transport; issue comments use REST with JSON-stdin Markdown, authenticated-actor selection, and fresh-read reconciliation without modifying user content."
+retained_graphql_rationale = "No retained GraphQL transport; issue comments use REST with JSON-stdin Markdown, authenticated-actor selection, and a hidden provider-visible operation marker that preserves rendered user content."
 source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:comment", "github/scripts/github_comment.py:reconcile_created_comment"]
-test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.comment.pr"
@@ -724,7 +724,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; PR timeline comments use the shared REST issue-comment endpoint and actor-aware fresh-read reconciliation."
 source_refs = ["github/scripts/gh-comment", "github/scripts/github_comment.py:comment", "github/scripts/github_comment.py:reconcile_created_comment"]
-test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match_fails_closed_without_repeat", "github/scripts/test_github_comment.py:test_rejected_create_retries_without_reconciliation", "github/scripts/test_github_comment.py:test_create_unknown_outcome_returns_reconciled_comment_without_retry", "github/scripts/test_github_comment.py:test_create_reconciliation_rejects_concurrent_identical_comment", "github/scripts/test_github_comment.py:test_create_reconciliation_excludes_preexisting_same_second_comment", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.gh_with_env_token"

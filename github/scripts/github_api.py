@@ -34,6 +34,7 @@ import os
 import pathlib
 import random
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,10 @@ DEFAULT_RETRY_MAX_ATTEMPTS = 8
 DEFAULT_RETRY_PROGRESS_SECONDS = 30.0
 DEFAULT_RETRY_JITTER_SECONDS = 3.0
 FLEXIBLE_RETRY_BUCKETS = frozenset({"delegated", "mixed", "unknown"})
+PRIMARY_RATE_LIMIT_CAUSES = frozenset(
+    {"graphql_primary_rate_limited", "rest_primary_rate_limited", "rate_limited_unknown_bucket"}
+)
+OPERATION_MARKER_PREFIX = "<!-- github-skill-operation:"
 
 GraphQLOperation = Literal["query", "mutation", "subscription", "unknown"]
 ReconciliationOutcome = Literal["matched", "no_match", "ambiguous", "failed"]
@@ -239,16 +244,19 @@ def aggregate_retry_summaries(
         "reconciled_not_applied": 3,
         "reconciled_applied": 2,
         "confirmed_not_applied": 1,
+        "confirmed": 1,
         "not_applicable": 0,
-        "confirmed": 0,
     }
     outcome_certainty = (
         "not_applicable"
         if failed
         else max(
-            summaries,
-            key=lambda summary: certainty_priority.get(summary.outcome_certainty, 0),
-        ).outcome_certainty
+            enumerate(summaries),
+            key=lambda item: (
+                certainty_priority.get(item[1].outcome_certainty, 0),
+                item[0],
+            ),
+        )[1].outcome_certainty
     )
     return RetrySummary(
         attempts=sum(summary.attempts for summary in summaries),
@@ -262,6 +270,23 @@ def aggregate_retry_summaries(
         effective_deadline=min(summary.effective_deadline for summary in summaries),
         exhausted_reason=exhausted_reason,
     )
+
+
+def new_operation_id() -> str:
+    return secrets.token_hex(16)
+
+
+def operation_marker_comment(operation_id: str) -> str:
+    return f"{OPERATION_MARKER_PREFIX}{operation_id} -->"
+
+
+def body_with_operation_marker(body: str, operation_id: str) -> str:
+    separator = "" if body.endswith("\n") else "\n"
+    return f"{body}{separator}\n{operation_marker_comment(operation_id)}\n"
+
+
+def body_has_operation_marker(body: Any, operation_id: str) -> bool:
+    return isinstance(body, str) and operation_marker_comment(operation_id) in body
 
 
 class ArgumentParsingError(Exception):
@@ -1161,7 +1186,11 @@ def classify_error(
     )
 
 
-def _rate_limit_from_probe(result: Optional[ApiResult]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+def _rate_limit_from_probe(
+    result: Optional[ApiResult],
+    *,
+    preferred_resource: Optional[str] = None,
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
     if result is None or not result.ok or not isinstance(result.body, dict):
         return None, None
     resources = result.body.get("resources")
@@ -1173,6 +1202,11 @@ def _rate_limit_from_probe(result: Optional[ApiResult]) -> tuple[Optional[str], 
             exhausted.append((str(name), value))
     if not exhausted:
         return None, None
+    if preferred_resource is not None:
+        preferred = preferred_resource.casefold()
+        exhausted = [item for item in exhausted if item[0].casefold() == preferred]
+        if not exhausted:
+            return None, None
     for name, value in exhausted:
         if name.lower() == "graphql":
             return "graphql_primary_rate_limited", {
@@ -1272,6 +1306,7 @@ def classify_legacy_failure(
         fallback_eligible = True
         write_outcome = not_started if "no automation gh token found" in lowered else rejected
     elif "graphql" in lowered and ("rate limit" in lowered or "rate_limited" in lowered):
+        _, rate_limit = _rate_limit_from_probe(rate_limit_result, preferred_resource="graphql")
         cause = "graphql_primary_rate_limited"
         disposition = "retry"
         retryable = True
@@ -1375,12 +1410,6 @@ def legacy_process_result(
     if provider_resource is None and isinstance(failure.rate_limit, dict):
         candidate = failure.rate_limit.get("resource")
         provider_resource = candidate if isinstance(candidate, str) else None
-    if provider_resource is None and rate_limit_result is not None:
-        provider_resource = (
-            rate_limit_result.rate_limit.resource
-            if rate_limit_result.rate_limit is not None
-            else rate_limit_result.bucket
-        )
     result_bucket = normalized_provider_bucket(provider_resource) or bucket
     return ApiResult(
         ok=False,

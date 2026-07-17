@@ -14,8 +14,9 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import github_api as github_api_core
 import github_comment as github_comment_core
@@ -152,6 +153,8 @@ def main() -> int:
         ):
             if api_result.get(key) is not None:
                 envelope[key] = api_result[key]
+        if CURRENT_RETRY_FIELDS:
+            envelope.update(CURRENT_RETRY_FIELDS)
         return github_api_core.emit_terminal(
             envelope,
             stderr_message=f"error: {exc}",
@@ -166,15 +169,18 @@ def main() -> int:
             disposition="stop",
             write_outcome="not_started" if is_write else None,
         )
+        envelope = github_api_core.terminal_failure(
+            failure,
+            operation=CURRENT_OPERATION,
+            expected_actor=EXPECTED_ACTOR,
+            transport=transport,
+            bucket=bucket,
+            error=message,
+        )
+        if CURRENT_RETRY_FIELDS:
+            envelope.update(CURRENT_RETRY_FIELDS)
         return github_api_core.emit_terminal(
-            github_api_core.terminal_failure(
-                failure,
-                operation=CURRENT_OPERATION,
-                expected_actor=EXPECTED_ACTOR,
-                transport=transport,
-                bucket=bucket,
-                error=message,
-            ),
+            envelope,
             stderr_message=f"error: {message}",
         )
     if isinstance(payload, dict) and CURRENT_RETRY_FIELDS:
@@ -367,6 +373,7 @@ def shared_comment(
     edit_last: bool = False,
     create_if_none: bool = False,
 ) -> dict[str, Any]:
+    retry_summaries: list[github_api_core.RetrySummary] = []
     try:
         return github_comment_core.comment(
             kind,
@@ -380,6 +387,7 @@ def shared_comment(
             failed_step=failed_step,
             edit_last=edit_last,
             create_if_none=create_if_none,
+            retry_summaries=retry_summaries,
         )
     except github_comment_core.CommentError as exc:
         raise PrHelperError(
@@ -388,6 +396,9 @@ def shared_comment(
             api_result=exc.api_result,
             **exc.payload,
         ) from exc
+    finally:
+        for summary in retry_summaries:
+            record_retry_summary(summary)
 
 
 def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
@@ -440,8 +451,9 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
             repo=repo,
             pr=number,
         ) from exc
+    finally:
+        record_retry_summary(reader.retry_summary())
     last_result = reader.last_result
-    record_retry_summary(reader.retry_summary())
     result_payload = {
         **payload,
         "ok": True,
@@ -479,8 +491,64 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     if args.commit_message:
         payload["commit_message"] = args.commit_message
     merge_path = f"/repos/{repo}/pulls/{number}/merge"
+    expected_head_sha = str(pr["head"]["sha"])
+
+    def reconcile_merge(
+        failed_result: github_api_core.ApiResult,
+        retry_context: github_api_core.ReconciliationContext,
+    ) -> github_api_core.ReconciliationDecision:
+        reconciliation_actor = failed_result.actor or failed_result.expected_actor
+        if reconciliation_actor is None:
+            return github_api_core.ReconciliationDecision(
+                "failed",
+                details={"failure": {"cause": "actor_unknown"}, "head_sha": expected_head_sha},
+            )
+        probe = github_api_core.call_gh_with_retry(
+            "GET",
+            f"/repos/{repo}/pulls/{number}",
+            gh_cmd=GH,
+            operation=CURRENT_OPERATION,
+            actor=reconciliation_actor,
+            expected_actor=reconciliation_actor,
+            bucket="rest_core",
+            is_write=False,
+            retry_policy=retry_context.retry_policy,
+            retry_runtime=retry_context.retry_runtime,
+            deadline_at=retry_context.deadline_at,
+        )
+        record_retry_fields(probe)
+        if not probe.ok or not isinstance(probe.body, dict):
+            return github_api_core.ReconciliationDecision(
+                "failed",
+                details={"head_sha": expected_head_sha, "failure": probe.as_dict()},
+            )
+        refreshed = probe.body
+        refreshed_head = str((refreshed.get("head") or {}).get("sha") or "")
+        merged = bool(refreshed.get("merged")) or bool(refreshed.get("merged_at"))
+        merge_sha = str(refreshed.get("merge_commit_sha") or "")
+        details = {
+            "head_sha": expected_head_sha,
+            "observed_head_sha": refreshed_head or None,
+            "merged": merged,
+            "merge_commit_sha": merge_sha or None,
+            "state": refreshed.get("state"),
+        }
+        if not refreshed_head or refreshed_head.casefold() != expected_head_sha.casefold():
+            return github_api_core.ReconciliationDecision("ambiguous", details=details)
+        if merged:
+            if not FULL_SHA_PATTERN.fullmatch(merge_sha):
+                return github_api_core.ReconciliationDecision("failed", details=details)
+            return github_api_core.ReconciliationDecision(
+                "matched",
+                body={"merged": True, "sha": merge_sha, "message": "Merge confirmed by PR re-read"},
+                details=details,
+            )
+        if refreshed.get("state") == "open":
+            return github_api_core.ReconciliationDecision("no_match", details=details)
+        return github_api_core.ReconciliationDecision("failed", details=details)
+
     try:
-        result = rest_json("PUT", merge_path, payload)
+        result = rest_result("PUT", merge_path, payload, reconcile=reconcile_merge).body
     except HelperError as exc:
         api_result = exc.payload.get("api_result") if isinstance(exc, PrHelperError) else None
         raise PrHelperError(
@@ -519,7 +587,13 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         refreshed_pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
         refreshed_sha = str(refreshed_pr.get("merge_commit_sha") or "")
         refreshed_merged = bool(refreshed_pr.get("merged")) or bool(refreshed_pr.get("merged_at"))
-        if not refreshed_merged or not FULL_SHA_PATTERN.fullmatch(refreshed_sha):
+        refreshed_head_sha = str((refreshed_pr.get("head") or {}).get("sha") or "")
+        if (
+            not refreshed_merged
+            or not FULL_SHA_PATTERN.fullmatch(refreshed_sha)
+            or not refreshed_head_sha
+            or refreshed_head_sha.casefold() != expected_head_sha.casefold()
+        ):
             raise PrHelperError(
                 "PR merge succeeded without a trustworthy final merge commit SHA",
                 failure=github_api_core.FailureDetail(
@@ -949,8 +1023,14 @@ def rest_json(
     payload: Optional[dict] = None,
     *,
     params: Optional[dict] = None,
+    reconcile: Optional[
+        Callable[
+            [github_api_core.ApiResult, github_api_core.ReconciliationContext],
+            github_api_core.ReconciliationDecision,
+        ]
+    ] = None,
 ) -> Any:
-    return rest_result(method, path, payload, params=params).body
+    return rest_result(method, path, payload, params=params, reconcile=reconcile).body
 
 
 def rest_result(
@@ -959,6 +1039,12 @@ def rest_result(
     payload: Optional[dict] = None,
     *,
     params: Optional[dict] = None,
+    reconcile: Optional[
+        Callable[
+            [github_api_core.ApiResult, github_api_core.ReconciliationContext],
+            github_api_core.ReconciliationDecision,
+        ]
+    ] = None,
 ) -> github_api_core.ApiResult:
     if params:
         path = path_with_query(path, params)
@@ -970,7 +1056,9 @@ def rest_result(
         operation=CURRENT_OPERATION,
         expected_actor=EXPECTED_ACTOR,
         bucket="rest_core",
+        reconcile=reconcile,
     )
+    record_retry_fields(result)
     if not result.ok:
         detail = result.failure.message if result.failure else "GitHub API request failed"
         raise PrHelperError(
@@ -980,7 +1068,6 @@ def rest_result(
             endpoint=github_api_core.redact_path(path),
             api_result=result.as_dict(),
         )
-    record_retry_fields(result)
     return result
 
 
@@ -1055,21 +1142,29 @@ def delete_ref(repo: str, ref: str) -> dict[str, Any]:
     delete_path = f"/repos/{repo}/git/refs/{ref}"
 
     def reconcile_delete(
-        _failed_result: github_api_core.ApiResult,
+        failed_result: github_api_core.ApiResult,
         retry_context: github_api_core.ReconciliationContext,
     ) -> github_api_core.ReconciliationDecision:
+        reconciliation_actor = failed_result.actor or failed_result.expected_actor
+        if reconciliation_actor is None:
+            return github_api_core.ReconciliationDecision(
+                "failed",
+                details={"ref": ref, "failure": {"cause": "actor_unknown"}},
+            )
         probe = github_api_core.call_gh_with_retry(
             "GET",
             f"/repos/{repo}/git/ref/{ref}",
             gh_cmd=GH,
             operation=operation,
-            expected_actor=EXPECTED_ACTOR,
+            actor=reconciliation_actor,
+            expected_actor=reconciliation_actor,
             bucket="rest_core",
             is_write=False,
             retry_policy=retry_context.retry_policy,
             retry_runtime=retry_context.retry_runtime,
             deadline_at=retry_context.deadline_at,
         )
+        record_retry_fields(probe)
         if probe.ok:
             return github_api_core.ReconciliationDecision(
                 "no_match",
@@ -1188,9 +1283,15 @@ def run_gh_with_retry(
     is_write: bool,
 ) -> tuple[subprocess.CompletedProcess[str], github_api_core.ApiResult]:
     last_proc: subprocess.CompletedProcess[str] | None = None
+    observed_bucket = "mixed"
+    retry_rule, _ = github_api_core.operation_retry_rule(operation)
+    probe_allowed = bool(
+        retry_rule and retry_rule.retry_eligibility in {"safe", "conditional"}
+    )
 
     def attempt(timeout_seconds: Optional[float] = None) -> github_api_core.ApiResult:
-        nonlocal last_proc
+        nonlocal last_proc, observed_bucket
+        attempt_started = time.monotonic()
         try:
             proc = run_gh(args, timeout_seconds=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
@@ -1210,7 +1311,7 @@ def run_gh_with_retry(
                 expected_actor=EXPECTED_ACTOR,
                 host=github_api_core.DEFAULT_HOST,
                 transport="gh_cli_wrapper",
-                bucket="mixed",
+                bucket=observed_bucket,
                 stderr=exc.stderr,
             )
         last_proc = proc
@@ -1228,9 +1329,9 @@ def run_gh_with_retry(
                 expected_actor=expected_context,
                 host=github_api_core.DEFAULT_HOST,
                 transport="gh_cli_wrapper",
-                bucket="mixed",
+                bucket=observed_bucket,
             )
-        return github_api_core.legacy_process_result(
+        result = github_api_core.legacy_process_result(
             proc.returncode,
             proc.stdout,
             proc.stderr,
@@ -1239,8 +1340,40 @@ def run_gh_with_retry(
             actor=reported_actor,
             expected_actor=expected_context,
             transport="gh_cli_wrapper",
-            bucket="mixed",
+            bucket=observed_bucket,
         )
+        if (
+            probe_allowed
+            and result.failure is not None
+            and result.failure.cause in github_api_core.PRIMARY_RATE_LIMIT_CAUSES
+            and not result.failure.rate_limit
+        ):
+            probe_timeout = timeout_seconds
+            if probe_timeout is not None:
+                probe_timeout -= time.monotonic() - attempt_started
+                if probe_timeout <= 0:
+                    return result
+            probe = github_api_core.rate_limit_probe(
+                gh_cmd=GH,
+                actor=reported_actor,
+                expected_actor=expected_context,
+                timeout_seconds=probe_timeout,
+            )
+            result = github_api_core.legacy_process_result(
+                proc.returncode,
+                proc.stdout,
+                proc.stderr,
+                operation=operation,
+                is_write=is_write,
+                actor=reported_actor,
+                expected_actor=expected_context,
+                transport="gh_cli_wrapper",
+                bucket=observed_bucket,
+                rate_limit_result=probe,
+            )
+        if result.bucket:
+            observed_bucket = result.bucket
+        return result
 
     result = github_api_core.run_with_retry(
         lambda: attempt(None),

@@ -106,6 +106,19 @@ def _local_error(
     )
 
 
+def _enrich_error_with_retry_summaries(
+    error: CommentError,
+    retry_summaries: list[github_api_core.RetrySummary],
+) -> None:
+    summary = github_api_core.aggregate_retry_summaries(retry_summaries)
+    if summary is None:
+        return
+    retry_fields = summary.as_dict()
+    error.payload = github_api_core.redact_body({**retry_fields, **error.payload})
+    if error.api_result is not None:
+        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result})
+
+
 def _raise_api_failure(
     result: github_api_core.ApiResult,
     *,
@@ -454,7 +467,6 @@ def _comment_fingerprint(repo: str, number: int, actor: str, body: str) -> str:
 def reconcile_created_comment(
     repo: str,
     number: int,
-    body: str,
     actor: str,
     started_at: str,
     *,
@@ -463,6 +475,7 @@ def reconcile_created_comment(
     expected_actor: Optional[str],
     completed_steps: list[str],
     fingerprint: str,
+    operation_id: str,
     existing_comment_ids: set[int],
     retry_context: github_api_core.ReconciliationContext,
     retry_summaries: list[github_api_core.RetrySummary],
@@ -506,13 +519,14 @@ def reconcile_created_comment(
             continue
         if not isinstance(item_actor, str) or item_actor.casefold() != actor.casefold():
             continue
-        if item.get("body") != body:
+        if not github_api_core.body_has_operation_marker(item.get("body"), operation_id):
             continue
         if created_at is None or created_at < threshold:
             continue
         matches.append(item)
     details = {
         "request_fingerprint": fingerprint,
+        "operation_id": operation_id,
         "started_at": started_at,
         "clock_skew_seconds": RECONCILIATION_CLOCK_SKEW_SECONDS,
         "preexisting_comment_ids": sorted(existing_comment_ids),
@@ -601,7 +615,7 @@ def _comment_payload(
     return payload
 
 
-def comment(
+def _comment_impl(
     kind: str,
     number: int,
     body: str,
@@ -614,6 +628,7 @@ def comment(
     operation: Optional[str] = None,
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -651,12 +666,12 @@ def comment(
         )
 
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-    retry_summaries: list[github_api_core.RetrySummary] = []
+    collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     actor = authenticated_actor(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
-        retry_summaries=retry_summaries,
+        retry_summaries=collected_retry_summaries,
     )
     steps = list(completed_steps or [])
     steps.append("resolve_actor")
@@ -671,7 +686,7 @@ def comment(
             actor=actor,
             expected_actor=expected_actor,
             completed_steps=steps,
-            retry_summaries=retry_summaries,
+            retry_summaries=collected_retry_summaries,
         )
         existing_comments = comments
         selected = _latest_actor_comment(comments, actor)
@@ -699,7 +714,7 @@ def comment(
                 completed_steps=steps,
                 failed_step=update_step,
                 is_write=True,
-                retry_summaries=retry_summaries,
+                retry_summaries=collected_retry_summaries,
                 failure_payload={
                     "kind": kind,
                     "repo": resolved_repo,
@@ -751,7 +766,7 @@ def comment(
             actor=actor,
             expected_actor=expected_actor,
             completed_steps=steps,
-            retry_summaries=retry_summaries,
+            retry_summaries=collected_retry_summaries,
         )
     existing_comment_ids = {
         comment_id
@@ -761,22 +776,26 @@ def comment(
     create_step = failed_step or "create_comment"
     started_at = _format_timestamp(_utc_now())
     fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
+    operation_id = github_api_core.new_operation_id()
+    provider_body = github_api_core.body_with_operation_marker(body, operation_id)
     marker = {
         "kind": "request_fingerprint",
         "value": fingerprint,
         "started_at": started_at,
+        "operation_id": operation_id,
     }
     reconciliation = {
-        "strategy": "list_recent_actor_comments_and_match_request_fingerprint",
+        "strategy": "list_recent_actor_comments_and_match_operation_id",
         "required_before_retry": True,
         "request_fingerprint": fingerprint,
+        "operation_id": operation_id,
         "started_at": started_at,
         "actor": actor,
     }
     result = _call_api(
         "POST",
         f"/repos/{resolved_repo}/issues/{number}/comments",
-        {"body": body},
+        {"body": provider_body},
         gh_cmd=gh_cmd,
         operation=operation,
         actor=actor,
@@ -795,7 +814,6 @@ def comment(
         reconcile=lambda failed_result, retry_context: reconcile_created_comment(
             resolved_repo,
             number,
-            body,
             failed_result.actor or actor,
             started_at,
             gh_cmd=gh_cmd,
@@ -803,11 +821,12 @@ def comment(
             expected_actor=expected_actor,
             completed_steps=steps,
             fingerprint=fingerprint,
+            operation_id=operation_id,
             existing_comment_ids=existing_comment_ids,
             retry_context=retry_context,
-            retry_summaries=retry_summaries,
+            retry_summaries=collected_retry_summaries,
         ),
-        retry_summaries=retry_summaries,
+        retry_summaries=collected_retry_summaries,
     )
     reconciled = bool(
         result.retry_summary
@@ -828,6 +847,42 @@ def comment(
         operation_marker=marker,
         retry_summary=result.retry_summary,
     )
+
+
+def comment(
+    kind: str,
+    number: int,
+    body: str,
+    *,
+    repo: Optional[str] = None,
+    edit_last: bool = False,
+    create_if_none: bool = False,
+    gh_cmd: str = DEFAULT_GH,
+    expected_actor: Optional[str] = EXPECTED_ACTOR,
+    operation: Optional[str] = None,
+    completed_steps: Optional[list[str]] = None,
+    failed_step: Optional[str] = None,
+    retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+) -> dict[str, Any]:
+    collected_retry_summaries = retry_summaries if retry_summaries is not None else []
+    try:
+        return _comment_impl(
+            kind,
+            number,
+            body,
+            repo=repo,
+            edit_last=edit_last,
+            create_if_none=create_if_none,
+            gh_cmd=gh_cmd,
+            expected_actor=expected_actor,
+            operation=operation,
+            completed_steps=completed_steps,
+            failed_step=failed_step,
+            retry_summaries=collected_retry_summaries,
+        )
+    except CommentError as error:
+        _enrich_error_with_retry_summaries(error, collected_retry_summaries)
+        raise
 
 
 def read_body(path: str) -> str:

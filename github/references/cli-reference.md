@@ -112,15 +112,18 @@ idempotent in the accepted matrix may also retry transient unknown outcomes.
 Other writes retry only when the shared result marks the write `not_started` or
 `rejected`; an `unknown` non-idempotent outcome requires an operation-specific
 reconciliation callback. Issue and comment creates use a stable request
-fingerprint, start time, and a pre-write snapshot of matching object IDs,
-reject pre-existing or ambiguous matches, return a uniquely matched new object
-without a second create, and fail closed after an unknown no-match result
-rather than risk eventual-consistency duplication. Provider-confirmed `not_started` or
-`rejected` creates may retry without reconciliation. Explicitly authorized
+fingerprint, a unique provider-visible ID embedded in a hidden HTML comment,
+start time, and a pre-write snapshot of matching object IDs. Reconciliation
+requires the unique ID, so concurrent identical requests cannot claim one
+another's object; pre-existing or ambiguous matches are rejected, and an
+unknown no-match result fails closed without a second create. Provider-confirmed
+`not_started` or `rejected` creates may retry without reconciliation. Explicitly authorized
 actor changes are announced before execution and start a new actor-keyed
 context; timeout results retain any announced fallback actor. Provider
 `x-ratelimit-resource` values are normalized to the supported bucket taxonomy,
-and an unannounced actor or bucket change fails closed.
+and an unannounced actor or bucket change fails closed. Legacy GraphQL failures
+without reset metadata perform one bounded `/rate_limit` probe for accepted
+retry operations and then wait on the reported GraphQL reset.
 
 GraphQL requests carry `graphql_operation` as `query`, `mutation`,
 `subscription`, or conservative `unknown`. A GraphQL POST query is read-only;
@@ -160,7 +163,10 @@ also include the shared `api_result` diagnostics envelope.
   `--create-if-none` only when a missing prior comment should create one.
 - `scripts/gh-pr.py checks <pr>`: Show check runs and commit statuses
   for the PR head.
-- `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR.
+- `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR. The expected head
+  SHA guards retries; an unknown response is reconciled by re-reading the PR,
+  recovering only a trustworthy final merge SHA and failing closed on head
+  drift or ambiguous state.
 - `scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
   superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
   `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo
@@ -360,9 +366,10 @@ envelope contract as the Python helpers. Comment results report
 comment evidence, and the returned URL; the compatibility `body` field remains
 the URL. Compound close flows report `completed_steps` and the failing step
 without printing multiple machine objects. Non-idempotent create results include
-a stable request fingerprint; ambiguous create failures require the documented
-read-after-failure reconciliation before retry. Human warnings and progress
-remain on stderr, and the process exit code matches `exit_code`.
+a stable request fingerprint and unique hidden operation ID; ambiguous create
+failures require the documented read-after-failure reconciliation before retry.
+Human warnings and progress remain on stderr, and the process exit code matches
+`exit_code`.
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to

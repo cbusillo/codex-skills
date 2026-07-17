@@ -191,6 +191,8 @@ def die(
                 envelope[key] = api_result[key]
     if retry_at is not None:
         envelope["retry_at"] = retry_at
+    if CURRENT_RETRY_FIELDS:
+        envelope.update(CURRENT_RETRY_FIELDS)
     github_api_core.emit_terminal(envelope, stderr_message=f"error: {message}")
     raise SystemExit(code)
 
@@ -354,6 +356,10 @@ def run_raw(
     resolved_operation = operation or CURRENT_OPERATION
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
+    retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
+    probe_allowed = bool(
+        retry_rule and retry_rule.retry_eligibility in {"safe", "conditional"}
+    )
 
     if not check:
         timeout_seconds = github_api_core.remaining_retry_timeout_seconds()
@@ -448,7 +454,12 @@ def run_raw(
             completed_steps=completed_steps,
             failed_step=failed_step,
         )
-        if result.failure and result.failure.cause == "rate_limited_unknown_bucket":
+        if (
+            probe_allowed
+            and result.failure
+            and result.failure.cause in github_api_core.PRIMARY_RATE_LIMIT_CAUSES
+            and not result.failure.rate_limit
+        ):
             probe_timeout = timeout_seconds
             if probe_timeout is not None:
                 probe_timeout -= time.monotonic() - attempt_started

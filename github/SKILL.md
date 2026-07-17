@@ -776,8 +776,11 @@ bucket. That same deadline bounds subprocesses, cooldown-lock acquisition, and
 reconciliation reads. Progress stays on stderr, provider bucket evidence is
 validated, actor changes require explicit authorization and begin a distinct
 retry context, and unknown non-idempotent outcomes must reconcile by operation
-marker plus a pre-write candidate snapshot; a unique new match is recovered
-and every other unknown outcome fails closed without replay.
+marker plus a pre-write candidate snapshot. Create markers are unique per
+invocation and provider-visible in hidden HTML comments, so concurrent
+identical writes cannot claim one another; a unique new match is recovered and
+every other unknown outcome fails closed without replay. Legacy GraphQL
+failures lacking reset metadata use one bounded quota probe before waiting.
 
 ## Workflow Loop
 

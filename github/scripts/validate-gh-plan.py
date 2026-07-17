@@ -1952,10 +1952,30 @@ def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
 def test_run_raw_retries_matrix_approved_graphql_query_on_same_actor() -> None:
     plan = load_plan_module()
     calls: list[list[str]] = []
+    current_time = [1000.0]
+    sleeps: list[float] = []
+
+    def sleep(duration: float) -> None:
+        sleeps.append(duration)
+        current_time[0] += duration
 
     def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        if len(calls) == 1:
+        if "/rate_limit" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "resources": {
+                            "core": {"remaining": 4999},
+                            "graphql": {"remaining": 0, "reset": 1005},
+                        }
+                    }
+                ).encode(),
+                b"",
+            )
+        if len([call for call in calls if "/rate_limit" not in call]) == 1:
             return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
         return completed(stdout='{"projects": []}')
 
@@ -1967,7 +1987,15 @@ def test_run_raw_retries_matrix_approved_graphql_query_on_same_actor() -> None:
             base_backoff_seconds=0.0,
             max_backoff_seconds=0.0,
             jitter_seconds=0.0,
+            drain_seconds=0.0,
             state_dir=Path(temp_dir),
+        )
+        plan.github_api_core.default_retry_runtime = lambda: plan.github_api_core.RetryRuntime(
+            now=lambda: current_time[0],
+            sleep=sleep,
+            jitter=lambda _maximum: 0.0,
+            cancelled=lambda: False,
+            progress=lambda _event: None,
         )
         actor, stdout, _ = plan.run_raw(
             ["project", "list"],
@@ -1978,7 +2006,8 @@ def test_run_raw_retries_matrix_approved_graphql_query_on_same_actor() -> None:
         )
     assert actor == "automation-gh", actor
     assert json.loads(stdout) == {"projects": []}, stdout
-    assert len(calls) == 2, calls
+    assert len(calls) == 3, calls
+    assert sum(sleeps) == 5.0, sleeps
     assert all(command[0].endswith("gh-with-env-token") for command in calls), calls
     assert plan.CURRENT_RETRY_FIELDS["attempts"] == 2, plan.CURRENT_RETRY_FIELDS
 
@@ -2276,6 +2305,81 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
     assert result.stderr == "", result.stderr
 
 
+def test_pr_checks_failure_records_reader_retry_summary() -> None:
+    pr = load_pr_module()
+    pr.CURRENT_RETRY_FIELDS = {}
+    pr.CURRENT_RETRY_SUMMARY = None
+    summary = pr.github_api_core.RetrySummary(
+        attempts=3,
+        elapsed_wait=2.0,
+        retry_eligible=True,
+        last_actor=pr.EXPECTED_ACTOR,
+        last_bucket="rest_core",
+        outcome_certainty="not_applicable",
+        reconciliation=None,
+        recommended_next_action="inspect_last_failure",
+        effective_deadline=2000.0,
+    )
+    failure = pr.github_api_core.FailureDetail(
+        cause="network_provider_failure",
+        message="checks failed",
+        retryable=True,
+        fallback_eligible=False,
+        disposition="retry",
+    )
+    failed_result = pr.github_api_core.ApiResult(
+        ok=False,
+        status=503,
+        body={"message": "checks failed"},
+        operation="github.pr.checks",
+        actor=pr.EXPECTED_ACTOR,
+        expected_actor=pr.EXPECTED_ACTOR,
+        host=pr.github_api_core.DEFAULT_HOST,
+        transport="rest_api",
+        bucket="rest_core",
+        failure=failure,
+        retry_summary=summary,
+    )
+
+    class FakeReader:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.last_result = failed_result
+            self.actor = pr.EXPECTED_ACTOR
+            self.completed_steps: list[str] = []
+            self.failed_results = [failed_result]
+
+        def retry_summary(self) -> Any:
+            return summary
+
+        def diagnostics(self) -> dict[str, Any]:
+            return {"degraded": True, "degradedComponents": ["checks"]}
+
+    original_reader = pr.github_read_core.GitHubReader
+    original_checks = pr.github_read_core.pull_request_checks
+    pr.github_read_core.GitHubReader = FakeReader
+
+    def fail_checks(reader: Any, _repo: str, _number: int) -> Any:
+        raise pr.github_read_core.GitHubReadError(
+            "checks failed",
+            result=reader.last_result,
+            diagnostics=reader.diagnostics(),
+        )
+
+    pr.github_read_core.pull_request_checks = fail_checks
+    try:
+        try:
+            pr.cmd_checks(types.SimpleNamespace(repo="owner/repo", pr="12"))
+        except pr.PrHelperError:
+            pass
+        else:
+            raise AssertionError("expected PR checks failure")
+    finally:
+        pr.github_read_core.GitHubReader = original_reader
+        pr.github_read_core.pull_request_checks = original_checks
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 3, pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["elapsed_wait"] == 2.0, pr.CURRENT_RETRY_FIELDS
+
+
 def test_plan_and_pr_retry_recorders_aggregate_early_waits() -> None:
     plan = load_plan_module()
 
@@ -2306,6 +2410,157 @@ def test_plan_and_pr_retry_recorders_aggregate_early_waits() -> None:
     pr.record_retry_summary(summary(1, 0.0))
     assert pr.CURRENT_RETRY_FIELDS["attempts"] == 3, pr.CURRENT_RETRY_FIELDS
     assert pr.CURRENT_RETRY_FIELDS["elapsed_wait"] == 3.0, pr.CURRENT_RETRY_FIELDS
+
+
+def test_plan_and_pr_failure_envelopes_keep_aggregate_retry_fields() -> None:
+    plan = load_plan_module()
+
+    def summary(core: Any, attempts: int) -> Any:
+        return core.RetrySummary(
+            attempts=attempts,
+            elapsed_wait=0.0,
+            retry_eligible=True,
+            last_actor="shiny-code-bot",
+            last_bucket="rest_core",
+            outcome_certainty="confirmed",
+            reconciliation=None,
+            recommended_next_action="none",
+            effective_deadline=2000.0,
+        )
+
+    plan.CURRENT_OPERATION = "github.plan.show"
+    plan.CURRENT_TRANSPORT = "rest_api"
+    plan.CURRENT_BUCKET = "rest_core"
+    plan.record_retry_summary(summary(plan.github_api_core, 2))
+    plan_stdout = StringIO()
+    plan_stderr = StringIO()
+    try:
+        with redirect_stdout(plan_stdout), redirect_stderr(plan_stderr):
+            plan.die("terminal plan failure")
+    except SystemExit as exc:
+        assert exc.code == 1, exc.code
+    else:
+        raise AssertionError("plan.die must exit")
+    plan_payload = json.loads(plan_stdout.getvalue())
+    assert plan_payload["attempts"] == 2, plan_payload
+
+    pr = load_pr_module()
+    original_call = pr.github_api_core.call_gh_with_retry
+    failure = pr.github_api_core.FailureDetail(
+        cause="network_provider_failure",
+        message="request failed",
+        retryable=True,
+        fallback_eligible=False,
+        disposition="retry",
+    )
+
+    def fake_call(*_args: Any, **_kwargs: Any) -> Any:
+        return pr.github_api_core.ApiResult(
+            ok=False,
+            status=503,
+            body={"message": "request failed"},
+            operation="github.pr.view",
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            transport="rest_api",
+            bucket="rest_core",
+            failure=failure,
+            retry_summary=summary(pr.github_api_core, 1),
+        )
+
+    def fail_after_early_retry(_args: Any) -> Any:
+        pr.record_retry_summary(summary(pr.github_api_core, 2))
+        return pr.rest_json("GET", "/repos/owner/repo/pulls/12")
+
+    pr.github_api_core.call_gh_with_retry = fake_call
+    pr.parse_args = lambda: types.SimpleNamespace(command="view", func=fail_after_early_retry)
+    pr_stdout = StringIO()
+    pr_stderr = StringIO()
+    try:
+        with redirect_stdout(pr_stdout), redirect_stderr(pr_stderr):
+            exit_code = pr.main()
+    finally:
+        pr.github_api_core.call_gh_with_retry = original_call
+    assert exit_code == 1, exit_code
+    pr_payload = json.loads(pr_stdout.getvalue())
+    assert pr_payload["attempts"] == 3, pr_payload
+    assert pr_payload["outcome_certainty"] == "confirmed", pr_payload
+
+
+def test_pr_legacy_graphql_rate_limit_uses_reset_probe() -> None:
+    pr = load_pr_module()
+    calls = 0
+    probe_calls = 0
+    current_time = [1000.0]
+    sleeps: list[float] = []
+    original_probe = pr.github_api_core.rate_limit_probe
+
+    def sleep(duration: float) -> None:
+        sleeps.append(duration)
+        current_time[0] += duration
+
+    def fake_run(
+        _args: list[str],
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del timeout_seconds
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return completed(stderr="GraphQL: API rate limit already exceeded", returncode=1)
+        if calls == 2:
+            return completed(stderr="HTTP 503: Service Unavailable", returncode=1)
+        return completed(stdout="updated")
+
+    def fake_probe(**_kwargs: Any) -> Any:
+        nonlocal probe_calls
+        probe_calls += 1
+        return pr.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body={"resources": {"graphql": {"remaining": 0, "reset": 1005}}},
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            bucket="rest_core",
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.run_gh = fake_run
+        pr.github_api_core.rate_limit_probe = fake_probe
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=3,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            drain_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        pr.github_api_core.default_retry_runtime = lambda: pr.github_api_core.RetryRuntime(
+            now=lambda: current_time[0],
+            sleep=sleep,
+            jitter=lambda _maximum: 0.0,
+            cancelled=lambda: False,
+            progress=lambda _event: None,
+        )
+        try:
+            proc, result = pr.run_gh_with_retry(
+                ["pr", "edit", "9", "--body", "updated"],
+                operation="github.pr.edit",
+                is_write=True,
+            )
+        finally:
+            pr.github_api_core.rate_limit_probe = original_probe
+    assert proc.stdout == "updated", proc
+    assert result.ok is True, result.as_dict()
+    assert result.retry_summary is not None
+    assert result.retry_summary.attempts == 3, result.retry_summary
+    assert result.retry_summary.last_bucket == "graphql", result.retry_summary
+    assert calls == 3, calls
+    assert probe_calls == 1, probe_calls
+    assert sum(sleeps) == 5.0, sleeps
 
 
 def test_retried_project_list_emits_retry_fields_on_stdout() -> None:
@@ -2829,12 +3084,14 @@ def test_delete_ref_reconciles_unknown_outcome() -> None:
                 status=0,
                 body=None,
                 operation=kwargs.get("operation"),
-                actor=pr.EXPECTED_ACTOR,
-                expected_actor=pr.EXPECTED_ACTOR,
+                actor="octocat",
+                expected_actor=None,
                 host=pr.github_api_core.DEFAULT_HOST,
                 bucket="rest_core",
                 failure=failure,
             )
+        assert kwargs.get("actor") == "octocat", kwargs
+        assert kwargs.get("expected_actor") == "octocat", kwargs
         failure = pr.github_api_core.FailureDetail(
             cause="not_found",
             message="Not Found",
@@ -2847,8 +3104,8 @@ def test_delete_ref_reconciles_unknown_outcome() -> None:
             status=404,
             body={"message": "Not Found"},
             operation=kwargs.get("operation"),
-            actor=pr.EXPECTED_ACTOR,
-            expected_actor=pr.EXPECTED_ACTOR,
+            actor="octocat",
+            expected_actor="octocat",
             host=pr.github_api_core.DEFAULT_HOST,
             bucket="rest_core",
             failure=failure,
@@ -2874,8 +3131,249 @@ def test_delete_ref_reconciles_unknown_outcome() -> None:
         ("DELETE", "/repos/owner/repo/git/refs/heads/topic"),
         ("GET", "/repos/owner/repo/git/ref/heads/topic"),
     ], calls
-    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 1, pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 2, pr.CURRENT_RETRY_FIELDS
     assert pr.CURRENT_RETRY_FIELDS["reconciliation"]["result"] == "matched", pr.CURRENT_RETRY_FIELDS
+
+
+def test_merge_reconciles_accepted_unknown_outcome_to_final_sha() -> None:
+    pr = load_pr_module()
+    pr.CURRENT_OPERATION = "github.pr.merge"
+    pr.CURRENT_RETRY_FIELDS = {}
+    pr.CURRENT_RETRY_SUMMARY = None
+    calls: list[tuple[str, str]] = []
+    merge_sha = "a" * 40
+    open_pr = {
+        "number": 12,
+        "title": "Demo",
+        "state": "open",
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"ref": "topic", "sha": "head-sha", "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+    }
+    original_call = pr.github_api_core.call_gh
+    original_policy = pr.github_api_core.default_retry_policy
+
+    def fake_call(method: str, path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append((method, path))
+        if method == "PUT":
+            failure = pr.github_api_core.FailureDetail(
+                cause="network_provider_failure",
+                message="response lost after merge",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="unknown",
+            )
+            return pr.github_api_core.ApiResult(
+                ok=False,
+                status=0,
+                body=None,
+                operation=kwargs.get("operation"),
+                actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR,
+                host=pr.github_api_core.DEFAULT_HOST,
+                bucket="rest_core",
+                failure=failure,
+            )
+        body = open_pr if len(calls) == 1 else {
+            **open_pr,
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-07-17T21:00:00Z",
+            "merge_commit_sha": merge_sha,
+        }
+        return pr.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body=body,
+            operation=kwargs.get("operation"),
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.github_api_core.call_gh = fake_call
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        try:
+            payload = pr.cmd_merge(types.SimpleNamespace(
+                repo="owner/repo",
+                pr="12",
+                method="merge",
+                commit_title=None,
+                commit_message=None,
+                delete_branch=False,
+            ))
+        finally:
+            pr.github_api_core.call_gh = original_call
+            pr.github_api_core.default_retry_policy = original_policy
+
+    assert calls == [
+        ("GET", "/repos/owner/repo/pulls/12"),
+        ("PUT", "/repos/owner/repo/pulls/12/merge"),
+        ("GET", "/repos/owner/repo/pulls/12"),
+    ], calls
+    assert payload["mergeCommitOid"] == merge_sha, payload
+    assert payload["merge"]["merged"] is True, payload
+    assert pr.CURRENT_RETRY_FIELDS["attempts"] == 3, pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["outcome_certainty"] == "reconciled_applied", pr.CURRENT_RETRY_FIELDS
+
+
+def test_merge_reconciliation_rejects_head_drift() -> None:
+    pr = load_pr_module()
+    pr.CURRENT_OPERATION = "github.pr.merge"
+    expected_head = "b" * 40
+    open_pr = {
+        "number": 12,
+        "title": "Demo",
+        "state": "open",
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"ref": "topic", "sha": expected_head, "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+    }
+    calls: list[tuple[str, str]] = []
+    original_call = pr.github_api_core.call_gh
+    original_policy = pr.github_api_core.default_retry_policy
+
+    def fake_call(method: str, path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append((method, path))
+        if method == "PUT":
+            failure = pr.github_api_core.FailureDetail(
+                cause="network_provider_failure",
+                message="response lost after merge",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="unknown",
+            )
+            return pr.github_api_core.ApiResult(
+                ok=False,
+                status=0,
+                body=None,
+                operation=kwargs.get("operation"),
+                actor=pr.EXPECTED_ACTOR,
+                expected_actor=pr.EXPECTED_ACTOR,
+                host=pr.github_api_core.DEFAULT_HOST,
+                bucket="rest_core",
+                failure=failure,
+            )
+        body = open_pr if len(calls) == 1 else {
+            **open_pr,
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-07-17T21:00:00Z",
+            "merge_commit_sha": "a" * 40,
+            "head": {**open_pr["head"], "sha": "c" * 40},
+        }
+        return pr.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body=body,
+            operation=kwargs.get("operation"),
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.github_api_core.call_gh = fake_call
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        try:
+            try:
+                pr.cmd_merge(types.SimpleNamespace(
+                    repo="owner/repo",
+                    pr="12",
+                    method="merge",
+                    commit_title=None,
+                    commit_message=None,
+                    delete_branch=False,
+                ))
+            except pr.PrHelperError as exc:
+                api_result = exc.payload["api_result"]
+                assert api_result["reconciliation"]["result"] == "ambiguous", api_result
+            else:
+                raise AssertionError("head drift must fail merge reconciliation closed")
+        finally:
+            pr.github_api_core.call_gh = original_call
+            pr.github_api_core.default_retry_policy = original_policy
+
+
+def test_merge_identity_reread_rejects_head_drift() -> None:
+    pr = load_pr_module()
+    pr.CURRENT_OPERATION = "github.pr.merge"
+    expected_head = "b" * 40
+    open_pr = {
+        "number": 12,
+        "title": "Demo",
+        "state": "open",
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"ref": "topic", "sha": expected_head, "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+    }
+    calls = 0
+    original_call = pr.github_api_core.call_gh
+
+    def fake_call(method: str, _path: str, _body: Any = None, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if method == "PUT":
+            body = {"merged": True, "sha": ""}
+        elif calls == 1:
+            body = open_pr
+        else:
+            body = {
+                **open_pr,
+                "state": "closed",
+                "merged": True,
+                "merged_at": "2026-07-17T21:00:00Z",
+                "merge_commit_sha": "a" * 40,
+                "head": {**open_pr["head"], "sha": "c" * 40},
+            }
+        return pr.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body=body,
+            operation=kwargs.get("operation"),
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+        )
+
+    pr.github_api_core.call_gh = fake_call
+    try:
+        try:
+            pr.cmd_merge(types.SimpleNamespace(
+                repo="owner/repo",
+                pr="12",
+                method="merge",
+                commit_title=None,
+                commit_message=None,
+                delete_branch=False,
+            ))
+        except pr.PrHelperError as exc:
+            assert exc.failure is not None
+            assert exc.failure.cause == "merge_identity_unavailable", exc.failure
+        else:
+            raise AssertionError("head drift must invalidate merge identity reread")
+    finally:
+        pr.github_api_core.call_gh = original_call
 
 
 def test_pr_helper_merge_404_includes_recovery_context() -> None:
@@ -4027,7 +4525,10 @@ def main() -> None:
         test_pr_write_timeout_is_bounded_and_reports_unknown_outcome,
         test_retried_pr_edit_emits_retry_fields_on_stdout,
         test_pr_checks_aggregates_retry_fields_across_reads,
+        test_pr_checks_failure_records_reader_retry_summary,
         test_plan_and_pr_retry_recorders_aggregate_early_waits,
+        test_plan_and_pr_failure_envelopes_keep_aggregate_retry_fields,
+        test_pr_legacy_graphql_rate_limit_uses_reset_probe,
         test_retried_project_list_emits_retry_fields_on_stdout,
         test_plan_cli_emits_shared_terminal_envelope,
         test_plan_project_query_failure_is_not_a_write,
@@ -4038,6 +4539,9 @@ def main() -> None:
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_delete_ref_reconciles_unknown_outcome,
+        test_merge_reconciles_accepted_unknown_outcome_to_final_sha,
+        test_merge_reconciliation_rejects_head_drift,
+        test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_merge_semantic_rejection_exits_nonzero,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,

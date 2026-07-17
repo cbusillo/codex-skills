@@ -978,6 +978,31 @@ def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
     assert failure.rate_limit == {"resource": "graphql", "remaining": 0, "reset": 1700000000}
 
 
+def test_legacy_graphql_rate_limit_uses_probe_reset() -> None:
+    probe = _api.ApiResult(
+        ok=True,
+        status=200,
+        body={"resources": {"core": {"remaining": 0}, "graphql": {"remaining": 0, "reset": 1700000000}}},
+    )
+    result = _api.legacy_process_result(
+        1,
+        "",
+        "GraphQL: API rate limit already exceeded",
+        operation="github.plan.project_list",
+        is_write=False,
+        bucket="mixed",
+        rate_limit_result=probe,
+    )
+    assert result.failure is not None
+    assert result.failure.cause == "graphql_primary_rate_limited"
+    assert result.failure.rate_limit == {
+        "resource": "graphql",
+        "remaining": 0,
+        "reset": 1700000000,
+    }
+    assert result.bucket == "graphql"
+
+
 def test_legacy_provider_bucket_replaces_requested_bucket() -> None:
     stdout = _include_output(
         429,
@@ -1430,6 +1455,35 @@ def test_asdict_rate_limit_in_failure_when_exhausted() -> None:
     assert failure["cause"] == "rest_primary_rate_limited"
     assert failure.get("rate_limit") is not None
     assert failure["rate_limit"]["remaining"] == 0
+
+
+def test_operation_marker_is_hidden_and_detectable() -> None:
+    body = _api.body_with_operation_marker("## Result\n", "a" * 32)
+    assert body.startswith("## Result\n")
+    assert _api.operation_marker_comment("a" * 32) in body
+    assert _api.body_has_operation_marker(body, "a" * 32) is True
+    assert _api.body_has_operation_marker(body, "b" * 32) is False
+
+
+def test_aggregate_retry_summaries_prefers_write_certainty() -> None:
+    def summary(certainty: str) -> Any:
+        return _api.RetrySummary(
+            attempts=1,
+            elapsed_wait=0.0,
+            retry_eligible=True,
+            last_actor="shiny-code-bot",
+            last_bucket="rest_core",
+            outcome_certainty=certainty,
+            reconciliation=None,
+            recommended_next_action="none",
+            effective_deadline=2000.0,
+        )
+
+    aggregate = _api.aggregate_retry_summaries(
+        [summary("not_applicable"), summary("confirmed")]
+    )
+    assert aggregate is not None
+    assert aggregate.outcome_certainty == "confirmed"
 
 
 class FakeRetryClock:
@@ -2603,6 +2657,7 @@ def main() -> None:
         test_legacy_process_result_merges_outer_and_delegated_failure_evidence,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
+        test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
         test_legacy_html_parse_error_is_summarized_as_provider_failure,
@@ -2635,6 +2690,8 @@ def main() -> None:
         test_error_asdict_has_failure_key,
         test_asdict_rate_limit_present_on_success,
         test_asdict_rate_limit_in_failure_when_exhausted,
+        test_operation_marker_is_hidden_and_detectable,
+        test_aggregate_retry_summaries_prefers_write_certainty,
         # reset-aware retries
         test_retry_waits_until_primary_reset_and_succeeds,
         test_retry_honors_secondary_retry_after,

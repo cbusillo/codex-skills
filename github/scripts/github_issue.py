@@ -97,6 +97,19 @@ def _local_error(
     )
 
 
+def _enrich_error_with_retry_summaries(
+    error: IssueError,
+    retry_summaries: list[github_api_core.RetrySummary],
+) -> None:
+    summary = github_api_core.aggregate_retry_summaries(retry_summaries)
+    if summary is None:
+        return
+    retry_fields = summary.as_dict()
+    error.payload = github_api_core.redact_body({**retry_fields, **error.payload})
+    if error.api_result is not None:
+        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result})
+
+
 def _from_comment_error(exc: github_comment.CommentError) -> IssueError:
     return IssueError(
         str(exc),
@@ -378,12 +391,14 @@ def _create_reconciliation(
     creator: Optional[str],
     fingerprint: str,
     started_at: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     creator_query = f"&creator={urllib.parse.quote(creator, safe='')}" if creator else ""
     return {
-        "strategy": "list_recent_issues_and_match_request_fingerprint",
+        "strategy": "list_recent_issues_and_match_operation_id",
         "required_before_retry": True,
         "request_fingerprint": fingerprint,
+        "operation_id": operation_id,
         "started_at": started_at,
         "clock_skew_seconds": RECONCILIATION_CLOCK_SKEW_SECONDS,
         "endpoint": (
@@ -393,38 +408,11 @@ def _create_reconciliation(
     }
 
 
-def _fingerprint_from_issue(repo: str, issue: dict[str, Any]) -> Optional[str]:
-    title = issue.get("title")
-    body = issue.get("body")
-    if not all(isinstance(value, str) for value in (title, body)):
-        return None
-    labels = [
-        item["name"] if isinstance(item, dict) else item
-        for item in issue.get("labels") or []
-        if isinstance(item, str) or (isinstance(item, dict) and isinstance(item.get("name"), str))
-    ]
-    assignees = [
-        item["login"]
-        for item in issue.get("assignees") or []
-        if isinstance(item, dict) and isinstance(item.get("login"), str)
-    ]
-    milestone = issue.get("milestone")
-    milestone_number = milestone.get("number") if isinstance(milestone, dict) else None
-    return _request_fingerprint(
-        repo=repo,
-        title=title,
-        body=body,
-        labels=labels,
-        assignees=assignees,
-        milestone=milestone_number if isinstance(milestone_number, int) else None,
-    )
-
-
 def _matching_created_issues(
     repo: str,
     actor: str,
     creator: Optional[str],
-    fingerprint: Optional[str],
+    operation_id: Optional[str],
     started_at: str,
     *,
     gh_cmd: str,
@@ -495,7 +483,9 @@ def _matching_created_issues(
             issue_id = item.get("id")
             if not isinstance(issue_id, int) or issue_id in existing_issue_ids:
                 continue
-            if fingerprint is None or _fingerprint_from_issue(repo, item) == fingerprint:
+            if operation_id is None or github_api_core.body_has_operation_marker(
+                item.get("body"), operation_id
+            ):
                 matches.append(item)
         if stop or not _has_next_page(result.headers):
             break
@@ -507,6 +497,7 @@ def reconcile_created_issue(
     actor: str,
     creator: Optional[str],
     fingerprint: str,
+    operation_id: str,
     started_at: str,
     *,
     gh_cmd: str,
@@ -521,7 +512,7 @@ def reconcile_created_issue(
         repo,
         actor,
         creator,
-        fingerprint,
+        operation_id,
         started_at,
         gh_cmd=gh_cmd,
         operation=operation,
@@ -701,6 +692,8 @@ def create_issue(
         assignees=normalized_assignees,
         milestone=milestone_number,
     )
+    operation_id = github_api_core.new_operation_id()
+    request["body"] = github_api_core.body_with_operation_marker(body, operation_id)
     started_at = _format_timestamp(_utc_now())
     preexisting_matches = _matching_created_issues(
         resolved_repo,
@@ -722,9 +715,20 @@ def create_issue(
         for item in preexisting_matches
         if isinstance((issue_id := item.get("id")), int)
     }
-    marker = {"kind": "request_fingerprint", "value": fingerprint, "started_at": started_at}
+    marker = {
+        "kind": "request_fingerprint",
+        "value": fingerprint,
+        "started_at": started_at,
+        "operation_id": operation_id,
+    }
     stable_creator = actor if expected_actor is not None else None
-    reconciliation = _create_reconciliation(resolved_repo, stable_creator, fingerprint, started_at)
+    reconciliation = _create_reconciliation(
+        resolved_repo,
+        stable_creator,
+        fingerprint,
+        started_at,
+        operation_id,
+    )
     reconciliation["preexisting_issue_ids"] = sorted(preexisting_issue_ids)
 
     def reconcile_failure(
@@ -745,6 +749,7 @@ def create_issue(
             reconciliation_actor,
             fingerprint,
             started_at,
+            operation_id,
         )
         retry_reconciliation["preexisting_issue_ids"] = sorted(preexisting_issue_ids)
         try:
@@ -753,6 +758,7 @@ def create_issue(
                 reconciliation_actor,
                 reconciliation_actor,
                 fingerprint,
+                operation_id,
                 started_at,
                 gh_cmd=gh_cmd,
                 operation=operation,
@@ -826,7 +832,7 @@ def _edit_reconciliation(repo: str, number: int, requested: dict[str, Any]) -> d
     }
 
 
-def edit_issue(
+def _edit_issue_impl(
     number: int,
     *,
     body: Optional[str] = None,
@@ -841,6 +847,7 @@ def edit_issue(
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
     operation: str = "github.issue.edit",
+    retry_summaries: list[github_api_core.RetrySummary],
 ) -> dict[str, Any]:
     expected_actor = github_comment.effective_expected_actor(expected_actor)
     if number <= 0:
@@ -852,7 +859,12 @@ def edit_issue(
             failed_step="input_validation",
         )
     resolved_repo = _resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-    actor = _authenticated_actor(gh_cmd=gh_cmd, operation=operation, expected_actor=expected_actor)
+    actor = _authenticated_actor(
+        gh_cmd=gh_cmd,
+        operation=operation,
+        expected_actor=expected_actor,
+        retry_summaries=retry_summaries,
+    )
     steps = ["resolve_actor"]
     normalized_add_labels = _split_values(add_labels)
     normalized_remove_labels = _split_values(remove_labels)
@@ -888,6 +900,7 @@ def edit_issue(
             actor=actor,
             expected_actor=expected_actor,
             completed_steps=steps,
+            retry_summaries=retry_summaries,
         )
         steps.append("resolve_milestone")
     core: dict[str, Any] = {}
@@ -938,6 +951,7 @@ def edit_issue(
             failed_step="edit_issue_fields",
             is_write=True,
             failure_payload=failure_payload,
+            retry_summaries=retry_summaries,
         )
         steps.append("edit_issue_fields")
     if normalized_add_labels:
@@ -953,6 +967,7 @@ def edit_issue(
             failed_step="add_labels",
             is_write=True,
             failure_payload=failure_payload,
+            retry_summaries=retry_summaries,
         )
         steps.append("add_labels")
     for label in normalized_remove_labels:
@@ -969,6 +984,7 @@ def edit_issue(
             failed_step="remove_label",
             is_write=True,
             failure_payload=failure_payload,
+            retry_summaries=retry_summaries,
         )
         steps.append("remove_label")
     if normalized_add_assignees:
@@ -984,6 +1000,7 @@ def edit_issue(
             failed_step="add_assignees",
             is_write=True,
             failure_payload=failure_payload,
+            retry_summaries=retry_summaries,
         )
         steps.append("add_assignees")
     if normalized_remove_assignees:
@@ -999,6 +1016,7 @@ def edit_issue(
             failed_step="remove_assignees",
             is_write=True,
             failure_payload=failure_payload,
+            retry_summaries=retry_summaries,
         )
         steps.append("remove_assignees")
     result = _call_api(
@@ -1014,6 +1032,7 @@ def edit_issue(
         is_write=False,
         write_outcome_if_missing="unknown" if steps[1:] else "not_started",
         failure_payload=failure_payload,
+        retry_summaries=retry_summaries,
     )
     steps.append("read_after_write")
     return _issue_payload(
@@ -1023,7 +1042,47 @@ def edit_issue(
         actor=actor if expected_actor is not None else None,
         expected_actor=expected_actor,
         completed_steps=steps,
+        retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
     )
+
+
+def edit_issue(
+    number: int,
+    *,
+    body: Optional[str] = None,
+    title: Optional[str] = None,
+    repo: Optional[str] = None,
+    add_labels: Optional[list[str]] = None,
+    remove_labels: Optional[list[str]] = None,
+    add_assignees: Optional[list[str]] = None,
+    remove_assignees: Optional[list[str]] = None,
+    milestone: Optional[str] = None,
+    remove_milestone: bool = False,
+    gh_cmd: str = DEFAULT_GH,
+    expected_actor: Optional[str] = EXPECTED_ACTOR,
+    operation: str = "github.issue.edit",
+) -> dict[str, Any]:
+    retry_summaries: list[github_api_core.RetrySummary] = []
+    try:
+        return _edit_issue_impl(
+            number,
+            body=body,
+            title=title,
+            repo=repo,
+            add_labels=add_labels,
+            remove_labels=remove_labels,
+            add_assignees=add_assignees,
+            remove_assignees=remove_assignees,
+            milestone=milestone,
+            remove_milestone=remove_milestone,
+            gh_cmd=gh_cmd,
+            expected_actor=expected_actor,
+            operation=operation,
+            retry_summaries=retry_summaries,
+        )
+    except IssueError as error:
+        _enrich_error_with_retry_summaries(error, retry_summaries)
+        raise
 
 
 def _issue_reference(value: str, default_repo: str) -> tuple[str, int]:
@@ -1056,7 +1115,7 @@ def _state_reconciliation(repo: str, number: int, state: str, state_reason: str)
     }
 
 
-def set_issue_state(
+def _set_issue_state_impl(
     number: int,
     *,
     state: str,
@@ -1067,6 +1126,7 @@ def set_issue_state(
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
     operation: Optional[str] = None,
+    retry_summaries: list[github_api_core.RetrySummary],
 ) -> dict[str, Any]:
     operation = operation or f"github.issue.{'close' if state == 'closed' else 'reopen'}"
     expected_actor = github_comment.effective_expected_actor(expected_actor)
@@ -1086,6 +1146,7 @@ def set_issue_state(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
+        retry_summaries=retry_summaries,
     )
     request: dict[str, Any] = {"state": state, "state_reason": state_reason}
     if duplicate_of is not None:
@@ -1113,6 +1174,7 @@ def set_issue_state(
             failed_step="resolve_duplicate_issue",
             is_write=False,
             write_outcome_if_missing="not_started",
+            retry_summaries=retry_summaries,
         )
         duplicate_id = result.body.get("id") if isinstance(result.body, dict) else None
         if not isinstance(duplicate_id, int):
@@ -1140,6 +1202,7 @@ def set_issue_state(
                 operation="github.comment.issue",
                 completed_steps=steps,
                 failed_step=comment_step,
+                retry_summaries=retry_summaries,
             )
         except github_comment.CommentError as exc:
             raise _from_comment_error(exc) from exc
@@ -1162,6 +1225,7 @@ def set_issue_state(
             "number": number,
             "reconciliation": reconciliation,
         },
+        retry_summaries=retry_summaries,
     )
     steps.append(mutation_step)
     return _issue_payload(
@@ -1171,7 +1235,39 @@ def set_issue_state(
         actor=actor if expected_actor is not None or comment_body else None,
         expected_actor=expected_actor,
         completed_steps=steps,
+        retry_summary=github_api_core.aggregate_retry_summaries(retry_summaries),
     )
+
+
+def set_issue_state(
+    number: int,
+    *,
+    state: str,
+    state_reason: str,
+    repo: Optional[str] = None,
+    comment_body: Optional[str] = None,
+    duplicate_of: Optional[str] = None,
+    gh_cmd: str = DEFAULT_GH,
+    expected_actor: Optional[str] = EXPECTED_ACTOR,
+    operation: Optional[str] = None,
+) -> dict[str, Any]:
+    retry_summaries: list[github_api_core.RetrySummary] = []
+    try:
+        return _set_issue_state_impl(
+            number,
+            state=state,
+            state_reason=state_reason,
+            repo=repo,
+            comment_body=comment_body,
+            duplicate_of=duplicate_of,
+            gh_cmd=gh_cmd,
+            expected_actor=expected_actor,
+            operation=operation,
+            retry_summaries=retry_summaries,
+        )
+    except IssueError as error:
+        _enrich_error_with_retry_summaries(error, retry_summaries)
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
