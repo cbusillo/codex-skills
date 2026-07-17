@@ -19,6 +19,12 @@ ln -s ~/Developer/codex-skills ~/.code/skills
 
 If `~/.code/skills` already exists, move it aside before creating the symlink.
 
+Treat the checkout behind the active `skills` path as a runtime checkout: keep
+it clean, on `main`, and current with `origin/main`. Use linked task worktrees
+for skill development. After a skills PR lands, reconcile the runtime checkout
+with the landed repo-local GitHub helper before relying on installed skill
+behavior or provenance-sensitive evidence.
+
 ## Local Overrides
 
 This repository is intended to be safe for public sharing. Put personal,

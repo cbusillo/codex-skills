@@ -310,6 +310,13 @@ preferred IDE and must clean it up afterward when it owns the open.
   redact token-like fields, and retain helper revision, plugin fingerprint, IDE
   product/build, failure phase, attribution class, cleanup status/reason, and
   evidence IDs.
+  When inspection evidence is used to qualify changes to this helper or another
+  installed runtime-bound skill, compare the recorded helper/source revision
+  with the intended landed revision or a fresh runtime-reconciliation receipt.
+  A missing or mismatched revision makes the installed-runtime claim `UNKNOWN`;
+  do not count it as current evidence. A repo-local helper may still provide
+  valid branch evidence when its exact path and revision are recorded and match
+  the source being evaluated.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.

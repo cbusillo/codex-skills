@@ -43,6 +43,15 @@ def load_plan_module() -> Any:
     return module
 
 
+def load_pr_module() -> Any:
+    spec = importlib.util.spec_from_file_location("gh_pr_under_test", PR_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load {PR_SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @contextmanager
 def patched_issue_core(plan: Any, **replacements: Any):
     originals = {name: getattr(plan.github_issue_core, name) for name in replacements}
@@ -2115,7 +2124,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "  if [[ \"$*\" == *'--paginate'* ]]; then exit 2; fi\n"
             "  printf '[{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"merged_at\":\"2026-05-19T01:23:52Z\",\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
-            "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
+            "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/check-runs'* ]]; then\n"
@@ -2191,7 +2200,11 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert checks_summary["combinedState"] is None
     assert checks_summary["combinedStateRaw"] == "success"
     assert checks_summary["legacyStatusesPresent"] is False
-    assert json.loads(merge.stdout)["merge"]["merged"] is True
+    merge_payload = json.loads(merge.stdout)
+    assert merge_payload["merge"]["merged"] is True
+    assert merge_payload["mergeCommitOid"] == "a" * 40
+    assert merge_payload["pr"]["merged"] is True
+    assert merge_payload["pr"]["mergeCommitOid"] == "a" * 40
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
     assert "/repos/owner/repo/pulls?state=open" in calls
@@ -2369,7 +2382,7 @@ def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
             "  if [[ \"$*\" != *'--method DELETE'* ]]; then exit 2; fi\n"
             "  exit 0\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
-            "  printf '{\"merged\":true,\"sha\":\"merge-sha\"}\\n'\n"
+            "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "else\n"
@@ -2436,6 +2449,41 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
     assert "token scope" in payload["hint"], payload
     assert payload["api_result"]["failure"]["cause"] == "network_provider_failure", payload
     assert result.stderr.strip() == "error: PR merge failed", result.stderr
+
+
+def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  printf '{\"merged\":false,\"message\":\"Required checks are pending\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "else\n"
+            "  printf '{}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path))
+        result = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+
+    assert result.returncode == 1, result
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False, payload
+    assert payload["failure"]["cause"] == "merge_rejected", payload
+    assert payload["write_outcome"] == "rejected", payload
+    assert payload["merge"]["merged"] is False, payload
+    assert result.stderr.strip() == "error: PR merge was not completed", result.stderr
 
 
 def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> None:
@@ -3179,6 +3227,25 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
     assert "--paginate" not in calls
 
 
+def test_pr_helper_preserves_final_merge_identity() -> None:
+    pr_helper = load_pr_module()
+    normalized = pr_helper.normalize_pr(
+        {
+            "number": 44,
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-07-17T19:00:00Z",
+            "merge_commit_sha": "a" * 40,
+            "head": {"ref": "feature", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+            "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        }
+    )
+
+    assert normalized["mergedAt"] == "2026-07-17T19:00:00Z"
+    assert normalized["mergeCommitOid"] == "a" * 40
+    assert normalized["headRefOid"] == "b" * 40
+
+
 def test_pr_helper_current_branch_resolves_upstream_fork() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -3443,6 +3510,7 @@ def main() -> None:
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_pr_helper_merge_404_includes_recovery_context,
+        test_pr_helper_merge_semantic_rejection_exits_nonzero,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_supersede_does_not_comment_when_close_fails,
@@ -3453,6 +3521,7 @@ def main() -> None:
         test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch,
         test_pr_helper_supersede_skips_branch_delete_for_default_branch,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
+        test_pr_helper_preserves_final_merge_identity,
         test_pr_helper_current_branch_resolves_upstream_fork,
         test_pr_helper_primary_match_skips_inaccessible_upstream,
         test_pr_helper_paged_rest_failure_preserves_diagnostics,

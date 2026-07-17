@@ -27,6 +27,8 @@ def sample_pr():
         "repo": "openai/codex",
         "head_sha": "abc123",
         "head_branch": "feature",
+        "base_branch": "main",
+        "merge_commit_sha": "",
         "state": "OPEN",
         "merged": False,
         "closed": False,
@@ -45,6 +47,51 @@ def sample_checks(**overrides):
     }
     checks.update(overrides)
     return checks
+
+
+def test_resolve_pr_exposes_final_merge_commit(monkeypatch):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda *args, **kwargs: {
+            "number": 42,
+            "url": "https://github.com/example/repo/pull/42",
+            "state": "MERGED",
+            "mergedAt": "2026-07-17T19:00:00Z",
+            "closedAt": "2026-07-17T19:00:00Z",
+            "mergeCommit": {"oid": "a" * 40},
+            "baseRefName": "main",
+            "headRefName": "feature",
+            "headRefOid": "b" * 40,
+            "mergeable": "UNKNOWN",
+            "mergeStateStatus": "UNKNOWN",
+            "reviewDecision": "",
+        },
+    )
+
+    pr = gh_pr_watch.resolve_pr("42", repo_override="example/repo")
+
+    assert pr["merged"] is True
+    assert pr["base_branch"] == "main"
+    assert pr["merge_commit_sha"] == "a" * 40
+    assert pr["head_sha"] == "b" * 40
+
+
+def test_resolve_pr_rejects_conflicting_repo_override(monkeypatch):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda *args, **kwargs: {
+            "number": 42,
+            "url": "https://github.com/example/repo/pull/42",
+            "state": "OPEN",
+            "headRefName": "feature",
+            "headRefOid": "b" * 40,
+        },
+    )
+
+    with pytest.raises(gh_pr_watch.GhCommandError, match="does not match --repo"):
+        gh_pr_watch.resolve_pr("42", repo_override="other/repo")
 
 
 def test_gh_text_uses_wrapper_by_default(monkeypatch):

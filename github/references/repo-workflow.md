@@ -336,6 +336,27 @@ Merge success is not the finish line. After a PR merges, wait for relevant
 post-merge Actions/check suites on the target/default branch when repo config
 says to or when the task affects readiness, deploy, security, or shared quality.
 
+When the merged repository is bound into an active local runtime such as the
+skills checkout behind `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills`, run the
+landed repo-local runtime reconciler after the final landing SHA is known. Use
+the merge result's `merge.sha` or a fresh merged-PR view's `mergeCommitOid`,
+never the PR head SHA:
+
+```sh
+uv run github/scripts/reconcile-runtime-checkout.py \
+  --merged-worktree "$PWD" \
+  --repo OWNER/REPO \
+  --landing-sha <full-landing-sha>
+```
+
+Invoke it from a worktree containing the landed helper source, not from a stale
+runtime checkout. Preserve two independent receipts: the remote merge/landing
+result and local runtime reconciliation. `blocked`, `retryable`, or `failed`
+runtime reconciliation does not undo the merge and must not trigger another
+merge attempt. It does block claims that installed runtime behavior or
+provenance-sensitive evidence is current. `not_applicable` is normal when the
+active runtime belongs to another repository.
+
 Report GitHub security/quality signal outcomes explicitly:
 
 - `clean`: checked and no relevant open findings
@@ -355,8 +376,11 @@ Allowed without asking when safe:
 - create a focused local branch for the current task
 - open a draft PR for work that implies review, CI, preview, QA handoff, or a
   durable checkpoint
-- run `git fetch --prune`
-- fast-forward the local default branch when it is an ancestor of the remote
+- run `git fetch --prune` for remote-ref orientation; fetching does not update
+  or reconcile a runtime-bound working tree
+- fast-forward a non-runtime-bound local default branch when it is an ancestor
+  of the remote; runtime-bound checkouts must use the landed repo-local
+  reconciler instead
 - report unsafe cleanup candidates instead of touching them
 
 Never include Codex Desktop or Every Code auto-review worktrees under
