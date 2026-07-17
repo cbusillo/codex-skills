@@ -218,16 +218,17 @@ verify_bot_login_for_write() {
 		return 0
 	fi
 	login_status=0
-	"$gh_command" api user --jq .login >"$stdout_file" 2>"$stderr_file" || login_status=$?
+	"$python_command" "$classifier" --gh "$gh_command" call \
+		--method GET \
+		--read \
+		--operation github.auth.verify_actor \
+		/user >"$classification_file" 2>"$stderr_file" || login_status=$?
 	if [ "$login_status" -ne 0 ]; then
-		if classify_failure "$login_status" api user --jq .login; then
-			:
-		fi
 		print_classified_message
 		echo "error: unable to verify the automation GitHub actor; refusing write" >&2
 		return "$login_status"
 	fi
-	login=$(cat "$stdout_file")
+	login=$(classified_value login "" 2>/dev/null) || login=
 	if [ "$login" = "$expected_login" ]; then
 		return 0
 	fi
@@ -280,6 +281,9 @@ if field == "cause":
     value = payload.get("error_code") or failure.get("cause")
 elif field == "message":
     value = failure.get("message") or payload.get("error")
+elif field == "login":
+    body = payload.get("body") or {}
+    value = body.get("login") if isinstance(body, dict) else None
 else:
     value = payload.get(field)
 print(default if value is None else value)

@@ -447,6 +447,23 @@ def test_retry_after_on_503_remains_provider_failure() -> None:
     assert result.as_dict()["failure"]["rate_limit"]["retry_after"] == 30
 
 
+def test_html_503_is_summarized_without_json_parse_noise() -> None:
+    html = """<!DOCTYPE html><html><head><title>Unicorn! &middot; GitHub</title></head>
+    <body><p>Sorry about that. Please try refreshing.</p></body></html>"""
+    stdout = _include_output(
+        503,
+        headers={"content-type": "text/html", "x-github-request-id": "REQ-503"},
+        body=html,
+    )
+    result = _call("GET", "/user", fake_stdout=stdout, returncode=1)
+    assert result.failure is not None
+    assert result.failure.cause == "network_provider_failure"
+    assert result.failure.message.endswith("Unicorn! · GitHub — Sorry about that. Please try refreshing.")
+    assert "invalid character '<'" not in result.failure.message
+    assert len(result.failure.message) < 200
+    assert result.request_id == "REQ-503"
+
+
 def test_classify_403_secondary_throttle_via_message() -> None:
     stdout = _include_output(
         403,
@@ -795,6 +812,21 @@ def test_legacy_deadline_and_cancellation_are_distinct() -> None:
     assert deadline.write_outcome == "unknown"
     assert cancelled.cause == "cancelled"
     assert cancelled.retryable is False
+
+
+def test_legacy_html_parse_error_is_summarized_as_provider_failure() -> None:
+    result = _api.legacy_process_result(
+        1,
+        "",
+        "invalid character '<' looking for beginning of value",
+        operation="github.api.legacy_html",
+        is_write=False,
+    )
+    assert result.failure is not None
+    assert result.failure.cause == "network_provider_failure"
+    assert result.failure.retryable is True
+    assert "legacy command omitted --include" in result.failure.message
+    assert "invalid character" not in result.failure.message
 
 
 def test_infer_gh_command_context_distinguishes_project_reads_and_writes() -> None:
@@ -1214,6 +1246,7 @@ def main() -> None:
         test_classify_429_rest_rate_limit,
         test_classify_403_secondary_throttle_via_retry_after,
         test_retry_after_on_503_remains_provider_failure,
+        test_html_503_is_summarized_without_json_parse_noise,
         test_classify_403_secondary_throttle_via_message,
         test_permission_403_wins_over_incidental_zero_remaining,
         test_classify_200_graphql_rate_limit,
@@ -1243,6 +1276,7 @@ def main() -> None:
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
+        test_legacy_html_parse_error_is_summarized_as_provider_failure,
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
         test_terminal_envelopes_have_stable_fields_and_redaction,
         test_cli_argument_failure_emits_terminal_envelope,

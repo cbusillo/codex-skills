@@ -82,9 +82,26 @@ set -euo pipefail
 if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
 	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
 	printf 'github.com\n  ✓ Logged in to github.com account code-bot (%s)\n' "${GH_TOKEN:-}" >&2
+elif [[ "${1:-}" == "api" && "$*" == *"--method GET"* && "$*" == *"/user"* ]]; then
+	if [[ "${GH_TOKEN:-}" == "invalid-write-token" ]]; then
+		printf 'HTTP/2.0 401 Unauthorized\r\ncontent-type: application/json\r\n\r\n{"message":"Bad credentials"}\n'
+		printf 'gh: HTTP 401\n' >&2
+		exit 1
+	elif [[ "${GH_TOKEN:-}" == "provider-failure-token" ]]; then
+		printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: text/html\r\nx-github-request-id: TEST-503\r\n\r\n<!DOCTYPE html><title>Unicorn! &middot; GitHub</title><p>Sorry about that.</p>\n'
+		printf 'gh: HTTP 503\n' >&2
+		exit 1
+	elif [[ -n "${GH_TOKEN:-}" ]]; then
+		printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n{"login":"shiny-code-bot"}\n'
+	else
+		printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n{"login":"cbusillo"}\n'
+	fi
 elif [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
 	if [[ "${GH_TOKEN:-}" == "invalid-write-token" ]]; then
 		printf 'Bad credentials\n' >&2
+		exit 1
+	elif [[ "${GH_TOKEN:-}" == "provider-failure-token" ]]; then
+		printf "invalid character '<' looking for beginning of value\n" >&2
 		exit 1
 	elif [[ -n "${GH_TOKEN:-}" ]]; then
 		printf 'shiny-code-bot\n'
@@ -466,63 +483,131 @@ grep -q "active gh account 'cbusillo'" "$stderr_log"
 grep -q 'gh auth status (active gh auth):' "$stderr_log"
 grep -qx 'active-success' "$stdout_log"
 
-: >"$log"
-if PATH="$tmpdir:$PATH" GH_ISSUE_TEST_LOG="$log" \
-	GH_ISSUE_GH="$tmpdir/rate-limited-gh" \
-	"$repo_root/github/scripts/gh-issue" create "Rate limited" --repo owner/repo >"$stdout_log" 2>"$stderr_log" <<'EOF'; then
-## Body
-EOF
-	echo "error: GH_ISSUE_GH override should surface the override failure" >&2
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=provider-failure-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" api --method POST /__validation_noop__ \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: provider failure during actor verification must refuse the write" >&2
+	exit 1
+fi
+grep -q 'Network or provider failure (status=503): Unicorn! · GitHub — Sorry about that.' "$stderr_log"
+grep -q 'unable to verify the automation GitHub actor; refusing write' "$stderr_log"
+if grep -q "invalid character '<'" "$stderr_log"; then
+	echo "error: actor verification leaked the gh HTML parse error" >&2
 	exit 1
 fi
 
-if grep -q '^active:' "$log"; then
-	echo "error: GH_ISSUE_GH override should not fall back to active gh" >&2
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=provider-failure-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" api user --jq .login \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: non-JSON provider response must remain nonzero" >&2
 	exit 1
 fi
-assert_failure_envelope "$stdout_log" github.issue.create graphql_primary_rate_limited create_issue rejected
+grep -q 'GitHub returned a non-JSON provider response' "$stderr_log"
+if grep -q "invalid character '<'" "$stderr_log"; then
+	echo "error: legacy API classification leaked the raw HTML parse error" >&2
+	exit 1
+fi
 
-mkdir -p "$tmpdir/github/scripts"
-cp "$repo_root/github/scripts/gh-issue" "$tmpdir/github/scripts/gh-issue"
-cp "$repo_root/github/scripts/gh-with-env-token" "$tmpdir/github/scripts/gh-with-env-token"
-cp "$repo_root/github/scripts/github_api.py" "$tmpdir/github/scripts/github_api.py"
-
-: >"$log"
-PATH="$tmpdir:$PATH" GH_ISSUE_TEST_LOG="$log" GH_TOKEN=bot-token \
-	GH_ISSUE_ENV_LOG="$env_log" GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
-	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
-	"$tmpdir/github/scripts/gh-issue" create "Rate limited" --repo owner/repo >"$stdout_log" 2>"$stderr_log" <<'EOF'
-## Body
-EOF
-
-grep -q '^bot:issue create' "$log"
-grep -q '^active:issue create' "$log"
-grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
-grep -q 'explicitly authorized active-auth fallback; retrying with the active gh account' "$stderr_log"
-assert_helper_envelope "$stdout_log" github.issue.create active-success
-
-cat >"$tmpdir/record-edit-gh" <<'EOF'
+cat >"$tmpdir/record-issue-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "$1 $2 $3" != "issue edit 42" || "$4" != "--body-file" || "$6 $7" != "--repo owner/repo" ]]; then
-	printf 'unexpected gh args: %s\n' "$*" >&2
-	exit 1
-fi
-cat "$5" >"$GH_ISSUE_TEST_LOG"
-printf 'edited\n'
+payload=''
+if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
+printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+issue() {
+	local number="$1"
+	local state="${2:-open}"
+	local reason="${3:-}"
+	printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":%s,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[{"name":"plan"}],"assignees":[{"login":"shiny-code-bot"}],"milestone":{"number":7,"title":"Sprint 7"}}\n' \
+		"$number" "$number" "$state" "$([[ -n "$reason" ]] && printf '"%s"' "$reason" || printf 'null')" "$number"
+}
+case "$*" in
+	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'/milestones?'*) printf '[{"number":7,"title":"Sprint 7"}]\n' ;;
+	*'--method POST'*'/repos/owner/repo/issues'*) issue 100 ;;
+	*'--method PATCH'*'/repos/owner/repo/issues/42'*) issue 42 ;;
+	*'--method POST'*'/repos/owner/repo/issues/42/labels'*) printf '[{"name":"enhancement"}]\n' ;;
+	*'--method DELETE'*'/repos/owner/repo/issues/42/labels/plan'*) printf '[]\n' ;;
+	*'--method POST'*'/repos/owner/repo/issues/42/assignees'*) issue 42 ;;
+	*'--method DELETE'*'/repos/owner/repo/issues/42/assignees'*) issue 42 ;;
+	*'--method GET'*'/repos/owner/repo/issues/42'*) issue 42 ;;
+	*) printf 'unexpected gh args: %s\n' "$*" >&2; exit 1 ;;
+esac
 EOF
-chmod +x "$tmpdir/record-edit-gh"
+chmod +x "$tmpdir/record-issue-gh"
 
 : >"$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
-printf 'Updated body with `literal markdown`.\n' | GH_ISSUE_GH="$tmpdir/record-edit-gh" GH_ISSUE_TEST_LOG="$log" \
-	"$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
+printf 'Body with `literal markdown` and $(do-not-run).\n' | \
+	GH_ISSUE_GH="$tmpdir/record-issue-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" create "Issue title" --repo owner/repo \
+	--label plan --assignee @me --milestone 'Sprint 7' \
 	>"$stdout_log" 2>"$stderr_log"
+assert_helper_envelope "$stdout_log" github.issue.create 'https://github.com/owner/repo/issues/100'
+jq -e '.transport == "rest_api" and .operation_marker.kind == "request_fingerprint" and (.operation_marker.value | length) == 64' "$stdout_log" >/dev/null
+python3 - "$log" <<'PY'
+import json
+import pathlib
+import sys
 
+calls = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+create = next(
+    line
+    for line in calls
+    if "--method POST" in line and "/repos/owner/repo/issues --input - |" in line
+)
+payload = json.loads(create.split(" | ", 1)[1])
+assert payload == {
+    "title": "Issue title",
+    "body": "Body with `literal markdown` and $(do-not-run).\n",
+    "labels": ["plan"],
+    "assignees": ["shiny-code-bot"],
+    "milestone": 7,
+}, payload
+PY
+
+cat >"$tmpdir/create-503-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *'/user'* ]]; then
+	printf '{"login":"shiny-code-bot"}\n'
+else
+	cat >/dev/null
+	printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: text/html\r\nx-github-request-id: CREATE-503\r\n\r\n<!DOCTYPE html><title>Unicorn! &middot; GitHub</title><p>Sorry about that.</p>\n'
+	printf 'gh: HTTP 503\n' >&2
+	exit 1
+fi
+EOF
+chmod +x "$tmpdir/create-503-gh"
+
+if printf 'Body\n' | GH_ISSUE_GH="$tmpdir/create-503-gh" \
+	"$repo_root/github/scripts/gh-issue" create "Unknown outcome" --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: ambiguous REST create must fail closed" >&2
+	exit 1
+fi
+assert_failure_envelope "$stdout_log" github.issue.create network_provider_failure create_issue unknown
+jq -e '.request_id == "CREATE-503" and .reconciliation.required_before_retry == true and (.operation_marker.value | length) == 64' "$stdout_log" >/dev/null
+
+: >"$log"
 # shellcheck disable=SC2016 # literal Markdown backticks are intentional.
-printf 'Updated body with `literal markdown`.\n' >"$tmpdir/expected-edit-body"
-cmp "$tmpdir/expected-edit-body" "$log"
-assert_helper_envelope "$stdout_log" github.issue.edit edited
+printf 'Updated body with `literal markdown`.\n' | \
+	GH_ISSUE_GH="$tmpdir/record-issue-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo --title 'New title' \
+	--add-label enhancement --remove-label plan --add-assignee octocat --remove-assignee @me --remove-milestone \
+	>"$stdout_log" 2>"$stderr_log"
+assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/42'
+jq -e '.completed_steps == ["resolve_actor","edit_issue_fields","add_labels","remove_label","add_assignees","remove_assignees","read_after_write"]' "$stdout_log" >/dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/42' "$log"
+grep -q -- '--method POST.* /repos/owner/repo/issues/42/labels' "$log"
+grep -q -- '--method DELETE.* /repos/owner/repo/issues/42/labels/plan' "$log"
+grep -q -- '--method POST.* /repos/owner/repo/issues/42/assignees' "$log"
+grep -q -- '--method DELETE.* /repos/owner/repo/issues/42/assignees' "$log"
+grep -q -- '--method GET.* /repos/owner/repo/issues/42' "$log"
 
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
 #!/usr/bin/env bash
@@ -600,11 +685,33 @@ fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
 	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
+	*'--method GET'*'/repos/owner/repo/issues/'*)
+		number=''
+		for arg in "$@"; do
+			case "$arg" in
+			/repos/owner/repo/issues/*) number="${arg##*/}" ;;
+			esac
+		done
+		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+			"$number" "$number" "$number"
+		;;
 	*'--method POST'*'/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
 		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
 		;;
-	issue\ close\ *) printf 'closed\n' ;;
+	*'--method PATCH'*'/repos/owner/repo/issues/'*)
+		number=''
+		for arg in "$@"; do
+			case "$arg" in
+			/repos/owner/repo/issues/*) number="${arg##*/}" ;;
+			esac
+		done
+		state="$(printf '%s' "$payload" | jq -r .state)"
+		reason="$(printf '%s' "$payload" | jq -r .state_reason)"
+		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":"%s","html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+			"$number" "$number" "$state" "$reason" "$number"
+		;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
 		exit 1
@@ -620,23 +727,25 @@ printf '%s' "Closing with \`literal markdown\`." | GH_ISSUE_GH="$tmpdir/record-g
 	>"$stdout_log" 2>"$stderr_log"
 
 grep -q '/repos/owner/repo/issues/9/comments' "$log"
-grep -q '^issue close 9 --repo owner/repo --reason completed | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/9' "$log"
+grep -q '"state": "closed".*"state_reason": "completed"' "$log"
 printf '%s' "Closing with \`literal markdown\`." >"$tmpdir/expected-close-comment"
 cmp "$tmpdir/expected-close-comment" "$env_log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
-jq -e '.completed_steps == ["post_close_comment"]' "$stdout_log" >/dev/null
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/9'
+jq -e '.completed_steps == ["post_close_comment", "close_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
 	"$repo_root/github/scripts/gh-issue" close 90 --repo owner/repo --reason completed \
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
-grep -q '^issue close 90 --repo owner/repo --reason completed | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/90' "$log"
 if grep -q '/comments' "$log"; then
 	echo "error: close without a comment must not call the comment REST endpoint" >&2
 	exit 1
 fi
-assert_helper_envelope "$stdout_log" github.issue.close closed
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/90'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
 
 : >"$log"
 : >"$env_log"
@@ -645,10 +754,10 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
 grep -q '/repos/owner/repo/issues/91/comments' "$log"
-grep -q '^issue close 91 --repo owner/repo | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/91' "$log"
 printf '%s' 'caller-supplied' >"$tmpdir/expected-caller-comment"
 cmp "$tmpdir/expected-caller-comment" "$env_log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/91'
 
 : >"$log"
 : >"$env_log"
@@ -658,8 +767,8 @@ printf 'Line one\nLine two\n\n' | GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_
 
 printf 'Line one\nLine two\n\n' >"$tmpdir/expected-comment-bytes"
 cmp "$tmpdir/expected-comment-bytes" "$env_log"
-grep -q '^issue close 92 --repo owner/repo | $' "$log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/92' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/92'
 
 : >"$log"
 : >"$env_log"
@@ -668,10 +777,10 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH
 	--comment "duplicate comment" --reason completed \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q '^issue close 10 --repo owner/repo --reason completed | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/10' "$log"
 printf '%s' 'Closing with stdin body only.' >"$tmpdir/expected-stdin-comment"
 cmp "$tmpdir/expected-stdin-comment" "$env_log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/10'
 if grep -q 'duplicate comment' "$log"; then
 	echo "error: gh-issue close should prefer the stdin body over caller --comment" >&2
 	exit 1
@@ -684,9 +793,9 @@ printf '%s' 'Closing with stdin body only.' | GH_ISSUE_GH="$tmpdir/record-gh" GH
 	-c"duplicate comment" --reason completed \
 	>"$stdout_log" 2>"$stderr_log"
 
-grep -q '^issue close 11 -Rowner/repo --reason completed | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/11' "$log"
 cmp "$tmpdir/expected-stdin-comment" "$env_log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/11'
 if grep -q -- '-cduplicate comment' "$log"; then
 	echo "error: gh-issue close should strip attached caller -c passthrough" >&2
 	exit 1
@@ -704,8 +813,9 @@ case "$*" in
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
 		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"shiny-code-bot"}}\n'
 		;;
-	'issue close 12 --repo owner/repo')
-		printf 'close failed\n' >&2
+	*'--method PATCH'*'/repos/owner/repo/issues/12'*)
+		printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: application/json\r\nx-github-request-id: CLOSE-503\r\n\r\n{"message":"Service temporarily unavailable"}\n'
+		printf 'gh: HTTP 503\n' >&2
 		exit 1
 		;;
 	*)
@@ -728,7 +838,8 @@ assert_failure_envelope "$stdout_log" github.issue.close network_provider_failur
 jq -e '.completed_steps == ["post_close_comment"]' "$stdout_log" >/dev/null
 
 grep -q '/repos/owner/repo/issues/12/comments' "$log"
-grep -q '^issue close 12 --repo owner/repo | $' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/12' "$log"
+jq -e '.request_id == "CLOSE-503" and .reconciliation.strategy == "read_issue_and_compare_state"' "$stdout_log" >/dev/null
 
 : >"$log"
 : >"$env_log"
@@ -739,15 +850,15 @@ Closing with a long streamed body.
 EOF
 
 grep -q '/repos/owner/repo/issues/13/comments' "$log"
-grep -q '^issue close 13 --repo owner/repo --reason completed | $' "$log"
-assert_helper_envelope "$stdout_log" github.issue.close closed
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/13' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/13'
 python3 - "$stdout_log" <<'PY'
 import json
 import pathlib
 import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-assert payload["completed_steps"] == ["post_close_comment"], payload
+assert payload["completed_steps"] == ["post_close_comment", "close_issue"], payload
 PY
 
 cat >"$tmpdir/failing-large-comment-gh" <<'EOF'
@@ -782,8 +893,73 @@ fi
 assert_failure_envelope "$stdout_log" github.issue.close network_provider_failure post_close_comment unknown
 
 grep -q '/repos/owner/repo/issues/14/comments' "$log"
-if grep -q '^issue close 14' "$log"; then
+if grep -q -- '--method PATCH.* /repos/owner/repo/issues/14' "$log"; then
 	echo "error: gh-issue close should stop before close after comment failure" >&2
+	exit 1
+fi
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" reopen 15 --repo owner/repo \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/15' "$log"
+grep -q '"state": "open".*"state_reason": "reopened"' "$log"
+assert_helper_envelope "$stdout_log" github.issue.reopen 'https://github.com/owner/repo/issues/15'
+jq -e '.completed_steps == ["reopen_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close 16 --repo owner/repo --duplicate-of 41 \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method GET.* /repos/owner/repo/issues/41' "$log"
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/16' "$log"
+grep -q '"state_reason": "duplicate".*"duplicate_issue_id": 9041' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/16'
+jq -e '.completed_steps == ["resolve_duplicate_issue", "close_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close 17 --repo owner/repo --reason 'not planned' \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/17' "$log"
+grep -q '"state_reason": "not_planned"' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/17'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close https://github.com/owner/repo/issues/18 \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/18' "$log"
+assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/18'
+jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" edit https://github.com/owner/repo/issues/19 --title 'URL target edit' \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/19' "$log"
+grep -q -- '--method GET.* /repos/owner/repo/issues/19' "$log"
+assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/19'
+
+: >"$log"
+GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" reopen 'owner/repo#20' \
+	>"$stdout_log" 2>"$stderr_log" </dev/null
+grep -q -- '--method PATCH.* /repos/owner/repo/issues/20' "$log"
+assert_helper_envelope "$stdout_log" github.issue.reopen 'https://github.com/owner/repo/issues/20'
+jq -e '.completed_steps == ["reopen_issue"]' "$stdout_log" >/dev/null
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/gh-issue" close 21 --repo owner/repo --reason not_planned --duplicate-of 41 \
+	>"$stdout_log" 2>"$stderr_log" </dev/null; then
+	echo "error: gh-issue close must reject --reason with --duplicate-of" >&2
+	exit 1
+fi
+assert_failure_envelope "$stdout_log" github.issue.close validation_error argument_parsing not_started
+if [[ -s "$log" ]]; then
+	echo "error: conflicting close modes must fail before calling GitHub" >&2
 	exit 1
 fi
 

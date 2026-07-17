@@ -22,6 +22,7 @@ Provides:
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import os
 import pathlib
@@ -474,7 +475,23 @@ def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:
 def _extract_message(body: Any) -> str:
     if isinstance(body, dict):
         return str(body.get("message") or body.get("error") or "")
-    return str(body) if body else ""
+    if not body:
+        return ""
+    text = str(body)
+    if re.search(r"<!doctype\s+html|<html\b|<title\b|<body\b", text, re.IGNORECASE):
+        parts: list[str] = []
+        for tag in ("title", "h1", "p"):
+            match = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", text, re.IGNORECASE | re.DOTALL)
+            if not match:
+                continue
+            value = re.sub(r"<[^>]+>", " ", match.group(1))
+            value = " ".join(html_lib.unescape(value).split())
+            if value and value not in parts:
+                parts.append(value)
+        if parts:
+            return " — ".join(parts)[:1000]
+        return "GitHub returned a non-JSON HTML response"
+    return " ".join(text.split())[:1000]
 
 
 def _is_graphql_rate_limit_body(body: Any) -> bool:
@@ -990,6 +1007,13 @@ def classify_legacy_failure(
         retryable = False
         fallback_eligible = True
         write_outcome = rejected
+    elif "invalid character '<'" in lowered or "unexpected character '<'" in lowered:
+        cause = "network_provider_failure"
+        disposition = "stop" if is_write else "retry"
+        retryable = not is_write
+        fallback_eligible = False
+        write_outcome = unknown if command_started else not_started
+        message = "GitHub returned a non-JSON provider response; HTTP status was unavailable because the legacy command omitted --include"
     else:
         cause = "network_provider_failure"
         disposition = "stop" if is_write else "retry"

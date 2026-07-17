@@ -358,7 +358,7 @@ def validate_static_coverage(
     )
     require_entrypoint_commands(
         "github/scripts/gh-issue",
-        extract_shell_case_choices(repo_root / "github/scripts/gh-issue", "command", errors),
+        extract_argparse_subcommands(repo_root / "github/scripts/github_issue.py", errors),
         entrypoints,
         errors,
     )

@@ -8,7 +8,21 @@
   "gh": {
     "repo": "cbusillo/codex-skills",
     "next_issue": 1200,
-    "issues": []
+    "issues": [],
+    "responses": [
+      {
+        "match": {
+          "contains": ["api", "/user"]
+        },
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues"]
+        },
+        "stdout": "{\"id\":91200,\"number\":1200,\"title\":\"Narrated action check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1200\",\"user\":{\"login\":\"shiny-code-bot\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
+      }
+    ]
   },
   "responses_api": {
     "responses": [
@@ -46,7 +60,11 @@
   },
   "expect": {
     "returncode": 0,
-    "gh_contains": ["issue create"],
+    "gh_contains": [
+      "/user",
+      "--method POST",
+      "/repos/cbusillo/codex-skills/issues"
+    ],
     "assistant_contains": [
       "https://github.com/cbusillo/codex-skills/issues/1200"
     ],

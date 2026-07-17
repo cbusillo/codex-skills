@@ -132,6 +132,12 @@ commands:
         "completed",
       ]
     purpose: Closes GitHub issues by reading an optional close comment from stdin; pass the comment with shell redirection or a quoted heredoc.
+  - name: github-issue-reopen
+    source: skill
+    resource_path: scripts/gh-issue
+    example_argv:
+      ["github/scripts/gh-issue", "reopen", "<issue>", "--repo", "OWNER/REPO"]
+    purpose: Reopens GitHub issues by reading an optional reopen comment from stdin; pass the comment with shell redirection or a quoted heredoc.
   - name: github-comment
     source: skill
     resource_path: scripts/gh-comment
@@ -355,7 +361,7 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "create"]
       action: require_preferred
-      message: Raw `gh issue create` is fragile for multiline Markdown. From the repo root, run `github/scripts/gh-issue create "Issue title" --repo OWNER/REPO < body.md` or use a quoted heredoc so the body is read safely from stdin.
+      message: Raw `gh issue create` uses active local auth and is fragile for multiline Markdown. Use `github/scripts/gh-issue` for REST-backed title, body, label, assignee, and milestone creation. For project, template, type, relationship, editor, recover, or web-only flags outside that REST subset, use `github/scripts/gh-with-env-token issue create --body-file ...` deliberately.
       preferred:
         - kind: script
           path: scripts/gh-issue
@@ -368,6 +374,21 @@ policy:
               "OWNER/REPO",
             ]
           purpose: Creates issues by reading Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv:
+            [
+              "github/scripts/gh-with-env-token",
+              "issue",
+              "create",
+              "--title",
+              "<title>",
+              "--body-file",
+              "<body-file>",
+              "--project",
+              "<project>",
+            ]
+          purpose: Preserves configured automation auth for create flags that are intentionally outside the REST helper's supported subset.
     - id: prefer-gh-issue-comment-helper
       match:
         argv_prefix: ["gh", "issue", "comment"]
@@ -382,7 +403,7 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "edit"]
       action: require_preferred
-      message: Raw `gh issue edit` can mangle multiline issue bodies. From the repo root, run `github/scripts/gh-issue edit 123 --repo OWNER/REPO < body.md` or use a quoted heredoc so the body is read safely from stdin.
+      message: Raw `gh issue edit` uses active local auth and can mangle multiline issue bodies. Use `github/scripts/gh-issue` for REST-backed title, body, label, assignee, and milestone edits. For project, type, parent, sub-issue, or dependency flags outside that REST subset, use `github/scripts/gh-with-env-token issue edit --body-file ...` deliberately.
       preferred:
         - kind: script
           path: scripts/gh-issue
@@ -395,6 +416,18 @@ policy:
               "OWNER/REPO",
             ]
           purpose: Edits issues by reading replacement Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
+        - kind: script
+          path: scripts/gh-with-env-token
+          example_argv:
+            [
+              "github/scripts/gh-with-env-token",
+              "issue",
+              "edit",
+              "<issue>",
+              "--add-project",
+              "<project>",
+            ]
+          purpose: Preserves configured automation auth for edit flags that are intentionally outside the REST helper's supported subset.
     - id: prefer-gh-issue-close-helper
       match:
         argv_prefix: ["gh", "issue", "close"]
@@ -414,6 +447,23 @@ policy:
               "completed",
             ]
           purpose: Closes ordinary non-plan issues by reading an optional close comment from stdin; use `< comment.md` or a quoted heredoc for the comment.
+    - id: prefer-gh-issue-reopen-helper
+      match:
+        argv_prefix: ["gh", "issue", "reopen"]
+      action: require_preferred
+      message: Raw `gh issue reopen` uses active local auth and cannot preserve multiline reopen comments safely. Use `github/scripts/gh-issue reopen 123 --repo OWNER/REPO < comment.md` or a quoted heredoc.
+      preferred:
+        - kind: script
+          path: scripts/gh-issue
+          example_argv:
+            [
+              "github/scripts/gh-issue",
+              "reopen",
+              "<issue>",
+              "--repo",
+              "OWNER/REPO",
+            ]
+          purpose: Reopens issues through REST and reads an optional reopen comment from stdin.
     - id: prefer-gh-release-wrapper
       match:
         argv_prefix: ["gh", "release"]
@@ -666,11 +716,14 @@ consistent auth/retry behavior, and safe formatting:
   query/mutation context, redaction, and bounded rate-limit probe.
 - `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
   pagination, edit-last selection, and deletion-race handling.
+- `scripts/github_issue.py`: Shared actor-aware REST issue create, edit,
+  close, reopen, membership, milestone, and reconciliation behavior.
 - `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
   diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
   fields remain nullable unless a future command explicitly opts into them.
-- `scripts/gh-issue`: Safe multiline issue create/edit/close bodies from stdin
-  with one versioned terminal JSON envelope, including compound-step evidence.
+- `scripts/gh-issue`: Safe multiline REST issue create/edit/close/reopen flows
+  from stdin with one versioned terminal JSON envelope, including compound-step
+  and reconciliation evidence.
 - `scripts/gh-comment`: Safe multiline REST commenting with actor-aware
   edit-last semantics, the same terminal JSON envelope, and stderr-only human
   diagnostics.

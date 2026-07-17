@@ -470,11 +470,8 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 id = "github.issue.create"
 entrypoint = "github/scripts/gh-issue create"
 intent = "Create an issue from stdin-backed Markdown body content."
-current_transport = "gh_cli_wrapper"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue create --body-file via github/scripts/gh-with-env-token"
-current_quota_bucket = "mixed"
 endpoint_or_command = "POST /repos/{repo}/issues with body-safe title/body and supported labels, assignees, and milestone fields"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
@@ -483,19 +480,16 @@ idempotency = "non_idempotent"
 retry_eligibility = "manual"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; issue creation uses REST with JSON-stdin body handling and an operation-specific reconciliation key."
-source_refs = ["github/scripts/gh-issue"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:create_issue"]
+test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_and_emits_operation_marker", "github/scripts/test_github_issue.py:test_create_unknown_outcome_requires_reconciliation_before_retry", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "github/scripts/test_github_issue.py:test_create_reconciliation_rejects_preexisting_identical_issue", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.edit"
 entrypoint = "github/scripts/gh-issue edit"
 intent = "Replace an issue body from stdin-backed Markdown body content."
-current_transport = "gh_cli_wrapper"
+current_transport = "rest_api"
 selected_transport = "rest_api"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue edit --body-file via github/scripts/gh-with-env-token"
-current_quota_bucket = "mixed"
-endpoint_or_command = "PATCH /repos/{repo}/issues/{number} with body-safe issue fields and label/assignee updates"
+endpoint_or_command = "PATCH /repos/{repo}/issues/{number}; POST/DELETE issue label and assignee endpoints; final GET reconciliation"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "update"
@@ -503,8 +497,8 @@ idempotency = "idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; issue body replacement maps directly to the REST issue update endpoint."
-source_refs = ["github/scripts/gh-issue"]
-test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:edit_issue"]
+test_refs = ["github/scripts/test_github_issue.py:test_edit_uses_rest_membership_endpoints_and_reads_after_write", "github/scripts/test_github_issue.py:test_edit_partial_failure_preserves_completed_steps_and_guidance", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.close"
@@ -512,10 +506,7 @@ entrypoint = "github/scripts/gh-issue close"
 intent = "Close an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
 current_transport = "composite"
 selected_transport = "composite"
-migration_status = "planned"
-current_endpoint_or_command = "Shared POST /repos/{repo}/issues/{number}/comments; gh issue close via github/scripts/gh-with-env-token"
-current_quota_bucket = "mixed"
-endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed with state_reason; report completed steps on partial success"
+endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed with state_reason and optional duplicate_issue_id resolved from --duplicate-of; report completed steps on partial success"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "close"
@@ -523,8 +514,25 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "two_phase_compensating"
 retained_graphql_rationale = "No retained GraphQL transport; close comments and issue state changes use explicit REST steps with partial-success reporting."
-source_refs = ["github/scripts/gh-issue", "github/scripts/github_comment.py:comment"]
-test_refs = ["github/scripts/test_github_comment.py", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:set_issue_state", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_issue.py:test_close_partial_failure_preserves_comment_step", "github/scripts/test_github_issue.py:test_close_and_reopen_use_explicit_state_reasons", "github/scripts/test_github_issue.py:test_duplicate_close_resolves_database_id", "github/scripts/test_github_issue.py:test_invalid_duplicate_target_does_not_post_comment", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/test_github_issue.py:test_close_reason_and_duplicate_target_are_mutually_exclusive", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.issue.reopen"
+entrypoint = "github/scripts/gh-issue reopen"
+intent = "Reopen an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=open with state_reason=reopened"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+idempotency = "conditional"
+retry_eligibility = "conditional"
+reconciliation_strategy = "two_phase_compensating"
+retained_graphql_rationale = "No retained GraphQL transport; reopen comments and issue state changes use explicit REST steps with partial-success reporting."
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:set_issue_state", "github/scripts/github_comment.py:comment"]
+test_refs = ["github/scripts/test_github_issue.py:test_close_and_reopen_use_explicit_state_reasons", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.comment.issue"
