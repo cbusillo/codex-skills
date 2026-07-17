@@ -145,12 +145,17 @@ or Project focus state.
 
 ### Planning: Management
 
-- `create <title>`: Create a new plan issue. Supports `--title` (flag), `--body`,
-  `--plan-status`, `--focus`, and `--finish-line`.
+- `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
+  search, labels are ensured through REST, and the shared issue helper creates
+  the issue with reconciliation evidence for unknown write outcomes. Supports
+  `--title` (flag), `--body`, `--plan-status`, `--focus`, and `--finish-line`.
 - `update-section <issue> <section>`: Patch a single markdown section.
 - `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or
   `subissue` relationships.
-- `close <issue>`: Mark plan as done, update labels, and clear Project focus.
+- `close <issue>`: Mark plan as done through shared REST label, comment, and
+  issue-state helpers, then report optional Project status/focus reconciliation
+  separately. Re-running close on an already closed issue requests only missing
+  label changes, so it can safely reconcile stale plan labels or Project fields.
 - `ensure-labels`: Page through repository labels and create documented missing
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.

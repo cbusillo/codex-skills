@@ -533,6 +533,7 @@ def _issue_payload(
         "title": issue.get("title"),
         "state": issue.get("state"),
         "state_reason": issue.get("state_reason"),
+        "updated_at": issue.get("updated_at"),
         "actor": response_actor if verify_creator and response_actor else actor,
         "expected_actor": expected_actor,
         "url": issue["html_url"],

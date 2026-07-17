@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 import github_api as github_api_core
 import github_comment as github_comment_core
+import github_issue as github_issue_core
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -238,6 +239,36 @@ def comment_route() -> tuple[str, str, Optional[str]]:
         failed_step="auth_selection",
     )
     raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
+
+
+def plan_error_from_issue(
+    exc: github_issue_core.IssueError,
+    *,
+    completed_steps: list[str] | None = None,
+) -> PlanError:
+    combined_steps = list(completed_steps or [])
+    combined_steps.extend(exc.failure.completed_steps or [])
+    exc.failure.completed_steps = combined_steps
+    api_result = dict(exc.api_result or {})
+    if api_result:
+        api_result["completed_steps"] = combined_steps
+        api_result["failed_step"] = api_result.get("failed_step") or exc.failure.failed_step
+        nested_failure = api_result.get("failure")
+        if isinstance(nested_failure, dict):
+            api_result["failure"] = {**nested_failure, "completed_steps": combined_steps}
+    return PlanError(
+        str(exc),
+        failure=exc.failure,
+        api_result=api_result or None,
+        payload=exc.payload,
+    )
+
+
+def plan_close_reason(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized not in {"completed", "not_planned"}:
+        raise PlanError("Close reason must be completed or not planned")
+    return normalized
 
 
 def run_raw(
@@ -607,10 +638,11 @@ def collect_paged_rest_items(
     limit: int | None = None,
     collection_key: str | None = None,
     issue_only: bool = False,
+    completed_steps: list[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     actor = ""
     items: list[dict[str, Any]] = []
-    completed_steps: list[str] = []
+    steps = completed_steps if completed_steps is not None else []
     page = 1
     while limit is None or len(items) < limit:
         page_path = path_with_query(path, {**query, "per_page": 100, "page": page})
@@ -618,7 +650,7 @@ def collect_paged_rest_items(
             "GET",
             page_path,
             bucket=bucket,
-            completed_steps=completed_steps,
+            completed_steps=steps,
             failed_step=f"{step_prefix}_page_{page}",
         )
         if not actor:
@@ -637,7 +669,7 @@ def collect_paged_rest_items(
             items.append(item)
             if limit is not None and len(items) >= limit:
                 break
-        completed_steps.append(f"{step_prefix}_page_{page}")
+        steps.append(f"{step_prefix}_page_{page}")
         if len(page_items) < 100:
             break
         page += 1
@@ -657,6 +689,37 @@ def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
         "labels": normalize_labels(issue.get("labels")),
         "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
     }
+
+
+def compact_dedupe_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    state = issue.get("state")
+    return {
+        "number": issue.get("number"),
+        "title": issue.get("title"),
+        "state": state.upper() if isinstance(state, str) else state,
+        "url": issue.get("html_url") or issue.get("url"),
+    }
+
+
+def find_existing_plan_issues(
+    repo: str,
+    title: str,
+    *,
+    completed_steps: list[str],
+) -> tuple[str, list[dict[str, Any]]]:
+    escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    actor, items = collect_paged_rest_items(
+        "/search/issues",
+        query={"q": f'"{escaped_title}" in:title repo:{repo} is:issue'},
+        bucket="search",
+        step_prefix="dedupe_plan_issues",
+        limit=100,
+        collection_key="items",
+        issue_only=True,
+        completed_steps=completed_steps,
+    )
+    exact = [compact_dedupe_issue(item) for item in items if item.get("title") == title]
+    return actor, exact
 
 
 def plan_error_status(error: PlanError) -> int | None:
@@ -821,8 +884,14 @@ def resolve_person_for_project(value: str) -> str | None:
     return None
 
 
-def normalize_labels(items: list[dict[str, Any]] | None) -> list[str]:
-    return [item.get("name", "") for item in items or [] if item.get("name")]
+def normalize_labels(items: list[Any] | None) -> list[str]:
+    names: list[str] = []
+    for item in items or []:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            names.append(item["name"])
+    return names
 
 
 def issue_ref(ref: str, repo: str) -> tuple[str, int]:
@@ -858,30 +927,6 @@ def issue_labels(issue: dict[str, Any]) -> list[str]:
         elif isinstance(item, dict) and isinstance(item.get("name"), str):
             names.append(item["name"])
     return names
-
-
-def rest_create_issue(
-    repo: str,
-    title: str,
-    body: str,
-    labels: list[str],
-    milestone: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    payload: dict[str, Any] = {"title": title, "body": body}
-    if labels:
-        payload["labels"] = labels
-    if milestone:
-        payload["milestone"] = milestone
-    actor, data = api_json(
-        "POST",
-        f"/repos/{repo}/issues",
-        payload,
-        failed_step="create_issue",
-    )
-    if not isinstance(data, dict):
-        raise PlanError("gh api issue create returned no issue")
-    data["repo"] = repo
-    return actor, data
 
 
 def rest_edit_issue(
@@ -1063,12 +1108,15 @@ def ensure_labels(
     config: dict[str, Any],
     *,
     create_unknown: bool = True,
+    completed_steps: list[str] | None = None,
 ) -> tuple[str, list[str]]:
+    steps = completed_steps if completed_steps is not None else []
     actor, existing = collect_paged_rest_items(
         f"/repos/{repo}/labels",
         query={},
         bucket="rest_core",
         step_prefix="list_labels",
+        completed_steps=steps,
     )
     existing_names = {
         item["name"].casefold()
@@ -1076,7 +1124,6 @@ def ensure_labels(
         if isinstance(item.get("name"), str)
     }
     created: list[str] = []
-    completed_steps: list[str] = []
     defs = config.get("label_defs", {})
     missing_without_defs: list[str] = []
     for name in wanted:
@@ -1098,7 +1145,7 @@ def ensure_labels(
                     "color": info.get("color", "ededed"),
                     "description": info.get("description", "Planning label"),
                 },
-                completed_steps=completed_steps,
+                completed_steps=steps,
                 failed_step="create_label",
             )
         except PlanError as create_error:
@@ -1108,7 +1155,7 @@ def ensure_labels(
                 _, reconciled = api_json(
                     "GET",
                     f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}",
-                    completed_steps=completed_steps,
+                    completed_steps=steps,
                     failed_step="reconcile_label_create",
                 )
             except PlanError:
@@ -1117,10 +1164,11 @@ def ensure_labels(
             if not isinstance(reconciled_name, str) or reconciled_name.casefold() != normalized_name:
                 raise create_error
             existing_names.add(normalized_name)
+            steps.append("reconcile_label_create")
             continue
         created.append(name)
         existing_names.add(normalized_name)
-        completed_steps.append("create_label")
+        steps.append("create_label")
     if missing_without_defs:
         missing = ", ".join(sorted(missing_without_defs))
         raise PlanError(
@@ -1190,25 +1238,39 @@ def cmd_create(args: argparse.Namespace) -> None:
     title = (args.title_flag or args.title or "").strip()
     if not title:
         raise PlanError("Issue title is required (pass as positional argument or --title)")
-    search_query = f'"{title}" in:title'
-    _, matches = gh_json([
-        "issue", "list", "-R", repo, "--state", "all", "--limit", "100",
-        "--search", search_query, "--json", "number,title,state,url"
-    ])
-    exact = [item for item in matches or [] if item.get("title") == title]
+    completed_steps: list[str] = []
+    actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
     if exact and not args.force:
-        emit({"ok": True, "deduped": True, "repo": repo, "existing": exact[0]})
+        emit({
+            "ok": True,
+            "actor": actor,
+            "deduped": True,
+            "repo": repo,
+            "existing": exact[0],
+            "completed_steps": completed_steps,
+        })
         return
 
     base_labels = labels(config, "plan")
     if args.plan_status != "none":
         base_labels.extend(labels(config, args.plan_status))
     extra_labels = args.label or []
-    wanted_labels = base_labels + extra_labels
-    _, created_base_labels = ensure_labels(repo, base_labels, config)
+    wanted_labels = list(dict.fromkeys(base_labels + extra_labels))
+    _, created_base_labels = ensure_labels(
+        repo,
+        base_labels,
+        config,
+        completed_steps=completed_steps,
+    )
     created_extra_labels: list[str] = []
     if extra_labels:
-        _, created_extra_labels = ensure_labels(repo, extra_labels, config, create_unknown=False)
+        _, created_extra_labels = ensure_labels(
+            repo,
+            extra_labels,
+            config,
+            create_unknown=False,
+            completed_steps=completed_steps,
+        )
     created_labels = created_base_labels + created_extra_labels
 
     body = read_body(args, template_body(title))
@@ -1218,26 +1280,45 @@ def cmd_create(args: argparse.Namespace) -> None:
     project = args.project
     if project is None and project_config.get("enabled", True):
         project = project_config.get("default_project")
-    actor, issue = rest_create_issue(
-        repo,
-        title,
-        body,
-        wanted_labels,
-        args.milestone,
-    )
+    route_actor, gh_cmd, expected_actor = comment_route()
+    try:
+        issue = github_issue_core.create_issue(
+            title,
+            body,
+            repo=repo,
+            labels=wanted_labels,
+            milestone=args.milestone,
+            gh_cmd=gh_cmd,
+            expected_actor=expected_actor,
+            operation=CURRENT_OPERATION,
+        )
+    except github_issue_core.IssueError as exc:
+        raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
+    actor = issue.get("actor") or route_actor
+    issue_steps = issue.get("completed_steps")
+    if isinstance(issue_steps, list):
+        completed_steps.extend(str(step) for step in issue_steps)
+    else:
+        completed_steps.append("reconcile_create" if issue.get("reconciled") else "create_issue")
+    issue_url = issue.get("url")
+    if not isinstance(issue_url, str):
+        raise PlanError("Shared issue create returned no issue URL")
     project_fields_set: dict[str, Any] = {}
     if project:
+        project_steps: list[str] = []
         try:
             owner = project_config.get("owner") or repo.split("/", 1)[0]
             _, number, _ = resolve_project(owner, project, recoverable=True)
+            project_steps.append("resolve_project")
             ensure_graphql_budget(prefer_active=True, recoverable=True)
-            _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"], prefer_active=True, recoverable=True)
+            _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue_url, "--format", "json"], prefer_active=True, recoverable=True)
+            project_steps.append("add_project_item")
             added_item = json.loads(added_stdout) if added_stdout.strip() else {}
             added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
             project_fields_set = set_project_fields(
                 owner=owner,
                 project_ref=project,
-                issue_url=issue["html_url"],
+                issue_url=issue_url,
                 config=config,
                 focus=args.focus,
                 manager=selected_manager_value(args.manager, config, repo),
@@ -1246,6 +1327,7 @@ def cmd_create(args: argparse.Namespace) -> None:
                 recoverable=True,
             )
         except PlanError as exc:
+            completed_steps.extend(project_steps)
             owner = project_config.get("owner") or repo.split("/", 1)[0]
             project_fields_set = project_failure_payload(
                 exc,
@@ -1254,13 +1336,21 @@ def cmd_create(args: argparse.Namespace) -> None:
                 operation="create_project_sync",
                 non_blocking=True,
             )
-    emit({
+        else:
+            completed_steps.append("sync_project")
+    result = {
         "ok": True,
         "actor": actor,
+        "expected_actor": issue.get("expected_actor", expected_actor),
         "created_labels": created_labels,
         "project_fields": project_fields_set,
         "issue": compact_issue(issue),
-    })
+        "completed_steps": completed_steps,
+    }
+    for key in ("operation_marker", "reconciled", "reconciliation"):
+        if key in issue:
+            result[key] = issue[key]
+    emit(result)
 
 
 def cmd_update_section(args: argparse.Namespace) -> None:
@@ -1638,21 +1728,36 @@ def cmd_close(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
     issue_repo, number = issue_ref(args.issue, repo)
-    _, issue = get_issue(args.issue, repo)
+    close_reason = plan_close_reason(args.reason)
+    issue_actor, issue = get_issue(args.issue, repo)
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
-    edit_args = ["issue", "edit", str(number), "-R", issue_repo]
-    if plan_labels.get("active"):
-        edit_args.extend(["--remove-label", plan_labels["active"]])
-    if plan_labels.get("done"):
-        edit_args.extend(["--add-label", plan_labels["done"]])
-    actor, _, _ = run_raw(edit_args)
+    route_actor, gh_cmd, expected_actor = comment_route()
+    current_labels = {name.casefold() for name in issue_labels(issue)}
+    done_label = plan_labels.get("done")
+    active_label = plan_labels.get("active")
+    add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
+    remove_labels = [active_label] if active_label and active_label.casefold() in current_labels else None
+    actor = issue_actor
+    if add_labels or remove_labels:
+        try:
+            label_result = github_issue_core.edit_issue(
+                number,
+                repo=issue_repo,
+                add_labels=add_labels,
+                remove_labels=remove_labels,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=CURRENT_OPERATION,
+            )
+        except github_issue_core.IssueError as exc:
+            raise plan_error_from_issue(exc) from exc
+        actor = label_result.get("actor") or route_actor
     completed_steps = ["update_labels"]
 
     comment_result: dict[str, Any] = {}
     if close_comment:
         try:
-            route_actor, gh_cmd, expected_actor = comment_route()
             comment_result = github_comment_core.comment(
                 "issue",
                 number,
@@ -1679,6 +1784,7 @@ def cmd_close(args: argparse.Namespace) -> None:
     project = args.project or project_config.get("default_project")
     owner = args.owner or project_config.get("owner") or issue_repo.split("/", 1)[0]
     if project:
+        project_steps: list[str] = []
         try:
             _, project_number, project_data = project_meta(owner, project, recoverable=True)
             fields = project_fields(owner, project_number, recoverable=True)
@@ -1696,12 +1802,15 @@ def cmd_close(args: argparse.Namespace) -> None:
                     recoverable=True,
                 )
                 updated["Status"] = "Done"
+                project_steps.append("set_project_status")
             focus_field = fields.get((config.get("project_fields") or {}).get("focus", "Focus"))
             if focus_field:
                 clear_project_field(project=project_data, item=item, field=focus_field, recoverable=True)
                 updated["Focus"] = None
+                project_steps.append("clear_project_focus")
             project_result = {"project": project_data.get("title"), "updated": updated}
         except PlanError as exc:
+            completed_steps.extend(project_steps)
             project_result = project_failure_payload(
                 exc,
                 owner=owner,
@@ -1712,26 +1821,43 @@ def cmd_close(args: argparse.Namespace) -> None:
         else:
             completed_steps.append("sync_project")
 
-    close_args = ["issue", "close", str(number), "-R", issue_repo, "--reason", args.reason]
-    actor, _, _ = run_raw(
-        close_args,
-        failed_step="close_issue",
-        completed_steps=completed_steps,
-    )
-    completed_steps.append("close_issue")
+    issue_state = issue.get("state")
+    issue_state_reason = issue.get("state_reason")
+    if (
+        isinstance(issue_state, str)
+        and issue_state.casefold() == "closed"
+        and issue_state_reason == close_reason
+    ):
+        close_result = {"actor": actor, "expected_actor": expected_actor}
+        completed_steps.append("close_issue_already_complete")
+    else:
+        try:
+            close_result = github_issue_core.set_issue_state(
+                number,
+                state="closed",
+                state_reason=close_reason,
+                repo=issue_repo,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=CURRENT_OPERATION,
+            )
+        except github_issue_core.IssueError as exc:
+            raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
+        actor = close_result.get("actor") or actor
+        completed_steps.append("close_issue")
 
     public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
-    expected_actor = (
+    output_expected_actor = (
         comment_result["expected_actor"]
         if "expected_actor" in comment_result
-        else EXPECTED_ACTOR
+        else close_result.get("expected_actor", expected_actor)
     )
 
     emit({
         "ok": True,
         "actor": actor,
-        "expected_actor": expected_actor,
-        "closed": {"repo": issue_repo, "number": number, "reason": args.reason, "url": issue["html_url"]},
+        "expected_actor": output_expected_actor,
+        "closed": {"repo": issue_repo, "number": number, "reason": close_reason, "url": issue["html_url"]},
         "comment": public_comment or None,
         "project": project_result,
         "completed_steps": completed_steps,

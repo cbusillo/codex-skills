@@ -287,10 +287,7 @@ entrypoint = "github/scripts/gh-plan.py create"
 intent = "Create a durable planning issue with configured labels and optional Project fields."
 current_transport = "composite"
 selected_transport = "composite"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue list dedupe; paged REST label ensure; POST /repos/{repo}/issues; optional gh project item-add/item-edit"
-current_quota_bucket = "mixed"
-endpoint_or_command = "REST issue-search dedupe; REST label ensure; POST /repos/{repo}/issues; optional retained gh project item-add/item-edit"
+endpoint_or_command = "Paged GET /search/issues exact-title dedupe; paged REST label ensure; shared POST /repos/{repo}/issues with fingerprint reconciliation; optional retained gh project item-add/item-edit"
 quota_bucket = "mixed"
 actor_policy = "automation_required_for_writes"
 mutation_class = "create"
@@ -298,8 +295,8 @@ idempotency = "non_idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "dedupe_then_create"
 retained_graphql_rationale = "GraphQL is retained only for optional Project sync; selected issue dedupe, label ensure, and issue creation use REST, while Project failures remain non-blocking warnings."
-source_refs = ["github/scripts/gh-plan.py:cmd_create"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_create_reports_issue_when_project_sync_fails", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_create", "github/scripts/gh-plan.py:find_existing_plan_issues", "github/scripts/gh-plan.py:ensure_labels", "github/scripts/github_issue.py:create_issue"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_create_uses_rest_dedupe_and_shared_issue_create", "github/scripts/validate-gh-plan.py:test_create_dedupes_exact_rest_search_without_writes", "github/scripts/validate-gh-plan.py:test_create_issue_failure_preserves_compound_recovery_evidence", "github/scripts/validate-gh-plan.py:test_create_surfaces_reconciled_shared_issue_evidence", "github/scripts/validate-gh-plan.py:test_create_reports_issue_when_project_sync_fails", "github/scripts/validate-gh-plan.py:test_create_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_create_supports_waiting_plan_status", "github/scripts/test_github_issue.py:test_create_unknown_outcome_returns_unique_reconciled_issue", "skill-creator/evaluations/exec-harness/fake-gh-plan-create.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.update_section"
@@ -375,10 +372,7 @@ entrypoint = "github/scripts/gh-plan.py close"
 intent = "Close a completed durable plan, update planning labels, optionally comment, and reconcile Project focus/status fields."
 current_transport = "composite"
 selected_transport = "composite"
-migration_status = "planned"
-current_endpoint_or_command = "gh issue edit/close; shared REST timeline comment; optional gh project view/field-list/item-list/item-edit"
-current_quota_bucket = "mixed"
-endpoint_or_command = "REST issue label/state updates and timeline comment; optional retained gh project view/field-list/item-list/item-edit"
+endpoint_or_command = "Shared REST issue label edit, timeline comment, and PATCH state transition; optional retained gh project view/field-list/item-list/item-edit"
 quota_bucket = "mixed"
 actor_policy = "automation_required_for_writes"
 mutation_class = "close"
@@ -386,8 +380,8 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "project_recoverable_warning"
 retained_graphql_rationale = "GraphQL is retained only for optional Project reconciliation; selected issue label, comment, and close steps use REST and Project failures remain non-blocking warnings."
-source_refs = ["github/scripts/gh-plan.py:cmd_close", "github/scripts/github_comment.py:comment"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_close", "github/scripts/github_issue.py:edit_issue", "github/scripts/github_comment.py:comment", "github/scripts/github_issue.py:set_issue_state"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_delegates_comment_to_shared_rest_helper", "github/scripts/validate-gh-plan.py:test_close_preserves_comment_reconciliation_after_partial_failure", "github/scripts/validate-gh-plan.py:test_close_state_failure_preserves_compound_steps", "github/scripts/validate-gh-plan.py:test_close_already_reconciled_skips_redundant_label_write", "github/scripts/validate-gh-plan.py:test_close_rejects_invalid_reason_before_remote_reads_or_writes", "github/scripts/validate-gh-plan.py:test_close_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_syncs_project_before_closing_issue", "skill-creator/evaluations/exec-harness/fake-gh-plan-close.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.project_add"
