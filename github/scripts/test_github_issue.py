@@ -51,6 +51,7 @@ def issue_body(
     state_reason: str | None = None,
     body: str = "body",
     created_at: str = "2026-07-16T22:00:00Z",
+    updated_at: str = "2026-07-17T03:20:00Z",
 ) -> dict[str, Any]:
     return {
         "id": 9000 + number,
@@ -58,6 +59,7 @@ def issue_body(
         "title": "Issue title",
         "body": body,
         "created_at": created_at,
+        "updated_at": updated_at,
         "state": state,
         "state_reason": state_reason,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
@@ -116,6 +118,7 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
         assert marker["kind"] == "request_fingerprint", marker
         assert len(marker["value"]) == 64, marker
         assert payload["actor"] == "shiny-code-bot", payload
+        assert payload["updated_at"] == "2026-07-17T03:20:00Z", payload
         assert payload["completed_steps"] == ["resolve_actor", "resolve_milestone", "create_issue"], payload
         assert [call["method"] for call in calls] == ["GET", "GET", "POST"], calls
 

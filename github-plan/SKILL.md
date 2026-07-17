@@ -312,6 +312,14 @@ intentionally preserve their smaller legacy result shape. Label maintenance
 uses paged REST label reads and reconciles concurrent creates without retrying
 the write blindly.
 
+`create` performs exact-title dedupe through REST issue search, ensures labels
+through REST, and delegates the non-idempotent issue write to the shared issue
+helper so unknown outcomes carry reconciliation evidence. `close` delegates
+label edits, optional timeline comments, and the final state transition to the
+shared REST issue/comment helpers. Optional Project synchronization remains the
+only GraphQL-backed phase and is reported as a non-blocking warning after the
+issue operation succeeds.
+
 Project v2, native sub-issues, and native dependency operations may require
 GraphQL. Before batching those operations, check rate limits when failures look
 quota-related. If GraphQL is exhausted but REST/core is available, keep issue

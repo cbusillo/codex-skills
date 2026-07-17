@@ -4,7 +4,8 @@
   "prompt": "Close completed durable planning issue #900 through the GitHub planning helper using the provided close-comment.md file.",
   "files": {
     "README.md": "# Fake gh planning close fixture\n",
-    "close-comment.md": "Completed with validation evidence.\n"
+    "close-comment.md": "Completed with validation evidence.\n",
+    ".github/github.json": "{\"planning\":{\"projects\":{\"enabled\":false}}}\n"
   },
   "gh": {
     "repo": "cbusillo/codex-skills",
@@ -14,7 +15,7 @@
         "title": "Completed plan",
         "body": "## Finish Line\nShip the completed plan.\n",
         "labels": [{ "name": "plan" }, { "name": "plan:active" }],
-        "state": "OPEN",
+        "state": "open",
         "html_url": "https://github.com/cbusillo/codex-skills/issues/900",
         "url": "https://github.com/cbusillo/codex-skills/issues/900"
       }
@@ -22,21 +23,27 @@
     "responses": [
       {
         "match": {
-          "contains": ["api", "user", "--jq", ".login"]
+          "contains": ["api", "/user"]
         },
-        "stdout": "shiny-code-bot"
+        "stdout": "{\"login\":\"shiny-code-bot\"}"
       },
       {
         "match": {
           "contains": ["api", "repos/cbusillo/codex-skills/issues/900"]
         },
-        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"OPEN\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
+        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
       },
       {
         "match": {
-          "contains": ["api", "/user"]
+          "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues/900/labels"]
         },
-        "stdout": "{\"login\":\"shiny-code-bot\"}"
+        "stdout": "[{\"name\":\"plan\"},{\"name\":\"plan:active\"},{\"name\":\"plan:done\"}]"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "DELETE", "/repos/cbusillo/codex-skills/issues/900/labels/plan%3Aactive"]
+        },
+        "stdout": "[{\"name\":\"plan\"},{\"name\":\"plan:done\"}]"
       },
       {
         "match": {
@@ -46,9 +53,9 @@
       },
       {
         "match": {
-          "contains": ["issue close", "900", "--reason", "completed"]
+          "contains": ["api", "--method", "PATCH", "/repos/cbusillo/codex-skills/issues/900"]
         },
-        "stdout": "https://github.com/cbusillo/codex-skills/issues/900"
+        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:done\"}],\"state\":\"closed\",\"state_reason\":\"completed\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
       }
     ]
   },
@@ -89,11 +96,12 @@
     "returncode": 0,
     "gh_contains": [
       "api",
-      "issue edit 900",
-      "--remove-label plan:active",
-      "--add-label plan:done",
+      "/user",
+      "/repos/cbusillo/codex-skills/issues/900/labels",
+      "/repos/cbusillo/codex-skills/issues/900/labels/plan%3Aactive",
       "/repos/cbusillo/codex-skills/issues/900/comments",
-      "issue close 900"
+      "--method PATCH",
+      "/repos/cbusillo/codex-skills/issues/900"
     ],
     "responses_request_count": 3
   },
