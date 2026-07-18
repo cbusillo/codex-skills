@@ -114,6 +114,9 @@ VERDICT_SOURCE_KEYS = (
     "inspection_attribution",
     "proof_failures",
 )
+SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
+NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
+NON_SEMANTIC_PSI_CLASS_MARKERS = frozenset({"plaintext", "textmate"})
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
 PROJECT_OPEN_BLOCKED_HINT = (
@@ -442,6 +445,12 @@ def build_parser() -> argparse.ArgumentParser:
             dest="include_stale",
             action="store_true",
             help="Return cached stale findings for diagnostics. Stale results still exit non-zero.",
+        )
+    for name in ("wait-for-inspection", "get-status", "get-problems", "inspect", "inspect-closeout"):
+        subparsers.choices[name].add_argument(
+            "--allow-text-only-coverage",
+            action="store_true",
+            help="Allow TextMate/PlainText-only scoped files instead of failing semantic coverage closed.",
         )
     return parser
 
@@ -825,6 +834,8 @@ def command_wait(args: argparse.Namespace, context: dict[str, Any]) -> dict[str,
         "route": body.get("route") or route,
         "wait": body,
     }
+    if getattr(args, "allow_text_only_coverage", False):
+        result["allow_text_only_coverage"] = True
     copy_verdict_evidence(result, body)
     apply_verdict(result)
     return result
@@ -852,6 +863,8 @@ def command_status(args: argparse.Namespace, context: dict[str, Any]) -> dict[st
         "timed_out": body.get("timed_out", False),
         "raw": body,
     }
+    if getattr(args, "allow_text_only_coverage", False):
+        result["allow_text_only_coverage"] = True
     copy_verdict_evidence(result, body)
     apply_verdict(result)
     return result
@@ -876,7 +889,12 @@ def command_problems(args: argparse.Namespace, context: dict[str, Any]) -> dict[
     body = call_contextual_endpoint(route, "problems", problems_params(args, context, route), context)
     if getattr(args, "include_stale", False):
         body.setdefault("include_stale", True)
-    return summarize_problems(context, body.get("route") or route, body)
+    return summarize_problems(
+        context,
+        body.get("route") or route,
+        body,
+        allow_text_only_coverage=getattr(args, "allow_text_only_coverage", False),
+    )
 
 
 def command_claim(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -1064,7 +1082,12 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         return inspection_run_changed_result(active_route, trigger, problems, phase="problems")
     if getattr(args, "include_stale", False):
         problems.setdefault("include_stale", True)
-    summary = summarize_problems(context, problems.get("route") or active_route, problems)
+    summary = summarize_problems(
+        context,
+        problems.get("route") or active_route,
+        problems,
+        allow_text_only_coverage=getattr(args, "allow_text_only_coverage", False),
+    )
     summary["trigger"] = trigger
     summary["wait"] = wait
     if cancellation is not None:
@@ -2732,7 +2755,12 @@ def wait_http_timeout(timeout_ms: int) -> float:
     return max(DEFAULT_TIMEOUT_SECONDS, (timeout_ms / 1000.0) + 5.0)
 
 
-def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+def summarize_problems(
+    context: dict[str, Any],
+    route: dict[str, Any],
+    body: dict[str, Any],
+    allow_text_only_coverage: bool = False,
+) -> dict[str, Any]:
     problems = body.get("problems") or []
     status = body.get("status", "unknown")
     results_may_be_stale = body.get("results_may_be_stale", False) or status == "stale_results"
@@ -2748,6 +2776,8 @@ def summarize_problems(context: dict[str, Any], route: dict[str, Any], body: dic
         "problems": problems,
         "raw": body,
     }
+    if allow_text_only_coverage:
+        summary["allow_text_only_coverage"] = True
     if "total_problems" in body:
         summary["total_problems"] = body["total_problems"]
     if "problems_shown" in body:
@@ -2840,6 +2870,112 @@ def defer_lifecycle_cleanup(lease: dict[str, Any], result: dict[str, Any]) -> di
     }
 
 
+def normalized_psi_marker(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> list[str]:
+    if file_diagnostic.get("directory") is True:
+        return []
+    reasons: list[str] = []
+    file_type = normalized_psi_marker(file_diagnostic.get("file_type"))
+    psi_language = normalized_psi_marker(file_diagnostic.get("psi_language"))
+    psi_class = normalized_psi_marker(file_diagnostic.get("psi_class"))
+    if (
+        file_type in NON_SEMANTIC_PSI_VALUES
+        or psi_language in NON_SEMANTIC_PSI_VALUES
+        or any(marker in psi_class for marker in NON_SEMANTIC_PSI_CLASS_MARKERS)
+    ):
+        reasons.append("non_semantic_fallback")
+    if file_diagnostic.get("valid") is False:
+        reasons.append("invalid_file")
+    if file_diagnostic.get("in_content") is False:
+        reasons.append("outside_project_content")
+    if file_diagnostic.get("diagnostic_error"):
+        reasons.append("diagnostic_error")
+    return reasons
+
+
+def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    existing = payload.get("semantic_coverage")
+    if isinstance(existing, dict):
+        return existing
+    diagnostic = payload.get("capture_diagnostic")
+    if not isinstance(diagnostic, dict):
+        return None
+    scope_files = diagnostic.get("scope_file_diagnostics")
+    if not isinstance(scope_files, list) or not scope_files:
+        return None
+    missing_files: list[dict[str, Any]] = []
+    for item in scope_files:
+        if not isinstance(item, dict):
+            continue
+        reasons = scope_file_semantic_coverage_reasons(item)
+        if not reasons:
+            continue
+        path = item.get("path")
+        file_summary = {
+            "path": path,
+            "requested_language_hint": Path(str(path)).suffix.lstrip(".").casefold() if path else None,
+            "file_type": item.get("file_type"),
+            "psi_language": item.get("psi_language"),
+            "psi_class": item.get("psi_class"),
+            "in_content": item.get("in_content"),
+            "in_source": item.get("in_source"),
+            "reasons": reasons,
+        }
+        missing_files.append({key: value for key, value in file_summary.items() if value is not None})
+    if not missing_files:
+        return None
+    allow_text_only = payload.get("allow_text_only_coverage") is True
+    text_only = all(file.get("reasons") == ["non_semantic_fallback"] for file in missing_files)
+    status = "text_only_allowed" if allow_text_only and text_only else "missing"
+    coverage = {
+        "status": status,
+        "reason": "text_only_coverage_allowed" if status == "text_only_allowed" else SEMANTIC_COVERAGE_MISSING_REASON,
+        "scope_kind": diagnostic.get("scope_kind"),
+        "scope_resolution_status": diagnostic.get("scope_resolution_status"),
+        "requested_file_count": diagnostic.get("scope_file_requested_count"),
+        "resolved_file_count": diagnostic.get("scope_file_resolved_count"),
+        "missing_file_count": len(missing_files),
+        "files": missing_files,
+    }
+    if allow_text_only:
+        coverage["allow_text_only_coverage"] = True
+    return {key: value for key, value in coverage.items() if value is not None}
+
+
+def apply_semantic_coverage(payload: dict[str, Any]) -> dict[str, Any]:
+    coverage = semantic_coverage_for_payload(payload)
+    if coverage is not None:
+        payload["semantic_coverage"] = coverage
+    return payload
+
+
+def semantic_coverage_unknown_verdict(payload: dict[str, Any]) -> dict[str, str] | None:
+    coverage = semantic_coverage_for_payload(payload)
+    if coverage is None or coverage.get("status") != "missing":
+        return None
+    return {
+        "verdict": "UNKNOWN",
+        "verdict_reason": SEMANTIC_COVERAGE_MISSING_REASON,
+        "verdict_message": "Inspection could not prove language-aware coverage for every requested file.",
+        "verdict_next_action": next_action_for_unknown(SEMANTIC_COVERAGE_MISSING_REASON, payload),
+    }
+
+
+def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str] | None:
+    coverage = semantic_coverage_for_payload(payload)
+    if coverage is None or coverage.get("status") != "text_only_allowed":
+        return None
+    return {
+        "verdict": "GREEN",
+        "verdict_reason": "text_only_coverage_allowed",
+        "verdict_message": "Inspection found no actionable findings with explicitly allowed text-only coverage.",
+        "verdict_next_action": "No inspection action required; text-only coverage was explicitly accepted for this scope.",
+    }
+
+
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
     wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
     cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
@@ -2880,6 +3016,13 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
         }
 
     plugin_verdict = payload.get("inspection_verdict")
+    if plugin_verdict == "GREEN":
+        semantic_coverage_verdict = semantic_coverage_unknown_verdict(payload)
+        if semantic_coverage_verdict is not None:
+            return semantic_coverage_verdict
+        semantic_coverage_verdict = semantic_coverage_allowed_verdict(payload)
+        if semantic_coverage_verdict is not None:
+            return semantic_coverage_verdict
     if plugin_verdict in {"GREEN", "RED", "UNKNOWN"}:
         return {
             "verdict": str(plugin_verdict),
@@ -2905,6 +3048,12 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
         or payload.get("status") == "clean"
         or payload.get("clean") is True
     ):
+        semantic_coverage_verdict = semantic_coverage_unknown_verdict(payload)
+        if semantic_coverage_verdict is not None:
+            return semantic_coverage_verdict
+        semantic_coverage_verdict = semantic_coverage_allowed_verdict(payload)
+        if semantic_coverage_verdict is not None:
+            return semantic_coverage_verdict
         return {
             "verdict": "GREEN",
             "verdict_reason": "no_matching_findings" if payload.get("status") == "results_available" else "clean_confirmed",
@@ -2986,6 +3135,18 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    if reason == SEMANTIC_COVERAGE_MISSING_REASON:
+        coverage = semantic_coverage_for_payload(payload) or {}
+        language_hints = sorted({
+            str(file.get("requested_language_hint"))
+            for file in coverage.get("files", [])
+            if isinstance(file, dict) and file.get("requested_language_hint")
+        })
+        languages = f" for {', '.join(language_hints)}" if language_hints else ""
+        return (
+            f"Open the worktree in a JetBrains IDE with semantic language support{languages}, install or enable the required language plugins, "
+            "or update the repository's preferred IDE metadata, then rerun. Use --allow-text-only-coverage only when text-only coverage is intentionally sufficient."
+        )
     if reason in {"non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error"}:
         return "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
     if reason in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results"}:
@@ -3090,6 +3251,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "project_open_blocked",
         PROJECT_OPEN_BLOCKED_REASON,
         "profile_resolution_error",
+        SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
     }:
         return "configuration_blocked"
@@ -3228,6 +3390,7 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
+    apply_semantic_coverage(payload)
     payload.update(verdict_for_payload(payload))
     apply_inspection_attribution(payload)
     apply_agent_result(payload)
@@ -3280,7 +3443,14 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "cleanup_not_clean"
     if normalized in {"invalid_api_response", "inspection_api_http_error", "extractor_failure", "helper_plugin_error", "inspection_trigger_empty_model", "non_empty_unmapped_tree", "inspection_proof_failed"}:
         return "tool_bug"
-    if normalized in {"inspection_api_unavailable", "ide_open_failed", "untrusted_auto_open_root", "project_open_blocked", "ide_not_ready_timeout"}:
+    if normalized in {
+        "inspection_api_unavailable",
+        "ide_open_failed",
+        "untrusted_auto_open_root",
+        "project_open_blocked",
+        "ide_not_ready_timeout",
+        SEMANTIC_COVERAGE_MISSING_REASON,
+    }:
         return "environment_blocked"
     if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection", "profile_resolution_error"}:
         return "policy_required"
@@ -3320,6 +3490,10 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
 
 def agent_report_for(verdict: str, bucket: str, reason: str, payload: dict[str, Any]) -> str:
     if verdict == "GREEN":
+        coverage = semantic_coverage_for_payload(payload)
+        if coverage is not None and coverage.get("status") == "text_only_allowed":
+            count = int(coverage.get("missing_file_count") or 0)
+            return f"JetBrains inspection passed with explicitly allowed text-only coverage for {count} file(s)."
         return "JetBrains inspection passed for the selected scope."
     if verdict == "RED":
         total = payload.get("total_problems")
@@ -3850,6 +4024,7 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
         print("STALE: cached findings withheld; re-run inspection or pass --include-stale for diagnostics.")
     if payload.get("snapshot_change_kind"):
         print(safe_text("SNAPSHOT: change_kind={kind}", {"kind": payload["snapshot_change_kind"]}))
+    print_semantic_coverage(payload.get("semantic_coverage"))
     print_capture_diagnostic(payload.get("capture_diagnostic"))
     wait = payload.get("wait") or {}
     if wait:
@@ -3944,6 +4119,37 @@ def print_ide_selection(selection: Any) -> None:
             },
         )
     )
+
+
+def print_semantic_coverage(coverage: Any) -> None:
+    if not isinstance(coverage, dict) or not coverage:
+        return
+    print(
+        safe_text(
+            "SEMANTIC_COVERAGE: status={status} reason={reason} missing_files={missing_files} allow_text_only={allow_text_only}",
+            {
+                "status": coverage.get("status"),
+                "reason": coverage.get("reason"),
+                "missing_files": coverage.get("missing_file_count"),
+                "allow_text_only": coverage.get("allow_text_only_coverage", False),
+            },
+        )
+    )
+    for file in (coverage.get("files") or [])[:25]:
+        if not isinstance(file, dict):
+            continue
+        print(
+            safe_text(
+                "SEMANTIC_COVERAGE_FILE: path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} reasons={reasons}",
+                {
+                    "path": file.get("path"),
+                    "language_hint": file.get("requested_language_hint"),
+                    "file_type": file.get("file_type"),
+                    "psi_language": file.get("psi_language"),
+                    "reasons": file.get("reasons"),
+                },
+            )
+        )
 
 
 def print_blocked_diagnostic(diagnostic: Any) -> None:
