@@ -317,6 +317,18 @@ preferred IDE and must clean it up afterward when it owns the open.
   do not count it as current evidence. A repo-local helper may still provide
   valid branch evidence when its exact path and revision are recorded and match
   the source being evaluated.
+- `scope_semantic_coverage_missing` is `UNKNOWN`: one or more requested scoped
+  files resolved only as generic TextMate/PlainText PSI, were invalid, or were
+  outside project content. This overrides an otherwise clean or plugin-provided
+  `GREEN`, including mixed-language scopes where only some files have semantic
+  support. `in_source: false` alone is not a failure because language-aware PSI
+  can inspect valid project-content files outside a configured source root.
+  Install or enable the needed language plugin, select a compatible IDE, or
+  update the repo's preferred IDE metadata before rerunning. Use
+  `--allow-text-only-coverage` only when generic text coverage is intentionally
+  sufficient; it does not allow invalid files or files outside project content.
+  The helper preserves actionable `RED` findings while attaching the semantic
+  coverage gap so real findings are not hidden.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.

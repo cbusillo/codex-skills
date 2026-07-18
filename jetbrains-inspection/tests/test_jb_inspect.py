@@ -122,6 +122,16 @@ def plugin_claim_body(route: dict, lease_id: str, close_proof: str = "proof-1", 
     return body
 
 
+def scope_capture_diagnostic(*files: dict) -> dict:
+    return {
+        "scope_kind": "files",
+        "scope_resolution_status": "files_resolved",
+        "scope_file_requested_count": len(files),
+        "scope_file_resolved_count": len(files),
+        "scope_file_diagnostics": list(files),
+    }
+
+
 class ParserCommandAliasTest(unittest.TestCase):
     def test_preferred_commands_parse_and_canonicalize(self):
         parser = jb_inspect.build_parser()
@@ -189,6 +199,14 @@ class ParserCommandAliasTest(unittest.TestCase):
         self.assertEqual(args.repo, "/tmp/repo")
         self.assertEqual(args.scope, "changed_files")
         self.assertFalse(args.open)
+
+    def test_assessment_commands_accept_text_only_coverage_override(self):
+        parser = jb_inspect.build_parser()
+
+        for command in ("wait-for-inspection", "get-status", "get-problems", "inspect", "inspect-closeout"):
+            with self.subTest(command=command):
+                args = parser.parse_args([command, "--allow-text-only-coverage"])
+                self.assertTrue(args.allow_text_only_coverage)
 
     def test_cleanup_command_has_lifecycle_lock_timeout(self):
         parser = jb_inspect.build_parser()
@@ -4489,6 +4507,33 @@ class EndpointUtilityTest(unittest.TestCase):
 
         self.assertEqual(summary["capture_diagnostic"], diagnostic)
 
+    def test_summarize_problems_applies_text_only_coverage_override(self):
+        body = {
+            "status": "results_available",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/example.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "textmate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, body, allow_text_only_coverage=True)
+
+        self.assertTrue(summary["allow_text_only_coverage"])
+        self.assertEqual(summary["verdict"], "GREEN")
+        self.assertEqual(summary["verdict_reason"], "text_only_coverage_allowed")
+        self.assertEqual(summary["semantic_coverage"]["status"], "text_only_allowed")
+
     def test_summarize_problems_keeps_cached_stale_findings_separate(self):
         body = {
             "status": "stale_results",
@@ -4900,6 +4945,182 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "GREEN")
         self.assertEqual(verdict["verdict_reason"], "no_matching_findings")
 
+    def test_textmate_scope_overrides_plugin_green_with_semantic_coverage_unknown(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/PlaybackValidation.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "textmate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "scope_semantic_coverage_missing")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["attribution_class"], "configuration_blocked")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 1)
+        self.assertEqual(payload["semantic_coverage"]["files"][0]["requested_language_hint"], "swift")
+        self.assertIn("language plugins", payload["verdict_next_action"])
+
+    def test_mixed_semantic_and_textmate_scope_fails_closed(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/tool.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": True,
+                    "in_source": False,
+                },
+                {
+                    "path": "/tmp/view.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "TextMate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 1)
+        self.assertTrue(payload["semantic_coverage"]["files"][0]["path"].endswith("view.swift"))
+
+    def test_semantic_psi_with_in_source_false_stays_green(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/PlaybackValidation.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "NoctuleSwift",
+                    "psi_language": "NoctuleSwift",
+                    "psi_class": "swift.lang.psi.lt",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertNotIn("semantic_coverage", payload)
+
+    def test_plaintext_scope_can_be_explicitly_allowed(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "allow_text_only_coverage": True,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/notes.txt",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "PLAIN_TEXT",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["verdict_reason"], "text_only_coverage_allowed")
+        self.assertEqual(payload["semantic_coverage"]["status"], "text_only_allowed")
+        self.assertIn("explicitly allowed", payload["agent_report"])
+
+    def test_text_only_override_does_not_allow_outside_project_content(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "allow_text_only_coverage": True,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/external.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": False,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["semantic_coverage"]["files"][0]["reasons"], ["outside_project_content"])
+
+    def test_semantic_coverage_gap_does_not_hide_actionable_red_verdict(self):
+        payload = {
+            "status": "findings",
+            "clean": False,
+            "total_problems": 1,
+            "problems": [{"description": "Broken"}],
+            "inspection_verdict": "RED",
+            "inspection_verdict_reason": "actionable_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/view.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "textmate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "RED")
+        self.assertEqual(payload["semantic_coverage"]["status"], "missing")
+
     def test_verdict_prefers_plugin_provided_contract(self):
         payload = {
             "status": "results_available",
@@ -5195,6 +5416,36 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("exit_reason=deadline", text)
         self.assertIn("view_ready_ok=False", text)
         self.assertIn("successful_extraction_count=3", text)
+
+    def test_human_output_identifies_missing_semantic_coverage(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/PlaybackValidation.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "textmate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+
+        text = output.getvalue()
+        self.assertIn("VERDICT: UNKNOWN reason=scope_semantic_coverage_missing", text)
+        self.assertIn("SEMANTIC_COVERAGE: status=missing", text)
+        self.assertIn("PlaybackValidation.swift", text)
+        self.assertIn("language_hint=swift", text)
+        self.assertIn("non_semantic_fallback", text)
 
     def test_human_output_explains_errors(self):
         payload = {
