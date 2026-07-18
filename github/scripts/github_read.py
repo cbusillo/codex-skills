@@ -660,14 +660,17 @@ def secret_scanning_repository_context(item: dict[str, Any]) -> dict[str, Any]:
     visibility = item.get("visibility") if isinstance(item.get("visibility"), str) else None
     if visibility is None:
         visibility = "private" if private is True else "public" if private is False else "unknown"
-    security = item.get("security_and_analysis")
-    secret_scanning = security.get("secret_scanning") if isinstance(security, dict) else None
-    feature_status = secret_scanning.get("status") if isinstance(secret_scanning, dict) else None
     return {
         "visibility": visibility,
         "isPrivate": private,
-        "scanningStatus": feature_status if isinstance(feature_status, str) else None,
     }
+
+
+def repository_secret_scanning_disabled(item: dict[str, Any]) -> bool:
+    security = item.get("security_and_analysis")
+    secret_scanning = security.get("secret_scanning") if isinstance(security, dict) else None
+    feature_status = secret_scanning.get("status") if isinstance(secret_scanning, dict) else None
+    return isinstance(feature_status, str) and feature_status.casefold() == "disabled"
 
 
 def secret_scanning_signal(
@@ -720,7 +723,6 @@ def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100)
     unknown_repository = {
         "visibility": "unknown",
         "isPrivate": None,
-        "scanningStatus": None,
     }
     if not verify_secret_scanning_actor(reader):
         return secret_scanning_signal(
@@ -752,7 +754,7 @@ def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100)
             status="unavailable",
             reason="public_repository_alert_api_unavailable",
         )
-    if repository_context["scanningStatus"] == "disabled":
+    if repository_secret_scanning_disabled(repository_item):
         return secret_scanning_signal(
             repository_context,
             status="not_enabled",

@@ -217,6 +217,7 @@ def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request
     assert data["status"] == "unavailable", data
     assert data["reason"] == "public_repository_alert_api_unavailable", data
     assert data["openAlertCount"] is None, data
+    assert "scanningStatus" not in data["repository"], data
     assert run.call_count == 2, run.call_args_list
     assert all(
         call.args[0][1:3] == ["--require-automation-auth", "api"]
@@ -356,6 +357,7 @@ def test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_r
         data = github_read.secret_scanning_status(reader, "o/r")
     assert data["status"] == "not_enabled", data
     assert data["reason"] == "secret_scanning_disabled", data
+    assert "scanningStatus" not in data["repository"], data
     assert run.call_count == 2, run.call_args_list
 
 
