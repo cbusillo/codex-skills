@@ -55,7 +55,7 @@ def process(stdout: bytes, *, returncode: int = 0, stderr: str = "") -> subproce
 def secret_scanning_reader() -> github_read.GitHubReader:
     return github_read.GitHubReader(
         gh_cmd="fake-gh",
-        operation="github.read.secret_scanning_status",
+        operation="github.read.redacted_secret_scanning_status",
         gh_prefix_args=github_read.automation_only_gh_prefix_args(),
         strict_actor=True,
     )
@@ -196,7 +196,7 @@ def test_reader_cli_operations_are_matrix_approved() -> None:
         "github.read.workflow_run",
         "github.read.workflow_jobs",
         "github.read.job_log",
-        "github.read.secret_scanning_status",
+        "github.read.redacted_secret_scanning_status",
         "github.read.repository",
     )
     for operation in operations:
@@ -213,7 +213,7 @@ def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request
     with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}):
         reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "unavailable", data
     assert data["reason"] == "public_repository_alert_api_unavailable", data
     assert data["openAlertCount"] is None, data
@@ -244,7 +244,7 @@ def test_secret_scanning_status_counts_findings_without_secret_material() -> Non
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     serialized = json.dumps({"data": data, "diagnostics": reader.diagnostics()})
     assert data["status"] == "findings", data
     assert data["openAlertCount"] == 1, data
@@ -266,9 +266,11 @@ def test_secret_scanning_status_preserves_hidden_values_on_followup_pages() -> N
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r", limit=3)
+        data = github_read.redacted_secret_scanning_status(reader, "o/r", limit=3)
     assert data["status"] == "findings", data
     assert data["openAlertCount"] == 2, data
+    serialized = json.dumps({"data": data, "diagnostics": reader.diagnostics()})
+    assert "first" not in serialized and "second" not in serialized, serialized
     followup_command = run.call_args_list[-1].args[0]
     assert any("hide_secret=true" in item for item in followup_command), followup_command
     assert any("state=open" in item for item in followup_command), followup_command
@@ -282,7 +284,7 @@ def test_secret_scanning_status_empty_alerts_is_clean() -> None:
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses):
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "clean", data
     assert data["openAlertCount"] == 0, data
     assert data["openAlertCountIsLowerBound"] is False, data
@@ -300,10 +302,10 @@ def test_secret_scanning_status_permission_denied_is_unavailable_without_fallbac
     with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}):
         reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "unavailable", data
     assert data["reason"] == "permission_limited", data
-    assert reader.diagnostics()["degradedComponents"] == ["secret_scanning_alerts_page_1"]
+    assert reader.diagnostics()["degradedComponents"] == ["security_alerts_page_1"]
     assert run.call_count == 3, run.call_args_list
     assert all(
         call.args[0][1:3] == ["--require-automation-auth", "api"]
@@ -320,9 +322,9 @@ def test_secret_scanning_status_404_is_ambiguous_and_never_clean() -> None:
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses):
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "unavailable", data
-    assert data["reason"] == "secret_scanning_404_ambiguous", data
+    assert data["reason"] == "alert_endpoint_404_ambiguous", data
     assert data["openAlertCount"] is None, data
 
 
@@ -336,7 +338,7 @@ def test_secret_scanning_status_repository_permission_failure_is_unavailable() -
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "unavailable", data
     assert data["reason"] == "repository_permission_or_visibility_limited", data
     assert data["repository"]["visibility"] == "unknown", data
@@ -354,9 +356,9 @@ def test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_r
     ]
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "not_enabled", data
-    assert data["reason"] == "secret_scanning_disabled", data
+    assert data["reason"] == "scanning_disabled", data
     assert "scanningStatus" not in data["repository"], data
     assert run.call_count == 2, run.call_args_list
 
@@ -364,7 +366,7 @@ def test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_r
 def test_secret_scanning_status_actor_mismatch_fails_closed_as_unavailable() -> None:
     reader = secret_scanning_reader()
     with patch("subprocess.run", return_value=process(include_output({"login": "octocat"}))) as run:
-        data = github_read.secret_scanning_status(reader, "o/r")
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
     assert data["status"] == "unavailable", data
     assert data["reason"] == "actor_mismatch", data
     diagnostics = reader.diagnostics()
@@ -389,7 +391,7 @@ def test_secret_scanning_status_rejects_actor_change_after_preflight() -> None:
     reader = secret_scanning_reader()
     with patch("subprocess.run", side_effect=responses) as run:
         try:
-            github_read.secret_scanning_status(reader, "o/r")
+            github_read.redacted_secret_scanning_status(reader, "o/r")
         except github_read.GitHubReadError as exc:
             assert exc.result.failure is not None
             assert exc.result.failure.cause == "actor_mismatch"
@@ -403,7 +405,7 @@ def test_secret_scanning_status_rejects_unbounded_limits_before_api_calls() -> N
     for limit in (0, 1001):
         with patch("subprocess.run") as run:
             try:
-                github_read.secret_scanning_status(reader, "o/r", limit=limit)
+                github_read.redacted_secret_scanning_status(reader, "o/r", limit=limit)
             except ValueError as exc:
                 assert "between 1 and 1000" in str(exc)
             else:
@@ -481,6 +483,29 @@ def test_reader_failed_request_dominates_aggregate_certainty() -> None:
     assert summary is not None
     assert summary.outcome_certainty == "not_applicable", summary
     assert summary.recommended_next_action == "inspect_last_failure", summary
+
+
+def test_request_diagnostic_redacts_failure_messages() -> None:
+    result = github_read.github_api_core.ApiResult(
+        ok=False,
+        status=500,
+        body=None,
+        failure=github_read.github_api_core.FailureDetail(
+            cause="network_provider_failure",
+            message="request failed token=ghp_should_never_escape",
+            retryable=True,
+            fallback_eligible=False,
+            disposition="retry_same_actor",
+        ),
+    )
+    diagnostic = github_read.request_diagnostic(
+        result,
+        method="GET",
+        path="/repos/o/r",
+        step="repository",
+    )
+    assert "ghp_should_never_escape" not in diagnostic["message"]
+    assert "[REDACTED]" in diagnostic["message"]
 
 
 def test_explicit_active_auth_actor_is_visible_and_degraded() -> None:
@@ -712,6 +737,7 @@ def main() -> None:
         test_secret_scanning_status_rejects_unbounded_limits_before_api_calls,
         test_secret_scanning_cli_reports_invalid_limit_as_input_validation,
         test_reader_failed_request_dominates_aggregate_certainty,
+        test_request_diagnostic_redacts_failure_messages,
         test_explicit_active_auth_actor_is_visible_and_degraded,
         test_permission_failure_is_explicit_and_degraded,
         test_rate_limit_failure_preserves_reset_metadata,

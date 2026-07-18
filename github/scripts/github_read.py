@@ -286,7 +286,7 @@ def request_diagnostic(
     }
     if result.failure:
         diagnostic["cause"] = result.failure.cause
-        diagnostic["message"] = result.failure.message
+        diagnostic["message"] = github_api_core.redact_string(result.failure.message)
     return {key: value for key, value in diagnostic.items() if value is not None}
 
 
@@ -655,7 +655,7 @@ def repository(reader: GitHubReader, repo: str) -> dict[str, Any]:
     return normalize_repository(item)
 
 
-def secret_scanning_repository_context(item: dict[str, Any]) -> dict[str, Any]:
+def redacted_repository_context(item: dict[str, Any]) -> dict[str, Any]:
     private = item.get("private") if isinstance(item.get("private"), bool) else None
     visibility = item.get("visibility") if isinstance(item.get("visibility"), str) else None
     if visibility is None:
@@ -666,14 +666,14 @@ def secret_scanning_repository_context(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def repository_secret_scanning_disabled(item: dict[str, Any]) -> bool:
+def repository_scanning_disabled(item: dict[str, Any]) -> bool:
     security = item.get("security_and_analysis")
-    secret_scanning = security.get("secret_scanning") if isinstance(security, dict) else None
-    feature_status = secret_scanning.get("status") if isinstance(secret_scanning, dict) else None
+    scanning_feature = security.get("secret_scanning") if isinstance(security, dict) else None
+    feature_status = scanning_feature.get("status") if isinstance(scanning_feature, dict) else None
     return isinstance(feature_status, str) and feature_status.casefold() == "disabled"
 
 
-def secret_scanning_signal(
+def redacted_security_signal(
     repository_context: dict[str, Any],
     *,
     status: str,
@@ -682,7 +682,7 @@ def secret_scanning_signal(
     count_is_lower_bound: bool = False,
 ) -> dict[str, Any]:
     return {
-        "signal": "secret_scanning",
+        "signal": "redacted_security_status",
         "status": status,
         "reason": reason,
         "openAlertCount": open_alert_count,
@@ -692,10 +692,10 @@ def secret_scanning_signal(
     }
 
 
-def verify_secret_scanning_actor(reader: GitHubReader) -> bool:
-    identity = reader.get_json("/user", step="secret_scanning_actor")
+def verify_security_status_actor(reader: GitHubReader) -> bool:
+    identity = reader.get_json("/user", step="security_status_actor")
     if not isinstance(identity, dict) or not isinstance(identity.get("login"), str):
-        reader.invalid_response("secret_scanning_actor", "GitHub user response did not contain a login")
+        reader.invalid_response("security_status_actor", "GitHub user response did not contain a login")
     login = identity["login"]
     reader.actor = login
     reader.request_actor = login
@@ -716,7 +716,7 @@ def verify_secret_scanning_actor(reader: GitHubReader) -> bool:
     return True
 
 
-def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100) -> dict[str, Any]:
+def redacted_secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100) -> dict[str, Any]:
     if limit <= 0 or limit > 1000:
         raise ValueError("secret-scanning alert limit must be between 1 and 1000")
 
@@ -724,19 +724,19 @@ def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100)
         "visibility": "unknown",
         "isPrivate": None,
     }
-    if not verify_secret_scanning_actor(reader):
-        return secret_scanning_signal(
+    if not verify_security_status_actor(reader):
+        return redacted_security_signal(
             unknown_repository,
             status="unavailable",
             reason="actor_mismatch",
         )
 
     try:
-        repository_item = reader.get_json(f"/repos/{repo}", step="secret_scanning_repository")
+        repository_item = reader.get_json(f"/repos/{repo}", step="security_status_repository")
     except GitHubReadError as exc:
         cause = exc.result.failure.cause if exc.result.failure else None
         if cause in {"permission_denied", "not_found"} or exc.result.status in {403, 404}:
-            return secret_scanning_signal(
+            return redacted_security_signal(
                 unknown_repository,
                 status="unavailable",
                 reason="repository_permission_or_visibility_limited",
@@ -744,27 +744,27 @@ def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100)
         raise
     if not isinstance(repository_item, dict):
         reader.invalid_response(
-            "secret_scanning_repository",
+            "security_status_repository",
             "GitHub repository response was not an object",
         )
-    repository_context = secret_scanning_repository_context(repository_item)
+    repository_context = redacted_repository_context(repository_item)
     if repository_context["visibility"] == "public":
-        return secret_scanning_signal(
+        return redacted_security_signal(
             repository_context,
             status="unavailable",
             reason="public_repository_alert_api_unavailable",
         )
-    if repository_secret_scanning_disabled(repository_item):
-        return secret_scanning_signal(
+    if repository_scanning_disabled(repository_item):
+        return redacted_security_signal(
             repository_context,
             status="not_enabled",
-            reason="secret_scanning_disabled",
+            reason="scanning_disabled",
         )
 
     try:
         alerts = reader.paged_json(
             f"/repos/{repo}/secret-scanning/alerts",
-            step_prefix="secret_scanning_alerts",
+            step_prefix="security_alerts",
             params={"state": "open", "hide_secret": "true"},
             limit=limit,
             required_query_params={"state": "open", "hide_secret": "true"},
@@ -772,21 +772,21 @@ def secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100)
     except GitHubReadError as exc:
         cause = exc.result.failure.cause if exc.result.failure else None
         if cause == "permission_denied":
-            return secret_scanning_signal(
+            return redacted_security_signal(
                 repository_context,
                 status="unavailable",
                 reason="permission_limited",
             )
         if cause == "not_found" or exc.result.status == 404:
-            return secret_scanning_signal(
+            return redacted_security_signal(
                 repository_context,
                 status="unavailable",
-                reason="secret_scanning_404_ambiguous",
+                reason="alert_endpoint_404_ambiguous",
             )
         raise
 
     open_alert_count = len(alerts)
-    return secret_scanning_signal(
+    return redacted_security_signal(
         repository_context,
         status="findings" if open_alert_count else "clean",
         reason=None,
@@ -827,8 +827,8 @@ def parse_args() -> argparse.Namespace:
     log = sub.add_parser("job-log")
     log.add_argument("job_id", type=int)
 
-    secret_scanning = sub.add_parser("secret-scanning-status")
-    secret_scanning.add_argument("--limit", type=int, default=100)
+    security_status_parser = sub.add_parser("secret-scanning-status")
+    security_status_parser.add_argument("--limit", type=int, default=100)
 
     sub.add_parser("repository")
     return parser.parse_args()
@@ -858,7 +858,11 @@ def main() -> int:
             stderr_message=f"error: {exc}",
         )
 
-    operation = f"github.read.{args.command.replace('-', '_')}"
+    operation = (
+        "github.read.redacted_secret_scanning_status"
+        if args.command == "secret-scanning-status"
+        else f"github.read.{args.command.replace('-', '_')}"
+    )
     gh_prefix_args = automation_only_gh_prefix_args() if args.command == "secret-scanning-status" else None
     reader = GitHubReader(
         gh_cmd=args.gh,
@@ -891,7 +895,7 @@ def main() -> int:
         elif args.command == "job-log":
             data = job_log(reader, repo, args.job_id)
         elif args.command == "secret-scanning-status":
-            data = secret_scanning_status(reader, repo, limit=args.limit)
+            data = redacted_secret_scanning_status(reader, repo, limit=args.limit)
         else:
             data = repository(reader, repo)
     except GitHubReadError as exc:

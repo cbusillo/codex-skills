@@ -404,7 +404,7 @@ source_refs = ["github/scripts/github_read.py:repository"]
 test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_matrix_approved", "github/scripts/test_github_read.py:test_matrix_approved_reader_retries_and_reports_attempts"]
 
 [[operations]]
-id = "github.read.secret_scanning_status"
+id = "github.read.redacted_secret_scanning_status"
 entrypoint = "github/scripts/github_read.py secret-scanning-status"
 intent = "Read a sanitized repository secret-scanning signal without emitting detected secret values or changing actor identity."
 current_transport = "rest_api"
@@ -417,7 +417,7 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "No retained GraphQL transport; repository visibility, actor verification, and secret-scanning alert status use REST while the result projects only status and counts."
-source_refs = ["github/scripts/github_read.py:secret_scanning_status", "github/scripts/github_api.py:is_repository_secret_scanning_alert_path", "github/scripts/gh-with-env-token:validate_sensitive_read_policy"]
+source_refs = ["github/scripts/github_read.py:redacted_secret_scanning_status", "github/scripts/github_api.py:is_repository_secret_scanning_alert_path", "github/scripts/gh-with-env-token:validate_sensitive_read_policy"]
 test_refs = ["github/scripts/test_github_read.py:test_secret_scanning_status_public_repo_is_unavailable_without_alert_request", "github/scripts/test_github_read.py:test_secret_scanning_status_counts_findings_without_secret_material", "github/scripts/test_github_read.py:test_secret_scanning_status_permission_denied_is_unavailable_without_fallback", "github/scripts/test_github_api.py:test_call_cli_refuses_raw_repository_secret_scanning_operations", "github/scripts/validate-gh-issue.sh"]
 
 [[operations]]
