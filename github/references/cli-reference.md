@@ -192,6 +192,42 @@ stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
 
+### Security Signal Reads
+
+Use the shared REST reader for repository secret-scanning status:
+
+```sh
+uv run github/scripts/github_read.py \
+  --repo OWNER/REPO \
+  secret-scanning-status
+```
+
+The command verifies the configured automation actor, reads repository
+visibility, and requests only open alerts with `hide_secret=true`. Its result
+contains a status and count, never raw alerts or detected secret values. The
+status is one of `clean`, `findings`, `unavailable`, or `not_enabled`;
+`unavailable` and `not_enabled` are never evidence that the repository is
+clean. Public repositories report `unavailable` because GitHub's repository
+alerts endpoint does not provide that signal for public repositories even
+though public secret scanning still runs.
+
+This operation is automation-only. It removes
+`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK`, sets
+`GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`, verifies the authenticated login
+against the expected bot actor, and does not retry permission or ambiguous
+`404` results under active user authentication. The wrapper snapshots the
+requirement before loading its env file, so local configuration cannot re-enable
+fallback for this command.
+Do not read `/secret-scanning/alerts` through raw `gh api`, generic HTTP
+clients, or `github_api.py call`. The skill routes those commands to this
+reader, the generic API CLI refuses raw repository alert operations, and the token
+wrapper admits the reader's underlying request only when automation auth is
+required and the exact generated GET retains `state=open` and
+`hide_secret=true`.
+Use `--limit` to bound the number of open alerts counted; the default is `100`
+and the accepted range is `1` through `1000`. A count at the requested limit is
+reported as a lower bound.
+
 ### Runtime Checkout Reconciliation
 
 Run the reconciler from landed repo-local source after GitHub confirms the final
@@ -379,6 +415,8 @@ closed without changing actor when automation auth is missing, rejected, or
 rate-limited. Write-like commands also require the authenticated login to match
 `shiny-code-bot`. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
 an explicitly approved one-off command whose human-owned actor is acceptable.
+`GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
+it overrides the fallback setting even when an env file enables fallback.
 Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
 different env file should be used.
 

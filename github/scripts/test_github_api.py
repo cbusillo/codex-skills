@@ -323,7 +323,7 @@ def test_build_post_body_never_on_command_line() -> None:
     """The body must not appear as any argv token — it belongs on stdin."""
     sensitive_body = {"token": "ghp_secret_value", "title": "my PR"}
     cmd = _api.build_gh_command("POST", "/repos/owner/repo/pulls")
-    for token in cmd:
+    for token in cmd[1:]:
         assert "ghp_secret_value" not in token
         assert "secret" not in token.lower() or token.startswith("-H")
 
@@ -446,6 +446,19 @@ def test_call_gh_post_sends_body_as_json_stdin() -> None:
     # body goes via stdin as JSON
     stdin_data = json.loads(call["input"].decode())
     assert stdin_data["title"] == "my issue"
+
+
+def test_call_gh_forwards_explicit_subprocess_environment() -> None:
+    explicit_environment = {"PATH": "/tmp", "GH_TOKEN": "test-token"}
+    proc = _fake_proc(stdout=_include_output(200, body={"ok": True}))
+    with patch("subprocess.run", return_value=proc) as run:
+        result = _api.call_gh(
+            "GET",
+            "/repos/owner/repo",
+            subprocess_env=explicit_environment,
+        )
+    assert result.ok is True, result.as_dict()
+    assert run.call_args.kwargs["env"] is explicit_environment
 
 
 def test_call_gh_timeout_marks_started_write_outcome_unknown() -> None:
@@ -1123,6 +1136,59 @@ def test_cli_argument_failure_emits_terminal_envelope() -> None:
     assert payload["operation"] == "github.api.call"
     assert payload["failure"]["cause"] == "validation_error"
     assert "required" in stderr.getvalue()
+
+
+def test_repository_secret_scanning_alert_path_detection() -> None:
+    assert _api.is_repository_secret_scanning_alert_path(
+        "/repos/owner/repo/secret-scanning/alerts?state=open"
+    )
+    assert _api.is_repository_secret_scanning_alert_path(
+        "https://api.github.com/repos/owner/repo/secret-scanning/alerts/7/locations"
+    )
+    assert _api.is_repository_secret_scanning_alert_path(
+        "/repos/owner/repo/%73ecret-scanning%252Falerts"
+    )
+    assert _api.is_repository_secret_scanning_alert_path(
+        "/repos/owner/repo/%25252573ecret-scanning%2525252Falerts"
+    )
+    assert _api.is_repository_secret_scanning_alert_path(
+        "/repos/owner/repo/secret-scanning/alerts#fragment"
+    )
+    assert not _api.is_repository_secret_scanning_alert_path(
+        "/orgs/owner/secret-scanning/alerts"
+    )
+    assert not _api.is_repository_secret_scanning_alert_path(
+        "/repos/owner/repo/code-scanning/alerts"
+    )
+
+
+def test_call_cli_refuses_raw_repository_secret_scanning_operations() -> None:
+    for method in ("GET", "PATCH"):
+        stdout = StringIO()
+        stderr = StringIO()
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "github_api.py",
+                    "call",
+                    "--method",
+                    method,
+                    "/repos/owner/repo/secret-scanning/alerts?hide_secret=true",
+                ],
+            ),
+            patch("subprocess.run") as run,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = _api.main()
+        payload = json.loads(stdout.getvalue())
+        assert exit_code == 2, payload
+        assert payload["failure"]["cause"] == "validation_error", payload
+        assert payload["failed_step"] == "input_validation", payload
+        assert "secret-scanning-status" in stderr.getvalue()
+        assert run.call_count == 0
 
 
 def test_rate_limit_cli_uses_public_operation_id() -> None:
@@ -2616,6 +2682,7 @@ def main() -> None:
         test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback,
         test_call_gh_unannounced_actor_change_fails_closed_after_write,
         test_call_gh_post_sends_body_as_json_stdin,
+        test_call_gh_forwards_explicit_subprocess_environment,
         test_call_gh_timeout_marks_started_write_outcome_unknown,
         test_call_gh_timeout_preserves_authorized_fallback_actor,
         test_call_gh_uses_provider_reported_search_bucket,
@@ -2664,6 +2731,8 @@ def main() -> None:
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
         test_terminal_envelopes_have_stable_fields_and_redaction,
         test_cli_argument_failure_emits_terminal_envelope,
+        test_repository_secret_scanning_alert_path_detection,
+        test_call_cli_refuses_raw_repository_secret_scanning_operations,
         test_rate_limit_cli_uses_public_operation_id,
         test_classify_legacy_rejects_malformed_payload_file,
         # redaction

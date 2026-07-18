@@ -40,6 +40,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
@@ -808,6 +809,18 @@ def _is_graphql_rate_limit_body(body: Any) -> bool:
 def is_graphql_path(path: str) -> bool:
     normalized = path.split("?", 1)[0].rstrip("/").lower()
     return normalized == "graphql" or normalized.endswith("/graphql")
+
+
+def is_repository_secret_scanning_alert_path(path: str) -> bool:
+    parsed = urllib.parse.urlsplit(path)
+    candidate = parsed.path
+    while True:
+        decoded = urllib.parse.unquote(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
+    normalized = f"/{candidate.lstrip('/')}"
+    return bool(re.fullmatch(r"/repos/[^/]+/[^/]+/secret-scanning/alerts(?:/.*)?", normalized))
 
 
 def infer_api_bucket(path: str) -> str:
@@ -2750,6 +2763,7 @@ def call_gh(
     bucket: Optional[str] = None,
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
+    subprocess_env: Optional[dict[str, str]] = None,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -2832,6 +2846,7 @@ def call_gh(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as exc:
         return subprocess_timeout_result(
@@ -3063,6 +3078,7 @@ def call_gh_with_retry(
     retry_runtime: Optional[RetryRuntime] = None,
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
+    subprocess_env: Optional[dict[str, str]] = None,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3094,6 +3110,7 @@ def call_gh_with_retry(
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
             timeout_seconds=timeout_seconds,
+            subprocess_env=subprocess_env,
         )
 
     return run_with_retry(
@@ -3249,6 +3266,33 @@ def main() -> int:
                 failed_step="argument_parsing",
             ),
             stderr_message=f"error: {exc}",
+        )
+
+    if args.cmd == "call" and is_repository_secret_scanning_alert_path(args.path):
+        failure = FailureDetail(
+            cause="validation_error",
+            message=(
+                "Raw repository secret-scanning alert operations are disabled; use "
+                "github/scripts/github_read.py --repo OWNER/REPO secret-scanning-status for reads"
+            ),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            failed_step="input_validation",
+        )
+        return emit_terminal(
+            terminal_failure(
+                failure,
+                operation=args.operation,
+                actor=args.actor,
+                expected_actor=args.expected_actor,
+                host=args.host,
+                transport=TRANSPORT,
+                bucket=args.bucket or "rest_core",
+                exit_code=2,
+                failed_step="input_validation",
+            ),
+            stderr_message=f"error: {failure.message}",
         )
 
     captured_stderr = ""

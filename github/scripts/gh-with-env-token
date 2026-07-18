@@ -19,6 +19,7 @@ fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-shiny-code-bot}
 print_auth_account=0
+require_automation_auth=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
@@ -26,6 +27,13 @@ stdin_file=$(mktemp)
 stdin_captured=0
 
 trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
+
+case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
+1 | true | TRUE | yes | YES)
+	require_automation_auth=1
+	;;
+esac
+readonly require_automation_auth
 
 case "${1:-}" in
 --print-auth-account)
@@ -61,6 +69,9 @@ run_with_input() {
 }
 
 allows_active_auth_fallback() {
+	if [ "$require_automation_auth" -eq 1 ]; then
+		return 1
+	fi
 	case "${GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK:-}" in
 	1 | true | TRUE | yes | YES)
 		return 0
@@ -209,6 +220,146 @@ is_write_command() {
 	return 1
 }
 
+validate_sensitive_read_policy() {
+	"$python_command" - "$require_automation_auth" "$@" <<'PY'
+import re
+import sys
+import urllib.parse
+
+require_automation_auth = sys.argv[1] == "1"
+arguments = sys.argv[2:]
+
+
+def decoded_path(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    path = parsed.path
+    while True:
+        decoded = urllib.parse.unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    return f"/{path.lstrip('/')}"
+
+
+def is_sensitive_endpoint(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"/repos/[^/]+/[^/]+/secret-scanning/alerts(?:/.*)?",
+            decoded_path(value),
+        )
+    )
+
+
+def reject() -> None:
+    print("error: raw repository secret-scanning alert operations are disabled", file=sys.stderr)
+    print(
+        "hint: use github/scripts/github_read.py --repo OWNER/REPO secret-scanning-status for reads",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+try:
+    api_index = arguments.index("api")
+except ValueError:
+    raise SystemExit(0)
+
+api_arguments = arguments[api_index + 1 :]
+endpoints = [argument for argument in api_arguments if is_sensitive_endpoint(argument)]
+if not endpoints:
+    raise SystemExit(0)
+if len(endpoints) != 1 or not require_automation_auth:
+    reject()
+
+endpoint = endpoints[0]
+methods = []
+headers = []
+include_count = 0
+endpoint_count = 0
+invalid_argument = False
+index = 0
+while index < len(api_arguments):
+    argument = api_arguments[index]
+    if argument == endpoint:
+        endpoint_count += 1
+        index += 1
+    elif argument in {"--method", "-X"}:
+        if index + 1 >= len(api_arguments):
+            invalid_argument = True
+            break
+        methods.append(api_arguments[index + 1].upper())
+        index += 2
+    elif argument.startswith("--method="):
+        methods.append(argument.split("=", 1)[1].upper())
+        index += 1
+    elif argument.startswith("-X") and argument != "-X":
+        methods.append(argument[2:].upper())
+        index += 1
+    elif argument in {"--include", "-i"}:
+        include_count += 1
+        index += 1
+    elif argument in {"--header", "-H"}:
+        if index + 1 >= len(api_arguments):
+            invalid_argument = True
+            break
+        headers.append(api_arguments[index + 1])
+        index += 2
+    elif argument.startswith("--header="):
+        headers.append(argument.split("=", 1)[1])
+        index += 1
+    elif argument.startswith("-H") and argument != "-H":
+        headers.append(argument[2:])
+        index += 1
+    else:
+        invalid_argument = True
+        index += 1
+
+parsed_endpoint = urllib.parse.urlsplit(endpoint)
+query = urllib.parse.parse_qs(parsed_endpoint.query, keep_blank_values=True)
+header_name, header_separator, header_value = headers[0].partition(":") if len(headers) == 1 else ("", "", "")
+allowed_header = (
+    header_name.strip().casefold() == "x-github-api-version"
+    and header_separator == ":"
+    and header_value.strip() == "2022-11-28"
+)
+allowed_query_keys = {"state", "hide_secret", "per_page", "page"}
+per_page_values = query.get("per_page", [])
+page_values = query.get("page", [])
+valid_per_page = not per_page_values or (
+    len(per_page_values) == 1
+    and per_page_values[0].isdigit()
+    and 1 <= int(per_page_values[0]) <= 100
+)
+valid_page = not page_values or (
+    len(page_values) == 1
+    and page_values[0].isdigit()
+    and int(page_values[0]) >= 1
+)
+is_collection = bool(
+    re.fullmatch(
+        r"/repos/[^/]+/[^/]+/secret-scanning/alerts",
+        decoded_path(endpoint),
+    )
+)
+if (
+    invalid_argument
+    or endpoint_count != 1
+    or methods != ["GET"]
+    or include_count != 1
+    or len(headers) != 1
+    or not allowed_header
+    or not is_collection
+    or parsed_endpoint.fragment
+    or not set(query).issubset(allowed_query_keys)
+    or query.get("state") != ["open"]
+    or query.get("hide_secret") != ["true"]
+    or not valid_per_page
+    or not valid_page
+):
+    reject()
+PY
+}
+
 active_auth_login() {
 	env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" api user --jq .login 2>/dev/null || true
 }
@@ -243,7 +394,11 @@ refuse_active_auth_fallback() {
 		return 1
 	fi
 	echo "error: $reason; refusing to use active local gh auth" >&2
-	echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot, or set GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 for an explicitly approved one-off" >&2
+	if [ "$require_automation_auth" -eq 1 ]; then
+		echo "hint: this command requires configured automation authentication" >&2
+	else
+		echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot, or set GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 for an explicitly approved one-off" >&2
+	fi
 	return 0
 }
 
@@ -312,6 +467,10 @@ print_account() {
 	echo "gh auth status ($label):" >&2
 	"$gh_command" auth status >&2 || true
 }
+
+if ! validate_sensitive_read_policy "$@"; then
+	exit 2
+fi
 
 if [ -z "${GH_TOKEN:-}" ]; then
 	if refuse_active_auth_fallback "no automation gh token found"; then
