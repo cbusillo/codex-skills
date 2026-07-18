@@ -366,6 +366,17 @@ Report GitHub security/quality signal outcomes explicitly:
 
 Do not treat unavailable or not-enabled signals as clean.
 
+For repository secret-scanning status, use
+`uv run github/scripts/github_read.py --repo OWNER/REPO secret-scanning-status`.
+The reader is automation-only, forces `hide_secret=true`, and emits only status,
+counts, actor evidence, and diagnostics. It does not return raw alert records or
+detected secret values. Public repositories report `unavailable` because the
+repository alerts API does not expose their signal; private-repository `403` or
+ambiguous `404` results also remain unavailable rather than triggering active
+user authentication or being interpreted as clean. Do not bypass this projection
+with raw `gh api`, `github_api.py call`, or generic HTTP requests; raw alert
+operations are unsupported, and status reads route through the sanitized helper.
+
 ## Safe Hygiene
 
 Automatic cleanup is only for unambiguous cases. Ask before deleting when more

@@ -61,12 +61,16 @@ class GitHubReader:
         expected_actor: Optional[str] = EXPECTED_ACTOR,
         operation: str = "github.read",
         actor: Optional[str] = None,
+        gh_prefix_args: Optional[list[str]] = None,
+        strict_actor: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
         self.expected_actor = expected_actor
         self.operation = operation
         self.actor = actor
         self.request_actor = actor
+        self.gh_prefix_args = list(gh_prefix_args or [])
+        self.strict_actor = strict_actor
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
         self.results: list[github_api_core.ApiResult] = []
@@ -79,6 +83,7 @@ class GitHubReader:
             method,
             path,
             gh_cmd=self.gh_cmd,
+            gh_prefix_args=self.gh_prefix_args,
             operation=self.operation,
             actor=self.request_actor,
             expected_actor=self.expected_actor,
@@ -87,6 +92,7 @@ class GitHubReader:
             failed_step=step,
             is_write=False,
         )
+        actor_mismatch = False
         if result.actor:
             if self.expected_actor and self.expected_actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
@@ -94,6 +100,7 @@ class GitHubReader:
                     "actor_mismatch",
                     f"GitHub read ran as '{result.actor}', expected '{self.expected_actor}'",
                 )
+                actor_mismatch = True
             elif self.actor and self.actor.casefold() != result.actor.casefold():
                 self.mark_degraded(
                     "actor",
@@ -101,6 +108,23 @@ class GitHubReader:
                     f"GitHub actor changed from '{self.actor}' to '{result.actor}' during one read operation",
                 )
             self.actor = result.actor
+        if actor_mismatch and self.strict_actor:
+            result.ok = False
+            result.expected_actor = self.expected_actor
+            result.failed_step = step
+            result.failure = github_api_core.FailureDetail(
+                cause="actor_mismatch",
+                message=(
+                    f"Authenticated actor '{result.actor}' does not match "
+                    f"expected actor '{self.expected_actor}'"
+                ),
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                completed_steps=list(self.completed_steps),
+                failed_step=step,
+                request_id=result.request_id,
+            )
         self.last_result = result
         self.results.append(result)
         self.requests.append(request_diagnostic(result, method=method, path=path, step=step))
@@ -130,6 +154,7 @@ class GitHubReader:
         collection_key: Optional[str] = None,
         limit: Optional[int] = None,
         item_filter: Optional[Callable[[dict[str, Any]], bool]] = None,
+        required_query_params: Optional[dict[str, Any]] = None,
     ) -> list[dict[str, Any]]:
         if limit is not None and limit <= 0:
             return []
@@ -159,6 +184,8 @@ class GitHubReader:
             link_header = result.headers.get("link")
             if link_header is not None:
                 next_path = next_link(link_header)
+                if next_path and required_query_params:
+                    next_path = replace_query_params(next_path, required_query_params)
             elif len(page_items) < per_page:
                 next_path = None
             else:
@@ -220,6 +247,10 @@ class GitHubReader:
         )
 
 
+def automation_only_gh_prefix_args() -> list[str]:
+    return ["--require-automation-auth"]
+
+
 def request_diagnostic(
     result: github_api_core.ApiResult,
     *,
@@ -255,13 +286,25 @@ def request_diagnostic(
     }
     if result.failure:
         diagnostic["cause"] = result.failure.cause
-        diagnostic["message"] = result.failure.message
+        diagnostic["message"] = github_api_core.redact_string(result.failure.message)
     return {key: value for key, value in diagnostic.items() if value is not None}
 
 
 def path_with_query(path: str, params: dict[str, Any]) -> str:
     separator = "&" if "?" in path else "?"
     return f"{path}{separator}{urllib.parse.urlencode(params, doseq=True)}"
+
+
+def replace_query_params(path: str, params: dict[str, Any]) -> str:
+    parsed = urllib.parse.urlsplit(path)
+    replacements = {str(key): str(value) for key, value in params.items()}
+    query = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in replacements
+    ]
+    query.extend(replacements.items())
+    return urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
 
 
 def next_link(link_header: Optional[str]) -> Optional[str]:
@@ -612,6 +655,146 @@ def repository(reader: GitHubReader, repo: str) -> dict[str, Any]:
     return normalize_repository(item)
 
 
+def redacted_repository_context(item: dict[str, Any]) -> dict[str, Any]:
+    private = item.get("private") if isinstance(item.get("private"), bool) else None
+    visibility = item.get("visibility") if isinstance(item.get("visibility"), str) else None
+    if visibility is None:
+        visibility = "private" if private is True else "public" if private is False else "unknown"
+    return {
+        "visibility": visibility,
+        "isPrivate": private,
+    }
+
+
+def repository_scanning_disabled(item: dict[str, Any]) -> bool:
+    security = item.get("security_and_analysis")
+    scanning_feature = security.get("secret_scanning") if isinstance(security, dict) else None
+    feature_status = scanning_feature.get("status") if isinstance(scanning_feature, dict) else None
+    return isinstance(feature_status, str) and feature_status.casefold() == "disabled"
+
+
+def redacted_security_signal(
+    repository_context: dict[str, Any],
+    *,
+    status: str,
+    reason: Optional[str],
+    open_alert_count: Optional[int] = None,
+    count_is_lower_bound: bool = False,
+) -> dict[str, Any]:
+    return {
+        "signal": "redacted_security_status",
+        "status": status,
+        "reason": reason,
+        "openAlertCount": open_alert_count,
+        "openAlertCountIsLowerBound": count_is_lower_bound,
+        "literalValuesHidden": True,
+        "repository": repository_context,
+    }
+
+
+def verify_security_status_actor(reader: GitHubReader) -> bool:
+    identity = reader.get_json("/user", step="security_status_actor")
+    if not isinstance(identity, dict) or not isinstance(identity.get("login"), str):
+        reader.invalid_response("security_status_actor", "GitHub user response did not contain a login")
+    login = identity["login"]
+    reader.actor = login
+    reader.request_actor = login
+    if reader.last_result is not None:
+        reader.last_result.actor = login
+        if reader.last_result.retry_summary is not None:
+            reader.last_result.retry_summary.last_actor = login
+    if reader.requests:
+        reader.requests[-1]["actor"] = login
+        reader.requests[-1]["lastActor"] = login
+    if reader.expected_actor and reader.expected_actor.casefold() != login.casefold():
+        reader.mark_degraded(
+            "actor",
+            "actor_mismatch",
+            f"GitHub secret-scanning read ran as '{login}', expected '{reader.expected_actor}'",
+        )
+        return False
+    return True
+
+
+def redacted_secret_scanning_status(reader: GitHubReader, repo: str, *, limit: int = 100) -> dict[str, Any]:
+    if limit <= 0 or limit > 1000:
+        raise ValueError("secret-scanning alert limit must be between 1 and 1000")
+
+    unknown_repository = {
+        "visibility": "unknown",
+        "isPrivate": None,
+    }
+    if not verify_security_status_actor(reader):
+        return redacted_security_signal(
+            unknown_repository,
+            status="unavailable",
+            reason="actor_mismatch",
+        )
+
+    try:
+        repository_item = reader.get_json(f"/repos/{repo}", step="security_status_repository")
+    except GitHubReadError as exc:
+        cause = exc.result.failure.cause if exc.result.failure else None
+        if cause in {"permission_denied", "not_found"} or exc.result.status in {403, 404}:
+            return redacted_security_signal(
+                unknown_repository,
+                status="unavailable",
+                reason="repository_permission_or_visibility_limited",
+            )
+        raise
+    if not isinstance(repository_item, dict):
+        reader.invalid_response(
+            "security_status_repository",
+            "GitHub repository response was not an object",
+        )
+    repository_context = redacted_repository_context(repository_item)
+    if repository_context["visibility"] == "public":
+        return redacted_security_signal(
+            repository_context,
+            status="unavailable",
+            reason="public_repository_alert_api_unavailable",
+        )
+    if repository_scanning_disabled(repository_item):
+        return redacted_security_signal(
+            repository_context,
+            status="not_enabled",
+            reason="scanning_disabled",
+        )
+
+    try:
+        alerts = reader.paged_json(
+            f"/repos/{repo}/secret-scanning/alerts",
+            step_prefix="security_alerts",
+            params={"state": "open", "hide_secret": "true"},
+            limit=limit,
+            required_query_params={"state": "open", "hide_secret": "true"},
+        )
+    except GitHubReadError as exc:
+        cause = exc.result.failure.cause if exc.result.failure else None
+        if cause == "permission_denied":
+            return redacted_security_signal(
+                repository_context,
+                status="unavailable",
+                reason="permission_limited",
+            )
+        if cause == "not_found" or exc.result.status == 404:
+            return redacted_security_signal(
+                repository_context,
+                status="unavailable",
+                reason="alert_endpoint_404_ambiguous",
+            )
+        raise
+
+    open_alert_count = len(alerts)
+    return redacted_security_signal(
+        repository_context,
+        status="findings" if open_alert_count else "clean",
+        reason=None,
+        open_alert_count=open_alert_count,
+        count_is_lower_bound=open_alert_count >= limit,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = github_api_core.TerminalArgumentParser(description="Shared paged REST readers for GitHub metadata.")
     parser.add_argument("--gh", default=DEFAULT_GH, help="Path to gh or gh-with-env-token.")
@@ -644,6 +827,9 @@ def parse_args() -> argparse.Namespace:
     log = sub.add_parser("job-log")
     log.add_argument("job_id", type=int)
 
+    security_status_parser = sub.add_parser("secret-scanning-status")
+    security_status_parser.add_argument("--limit", type=int, default=100)
+
     sub.add_parser("repository")
     return parser.parse_args()
 
@@ -672,8 +858,19 @@ def main() -> int:
             stderr_message=f"error: {exc}",
         )
 
-    operation = f"github.read.{args.command.replace('-', '_')}"
-    reader = GitHubReader(gh_cmd=args.gh, expected_actor=EXPECTED_ACTOR, operation=operation)
+    operation = (
+        "github.read.redacted_secret_scanning_status"
+        if args.command == "secret-scanning-status"
+        else f"github.read.{args.command.replace('-', '_')}"
+    )
+    gh_prefix_args = automation_only_gh_prefix_args() if args.command == "secret-scanning-status" else None
+    reader = GitHubReader(
+        gh_cmd=args.gh,
+        expected_actor=EXPECTED_ACTOR,
+        operation=operation,
+        gh_prefix_args=gh_prefix_args,
+        strict_actor=args.command == "secret-scanning-status",
+    )
     try:
         repo_root = pathlib.Path(args.repo_root).resolve()
         repo = resolve_repo(repo_root, args.repo)
@@ -697,6 +894,8 @@ def main() -> int:
             data = workflow_jobs(reader, repo, args.run_id)
         elif args.command == "job-log":
             data = job_log(reader, repo, args.job_id)
+        elif args.command == "secret-scanning-status":
+            data = redacted_secret_scanning_status(reader, repo, limit=args.limit)
         else:
             data = repository(reader, repo)
     except GitHubReadError as exc:
@@ -727,7 +926,31 @@ def main() -> int:
             ),
             stderr_message=f"error: {exc}",
         )
-    except (GitHubReadShapeError, ValueError) as exc:
+    except ValueError as exc:
+        failure = github_api_core.FailureDetail(
+            cause="validation_error",
+            message=str(exc),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            completed_steps=list(reader.completed_steps),
+            failed_step="input_validation",
+        )
+        return github_api_core.emit_terminal(
+            github_api_core.terminal_failure(
+                failure,
+                operation=operation,
+                payload={"diagnostics": reader.diagnostics()},
+                expected_actor=EXPECTED_ACTOR,
+                transport="rest_api",
+                bucket="rest_core",
+                exit_code=2,
+                completed_steps=reader.completed_steps,
+                failed_step="input_validation",
+            ),
+            stderr_message=f"error: {exc}",
+        )
+    except GitHubReadShapeError as exc:
         failure = github_api_core.FailureDetail(
             cause="validation_error",
             message=str(exc),

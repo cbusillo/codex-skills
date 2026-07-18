@@ -330,6 +330,7 @@ grep -q 'Logged in to github.com account code-bot' "$stderr_log"
 
 if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_ENV_LOG="$env_log" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
 	"$repo_root/github/scripts/gh-with-env-token" --print-auth-account rate-limited-command \
 	>"$stdout_log" 2>"$stderr_log"; then
@@ -340,6 +341,137 @@ fi
 grep -q 'error: automation gh request was rate-limited; refusing to use active local gh auth' "$stderr_log"
 grep -q 'GraphQL: API rate limit already exceeded' "$stderr_log"
 grep -q 'gh auth status (automation token):' "$stderr_log"
+
+printf 'CODEX_GITHUB_TOKEN=codex-token\nGH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1\n' \
+	>"$tmpdir/automation-only.env"
+if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/automation-only.env" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" --require-automation-auth \
+	rate-limited-command \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: automation-only mode must override fallback enabled by the env file" >&2
+	exit 1
+fi
+
+grep -q 'error: automation gh request was rate-limited; refusing to use active local gh auth' "$stderr_log"
+grep -q 'hint: this command requires configured automation authentication' "$stderr_log"
+if grep -q 'active-success' "$stdout_log"; then
+	echo "error: automation-only mode used active gh auth" >&2
+	exit 1
+fi
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET \
+	/repos/owner/repo/secret-scanning/alerts \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: raw secret-scanning reads must use the sanitized reader" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+grep -q 'secret-scanning-status' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: secret-scanning reads must force hide_secret=true" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=false&hide_secret=true' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: conflicting hide_secret parameters must be rejected" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method PATCH --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=true' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: ambiguous methods must not admit a raw secret-scanning request" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2026-01-01' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=true' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: non-generated API-version headers must be rejected" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+if PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=true&unexpected=value' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: non-generated query parameters must be rejected" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/%25252573ecret-scanning%2525252Falerts?state=open&hide_secret=true' \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: no-token fallback bypassed the sensitive-read guard" >&2
+	exit 1
+fi
+
+grep -q 'error: raw repository secret-scanning alert operations are disabled' "$stderr_log"
+
+: >"$env_log"
+PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" --require-automation-auth \
+	api --method GET --include \
+	-H 'X-GitHub-Api-Version: 2022-11-28' \
+	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=true' \
+	>"$stdout_log" 2>"$stderr_log"
+
+grep -qx 'codex-token' "$env_log"
 
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \

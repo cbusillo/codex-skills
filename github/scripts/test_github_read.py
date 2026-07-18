@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
@@ -47,6 +50,15 @@ def include_output(
 
 def process(stdout: bytes, *, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[bytes]:
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr.encode())
+
+
+def secret_scanning_reader() -> github_read.GitHubReader:
+    return github_read.GitHubReader(
+        gh_cmd="fake-gh",
+        operation="github.read.redacted_secret_scanning_status",
+        gh_prefix_args=github_read.automation_only_gh_prefix_args(),
+        strict_actor=True,
+    )
 
 
 def test_issue_reader_paginates_and_filters_pull_requests() -> None:
@@ -184,12 +196,250 @@ def test_reader_cli_operations_are_matrix_approved() -> None:
         "github.read.workflow_run",
         "github.read.workflow_jobs",
         "github.read.job_log",
+        "github.read.redacted_secret_scanning_status",
         "github.read.repository",
     )
     for operation in operations:
         rule, error = github_read.github_api_core.operation_retry_rule(operation)
         assert error is None, (operation, error)
         assert rule is not None and rule.retry_eligibility == "safe", (operation, rule)
+
+
+def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"private": False, "visibility": "public"})),
+    ]
+    with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}):
+        reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "unavailable", data
+    assert data["reason"] == "public_repository_alert_api_unavailable", data
+    assert data["openAlertCount"] is None, data
+    assert "scanningStatus" not in data["repository"], data
+    assert run.call_count == 2, run.call_args_list
+    assert all(
+        call.args[0][1:3] == ["--require-automation-auth", "api"]
+        and "env" not in call.kwargs
+        for call in run.call_args_list
+    )
+
+
+def test_secret_scanning_status_counts_findings_without_secret_material() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({
+            "private": True,
+            "visibility": "private",
+            "security_and_analysis": {"secret_scanning": {"status": "enabled"}},
+        })),
+        process(include_output([{
+            "number": 7,
+            "state": "open",
+            "secret": "ghp_should_never_escape",
+            "secret_type": "github_personal_access_token",
+            "locations_url": "https://api.github.com/repos/o/r/secret-scanning/alerts/7/locations",
+        }])),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    serialized = json.dumps({"data": data, "diagnostics": reader.diagnostics()})
+    assert data["status"] == "findings", data
+    assert data["openAlertCount"] == 1, data
+    assert data["literalValuesHidden"] is True, data
+    assert "alerts" not in data, data
+    assert "ghp_should_never_escape" not in serialized, serialized
+    command = run.call_args_list[-1].args[0]
+    assert any("hide_secret=true" in item for item in command), command
+    assert not any("hide_secret=True" in item for item in command), command
+
+
+def test_secret_scanning_status_preserves_hidden_values_on_followup_pages() -> None:
+    next_page = "https://api.github.com/repos/o/r/secret-scanning/alerts?page=2&per_page=3"
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"private": True, "visibility": "private"})),
+        process(include_output([{"secret": "first"}], headers={"link": f'<{next_page}>; rel="next"'})),
+        process(include_output([{"secret": "second"}])),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r", limit=3)
+    assert data["status"] == "findings", data
+    assert data["openAlertCount"] == 2, data
+    serialized = json.dumps({"data": data, "diagnostics": reader.diagnostics()})
+    assert "first" not in serialized and "second" not in serialized, serialized
+    followup_command = run.call_args_list[-1].args[0]
+    assert any("hide_secret=true" in item for item in followup_command), followup_command
+    assert any("state=open" in item for item in followup_command), followup_command
+
+
+def test_secret_scanning_status_empty_alerts_is_clean() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"private": True, "visibility": "private"})),
+        process(include_output([])),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses):
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "clean", data
+    assert data["openAlertCount"] == 0, data
+    assert data["openAlertCountIsLowerBound"] is False, data
+
+
+def test_secret_scanning_status_permission_denied_is_unavailable_without_fallback() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"private": True, "visibility": "private"})),
+        process(
+            include_output({"message": "Resource not accessible by integration"}, status=403),
+            returncode=1,
+        ),
+    ]
+    with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}):
+        reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "unavailable", data
+    assert data["reason"] == "permission_limited", data
+    assert reader.diagnostics()["degradedComponents"] == ["security_alerts_page_1"]
+    assert run.call_count == 3, run.call_args_list
+    assert all(
+        call.args[0][1:3] == ["--require-automation-auth", "api"]
+        and "env" not in call.kwargs
+        for call in run.call_args_list
+    )
+
+
+def test_secret_scanning_status_404_is_ambiguous_and_never_clean() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"private": True, "visibility": "private"})),
+        process(include_output({"message": "Not Found"}, status=404), returncode=1),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses):
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "unavailable", data
+    assert data["reason"] == "alert_endpoint_404_ambiguous", data
+    assert data["openAlertCount"] is None, data
+
+
+def test_secret_scanning_status_repository_permission_failure_is_unavailable() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(
+            include_output({"message": "Resource not accessible by integration"}, status=403),
+            returncode=1,
+        ),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "unavailable", data
+    assert data["reason"] == "repository_permission_or_visibility_limited", data
+    assert data["repository"]["visibility"] == "unknown", data
+    assert run.call_count == 2, run.call_args_list
+
+
+def test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_request() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({
+            "private": True,
+            "visibility": "private",
+            "security_and_analysis": {"secret_scanning": {"status": "disabled"}},
+        })),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "not_enabled", data
+    assert data["reason"] == "scanning_disabled", data
+    assert "scanningStatus" not in data["repository"], data
+    assert run.call_count == 2, run.call_args_list
+
+
+def test_secret_scanning_status_actor_mismatch_fails_closed_as_unavailable() -> None:
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", return_value=process(include_output({"login": "octocat"}))) as run:
+        data = github_read.redacted_secret_scanning_status(reader, "o/r")
+    assert data["status"] == "unavailable", data
+    assert data["reason"] == "actor_mismatch", data
+    diagnostics = reader.diagnostics()
+    assert diagnostics["actor"] == "octocat"
+    assert diagnostics["requests"][0]["lastActor"] == "octocat"
+    assert diagnostics["retry"]["last_actor"] == "octocat"
+    assert diagnostics["degradedComponents"] == ["actor"]
+    assert run.call_count == 1
+
+
+def test_secret_scanning_status_rejects_actor_change_after_preflight() -> None:
+    responses = [
+        process(include_output({"login": "shiny-code-bot"})),
+        process(
+            include_output({"private": True, "visibility": "private"}),
+            stderr=(
+                "warning: automation gh request was rate-limited; explicitly authorized "
+                "active-auth fallback; retrying with the active gh account 'octocat'"
+            ),
+        ),
+    ]
+    reader = secret_scanning_reader()
+    with patch("subprocess.run", side_effect=responses) as run:
+        try:
+            github_read.redacted_secret_scanning_status(reader, "o/r")
+        except github_read.GitHubReadError as exc:
+            assert exc.result.failure is not None
+            assert exc.result.failure.cause == "actor_mismatch"
+        else:
+            raise AssertionError("expected actor change to fail closed")
+    assert run.call_count == 2, run.call_args_list
+
+
+def test_secret_scanning_status_rejects_unbounded_limits_before_api_calls() -> None:
+    reader = secret_scanning_reader()
+    for limit in (0, 1001):
+        with patch("subprocess.run") as run:
+            try:
+                github_read.redacted_secret_scanning_status(reader, "o/r", limit=limit)
+            except ValueError as exc:
+                assert "between 1 and 1000" in str(exc)
+            else:
+                raise AssertionError("expected bounded secret-scanning limit failure")
+            assert run.call_count == 0
+
+
+def test_secret_scanning_cli_reports_invalid_limit_as_input_validation() -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+    with (
+        patch.object(
+            sys,
+            "argv",
+            [
+                "github_read.py",
+                "--repo",
+                "o/r",
+                "secret-scanning-status",
+                "--limit",
+                "1001",
+            ],
+        ),
+        patch("subprocess.run") as run,
+        redirect_stdout(stdout),
+        redirect_stderr(stderr),
+    ):
+        exit_code = github_read.main()
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 2, payload
+    assert payload["failure"]["cause"] == "validation_error", payload
+    assert payload["failed_step"] == "input_validation", payload
+    assert "between 1 and 1000" in stderr.getvalue()
+    assert run.call_count == 0
 
 
 def test_reader_failed_request_dominates_aggregate_certainty() -> None:
@@ -233,6 +483,29 @@ def test_reader_failed_request_dominates_aggregate_certainty() -> None:
     assert summary is not None
     assert summary.outcome_certainty == "not_applicable", summary
     assert summary.recommended_next_action == "inspect_last_failure", summary
+
+
+def test_request_diagnostic_redacts_failure_messages() -> None:
+    result = github_read.github_api_core.ApiResult(
+        ok=False,
+        status=500,
+        body=None,
+        failure=github_read.github_api_core.FailureDetail(
+            cause="network_provider_failure",
+            message="request failed token=ghp_should_never_escape",
+            retryable=True,
+            fallback_eligible=False,
+            disposition="retry_same_actor",
+        ),
+    )
+    diagnostic = github_read.request_diagnostic(
+        result,
+        method="GET",
+        path="/repos/o/r",
+        step="repository",
+    )
+    assert "ghp_should_never_escape" not in diagnostic["message"]
+    assert "[REDACTED]" in diagnostic["message"]
 
 
 def test_explicit_active_auth_actor_is_visible_and_degraded() -> None:
@@ -451,7 +724,20 @@ def main() -> None:
         test_matrix_approved_reader_retries_and_reports_attempts,
         test_reader_aggregates_retry_summary_across_requests,
         test_reader_cli_operations_are_matrix_approved,
+        test_secret_scanning_status_public_repo_is_unavailable_without_alert_request,
+        test_secret_scanning_status_counts_findings_without_secret_material,
+        test_secret_scanning_status_preserves_hidden_values_on_followup_pages,
+        test_secret_scanning_status_empty_alerts_is_clean,
+        test_secret_scanning_status_permission_denied_is_unavailable_without_fallback,
+        test_secret_scanning_status_404_is_ambiguous_and_never_clean,
+        test_secret_scanning_status_repository_permission_failure_is_unavailable,
+        test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_request,
+        test_secret_scanning_status_actor_mismatch_fails_closed_as_unavailable,
+        test_secret_scanning_status_rejects_actor_change_after_preflight,
+        test_secret_scanning_status_rejects_unbounded_limits_before_api_calls,
+        test_secret_scanning_cli_reports_invalid_limit_as_input_validation,
         test_reader_failed_request_dominates_aggregate_certainty,
+        test_request_diagnostic_redacts_failure_messages,
         test_explicit_active_auth_actor_is_visible_and_degraded,
         test_permission_failure_is_explicit_and_degraded,
         test_rate_limit_failure_preserves_reset_metadata,

@@ -7,6 +7,9 @@ resources:
   - path: scripts/github_api.py
     kind: script
     description: Shared body-safe GitHub API transport, terminal envelope, legacy failure classifier, GraphQL operation context, and rate-limit metadata layer.
+  - path: scripts/github_read.py
+    kind: script
+    description: Shared paged REST readers, including the automation-only sanitized secret-scanning status signal.
   - path: scripts/gh-pr.py
     kind: script
     description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.
@@ -73,6 +76,19 @@ commands:
     resource_path: scripts/github_api.py
     example_argv: ["uv", "run", "scripts/github_api.py", "rate-limit"]
     purpose: Reads and normalizes GitHub rate-limit metadata through the shared API layer.
+  - name: github-secret-scanning-status
+    source: skill
+    resource_path: scripts/github_read.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/github_read.py",
+        "--repo",
+        "OWNER/REPO",
+        "secret-scanning-status",
+      ]
+    purpose: Reports clean, findings, unavailable, or not-enabled secret-scanning status without returning detected secret values or changing actor identity.
   - name: github-pr-view
     source: skill
     resource_path: scripts/gh-pr.py
@@ -357,6 +373,24 @@ policy:
               "--failed",
             ]
           purpose: Reruns Actions through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-secret-scanning-status-reader
+      match:
+        shell_regex: "(?:\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\bapi\\b|\\bgithub_api\\.py\\b[\\s\\S]*\\bcall\\b|\\b(?:curl|wget|http)\\b)[\\s\\S]*\\bsecret-scanning/alerts\\b"
+      action: require_preferred
+      message: Raw secret-scanning alert operations can expose sensitive alert payloads and are unsupported here. Use the sanitized automation-only status reader for reads.
+      preferred:
+        - kind: script
+          path: scripts/github_read.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/github_read.py",
+              "--repo",
+              "OWNER/REPO",
+              "secret-scanning-status",
+            ]
+          purpose: Forces hidden-secret REST reads and emits only status, counts, actor evidence, and degraded diagnostics.
     - id: prefer-gh-api-wrapper
       match:
         shell_regex: "\\bgh\\s+api\\s+(?!graphql\\b)"
@@ -710,7 +744,10 @@ invocation rules.
   `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` is set. Use
   `scripts/gh-with-env-token --print-auth-account ...` when the acting account
   should be visible; it writes the account receipt to stderr so JSON stdout
-  remains parseable.
+  remains parseable. Security-sensitive automation-only helpers pass the
+  wrapper prefix `--require-automation-auth`; shell callers may use the
+  equivalent `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`. Both take
+  precedence over fallback settings loaded from the local env file.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 - **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix
