@@ -33,14 +33,23 @@ case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
 	require_automation_auth=1
 	;;
 esac
-readonly require_automation_auth
 
-case "${1:-}" in
---print-auth-account)
-	print_auth_account=1
-	shift
-	;;
-esac
+while [ "$#" -gt 0 ]; do
+	case "${1:-}" in
+	--print-auth-account)
+		print_auth_account=1
+		shift
+		;;
+	--require-automation-auth)
+		require_automation_auth=1
+		shift
+		;;
+	*)
+		break
+		;;
+	esac
+done
+readonly require_automation_auth
 
 if [ -f "$env_file" ]; then
 	set -a

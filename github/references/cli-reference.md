@@ -211,13 +211,12 @@ clean. Public repositories report `unavailable` because GitHub's repository
 alerts endpoint does not provide that signal for public repositories even
 though public secret scanning still runs.
 
-This operation is automation-only. It removes
-`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK`, sets
-`GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`, verifies the authenticated login
-against the expected bot actor, and does not retry permission or ambiguous
-`404` results under active user authentication. The wrapper snapshots the
-requirement before loading its env file, so local configuration cannot re-enable
-fallback for this command.
+This operation is automation-only. It invokes the token wrapper with its
+`--require-automation-auth` prefix, verifies the authenticated login against the
+expected bot actor, and does not retry permission or ambiguous `404` results
+under active user authentication. The wrapper consumes and freezes that prefix
+before loading its env file, so local configuration cannot re-enable fallback
+for this command.
 Do not read `/secret-scanning/alerts` through raw `gh api`, generic HTTP
 clients, or `github_api.py call`. The skill routes those commands to this
 reader, the generic API CLI refuses raw repository alert operations, and the token
@@ -417,6 +416,9 @@ rate-limited. Write-like commands also require the authenticated login to match
 an explicitly approved one-off command whose human-owned actor is acceptable.
 `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
 it overrides the fallback setting even when an env file enables fallback.
+Automation-only Python readers use the equivalent wrapper prefix
+`--require-automation-auth`, avoiding an explicit process-environment copy while
+preserving the same fail-closed behavior.
 Set `CODEX_SKILLS_ENV_FILE` only in tests or special local cases where a
 different env file should be used.
 

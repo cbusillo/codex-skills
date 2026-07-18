@@ -61,7 +61,7 @@ class GitHubReader:
         expected_actor: Optional[str] = EXPECTED_ACTOR,
         operation: str = "github.read",
         actor: Optional[str] = None,
-        subprocess_env: Optional[dict[str, str]] = None,
+        gh_prefix_args: Optional[list[str]] = None,
         strict_actor: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
@@ -69,7 +69,7 @@ class GitHubReader:
         self.operation = operation
         self.actor = actor
         self.request_actor = actor
-        self.subprocess_env = subprocess_env
+        self.gh_prefix_args = list(gh_prefix_args or [])
         self.strict_actor = strict_actor
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
@@ -83,6 +83,7 @@ class GitHubReader:
             method,
             path,
             gh_cmd=self.gh_cmd,
+            gh_prefix_args=self.gh_prefix_args,
             operation=self.operation,
             actor=self.request_actor,
             expected_actor=self.expected_actor,
@@ -90,7 +91,6 @@ class GitHubReader:
             completed_steps=list(self.completed_steps),
             failed_step=step,
             is_write=False,
-            subprocess_env=self.subprocess_env,
         )
         actor_mismatch = False
         if result.actor:
@@ -247,11 +247,8 @@ class GitHubReader:
         )
 
 
-def automation_only_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    environment.pop("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK", None)
-    environment["GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH"] = "1"
-    return environment
+def automation_only_gh_prefix_args() -> list[str]:
+    return ["--require-automation-auth"]
 
 
 def request_diagnostic(
@@ -860,12 +857,12 @@ def main() -> int:
         )
 
     operation = f"github.read.{args.command.replace('-', '_')}"
-    subprocess_env = automation_only_environment() if args.command == "secret-scanning-status" else None
+    gh_prefix_args = automation_only_gh_prefix_args() if args.command == "secret-scanning-status" else None
     reader = GitHubReader(
         gh_cmd=args.gh,
         expected_actor=EXPECTED_ACTOR,
         operation=operation,
-        subprocess_env=subprocess_env,
+        gh_prefix_args=gh_prefix_args,
         strict_actor=args.command == "secret-scanning-status",
     )
     try:

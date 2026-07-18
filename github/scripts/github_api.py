@@ -1510,6 +1510,7 @@ def build_gh_command(
     path: str,
     *,
     gh_cmd: str = DEFAULT_GH,
+    gh_prefix_args: Optional[list[str]] = None,
     api_version: str = DEFAULT_API_VERSION,
     extra_headers: Optional[dict[str, str]] = None,
     has_body: Optional[bool] = None,
@@ -1526,6 +1527,7 @@ def build_gh_command(
         method: HTTP method string ("GET", "POST", …).
         path: API path starting with "/" or a full URL.
         gh_cmd: Path to the gh binary or wrapper (default "gh").
+        gh_prefix_args: Wrapper-specific arguments inserted before ``api``.
         extra_headers: Additional -H headers to include in the request.
 
     Returns:
@@ -1536,6 +1538,7 @@ def build_gh_command(
 
     cmd = [
         gh_cmd,
+        *(gh_prefix_args or []),
         "api",
         "--method",
         method.upper(),
@@ -2751,6 +2754,7 @@ def call_gh(
     body: Any = None,
     *,
     gh_cmd: str = DEFAULT_GH,
+    gh_prefix_args: Optional[list[str]] = None,
     api_version: str = DEFAULT_API_VERSION,
     extra_headers: Optional[dict[str, str]] = None,
     completed_steps: Optional[list[str]] = None,
@@ -2763,7 +2767,6 @@ def call_gh(
     bucket: Optional[str] = None,
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
-    subprocess_env: Optional[dict[str, str]] = None,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -2776,6 +2779,7 @@ def call_gh(
         path: API path (e.g. "/repos/owner/repo/pulls") or full URL.
         body: Python object to serialise as the JSON request body.
         gh_cmd: Path to the gh binary or wrapper script.
+        gh_prefix_args: Wrapper-specific arguments inserted before ``api``.
         extra_headers: Additional headers to pass as ``-H name: value``.
         completed_steps: Steps already done before this call (for partial-success tracking).
         failed_step: Label for the step this call represents (appended to FailureDetail on error).
@@ -2830,6 +2834,7 @@ def call_gh(
         method,
         path,
         gh_cmd=gh_cmd,
+        gh_prefix_args=gh_prefix_args,
         api_version=api_version,
         extra_headers=extra_headers,
         has_body=has_body,
@@ -2846,7 +2851,6 @@ def call_gh(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,
-            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as exc:
         return subprocess_timeout_result(
@@ -3060,6 +3064,7 @@ def call_gh_with_retry(
     body: Any = None,
     *,
     gh_cmd: str = DEFAULT_GH,
+    gh_prefix_args: Optional[list[str]] = None,
     api_version: str = DEFAULT_API_VERSION,
     extra_headers: Optional[dict[str, str]] = None,
     completed_steps: Optional[list[str]] = None,
@@ -3078,7 +3083,6 @@ def call_gh_with_retry(
     retry_runtime: Optional[RetryRuntime] = None,
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
-    subprocess_env: Optional[dict[str, str]] = None,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3098,6 +3102,7 @@ def call_gh_with_retry(
             path,
             body,
             gh_cmd=gh_cmd,
+            gh_prefix_args=gh_prefix_args,
             api_version=api_version,
             extra_headers=extra_headers,
             completed_steps=completed_steps,
@@ -3110,7 +3115,6 @@ def call_gh_with_retry(
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,
             timeout_seconds=timeout_seconds,
-            subprocess_env=subprocess_env,
         )
 
     return run_with_retry(

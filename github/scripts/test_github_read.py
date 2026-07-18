@@ -56,7 +56,7 @@ def secret_scanning_reader() -> github_read.GitHubReader:
     return github_read.GitHubReader(
         gh_cmd="fake-gh",
         operation="github.read.secret_scanning_status",
-        subprocess_env=github_read.automation_only_environment(),
+        gh_prefix_args=github_read.automation_only_gh_prefix_args(),
         strict_actor=True,
     )
 
@@ -219,8 +219,8 @@ def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request
     assert data["openAlertCount"] is None, data
     assert run.call_count == 2, run.call_args_list
     assert all(
-        call.kwargs["env"].get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK") is None
-        and call.kwargs["env"].get("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") == "1"
+        call.args[0][1:3] == ["--require-automation-auth", "api"]
+        and "env" not in call.kwargs
         for call in run.call_args_list
     )
 
@@ -305,8 +305,8 @@ def test_secret_scanning_status_permission_denied_is_unavailable_without_fallbac
     assert reader.diagnostics()["degradedComponents"] == ["secret_scanning_alerts_page_1"]
     assert run.call_count == 3, run.call_args_list
     assert all(
-        call.kwargs["env"].get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK") is None
-        and call.kwargs["env"].get("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") == "1"
+        call.args[0][1:3] == ["--require-automation-auth", "api"]
+        and "env" not in call.kwargs
         for call in run.call_args_list
     )
 

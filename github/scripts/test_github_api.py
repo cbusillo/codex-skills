@@ -448,17 +448,22 @@ def test_call_gh_post_sends_body_as_json_stdin() -> None:
     assert stdin_data["title"] == "my issue"
 
 
-def test_call_gh_forwards_explicit_subprocess_environment() -> None:
-    explicit_environment = {"PATH": "/tmp", "GH_TOKEN": "test-token"}
+def test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment() -> None:
     proc = _fake_proc(stdout=_include_output(200, body={"ok": True}))
     with patch("subprocess.run", return_value=proc) as run:
         result = _api.call_gh(
             "GET",
             "/repos/owner/repo",
-            subprocess_env=explicit_environment,
+            gh_cmd="./gh-with-env-token",
+            gh_prefix_args=["--require-automation-auth"],
         )
     assert result.ok is True, result.as_dict()
-    assert run.call_args.kwargs["env"] is explicit_environment
+    assert run.call_args.args[0][:3] == [
+        "./gh-with-env-token",
+        "--require-automation-auth",
+        "api",
+    ]
+    assert "env" not in run.call_args.kwargs
 
 
 def test_call_gh_timeout_marks_started_write_outcome_unknown() -> None:
@@ -2682,7 +2687,7 @@ def main() -> None:
         test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback,
         test_call_gh_unannounced_actor_change_fails_closed_after_write,
         test_call_gh_post_sends_body_as_json_stdin,
-        test_call_gh_forwards_explicit_subprocess_environment,
+        test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment,
         test_call_gh_timeout_marks_started_write_outcome_unknown,
         test_call_gh_timeout_preserves_authorized_fallback_actor,
         test_call_gh_uses_provider_reported_search_bucket,

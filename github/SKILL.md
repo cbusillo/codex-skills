@@ -744,9 +744,10 @@ invocation rules.
   `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` is set. Use
   `scripts/gh-with-env-token --print-auth-account ...` when the acting account
   should be visible; it writes the account receipt to stderr so JSON stdout
-  remains parseable. Security-sensitive automation-only helpers set
-  `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`, which takes precedence over
-  fallback settings loaded from the local env file.
+  remains parseable. Security-sensitive automation-only helpers pass the
+  wrapper prefix `--require-automation-auth`; shell callers may use the
+  equivalent `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`. Both take
+  precedence over fallback settings loaded from the local env file.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 - **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix

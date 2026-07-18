@@ -347,8 +347,8 @@ printf 'CODEX_GITHUB_TOKEN=codex-token\nGH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALL
 if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
 	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/automation-only.env" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
-	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
-	"$repo_root/github/scripts/gh-with-env-token" rate-limited-command \
+	"$repo_root/github/scripts/gh-with-env-token" --require-automation-auth \
+	rate-limited-command \
 	>"$stdout_log" 2>"$stderr_log"; then
 	echo "error: automation-only mode must override fallback enabled by the env file" >&2
 	exit 1
@@ -465,8 +465,8 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	CODEX_GITHUB_TOKEN=codex-token \
 	GH_ISSUE_ENV_LOG="$env_log" \
 	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
-	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
-	"$repo_root/github/scripts/gh-with-env-token" api --method GET --include \
+	"$repo_root/github/scripts/gh-with-env-token" --require-automation-auth \
+	api --method GET --include \
 	-H 'X-GitHub-Api-Version: 2022-11-28' \
 	'/repos/owner/repo/secret-scanning/alerts?state=open&hide_secret=true' \
 	>"$stdout_log" 2>"$stderr_log"
