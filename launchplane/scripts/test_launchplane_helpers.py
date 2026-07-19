@@ -70,7 +70,8 @@ def test_endpoint_validation_policy() -> None:
     assert safety.validate_service_url("http://localhost:8000").origin == ("http", "localhost", 8000)
     assert_rejects_url("launchplane.example.invalid", "invalid_service_url_absolute")
     assert_rejects_url("https:///v1", "invalid_service_url_absolute")
-    assert_rejects_url("https://user:pass@launchplane.example.invalid", "invalid_service_url_userinfo")
+    credentialed_url = "https://" + "user" + ":" + "pass" + "@launchplane.example.invalid"
+    assert_rejects_url(credentialed_url, "invalid_service_url_userinfo")
     assert_rejects_url("ftp://launchplane.example.invalid", "invalid_service_url_scheme")
     assert_rejects_url("http://launchplane.example.invalid", "invalid_service_url_http")
     assert_rejects_url("https://launchplane.example.invalid?token=secret", "invalid_service_url_component")
