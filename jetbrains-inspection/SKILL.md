@@ -323,8 +323,14 @@ preferred IDE and must clean it up afterward when it owns the open.
   `GREEN`, including mixed-language scopes where only some files have semantic
   support. `in_source: false` alone is not a failure because language-aware PSI
   can inspect valid project-content files outside a configured source root.
-  Install or enable the needed language plugin, select a compatible IDE, or
-  update the repo's preferred IDE metadata before rerunning. Use
+  Valid in-content JetBrains project metadata identified by the authoritative
+  `IDEA_MODULE` file role is classified as `project_metadata`, even when the IDE
+  exposes it as `PsiPlainTextFile`; it does not require language-aware PSI. The
+  helper reports that classification with no-action guidance instead of
+  suggesting a language plugin. When a file is outside project content, the
+  next action points to the intended module/content root rather than language
+  support. Otherwise, install or enable the needed language plugin, select a
+  compatible IDE, or update the repo's preferred IDE metadata before rerunning. Use
   `--allow-text-only-coverage` only when generic text coverage is intentionally
   sufficient; it does not allow invalid files or files outside project content.
   The helper preserves actionable `RED` findings while attaching the semantic

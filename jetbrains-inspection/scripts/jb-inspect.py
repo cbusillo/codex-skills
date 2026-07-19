@@ -115,8 +115,10 @@ VERDICT_SOURCE_KEYS = (
     "proof_failures",
 )
 SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
+PROJECT_METADATA_COVERAGE_REASON = "project_metadata_coverage_not_required"
 NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
 NON_SEMANTIC_PSI_CLASS_MARKERS = frozenset({"plaintext", "textmate"})
+PROJECT_METADATA_FILE_TYPES = frozenset({"ideamodule"})
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
 PROJECT_OPEN_BLOCKED_HINT = (
@@ -2874,6 +2876,17 @@ def normalized_psi_marker(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
 
+def scope_file_is_project_metadata(file_diagnostic: dict[str, Any]) -> bool:
+    file_type = normalized_psi_marker(file_diagnostic.get("file_type"))
+    return (
+        file_diagnostic.get("directory") is not True
+        and file_diagnostic.get("valid") is True
+        and not file_diagnostic.get("diagnostic_error")
+        and file_diagnostic.get("in_content") is True
+        and file_type in PROJECT_METADATA_FILE_TYPES
+    )
+
+
 def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> list[str]:
     if file_diagnostic.get("directory") is True:
         return []
@@ -2885,7 +2898,7 @@ def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> lis
         file_type in NON_SEMANTIC_PSI_VALUES
         or psi_language in NON_SEMANTIC_PSI_VALUES
         or any(marker in psi_class for marker in NON_SEMANTIC_PSI_CLASS_MARKERS)
-    ):
+    ) and not scope_file_is_project_metadata(file_diagnostic):
         reasons.append("non_semantic_fallback")
     if file_diagnostic.get("valid") is False:
         reasons.append("invalid_file")
@@ -2907,9 +2920,24 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
     if not isinstance(scope_files, list) or not scope_files:
         return None
     missing_files: list[dict[str, Any]] = []
+    metadata_files: list[dict[str, Any]] = []
     for item in scope_files:
         if not isinstance(item, dict):
             continue
+        if scope_file_is_project_metadata(item):
+            path = item.get("path")
+            metadata_summary = {
+                "classification": "project_metadata",
+                "coverage_required": False,
+                "path": path,
+                "requested_language_hint": Path(str(path)).suffix.lstrip(".").casefold() if path else None,
+                "file_type": item.get("file_type"),
+                "psi_language": item.get("psi_language"),
+                "psi_class": item.get("psi_class"),
+                "in_content": item.get("in_content"),
+                "in_source": item.get("in_source"),
+            }
+            metadata_files.append({key: value for key, value in metadata_summary.items() if value is not None})
         reasons = scope_file_semantic_coverage_reasons(item)
         if not reasons:
             continue
@@ -2925,20 +2953,27 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
             "reasons": reasons,
         }
         missing_files.append({key: value for key, value in file_summary.items() if value is not None})
-    if not missing_files:
+    if not missing_files and not metadata_files:
         return None
     allow_text_only = payload.get("allow_text_only_coverage") is True
     text_only = all(file.get("reasons") == ["non_semantic_fallback"] for file in missing_files)
-    status = "text_only_allowed" if allow_text_only and text_only else "missing"
+    if missing_files:
+        status = "text_only_allowed" if allow_text_only and text_only else "missing"
+        reason = "text_only_coverage_allowed" if status == "text_only_allowed" else SEMANTIC_COVERAGE_MISSING_REASON
+    else:
+        status = "satisfied"
+        reason = PROJECT_METADATA_COVERAGE_REASON
     coverage = {
         "status": status,
-        "reason": "text_only_coverage_allowed" if status == "text_only_allowed" else SEMANTIC_COVERAGE_MISSING_REASON,
+        "reason": reason,
         "scope_kind": diagnostic.get("scope_kind"),
         "scope_resolution_status": diagnostic.get("scope_resolution_status"),
         "requested_file_count": diagnostic.get("scope_file_requested_count"),
         "resolved_file_count": diagnostic.get("scope_file_resolved_count"),
         "missing_file_count": len(missing_files),
         "files": missing_files,
+        "metadata_file_count": len(metadata_files),
+        "metadata_files": metadata_files,
     }
     if allow_text_only:
         coverage["allow_text_only_coverage"] = True
@@ -2966,7 +3001,16 @@ def semantic_coverage_unknown_verdict(payload: dict[str, Any]) -> dict[str, str]
 
 def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str] | None:
     coverage = semantic_coverage_for_payload(payload)
-    if coverage is None or coverage.get("status") != "text_only_allowed":
+    if coverage is None:
+        return None
+    if coverage.get("status") == "satisfied":
+        return {
+            "verdict": "GREEN",
+            "verdict_reason": PROJECT_METADATA_COVERAGE_REASON,
+            "verdict_message": "Inspection found no actionable findings; classified JetBrains project metadata does not require language-aware PSI.",
+            "verdict_next_action": "No inspection action required for classified JetBrains project metadata.",
+        }
+    if coverage.get("status") != "text_only_allowed":
         return None
     return {
         "verdict": "GREEN",
@@ -3137,10 +3181,30 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
     if reason == SEMANTIC_COVERAGE_MISSING_REASON:
         coverage = semantic_coverage_for_payload(payload) or {}
+        coverage_files = [file for file in coverage.get("files", []) if isinstance(file, dict)]
+        has_outside_content = any(
+            "outside_project_content" in (file.get("reasons") or []) for file in coverage_files
+        )
+        has_non_semantic_source = any(
+            "non_semantic_fallback" in (file.get("reasons") or [])
+            and normalized_psi_marker(file.get("file_type")) not in PROJECT_METADATA_FILE_TYPES
+            for file in coverage_files
+        )
+        if has_outside_content:
+            actions = [
+                "Open or import the exact worktree so every requested file belongs to the intended JetBrains module/content root."
+            ]
+            if has_non_semantic_source:
+                actions.append(
+                    "Then use a JetBrains IDE with semantic language support for the remaining PlainText/TextMate source files, "
+                    "install or enable the required language plugins, or update the repository's preferred IDE metadata."
+                )
+            actions.append("Do not use --allow-text-only-coverage to override outside-project-content, then rerun.")
+            return " ".join(actions)
         language_hints = sorted({
             str(file.get("requested_language_hint"))
-            for file in coverage.get("files", [])
-            if isinstance(file, dict) and file.get("requested_language_hint")
+            for file in coverage_files
+            if file.get("requested_language_hint")
         })
         languages = f" for {', '.join(language_hints)}" if language_hints else ""
         return (
@@ -4126,11 +4190,12 @@ def print_semantic_coverage(coverage: Any) -> None:
         return
     print(
         safe_text(
-            "SEMANTIC_COVERAGE: status={status} reason={reason} missing_files={missing_files} allow_text_only={allow_text_only}",
+            "SEMANTIC_COVERAGE: status={status} reason={reason} missing_files={missing_files} metadata_files={metadata_files} allow_text_only={allow_text_only}",
             {
                 "status": coverage.get("status"),
                 "reason": coverage.get("reason"),
                 "missing_files": coverage.get("missing_file_count"),
+                "metadata_files": coverage.get("metadata_file_count", 0),
                 "allow_text_only": coverage.get("allow_text_only_coverage", False),
             },
         )
@@ -4147,6 +4212,23 @@ def print_semantic_coverage(coverage: Any) -> None:
                     "file_type": file.get("file_type"),
                     "psi_language": file.get("psi_language"),
                     "reasons": file.get("reasons"),
+                },
+            )
+        )
+    for file in (coverage.get("metadata_files") or [])[:25]:
+        if not isinstance(file, dict):
+            continue
+        print(
+            safe_text(
+                "SEMANTIC_COVERAGE_METADATA_FILE: classification={classification} path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} psi_class={psi_class} coverage_required={coverage_required}",
+                {
+                    "classification": file.get("classification"),
+                    "path": file.get("path"),
+                    "language_hint": file.get("requested_language_hint"),
+                    "file_type": file.get("file_type"),
+                    "psi_language": file.get("psi_language"),
+                    "psi_class": file.get("psi_class"),
+                    "coverage_required": file.get("coverage_required"),
                 },
             )
         )
