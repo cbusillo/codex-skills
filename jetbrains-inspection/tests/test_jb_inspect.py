@@ -5040,6 +5040,155 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["verdict"], "GREEN")
         self.assertNotIn("semantic_coverage", payload)
 
+    def test_idea_module_plaintext_in_content_is_classified_as_metadata(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/project.iml",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "IDEA_MODULE",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["verdict_reason"], "project_metadata_coverage_not_required")
+        self.assertEqual(payload["semantic_coverage"]["status"], "satisfied")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 0)
+        self.assertEqual(payload["semantic_coverage"]["metadata_file_count"], 1)
+        self.assertEqual(payload["semantic_coverage"]["metadata_files"][0]["classification"], "project_metadata")
+        self.assertEqual(payload["semantic_coverage"]["files"], [])
+        self.assertEqual(
+            payload["verdict_next_action"],
+            "No inspection action required for classified JetBrains project metadata.",
+        )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+        text = output.getvalue()
+        self.assertIn("SEMANTIC_COVERAGE: status=satisfied", text)
+        self.assertIn("classification=project_metadata", text)
+        self.assertIn("coverage_required=False", text)
+
+    def test_mixed_semantic_scope_with_idea_module_metadata_stays_green(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/tool.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": True,
+                    "in_source": True,
+                },
+                {
+                    "path": "/tmp/project.iml",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "IDEA_MODULE",
+                    "psi_language": "TEXT",
+                    "psi_class": "com.intellij.psi.impl.light.LightPsiFile",
+                    "in_content": True,
+                    "in_source": False,
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["semantic_coverage"]["status"], "satisfied")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 0)
+        self.assertEqual(payload["semantic_coverage"]["metadata_file_count"], 1)
+        metadata_file = payload["semantic_coverage"]["metadata_files"][0]
+        self.assertEqual(metadata_file["psi_language"], "TEXT")
+        self.assertEqual(metadata_file["psi_class"], "com.intellij.psi.impl.light.LightPsiFile")
+
+    def test_idea_module_requires_explicit_valid_true(self):
+        missing = object()
+        for label, valid in (("missing", missing), ("null", None), ("string", "true")):
+            with self.subTest(label=label):
+                file_diagnostic = {
+                    "path": "/tmp/project.iml",
+                    "directory": False,
+                    "file_type": "IDEA_MODULE",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+                if valid is not missing:
+                    file_diagnostic["valid"] = valid
+                payload = {
+                    "status": "results_available",
+                    "clean": True,
+                    "total_problems": 0,
+                    "problems": [],
+                    "inspection_verdict": "GREEN",
+                    "inspection_verdict_reason": "no_matching_findings",
+                    "capture_diagnostic": scope_capture_diagnostic(file_diagnostic),
+                }
+
+                jb_inspect.apply_verdict(payload)
+
+                self.assertEqual(payload["verdict"], "UNKNOWN")
+                self.assertEqual(payload["verdict_reason"], "scope_semantic_coverage_missing")
+                self.assertEqual(
+                    payload["semantic_coverage"]["files"][0]["reasons"],
+                    ["non_semantic_fallback"],
+                )
+
+    def test_plaintext_code_scope_still_fails_closed(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/tool.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "PLAIN_TEXT",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "scope_semantic_coverage_missing")
+        self.assertEqual(payload["semantic_coverage"]["files"][0]["reasons"], ["non_semantic_fallback"])
+        self.assertIn("language plugins", payload["verdict_next_action"])
+
     def test_plaintext_scope_can_be_explicitly_allowed(self):
         payload = {
             "status": "results_available",
@@ -5093,6 +5242,74 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(payload["verdict"], "UNKNOWN")
         self.assertEqual(payload["semantic_coverage"]["files"][0]["reasons"], ["outside_project_content"])
+        self.assertIn("module/content root", payload["verdict_next_action"])
+        self.assertNotIn("language plugins", payload["verdict_next_action"])
+
+    def test_idea_module_outside_content_is_not_exempted_by_text_only_override(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "allow_text_only_coverage": True,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/project.iml",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "IDEA_MODULE",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": False,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(
+            payload["semantic_coverage"]["files"][0]["reasons"],
+            ["non_semantic_fallback", "outside_project_content"],
+        )
+        self.assertIn("module/content root", payload["verdict_next_action"])
+        self.assertNotIn("language plugins", payload["verdict_next_action"])
+
+    def test_mixed_outside_content_and_textmate_scope_reports_both_actions(self):
+        payload = {
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/external.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": False,
+                    "in_source": False,
+                },
+                {
+                    "path": "/tmp/view.swift",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "TextMate",
+                    "psi_language": "textmate",
+                    "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content": True,
+                    "in_source": False,
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertIn("module/content root", payload["verdict_next_action"])
+        self.assertIn("language plugins", payload["verdict_next_action"])
+        self.assertIn("--allow-text-only-coverage", payload["verdict_next_action"])
 
     def test_semantic_coverage_gap_does_not_hide_actionable_red_verdict(self):
         payload = {
@@ -5120,6 +5337,34 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(payload["verdict"], "RED")
         self.assertEqual(payload["semantic_coverage"]["status"], "missing")
+
+    def test_project_metadata_classification_does_not_hide_actionable_red_verdict(self):
+        payload = {
+            "status": "findings",
+            "clean": False,
+            "total_problems": 1,
+            "problems": [{"description": "Broken"}],
+            "inspection_verdict": "RED",
+            "inspection_verdict_reason": "actionable_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/project.iml",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "IDEA_MODULE",
+                    "psi_language": "Plain text",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": True,
+                    "in_source": False,
+                }
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "RED")
+        self.assertEqual(payload["verdict_reason"], "actionable_findings")
+        self.assertEqual(payload["semantic_coverage"]["status"], "satisfied")
 
     def test_verdict_prefers_plugin_provided_contract(self):
         payload = {
