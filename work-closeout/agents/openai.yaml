@@ -1,0 +1,7 @@
+interface:
+  display_name: "Work Closeout"
+  short_description: "Close out workstreams and handoffs"
+  default_prompt: "Use $work-closeout to cleanly close, park, or hand off the current workstream with a safe-to-exit verdict."
+
+policy:
+  allow_implicit_invocation: true

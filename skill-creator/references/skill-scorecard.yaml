@@ -606,6 +606,45 @@ skills:
       - external_api
       - system_override
     checks:
+      - check_id: fallback-routing-contract
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/gpt-5.6-skill-guidance
+          notes: >-
+            Behavior validation protects explicit target preservation,
+            substantive remote-guide fallback order, narrow migration scope,
+            and the no-automatic-MCP-install boundary.
+      - check_id: gpt56-source-boundary-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-responses-openai-docs-gpt56-guidance.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/gpt-5.6-skill-guidance
+          notes: >-
+            Fake Responses API scenario verifies explicit OpenAI Docs loading,
+            GPT-5.6 migration guidance, and no automatic MCP installation.
+      - check_id: latest-model-resolver-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/gpt-5.6-skill-guidance
+          notes: >-
+            Offline fixtures cover frontmatter and comment metadata parsing,
+            URL resolution, malformed input, and the bundled GPT-5.6 fallback.
       - check_id: skill-repo-validation
         kind: static_validator
         mode: ci
@@ -619,10 +658,8 @@ skills:
             Metadata and system override presence covered by repo validation.
     known_gaps:
       - >-
-        No focused script tests yet for the JavaScript docs resolver; add
-        offline markdown fixture coverage before treating this as more than
-        metadata validation. No scenario yet for official-docs-only browsing
-        behavior.
+        No live advisory scenario yet for remote official-docs retrieval and
+        remote-to-bundled fallback behavior.
   people:
     status: active
     risk_classes:
@@ -756,6 +793,18 @@ skills:
       - private_context
       - script_helper
     checks:
+      - check_id: gpt56-comparison-boundary
+        kind: static_validator
+        mode: ci
+        dimension: advisory_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/gpt-5.6-skill-guidance
+          notes: >-
+            Behavior validation keeps GPT-5.6 variants opt-in while preserving
+            the GPT-5.4 comparison and fake GPT-5.1-Codex protocol fixtures.
       - check_id: rollout-validator-suite
         kind: script_test
         mode: ci
@@ -825,6 +874,20 @@ skills:
           notes: >-
             Collector emits public-safe advisory metrics from local
             exec-harness artifacts; raw artifacts remain local-only.
+      - check_id: outcome-contract-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          skill-creator/evaluations/exec-harness/fake-responses-skill-creator-outcome-contract.json
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/gpt-5.6-skill-guidance
+          notes: >-
+            Fake Responses API scenario verifies request assembly exposes the
+            outcome-first contract and progressive-disclosure reference.
       - check_id: private-context-omission-scenario
         kind: exec_harness
         mode: fake_responses_api
@@ -875,7 +938,10 @@ skills:
           last_validated_ref: main
           notes: Scorecard schema and active skill coverage validated in CI.
     known_gaps:
-      - No exec-harness scenario yet for skill-authoring behavior changes.
+      - >-
+        No live-model advisory eval currently demonstrates that the compressed
+        outcome-first guidance preserves skill-authoring behavior; the fake
+        Responses scenario validates request assembly only.
   skill-installer:
     status: active
     risk_classes:

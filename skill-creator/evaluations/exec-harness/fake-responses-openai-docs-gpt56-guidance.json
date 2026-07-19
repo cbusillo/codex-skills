@@ -1,0 +1,36 @@
+{
+  "name": "fake-responses-openai-docs-gpt56-guidance",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $openai-docs to review a latest-model migration request, then reply with exactly: ok",
+  "files": {
+    "README.md": "# OpenAI docs GPT-5.6 guidance fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-openai-docs-gpt56-guidance"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "<name>openai-docs</name>",
+          "Do not install or reconfigure MCP as a side effect of a docs lookup",
+          "preserve the current reasoning effort for",
+          "test the same setting plus one level lower",
+          "Keep optional capabilities"
+        ],
+        "not_contains": "Run the install command yourself"
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

@@ -372,6 +372,13 @@ stay behind the matrix runner's bounded provider-specific transport. Do not use
 `agent.create` `context_files` to pass rollout prompt payloads to agents for
 matrix/model evaluation.
 
+For GPT-5.6 migration comparisons, add explicit Sol, Terra, or Luna variants
+with `--variant` alongside the existing GPT-5.4 comparison instead of replacing
+the pinned baseline. Keep new family variants opt-in: every additional variant
+changes provider cost and runtime, and Sol should not become the default for
+every workload. Preserve fake `gpt-5.1-codex` harness models because they are
+deterministic protocol fixtures rather than production recommendations.
+
 `context_files` snapshots file contents directly into a spawned agent prompt.
 Use it only for deliberate agent-context snapshots, and require an explicit
 large `context_budget_tokens` when a large file is truly intended. For rollout

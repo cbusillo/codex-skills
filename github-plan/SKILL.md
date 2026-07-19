@@ -86,7 +86,7 @@ policy:
 
 # GitHub Plan
 
-## Purpose
+## Outcome
 
 Use GitHub issues as the durable planning database. Keep chat planning
 ephemeral until the work should survive the current conversation.
@@ -99,6 +99,11 @@ relationships, blockers, labels, validation, and completion state.
 This skill supersedes local file-backed plans for normal GitHub-backed planning.
 Use local plan files only when the user explicitly asks for an offline/local
 plan or the work must not be written to GitHub.
+
+Success means one canonical issue or issue graph has a concrete finish line,
+current recovery state, next action, and accurate dependencies. Optional
+Projects or local surfaces may improve visibility, but they do not become a
+second planning backend.
 
 ## Operating Model
 
@@ -201,23 +206,6 @@ Use sub-issues when any two are true:
 
 Parent issues should hold intent, finish line, dependency order, and recovery
 state. Child issues should each have one scoped finish line and one next action.
-
-## Default Session Ritual
-
-1. Orient from the active issue: finish line, current status, next action,
-   blockers, and timeline comments. Before acting on an issue body or title,
-   read its comments because they may redirect scope, add constraints, or
-   supersede the original description.
-2. Pick one next action and start work.
-3. When a new idea appears, run a Plan Direction Checkpoint. Classify it as do
-   now, acceptance criterion, related issue, sub-issue, blocker, or later. Do
-   not pivot without updating durable plan state or saying in the chat reply why
-   no plan update is needed.
-4. Before pausing, update `Current Status` or the owning PR/issue comment so the
-   user can resume quickly. Do not leave a local handoff file as the only
-   recovery source for GitHub-backed work.
-5. Keep the user in maker mode; let Projects or other surfaces handle management
-   state.
 
 ## Plan Direction Checkpoints
 
@@ -440,12 +428,20 @@ Before saying a plan is captured, verify:
 ## Workflow
 
 1. Decide whether the work is ephemeral or durable.
-2. Resolve the repo and run `index` or `search` before creating anything.
-3. Draft or revise the shape with the user in chat when unclear.
-4. Create or update the parent plan issue.
-5. For broad workstreams, create scoped sub-issues and link or reference them.
-6. Use blockers, sub-issues, and related links to represent the execution graph.
-7. Add configured Project fields only as view/tracking layers.
-8. Keep `Current Status`, acceptance criteria, decisions, and validation current.
+2. Resolve the repo and read the active issue's finish line, `Current Status`,
+   next action, blockers, and comments; comments may supersede the original
+   body.
+3. Run `index` or `search` before creating anything, then draft or revise the
+   issue shape with the user in chat when intent is unclear.
+4. Create or update the canonical parent issue and choose one next action.
+5. For broad workstreams, create scoped sub-issues and represent blockers,
+   dependencies, and related context in the issue graph.
+6. When discoveries change direction, run a Plan Direction Checkpoint and
+   update durable state before pivoting.
+7. Add configured Project fields only as view/tracking layers; keep the user in
+   maker mode instead of duplicating management state in prose.
+8. Before pausing, keep `Current Status`, acceptance criteria, decisions,
+   validation, and the next action current. Do not leave a local handoff file as
+   the only recovery source for GitHub-backed work.
 9. When work completes, update status and close durable plan issues with
    `gh-plan.py close`; do not leave stale local plan files behind.

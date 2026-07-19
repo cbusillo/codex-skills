@@ -1,0 +1,7 @@
+interface:
+  display_name: "Repo Readiness"
+  short_description: "Check repository readiness with evidence"
+  default_prompt: "Use $repo-readiness to determine whether the current change is ready and report concrete gate evidence."
+
+policy:
+  allow_implicit_invocation: true

@@ -27,54 +27,71 @@ commands:
 
 # OpenAI Docs
 
-Provide authoritative, current guidance from OpenAI developer docs using the developers.openai.com MCP server. Always prioritize the developer docs MCP tools over web.run for OpenAI-related questions. This skill also owns model selection, API model migration, and prompt-upgrade guidance. Only if the MCP server is installed and returns no meaningful results should you fall back to web search.
+Provide authoritative, current guidance from OpenAI developer docs. Use the
+developer-docs MCP tools first when they are available and useful; use official
+OpenAI-domain web search as the fallback. This skill owns OpenAI model
+selection, model migration, and prompt-upgrade guidance as well as general API
+docs lookup.
 
-## Quick start
+## Source priority
 
-- Use `mcp__openaiDeveloperDocs__search_openai_docs` to find the most relevant doc pages.
-- Use `mcp__openaiDeveloperDocs__fetch_openai_doc` to pull exact sections and quote/paraphrase accurately.
-- Use `mcp__openaiDeveloperDocs__list_openai_docs` only when you need to browse or discover pages without a clear query.
-- For model-selection, "latest model", or default-model questions, fetch `https://developers.openai.com/api/docs/guides/latest-model.md` first. If that is unavailable, load `references/latest-model.md`.
-- For model upgrades or prompt upgrades, run `node scripts/resolve-latest-model-info.js` only when the target is latest/current/default or otherwise unspecified; otherwise preserve the explicitly requested target.
-- Preserve explicit target requests: if the user names a target model like "migrate to GPT-5.4", keep that requested target even if `latest-model.md` names a newer model. Mention newer guidance only as optional.
-- If current remote guidance is needed, fetch both the returned migration and prompting guide URLs directly. If direct fetch fails, use MCP/search fallback; if that also fails, use bundled fallback references and disclose the fallback.
+- Search with a compact, title-like query of 2-6 discriminative terms instead
+  of turning the full user question into a keyword list.
+- Use `mcp__openaiDeveloperDocs__search_openai_docs` to discover relevant pages
+  and `mcp__openaiDeveloperDocs__fetch_openai_doc` to read exact sections.
+- For API schema, parameter, or required-field questions, use
+  `mcp__openaiDeveloperDocs__get_openapi_spec` when available alongside the
+  relevant guide or reference page.
+- When an official page URL is already known, fetch that page before relying on
+  search-result summaries.
+- Use `mcp__openaiDeveloperDocs__list_openai_docs` only when no clear query or
+  candidate page exists.
+- If MCP tools are unavailable or unhelpful, continue with official OpenAI web
+  sources. Do not install or reconfigure MCP as a side effect of a docs lookup;
+  offer setup only when the user asks to configure it.
 
-## OpenAI product snapshots
+## Latest-model route
 
-1. Apps SDK: Build ChatGPT apps by providing a web component UI and an MCP server that exposes your app's tools to ChatGPT.
-2. Responses API: A unified endpoint designed for stateful, multimodal, tool-using interactions in agentic workflows.
-3. Chat Completions API: Generate a model response from a list of messages comprising a conversation.
-4. Codex: OpenAI's coding agent for software development that can write, understand, review, and debug code.
-5. gpt-oss: Open-weight OpenAI reasoning models (gpt-oss-120b and gpt-oss-20b) released under the Apache 2.0 license.
-6. Realtime API: Build low-latency, multimodal experiences including natural speech-to-speech conversations.
-7. Agents SDK: A toolkit for building agentic apps where a model can use tools and context, hand off to other agents, stream partial results, and keep a full trace.
-
-## If MCP server is missing
-
-If MCP tools fail or no OpenAI docs resources are available:
-
-1. Run the install command yourself: `codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`
-2. If it fails due to permissions/sandboxing, immediately retry the same command with escalated permissions and include a 1-sentence justification for approval. Do not ask the user to run it yet.
-3. Only if the escalated attempt fails, ask the user to run the install command.
-4. Ask the user to restart Codex.
-5. Re-run the doc search/fetch after restart.
+- Fetch `https://developers.openai.com/api/docs/guides/latest-model.md` first
+  for latest/current/default model questions.
+- For a latest/current/default migration, run
+  `node scripts/resolve-latest-model-info.js`, then fetch the returned migration
+  and prompting URLs.
+- Treat a non-2xx, empty, whitespace-only, or non-substantive guide response as
+  unavailable. Try MCP fetch/search or official OpenAI web search for the same
+  guidance before using bundled fallbacks.
+- Preserve explicit targets. If the user asks for GPT-5.4, do not silently
+  retarget the work to GPT-5.6; mention newer guidance only as optional context.
+- If current remote guidance cannot be read, use the bundled references and
+  disclose that fallback guidance was used.
+- If current OpenAI pages disagree, state the conflict and avoid inventing a
+  single value.
 
 ## Workflow
 
-1. Clarify whether the request is general docs lookup, model selection, a model-string upgrade, prompt-upgrade guidance, or broader API/provider migration.
-2. For model-selection or upgrade requests, prefer current remote docs over bundled references when the user asks for latest/current/default guidance.
-   - Fetch `https://developers.openai.com/api/docs/guides/latest-model.md`.
-   - Find the latest model ID and explicit migration or prompt-guidance links.
-   - Prefer explicit links from the latest-model page over derived URLs.
-   - For explicit named-model requests, preserve the requested model target and do not silently retarget to the latest model. Mention newer remote guidance only as optional.
-   - For dynamic latest/current/default upgrades, run `node scripts/resolve-latest-model-info.js`, then fetch both returned guide URLs directly when possible.
-   - If direct guide fetch fails, use the developer-docs MCP tools or official OpenAI-domain search to find the same guide content.
-   - If remote docs are unavailable, use bundled fallback references and say that fallback guidance was used.
-3. For model upgrades, keep changes narrow: update active OpenAI API model defaults and directly related prompts only when safe.
-4. Leave historical docs, examples, eval baselines, fixtures, provider comparisons, provider registries, pricing tables, alias defaults, low-cost fallback paths, and ambiguous older model usage unchanged unless the user explicitly asks to upgrade them.
-5. Do not perform SDK, tooling, IDE, plugin, shell, auth, or provider-environment migrations as part of a model-and-prompt upgrade.
-6. If an upgrade needs API-surface changes, schema rewiring, tool-handler changes, or implementation work beyond a literal model-string replacement and prompt edits, report it as blocked or confirmation-needed.
-7. For general docs lookup, search docs with a precise query, fetch the best page and exact section needed, and answer with concise citations.
+1. Classify the request as general docs lookup, model selection, model
+   migration, prompt migration, or broader API/provider implementation work.
+2. For model migrations, inventory active model usage, reasoning settings,
+   adjacent prompts, routers, fallbacks, schemas, parsers, tools, and tests.
+3. Map workload roles rather than replacing every model with the flagship tier.
+   Preserve historical docs, examples, eval baselines, comparison code,
+   intentionally pinned fallbacks, and ambiguous usage unless explicitly asked
+   to change them.
+4. For GPT-5.5 or GPT-5.4 migrations, preserve the current reasoning effort for
+   the baseline and test the same setting plus one level lower. Do not guess an
+   omitted setting when current docs or host behavior are unclear.
+5. Switch the model and run representative evals before rewriting prompts.
+   Remove redundant or stale scaffolding one group at a time and add only the
+   smallest instruction needed for a measured regression.
+6. Keep optional capabilities such as Pro mode, explicit caching, persisted
+   reasoning, Programmatic Tool Calling, and multi-agent behavior separate from
+   the baseline migration unless the user explicitly requests them.
+7. Do not turn a model-and-prompt upgrade into an SDK, endpoint, provider,
+   tooling, IDE, plugin, shell, auth, tool-schema, parser, or orchestration
+   migration without explicit scope.
+8. Validate user-visible behavior and machine-readable contracts. Report what
+   changed, what remained pinned, what was not run, and any compatibility
+   blockers.
 
 ## Reference map
 
@@ -89,7 +106,8 @@ Read only what you need:
 
 - Treat OpenAI docs as the source of truth; avoid speculation.
 - Keep migration changes narrow and behavior-preserving.
-- Prefer prompt-only upgrades when possible.
+- Prefer prompt-only fixes for prompt-specific regressions; do not rewrite a
+  working prompt stack wholesale.
 - Do not invent pricing, availability, parameters, API changes, or breaking changes.
 - Keep quotes short and within policy limits; prefer paraphrase with citations.
 - If multiple pages differ, call out the difference and cite both.
@@ -98,6 +116,6 @@ Read only what you need:
 
 ## Tooling notes
 
-- Always use MCP doc tools before any web search for OpenAI-related questions.
-- If the MCP server is installed but returns no meaningful results, then use web search as a fallback.
+- Prefer MCP doc tools for OpenAI markdown docs when available, then use
+  official-domain web search when MCP is unavailable or unhelpful.
 - When falling back to web search, restrict to official OpenAI domains (developers.openai.com, platform.openai.com) and cite sources.

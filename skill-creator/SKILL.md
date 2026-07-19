@@ -34,6 +34,9 @@ resources:
   - path: references/command-policy-contract.md
     kind: reference
     description: Contract for portable command-policy metadata, runtime enforcement boundaries, and simulator/harness expectations.
+  - path: references/skill-design-details.md
+    kind: reference
+    description: Detailed structured metadata, resource, and progressive-disclosure patterns for skill authors.
 commands:
   - name: init-skill
     source: skill
@@ -131,6 +134,23 @@ Match the level of specificity to the task's fragility and variability:
 
 Think of Codex as exploring a path: a narrow bridge with cliffs needs specific guardrails (low freedom), while an open field allows many routes (high freedom).
 
+### Write Outcome-First Contracts
+
+Describe the destination and completion bar before prescribing process. A
+substantial skill should make five things easy to find:
+
+1. **Goal** - the user-visible outcome the skill owns.
+2. **Success evidence** - what must be true before the task is complete.
+3. **Autonomy boundary** - which safe local actions are allowed and which
+   destructive, external, costly, or scope-expanding actions require approval.
+4. **Tool routing** - the primary helper or decision rule for choosing tools.
+5. **Final result contract** - the status, evidence, gaps, and next action the
+   user should receive.
+
+Keep hard safety, permission, evidence, and output constraints. Remove repeated
+rules, examples, or process narration that do not change behavior. Use absolute
+language only for true invariants; use decision rules for judgment calls.
+
 ### Protect Validation Integrity
 
 You may use subagents during iteration to validate whether a skill works on realistic tasks or whether a suspected problem is real. This is most useful when you want an independent pass on the skill's behavior, outputs, or failure modes after a revision. Only do this when it is possible to start new subagents.
@@ -141,11 +161,15 @@ Prefer raw artifacts such as example prompts, outputs, diffs, logs, or traces. G
 
 Use the exec harness for behavior-sensitive skill changes when available. A
 skill that changes routing, command policy, safety boundaries, or GitHub/repo
-workflow semantics should have at least one harness-style prompt that exercises
-the intended behavior and a negative or ambiguity case when practical. Keep
-these tests focused on observable agent behavior rather than private reasoning.
-For this repo, read `references/exec_harness.md` before designing or running
-exec-harness scenarios.
+workflow semantics should normally have at least three representative prompts:
+the intended trigger and success path, an adjacent request that should not
+trigger or should route elsewhere, and an ambiguity or safety-boundary case.
+Include a negative or ambiguity case when practical. Keep tests focused on
+observable behavior rather than private reasoning. For model-specific prompt
+migrations, consult current model guidance and preserve the existing eval
+baseline; use `openai-docs` for OpenAI models. For GPT-5.6 specifically, compare
+the target at the same reasoning effort and one level lower before changing the
+prompt. Read `references/exec_harness.md` before designing or running scenarios.
 
 ### Anatomy of a Skill
 
@@ -178,40 +202,11 @@ Every SKILL.md consists of:
 
 ##### Structured resources and commands
 
-Use `resources` to declare bundled files that agents can load or run, and use
-`commands` to declare routine command entrypoints. This metadata should describe
-the stable surface area; do not move nuanced workflow guidance out of prose.
-
-```yaml
-resources:
-  - path: scripts/example.py
-    kind: script
-    description: Short description.
-commands:
-  - name: example-command
-    source: skill
-    resource_path: scripts/example.py
-    example_argv: ["uv", "run", "scripts/example.py", "--flag"]
-    purpose: Short purpose.
-  - name: repo-command
-    source: repo
-    example_argv: ["just", "some-recipe"]
-    purpose: Runs a repo workflow command.
-  - name: external-command
-    source: external
-    example_argv: ["gh", "pr", "view"]
-    purpose: Runs an external tool command.
-workflow_defaults:
-  - name: default_name
-    value: default value
-    description: Short description.
-```
-
-- `resources[].kind` must be one of `script`, `reference`, `template`, or `asset`.
-  - Commands must declare `source`.
-  - `source: skill` commands must declare `resource_path`, and that path must exist and be listed in `resources`.
-- `source: repo` and `source: external` commands must not declare `resource_path`.
-- Do not invent unsupported structured fields for options, variants, network requirements, sandbox hints, or output templates.
+Use `resources` for bundled files, `commands` for routine entrypoints, and
+`workflow_defaults` for simple stable defaults. Keep descriptions and purposes
+short, distinguish similar commands clearly, and keep judgment, routing,
+safety, and exceptions in prose. Read `references/skill-design-details.md` when
+adding or changing structured metadata.
 
 ##### Command policies
 
@@ -219,58 +214,11 @@ When a skill owns a fragile or preferred command workflow, put the machine-reada
 mapping in `policy.command_policies` instead of relying only on prose. Keep prose
 for judgment, sequencing, and exceptions.
 
-Command policies are structured skill metadata: they live in `SKILL.md`
-frontmatter so the skill catalog, validators, harness scenarios, and future
-runtime integrations can read the same source. They are not, by themselves, a
-runtime command-blocker guarantee. If a command must be prevented regardless of
-which skill is active, Every Code or Codex Lab must load that policy into the
-command execution layer; this repo should keep the policy catalog and behavior
-fixtures accurate enough for that integration.
-
 Use `references/command-policy-contract.md` as the source of truth for the
 frontmatter/runtime boundary, matcher precedence, path resolution, and
-exec-harness limits.
-
-Use command policies for common raw-command-to-helper cases, especially when raw
-commands are fragile around auth, multiline Markdown, quoting, retries, cleanup,
-or normalized output.
-
-Choose one canonical owner for each raw command path. If sibling skills care
-about the same command, put the policy on the skill that owns the workflow and
-have the other skills reference that owner in prose. Do not copy the same matcher
-into multiple skills just to restate shared guidance.
-
-When multiple loaded policies match a command, Every Code selects the primary
-policy by matcher specificity (`argv_exact`, then `argv_prefix`, then
-`shell_regex`), longer argv matcher, and stable skill load/declaration order.
-The guard still lists lower-priority matched policies with their action and
-warning, and de-duplicates identical preferred actions. Keep matchers as narrow
-as the workflow allows; broad prefixes are appropriate only when the skill truly
-owns the whole command family.
-
-`argv_exact` and `argv_prefix` match tokenized command arguments. Use
-`shell_regex` for wildcard-like shell-script situations, compound commands, or
-patterns that cannot be represented as a token prefix.
-
-```yaml
-policy:
-  command_policies:
-    - id: prefer-helper
-      match:
-        argv_prefix: ["tool", "subcommand"]
-      action: require_preferred
-      message: Prefer the bundled helper for this workflow.
-      preferred:
-        - kind: script
-          path: scripts/helper.py
-          example_argv:
-            ["uv", "run", "scripts/helper.py", "subcommand", "<target>"]
-          purpose: Runs the workflow through the maintained helper.
-```
-
-Supported matchers are `argv_exact`, `argv_prefix`, and `shell_regex`; declare
-exactly one. Supported actions are `require_preferred`, `require_confirm`, and
-`reject`. Preferred entries may name `script`, `skill`, or `command` actions.
+exec-harness limits. Keep one canonical owner for each raw command path and use
+the narrowest matcher that represents the workflow. Command policies are
+portable metadata, not a runtime enforcement guarantee by themselves.
 
 #### Agents metadata (recommended)
 
@@ -284,61 +232,18 @@ exactly one. Supported actions are `require_preferred`, `require_confirm`, and
 
 #### Bundled Resources (optional)
 
-##### Scripts (`scripts/`)
+Use scripts for deterministic or repeatedly rewritten work, references for
+details loaded only when needed, and assets for files copied or modified in the
+final output. Python helpers require PEP 723 metadata and should run with
+`uv run`; shell helpers must be documented and invoked as shell helpers. Prefer
+stdin or body files for fragile multiline payloads. Keep information in one
+place rather than duplicating it between `SKILL.md` and references.
 
-Executable code (Python/Bash/etc.) for tasks that require deterministic reliability or are repeatedly rewritten.
-
-- **Standard**: All Python scripts must include **PEP 723 inline metadata** for dependency management. This ensures the script is hermetic and can be executed via `uv run` without manual environment setup.
-- **Example Header**:
-  ```python
-  #!/usr/bin/env python3
-  # /// script
-  # requires-python = ">=3.12"
-  # dependencies = [
-  #     "requests",
-  #     "rich",
-  # ]
-  # ///
-  ```
-- **Execution**: Prefer `uv run scripts/name.py` over direct `python` calls.
-- **Shell helpers**: Some executable shell helpers intentionally omit `.sh`
-  when they are command-style entrypoints. Document these as shell helpers,
-  give direct or `bash` invocation examples, and never show them being run with
-  `python`, `python3`, or `uv run`.
-- **Command examples**: Match `commands[].example_argv` and policy
-  `preferred[].example_argv` to the helper type. Use direct execution for shell
-  helpers and `uv run scripts/name.py` for Python helpers with PEP 723 metadata.
-- **When to include**: When the same code is being rewritten repeatedly or deterministic reliability is needed.
-- **Benefits**: Token efficient, deterministic, and environment-agnostic.
-
-When a workflow depends on fragile CLI payloads such as multiline Markdown,
-JSON, or shell-sensitive quoting, prefer a helper script that reads stdin or a
-file over teaching quoting tricks in prose.
-
-When creating or updating a skill that generates reviews, handoffs, issue/PR
-comments, readiness reports, or final summaries, point it at
-`../references/every-code-formatting.md` instead of copying broad Every Code
-formatting rules into the skill body.
-
-##### References (`references/`)
-
-Documentation and reference material intended to be loaded as needed into context to inform Codex's process and thinking.
-
-- **When to include**: For documentation that Codex should reference while working
-- **Examples**: `references/finance.md` for financial schemas, `references/mnda.md` for company NDA template, `references/policies.md` for company policies, `references/api_docs.md` for API specifications
-- **Use cases**: Database schemas, API documentation, domain knowledge, company policies, detailed workflow guides
-- **Benefits**: Keeps SKILL.md lean, loaded only when Codex determines it's needed
-- **Best practice**: If files are large (>10k words), include grep search patterns in SKILL.md
-- **Avoid duplication**: Information should live in either SKILL.md or references files, not both. Prefer references files for detailed information unless it's truly core to the skill—this keeps SKILL.md lean while making information discoverable without hogging the context window. Keep only essential procedural instructions and workflow guidance in SKILL.md; move detailed reference material, schemas, and examples to references files.
-
-##### Assets (`assets/`)
-
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-- **When to include**: When the skill needs files that will be used in the final output
-- **Examples**: `assets/logo.png` for brand assets, `assets/slides.pptx` for PowerPoint templates, `assets/frontend-template/` for HTML/React boilerplate, `assets/font.ttf` for typography
-- **Use cases**: Templates, images, icons, boilerplate code, fonts, sample documents that get copied or modified
-- **Benefits**: Separates output resources from documentation, enables Codex to use files without loading them into context
+Read `references/skill-design-details.md` for resource patterns, helper
+invocation rules, and progressive-disclosure examples. Skills that generate
+reviews, handoffs, issue or PR comments, readiness reports, or final summaries
+should point to `../references/every-code-formatting.md` instead of copying its
+rules.
 
 #### What to Not Include in a Skill
 
@@ -362,83 +267,12 @@ Skills use a three-level loading system to manage context efficiently:
 
 #### Progressive Disclosure Patterns
 
-Keep SKILL.md body to the essentials and under 500 lines to minimize context bloat. Split content into separate files when approaching this limit. When splitting out content into other files, it is very important to reference them from SKILL.md and describe clearly when to read them, to ensure the reader of the skill knows they exist and when to use them.
-
-**Key principle:** When a skill supports multiple variations, frameworks, or options, keep only the core workflow and selection guidance in SKILL.md. Move variant-specific details (patterns, examples, configuration) into separate reference files.
-
-**Pattern 1: High-level guide with references**
-
-```markdown
-# PDF Processing
-
-## Quick start
-
-Extract text with pdfplumber:
-[code example]
-
-## Advanced features
-
-- **Form filling**: See [FORMS.md](FORMS.md) for complete guide
-- **API reference**: See [REFERENCE.md](REFERENCE.md) for all methods
-- **Examples**: See [EXAMPLES.md](EXAMPLES.md) for common patterns
-```
-
-Codex loads FORMS.md, REFERENCE.md, or EXAMPLES.md only when needed.
-
-**Pattern 2: Domain-specific organization**
-
-For Skills with multiple domains, organize content by domain to avoid loading irrelevant context:
-
-```
-bigquery-skill/
-├── SKILL.md (overview and navigation)
-└── reference/
-    ├── finance.md (revenue, billing metrics)
-    ├── sales.md (opportunities, pipeline)
-    ├── product.md (API usage, features)
-    └── marketing.md (campaigns, attribution)
-```
-
-When a user asks about sales metrics, Codex only reads sales.md.
-
-Similarly, for skills supporting multiple frameworks or variants, organize by variant:
-
-```
-cloud-deploy/
-├── SKILL.md (workflow + provider selection)
-└── references/
-    ├── aws.md (AWS deployment patterns)
-    ├── gcp.md (GCP deployment patterns)
-    └── azure.md (Azure deployment patterns)
-```
-
-When the user chooses AWS, Codex only reads aws.md.
-
-**Pattern 3: Conditional details**
-
-Show basic content, link to advanced content:
-
-```markdown
-# DOCX Processing
-
-## Creating documents
-
-Use docx-js for new documents. See [DOCX-JS.md](DOCX-JS.md).
-
-## Editing documents
-
-For simple edits, modify the XML directly.
-
-**For tracked changes**: See [REDLINING.md](REDLINING.md)
-**For OOXML details**: See [OOXML.md](OOXML.md)
-```
-
-Codex reads REDLINING.md or OOXML.md only when the user needs those features.
-
-**Important guidelines:**
-
-- **Avoid deeply nested references** - Keep references one level deep from SKILL.md. All reference files should link directly from SKILL.md.
-- **Structure longer reference files** - For files longer than 100 lines, include a table of contents at the top so Codex can see the full scope when previewing.
+Keep the body to essential routing, judgment, safety, and workflow instructions
+and under 500 lines. Move variant-specific details, examples, configuration,
+schemas, and exhaustive command documentation to one-level-deep references.
+Name each reference from `SKILL.md` and say when to read it. Add a table of
+contents to longer reference files. See `references/skill-design-details.md` for
+worked patterns.
 
 ## Skill Creation Process
 
@@ -625,17 +459,16 @@ The validation script checks YAML frontmatter format, required fields, and namin
 
 ### Step 6: Iterate
 
-After testing the skill, you may detect the skill is complex enough that it requires forward-testing; or users may request improvements.
-
-User testing often this happens right after using the skill, with fresh context of how the skill performed.
+After testing the skill, forward-test substantial or fragile changes and use
+fresh user feedback to identify measured failures.
 
 **Forward-testing and iteration workflow:**
 
-1. Use the skill on real tasks
-2. Notice struggles or inefficiencies
-3. Identify how SKILL.md or bundled resources should be updated
-4. Implement changes and test again
-5. Forward-test if it is reasonable and appropriate
+1. Record a baseline on representative tasks.
+2. Identify a concrete struggle, inefficiency, or contract failure.
+3. Change one instruction group, resource, or tool route at a time.
+4. Rerun the same cases and compare observable outcomes.
+5. Keep the change only when it improves behavior without weakening boundaries.
 
 Read `references/forward-testing.md` only when planning or running a subagent
 forward-test for a tricky skill revision.
