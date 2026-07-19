@@ -559,19 +559,19 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 [[operations]]
 id = "github.plan.close"
 entrypoint = "github/scripts/gh-plan.py close"
-intent = "Close a completed durable plan, update planning labels, optionally comment, and reconcile Project focus/status fields."
+intent = "Fail closed on unsafe or incomplete native relationships, synchronize configured Project fields, close a completed or not-planned durable plan, and reconcile post-close labels/comments without duplicate evidence."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Shared REST issue label edit, timeline comment, and PATCH state transition; optional retained gh project view/field-list/item-list/item-edit"
+endpoint_or_command = "Paged GET native blocked_by and sub_issues; optional retained gh project view/field-list/item-list/item-edit before closure; shared REST PATCH state transition; post-close REST label edit and deduplicated timeline comment"
 quota_bucket = "mixed"
 actor_policy = "automation_required_for_writes"
 mutation_class = "close"
 idempotency = "conditional"
 retry_eligibility = "manual"
-reconciliation_strategy = "project_recoverable_warning"
-retained_graphql_rationale = "GraphQL is retained only for optional Project reconciliation; selected issue label, comment, and close steps use REST and Project failures remain non-blocking warnings."
-source_refs = ["github/scripts/gh-plan.py:cmd_close", "github/scripts/github_issue.py:edit_issue", "github/scripts/github_comment.py:comment", "github/scripts/github_issue.py:set_issue_state"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_delegates_comment_to_shared_rest_helper", "github/scripts/validate-gh-plan.py:test_close_preserves_comment_reconciliation_after_partial_failure", "github/scripts/validate-gh-plan.py:test_close_state_failure_preserves_compound_steps", "github/scripts/validate-gh-plan.py:test_close_already_reconciled_skips_redundant_label_write", "github/scripts/validate-gh-plan.py:test_close_rejects_invalid_reason_before_remote_reads_or_writes", "github/scripts/validate-gh-plan.py:test_close_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_syncs_project_before_closing_issue", "skill-creator/evaluations/exec-harness/fake-gh-plan-close.json", "github/scripts/validate-operation-matrix.py:self-test"]
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "GraphQL is retained only for optional Project synchronization, which must run before issue closure while the item remains discoverable. Native relationship preflight, issue state, labels, and comments use REST; Project split state remains explicitly recoverable."
+source_refs = ["github/scripts/gh-plan.py:close_relationship_preflight", "github/scripts/gh-plan.py:cmd_close", "github/scripts/github_issue.py:edit_issue", "github/scripts/github_comment.py:comment", "github/scripts/github_issue.py:set_issue_state"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_close_rejects_open_cross_repo_blocker_before_any_write", "github/scripts/validate-gh-plan.py:test_close_rejects_partial_subissues_before_any_write", "github/scripts/validate-gh-plan.py:test_close_allows_closed_relationships_and_ignores_issues_it_blocks", "github/scripts/validate-gh-plan.py:test_close_relationship_preflight_fails_closed_on_unavailable_and_ambiguous_reads", "github/scripts/validate-gh-plan.py:test_close_not_planned_retains_and_reports_open_relationships", "github/scripts/validate-gh-plan.py:test_close_known_failure_reports_project_split_and_stops_metadata", "github/scripts/validate-gh-plan.py:test_close_unknown_outcome_reports_unavailable_reconciliation", "github/scripts/validate-gh-plan.py:test_close_reconciles_unknown_success_before_metadata", "github/scripts/validate-gh-plan.py:test_close_post_close_label_failure_is_recoverable", "github/scripts/validate-gh-plan.py:test_close_already_complete_reuses_completion_comment", "github/scripts/validate-gh-plan.py:test_close_reports_stale_project_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_delegates_comment_to_shared_rest_helper", "github/scripts/validate-gh-plan.py:test_close_preserves_comment_reconciliation_after_partial_failure", "github/scripts/validate-gh-plan.py:test_close_state_failure_preserves_compound_steps", "github/scripts/validate-gh-plan.py:test_close_already_reconciled_skips_redundant_label_write", "github/scripts/validate-gh-plan.py:test_close_rejects_invalid_reason_before_remote_reads_or_writes", "github/scripts/validate-gh-plan.py:test_close_reports_project_auth_denied_as_non_blocking_warning", "github/scripts/validate-gh-plan.py:test_close_syncs_project_before_closing_issue", "github/scripts/test_github_comment.py:test_dedupe_body_reuses_existing_actor_comment_without_write", "skill-creator/evaluations/exec-harness/fake-gh-plan-close.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.project_add"
