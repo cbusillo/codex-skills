@@ -4978,6 +4978,16 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["semantic_coverage"]["files"][0]["requested_language_hint"], "swift")
         self.assertIn("language plugins", payload["verdict_next_action"])
 
+        output = io.StringIO()
+        with redirect_stdout(output):
+            jb_inspect.print_human(payload)
+        lines = output.getvalue().splitlines()
+        self.assertIn(
+            'SEMANTIC_COVERAGE_FILE: path=/tmp/PlaybackValidation.swift language_hint=swift file_type=textmate psi_language=textmate reasons=["non_semantic_fallback"]',
+            lines,
+        )
+        self.assertFalse(any(line.startswith("SEMANTIC_COVERAGE_FILE: classification=") for line in lines))
+
     def test_mixed_semantic_and_textmate_scope_fails_closed(self):
         payload = {
             "status": "clean",
@@ -5081,6 +5091,7 @@ class HumanOutputTest(unittest.TestCase):
             jb_inspect.print_human(payload)
         text = output.getvalue()
         self.assertIn("SEMANTIC_COVERAGE: status=satisfied", text)
+        self.assertIn("SEMANTIC_COVERAGE_METADATA_FILE:", text)
         self.assertIn("classification=project_metadata", text)
         self.assertIn("coverage_required=False", text)
 

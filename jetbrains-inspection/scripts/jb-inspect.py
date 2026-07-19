@@ -4205,9 +4205,8 @@ def print_semantic_coverage(coverage: Any) -> None:
             continue
         print(
             safe_text(
-                "SEMANTIC_COVERAGE_FILE: classification={classification} path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} reasons={reasons}",
+                "SEMANTIC_COVERAGE_FILE: path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} reasons={reasons}",
                 {
-                    "classification": file.get("classification") or "missing",
                     "path": file.get("path"),
                     "language_hint": file.get("requested_language_hint"),
                     "file_type": file.get("file_type"),
@@ -4221,7 +4220,7 @@ def print_semantic_coverage(coverage: Any) -> None:
             continue
         print(
             safe_text(
-                "SEMANTIC_COVERAGE_FILE: classification={classification} path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} psi_class={psi_class} coverage_required={coverage_required}",
+                "SEMANTIC_COVERAGE_METADATA_FILE: classification={classification} path={path} language_hint={language_hint} file_type={file_type} psi_language={psi_language} psi_class={psi_class} coverage_required={coverage_required}",
                 {
                     "classification": file.get("classification"),
                     "path": file.get("path"),
