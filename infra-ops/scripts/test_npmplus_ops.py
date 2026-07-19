@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import subprocess
@@ -87,18 +88,29 @@ def write_provider(private_repo: Path, payload: dict[str, object]) -> Path:
 
 def context_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": "npmplus.ops.v1",
+        "schema_version": "npmplus.ops.v2",
         "api": {
             "env_file": ".code/local.env",
             "base_url_env": "NPMPLUS_BASE_URL",
             "identity_env": "NPMPLUS_AUTOMATION_EMAIL",
             "secret_env": "NPMPLUS_AUTOMATION_PASSWORD",
+            "expected_base_url": "https://npmplus.invalid",
+            "expected_principal": {"id": 7, "email": "robot@example.invalid"},
         },
         "refs": {
-            "canary": {"kind": "proxy_host", "id": 123},
+            "canary": {
+                "kind": "proxy_host",
+                "id": 123,
+                "allowed_apply_actions": ["proxy-host-enable", "proxy-host-disable"],
+                "identity": {"domain_names": ["private.example.invalid"]},
+                "write_evidence": {
+                    "snapshot_ready": True,
+                    "rollback_ready": True,
+                    "external_validation_ready": True,
+                },
+            },
         },
         "pilot": {"default_ref": "canary"},
-        "policy": {"allowed_apply_actions": ["proxy-host-enable", "proxy-host-disable"]},
     }
     payload.update(overrides)
     return payload
@@ -111,24 +123,69 @@ def test_load_context_accepts_public_safe_schema(tmp_path: Path) -> None:
     context = npmplus_ops.load_context(private_repo, provider, "default")
 
     assert context.profile == "default"
+    assert context.schema_version == "npmplus.ops.v2"
     assert context.env_file == private_repo / ".code" / "local.env"
     assert context.default_pilot_ref == "canary"
-    assert context.refs == {"canary": {"kind": "proxy_host", "id": 123}}
-    assert context.allowed_apply_actions == {"proxy-host-enable", "proxy-host-disable"}
+    assert context.refs == {
+        "canary": {
+            "kind": "proxy_host",
+            "id": 123,
+            "allowed_apply_actions": {"proxy-host-enable", "proxy-host-disable"},
+            "identity": {"domain_names": ["private.example.invalid"]},
+            "write_evidence": {
+                "snapshot_ready": True,
+                "rollback_ready": True,
+                "external_validation_ready": True,
+            },
+        }
+    }
+    assert context.expected_base_url == "https://npmplus.invalid"
+    assert context.expected_principal == {
+        "id": 7,
+        "email": "robot@example.invalid",
+    }
+
+
+def test_legacy_context_is_read_only_compatible(tmp_path: Path) -> None:
+    private_repo = make_private_repo(tmp_path)
+    payload = context_payload()
+    payload["schema_version"] = "npmplus.ops.v1"
+    api = payload["api"]
+    assert isinstance(api, dict)
+    api.pop("expected_base_url")
+    api.pop("expected_principal")
+    refs = payload["refs"]
+    assert isinstance(refs, dict)
+    ref = refs["canary"]
+    assert isinstance(ref, dict)
+    ref.pop("allowed_apply_actions")
+    ref.pop("identity")
+    ref.pop("write_evidence")
+    payload["policy"] = {
+        "allowed_apply_actions": ["proxy-host-enable", "proxy-host-disable"]
+    }
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, payload), "default"
+    )
+
+    assert context.schema_version == "npmplus.ops.v1"
+    assert context.refs["canary"]["allowed_apply_actions"] == set()
+    with pytest.raises(npmplus_ops.OpsError, match="require private context schema"):
+        npmplus_ops.authorize_lifecycle_write(
+            context, context.refs["canary"], "proxy-host-enable"
+        )
+
 
 
 def test_context_rejects_absolute_env_file_path(tmp_path: Path) -> None:
     private_repo = make_private_repo(tmp_path)
+    payload = context_payload()
+    api = payload["api"]
+    assert isinstance(api, dict)
+    api["env_file"] = "/private/path"
     provider = write_provider(
         private_repo,
-        context_payload(
-            api={
-                "env_file": "/private/path",
-                "base_url_env": "A",
-                "identity_env": "B",
-                "secret_env": "C",
-            }
-        ),
+        payload,
     )
 
     with pytest.raises(npmplus_ops.OpsError, match="must stay inside"):
@@ -238,43 +295,101 @@ def test_authenticate_accepts_legacy_and_host_prefixed_token_cookies(
             identity="robot@example.invalid",
             secret="secret-value",
             timeout=1,
+            expected_principal={"id": 7, "email": "robot@example.invalid"},
         )
     )
 
-    def fake_request(method: str, path: str, *, body: dict[str, object] | None = None) -> dict[str, str]:
-        assert method == "POST"
-        assert path == "/api/tokens"
-        assert body == {"identity": "robot@example.invalid", "secret": "secret-value"}
-        client.cookies.set_cookie(
-            Cookie(
-                version=0,
-                name=cookie_name,
-                value="redacted",
-                port=None,
-                port_specified=False,
-                domain="npmplus.invalid",
-                domain_specified=True,
-                domain_initial_dot=False,
-                path="/",
-                path_specified=True,
-                secure=True,
-                expires=None,
-                discard=True,
-                comment=None,
-                comment_url=None,
-                rest={},
-                rfc2109=False,
+    def fake_request(
+        method: str, path: str, *, body: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        if path == "/api/tokens":
+            assert method == "POST"
+            assert body == {
+                "identity": "robot@example.invalid",
+                "secret": "secret-value",
+            }
+            client.cookies.set_cookie(
+                Cookie(
+                    version=0,
+                    name=cookie_name,
+                    value="redacted",
+                    port=None,
+                    port_specified=False,
+                    domain="npmplus.invalid",
+                    domain_specified=True,
+                    domain_initial_dot=False,
+                    path="/",
+                    path_specified=True,
+                    secure=True,
+                    expires=None,
+                    discard=True,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False,
+                )
             )
-        )
-        return {"expires": "redacted"}
+            return {"expires": "redacted"}
+        assert method == "GET"
+        assert path == "/api/users/me"
+        assert body is None
+        return {"id": 7, "email": "robot@example.invalid"}
 
     monkeypatch.setattr(client, "request", fake_request)
 
     assert client.authenticate() == {
         "ok": True,
         "payload_keys": ["expires"],
+        "principal_verified": True,
         "token_cookie_present": True,
     }
+
+
+def test_authenticate_rejects_wrong_authenticated_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = npmplus_ops.NpmplusClient(
+        npmplus_ops.ApiConfig(
+            base_url="https://npmplus.invalid",
+            identity="robot@example.invalid",
+            secret="secret-value",
+            timeout=1,
+            expected_principal={"id": 7, "email": "robot@example.invalid"},
+        )
+    )
+
+    def fake_request(
+        method: str, path: str, *, body: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        if path == "/api/tokens":
+            client.cookies.set_cookie(
+                Cookie(
+                    version=0,
+                    name="token",
+                    value="redacted",
+                    port=None,
+                    port_specified=False,
+                    domain="npmplus.invalid",
+                    domain_specified=True,
+                    domain_initial_dot=False,
+                    path="/",
+                    path_specified=True,
+                    secure=True,
+                    expires=None,
+                    discard=True,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False,
+                )
+            )
+            return {"expires": "redacted"}
+        return {"id": 99, "email": "other@example.invalid"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    with pytest.raises(npmplus_ops.OpsError, match="authenticated principal"):
+        client.authenticate()
 
 
 def test_public_engine_does_not_contain_private_literals() -> None:
@@ -292,3 +407,183 @@ def test_help_does_not_contain_private_literals() -> None:
     )
     for literal in PRIVATE_LITERALS:
         assert literal not in result.stdout
+
+
+def test_api_config_rejects_wrong_instance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    provider = write_provider(private_repo, context_payload())
+    context = npmplus_ops.load_context(private_repo, provider, "default")
+    monkeypatch.setenv("NPMPLUS_BASE_URL", "https://other.invalid")
+    with pytest.raises(
+        npmplus_ops.OpsError,
+        match="does not match private context expected instance",
+    ):
+        npmplus_ops.load_api_config(context, 10)
+
+
+def test_api_config_rejects_wrong_principal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    provider = write_provider(private_repo, context_payload())
+    context = npmplus_ops.load_context(private_repo, provider, "default")
+    monkeypatch.setenv("NPMPLUS_AUTOMATION_EMAIL", "other@example.invalid")
+    with pytest.raises(
+        npmplus_ops.OpsError,
+        match="does not match private context expected principal",
+    ):
+        npmplus_ops.load_api_config(context, 10)
+
+
+def test_verify_host_identity_accepts_match() -> None:
+    host = {"id": 123, "domain_names": ["private.example.invalid"]}
+    ref = {"id": 123, "identity": {"domain_names": ["private.example.invalid"]}}
+
+    npmplus_ops.verify_host_identity(host, ref)
+
+
+def test_verify_host_identity_rejects_wrong_id() -> None:
+    host = {"id": 999, "domain_names": ["private.example.invalid"]}
+    ref = {"id": 123, "identity": {"domain_names": ["private.example.invalid"]}}
+    with pytest.raises(npmplus_ops.OpsError, match="id does not match"):
+        npmplus_ops.verify_host_identity(host, ref)
+
+
+def test_verify_host_identity_rejects_domain_mismatch() -> None:
+    host = {"id": 123, "domain_names": ["wrong.example.invalid"]}
+    ref = {"id": 123, "identity": {"domain_names": ["private.example.invalid"]}}
+    with pytest.raises(npmplus_ops.OpsError, match="domain names do not match"):
+        npmplus_ops.verify_host_identity(host, ref)
+
+
+def test_authorize_lifecycle_write_is_per_ref_and_requires_evidence(
+    tmp_path: Path,
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, context_payload()), "default"
+    )
+    ref = context.refs["canary"]
+
+    with pytest.raises(npmplus_ops.OpsError, match="does not allow"):
+        npmplus_ops.authorize_lifecycle_write(
+            context, ref, "proxy-host-unsupported"
+        )
+
+    ref["write_evidence"]["rollback_ready"] = False
+    with pytest.raises(npmplus_ops.OpsError, match="write evidence is incomplete"):
+        npmplus_ops.authorize_lifecycle_write(
+            context, ref, "proxy-host-enable"
+        )
+
+
+def test_cmd_lifecycle_rejects_unauthorized_ref_before_client_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    payload = context_payload()
+    refs = payload["refs"]
+    assert isinstance(refs, dict)
+    ref = refs["canary"]
+    assert isinstance(ref, dict)
+    ref["allowed_apply_actions"] = ["proxy-host-disable"]
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, payload), "default"
+    )
+    monkeypatch.setattr(npmplus_ops, "build_context", lambda args: context)
+
+    def fail_build_client(*args: object) -> None:
+        raise AssertionError("client must not be built before authorization")
+
+    monkeypatch.setattr(npmplus_ops, "build_client", fail_build_client)
+    args = argparse.Namespace(
+        apply=True,
+        host_ref="canary",
+        lifecycle_action="enable",
+    )
+
+    with pytest.raises(npmplus_ops.OpsError, match="does not allow"):
+        npmplus_ops.cmd_lifecycle(args)
+
+
+def test_lifecycle_rechecks_target_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = npmplus_ops.NpmplusClient(
+        npmplus_ops.ApiConfig(
+            base_url="https://npmplus.invalid",
+            identity="robot@example.invalid",
+            secret="secret-value",
+            timeout=1,
+            expected_principal=None,
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(
+        method: str, path: str, *, body: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        calls.append((method, path))
+        return {
+            "id": 999,
+            "domain_names": ["private.example.invalid"],
+            "enabled": False,
+        }
+
+    monkeypatch.setattr(client, "request", fake_request)
+    ref = {"id": 123, "identity": {"domain_names": ["private.example.invalid"]}}
+
+    with pytest.raises(npmplus_ops.OpsError, match="id does not match"):
+        client.lifecycle("enable", ref)
+    assert calls == [("GET", "/api/nginx/proxy-hosts/123")]
+
+
+def test_lifecycle_verifies_same_target_after_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = npmplus_ops.NpmplusClient(
+        npmplus_ops.ApiConfig(
+            base_url="https://npmplus.invalid",
+            identity="robot@example.invalid",
+            secret="secret-value",
+            timeout=1,
+            expected_principal=None,
+        )
+    )
+    responses: list[dict[str, object]] = [
+        {
+            "id": 123,
+            "domain_names": ["private.example.invalid"],
+            "enabled": False,
+        },
+        {},
+        {
+            "id": 999,
+            "domain_names": ["private.example.invalid"],
+            "enabled": True,
+        },
+    ]
+
+    def fake_request(
+        method: str, path: str, *, body: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "request", fake_request)
+    ref = {"id": 123, "identity": {"domain_names": ["private.example.invalid"]}}
+
+    with pytest.raises(npmplus_ops.OpsError, match="id does not match"):
+        client.lifecycle("enable", ref)
+
+
+def test_lifecycle_cli_has_no_raw_id_bypass() -> None:
+    parser = npmplus_ops.build_parser()
+    enable_parser = next(
+        action.choices["proxy-host-enable"]
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert all("--host-id" not in action.option_strings for action in enable_parser._actions)

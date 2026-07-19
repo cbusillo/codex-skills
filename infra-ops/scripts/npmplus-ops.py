@@ -29,13 +29,20 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "npmplus.ops.v1"
+LEGACY_SCHEMA_VERSION = "npmplus.ops.v1"
+SCHEMA_VERSION = "npmplus.ops.v2"
+SUPPORTED_SCHEMA_VERSIONS = {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
 DEFAULT_PROFILE = "default"
 DEFAULT_CONTEXT_PROVIDER = Path("scripts/infra-context.py")
 DEFAULT_TIMEOUT_SECONDS = 15
 AUTH_REQUEST_NONE = {None, "", "none"}
 VALID_URL_SCHEMES = {"http", "https"}
 ALLOWED_LIFECYCLE_ACTIONS = {"proxy-host-enable", "proxy-host-disable"}
+REQUIRED_WRITE_EVIDENCE = (
+    "snapshot_ready",
+    "rollback_ready",
+    "external_validation_ready",
+)
 PUBLIC_ALIAS_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
@@ -60,19 +67,22 @@ class ApiConfig:
     identity: str
     secret: str
     timeout: int
+    expected_principal: dict[str, object] | None
 
 
 @dataclass(frozen=True)
 class NpmplusContext:
     private_repo: Path
     profile: str
+    schema_version: str
     env_file: Path
     base_url_env: str
     identity_env: str
     secret_env: str
+    expected_base_url: str | None
+    expected_principal: dict[str, object] | None
     refs: dict[str, dict[str, Any]]
     default_pilot_ref: str | None
-    allowed_apply_actions: set[str]
 
 
 def print_json(value: Any) -> None:
@@ -178,14 +188,94 @@ def validate_env_name(value: Any, field_name: str) -> str:
     return value
 
 
+def normalize_base_url(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise OpsError(f"context {field_name} must be an absolute HTTP(S) URL")
+    parsed = urllib.parse.urlparse(value.strip())
+    if (
+        parsed.scheme not in VALID_URL_SCHEMES
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise OpsError(f"context {field_name} must be an absolute HTTP(S) origin")
+    return urllib.parse.urlunparse(
+        (parsed.scheme.lower(), parsed.netloc.lower(), "", "", "", "")
+    )
+
+
+def normalize_expected_principal(value: Any) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise OpsError("private NPMplus context api.expected_principal must be an object")
+    unknown_keys = set(value) - {"id", "email"}
+    if unknown_keys:
+        raise OpsError("private NPMplus context api.expected_principal has unsupported fields")
+    email = value.get("email")
+    if not isinstance(email, str) or not email.strip():
+        raise OpsError("private NPMplus context api.expected_principal.email is required")
+    normalized: dict[str, object] = {"email": email.strip()}
+    principal_id = value.get("id")
+    if principal_id is not None:
+        if not isinstance(principal_id, int) or isinstance(principal_id, bool) or principal_id <= 0:
+            raise OpsError("private NPMplus context api.expected_principal.id is invalid")
+        normalized["id"] = principal_id
+    return normalized
+
+
+def normalize_target_identity(value: Any, ref_name: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"domain_names"}:
+        raise OpsError(
+            f"private NPMplus context ref {ref_name!r} identity must contain domain_names"
+        )
+    domain_names = value.get("domain_names")
+    if (
+        not isinstance(domain_names, list)
+        or not domain_names
+        or not all(isinstance(item, str) and item.strip() for item in domain_names)
+    ):
+        raise OpsError(
+            f"private NPMplus context ref {ref_name!r} identity.domain_names is invalid"
+        )
+    normalized_domains = [item.strip() for item in domain_names]
+    if len(set(normalized_domains)) != len(normalized_domains):
+        raise OpsError(
+            f"private NPMplus context ref {ref_name!r} identity.domain_names has duplicates"
+        )
+    return {"domain_names": normalized_domains}
+
+
+def normalize_write_evidence(value: Any, ref_name: str) -> dict[str, bool]:
+    if not isinstance(value, dict) or set(value) != set(REQUIRED_WRITE_EVIDENCE):
+        raise OpsError(
+            f"private NPMplus context ref {ref_name!r} write_evidence is incomplete"
+        )
+    if not all(isinstance(value[field], bool) for field in REQUIRED_WRITE_EVIDENCE):
+        raise OpsError(
+            f"private NPMplus context ref {ref_name!r} write_evidence must use booleans"
+        )
+    return {field: value[field] for field in REQUIRED_WRITE_EVIDENCE}
+
+
 def load_context(private_repo: Path, provider: Path, profile: str) -> NpmplusContext:
     raw_context = run_context_provider(private_repo, provider, profile)
-    if raw_context.get("schema_version") != SCHEMA_VERSION:
+    schema_version = raw_context.get("schema_version")
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise OpsError("private NPMplus context has an unsupported schema version")
 
     api = raw_context.get("api")
     if not isinstance(api, dict):
         raise OpsError("private NPMplus context is missing api settings")
+    expected_base_url = None
+    expected_principal = None
+    if schema_version == SCHEMA_VERSION:
+        expected_base_url = normalize_base_url(
+            api.get("expected_base_url"), "api.expected_base_url"
+        )
+        expected_principal = normalize_expected_principal(api.get("expected_principal"))
 
     refs = raw_context.get("refs")
     if not isinstance(refs, dict):
@@ -197,9 +287,37 @@ def load_context(private_repo: Path, provider: Path, profile: str) -> NpmplusCon
         if not isinstance(spec, dict) or spec.get("kind") != "proxy_host":
             raise OpsError(f"private NPMplus context ref {name!r} must be a proxy_host")
         host_id = spec.get("id")
-        if not isinstance(host_id, int) or host_id <= 0:
+        if not isinstance(host_id, int) or isinstance(host_id, bool) or host_id <= 0:
             raise OpsError(f"private NPMplus context ref {name!r} has an invalid id")
-        normalized_refs[name] = {"kind": "proxy_host", "id": host_id}
+
+        allowed_apply_actions: set[str] = set()
+        identity = None
+        write_evidence = None
+        if schema_version == SCHEMA_VERSION:
+            raw_allowed = spec.get("allowed_apply_actions")
+            if not isinstance(raw_allowed, list) or not all(
+                isinstance(item, str) for item in raw_allowed
+            ):
+                raise OpsError(
+                    f"private NPMplus context ref {name!r} allowed_apply_actions "
+                    "must be a list of strings"
+                )
+            unknown_actions = set(raw_allowed) - ALLOWED_LIFECYCLE_ACTIONS
+            if unknown_actions:
+                raise OpsError(
+                    f"private NPMplus context ref {name!r} contains unsupported apply actions"
+                )
+            allowed_apply_actions = set(raw_allowed)
+            identity = normalize_target_identity(spec.get("identity"), name)
+            write_evidence = normalize_write_evidence(spec.get("write_evidence"), name)
+
+        normalized_refs[name] = {
+            "kind": "proxy_host",
+            "id": host_id,
+            "allowed_apply_actions": allowed_apply_actions,
+            "identity": identity,
+            "write_evidence": write_evidence,
+        }
 
     pilot = raw_context.get("pilot")
     default_pilot_ref = None
@@ -212,23 +330,18 @@ def load_context(private_repo: Path, provider: Path, profile: str) -> NpmplusCon
                 raise OpsError("private NPMplus context pilot default_ref is invalid")
             default_pilot_ref = raw_default_ref
 
-    raw_policy = raw_context.get("policy")
-    policy = raw_policy if isinstance(raw_policy, dict) else {}
-    raw_allowed = policy.get("allowed_apply_actions", [])
-    if not isinstance(raw_allowed, list) or not all(isinstance(item, str) for item in raw_allowed):
-        raise OpsError("private NPMplus context allowed_apply_actions must be a list of strings")
-    allowed_apply_actions = set(raw_allowed) & ALLOWED_LIFECYCLE_ACTIONS
-
     return NpmplusContext(
         private_repo=private_repo,
         profile=profile,
+        schema_version=schema_version,
         env_file=resolve_private_path(private_repo, api.get("env_file"), "api.env_file"),
         base_url_env=validate_env_name(api.get("base_url_env"), "api.base_url_env"),
         identity_env=validate_env_name(api.get("identity_env"), "api.identity_env"),
         secret_env=validate_env_name(api.get("secret_env"), "api.secret_env"),
+        expected_base_url=expected_base_url,
+        expected_principal=expected_principal,
         refs=normalized_refs,
         default_pilot_ref=default_pilot_ref,
-        allowed_apply_actions=allowed_apply_actions,
     )
 
 
@@ -276,17 +389,73 @@ def load_api_config(context: NpmplusContext, timeout: int) -> ApiConfig:
     if missing:
         raise OpsError("private NPMplus API configuration is incomplete")
 
-    base_url = merged[context.base_url_env].rstrip("/")
-    parsed = urllib.parse.urlparse(base_url)
-    if parsed.scheme not in VALID_URL_SCHEMES or not parsed.netloc:
-        raise OpsError("private NPMplus base URL is invalid")
+    try:
+        base_url = normalize_base_url(merged[context.base_url_env], "resolved base URL")
+    except OpsError:
+        raise OpsError("private NPMplus base URL is invalid") from None
+
+    identity = merged[context.identity_env]
+    if context.expected_base_url is not None and base_url != context.expected_base_url:
+        raise OpsError("resolved NPMplus base URL does not match private context expected instance")
+    if (
+        context.expected_principal is not None
+        and identity != context.expected_principal["email"]
+    ):
+        raise OpsError("resolved NPMplus identity does not match private context expected principal")
 
     return ApiConfig(
         base_url=base_url,
-        identity=merged[context.identity_env],
+        identity=identity,
         secret=merged[context.secret_env],
         timeout=timeout,
+        expected_principal=context.expected_principal,
     )
+
+
+def verify_principal_identity(
+    principal: Any, expected_principal: dict[str, object]
+) -> None:
+    if not isinstance(principal, dict):
+        raise OpsError("NPMplus authenticated principal response is invalid")
+    if principal.get("email") != expected_principal["email"]:
+        raise OpsError("NPMplus authenticated principal does not match private context")
+    expected_id = expected_principal.get("id")
+    if expected_id is not None and principal.get("id") != expected_id:
+        raise OpsError("NPMplus authenticated principal does not match private context")
+
+
+def verify_host_identity(host: dict[str, Any], ref: dict[str, Any]) -> None:
+    if host.get("id") != ref["id"]:
+        raise OpsError("proxy host identity mismatch: id does not match private context")
+
+    identity = ref.get("identity")
+    if not identity:
+        return
+
+    expected_domains = identity.get("domain_names")
+    actual_domains = host.get("domain_names")
+    if not isinstance(actual_domains, list) or not all(
+        isinstance(item, str) for item in actual_domains
+    ):
+        raise OpsError("proxy host identity mismatch: domain names are invalid")
+    if set(actual_domains) != set(expected_domains):
+        raise OpsError("proxy host identity mismatch: domain names do not match private context")
+
+
+def authorize_lifecycle_write(
+    context: NpmplusContext, ref: dict[str, Any], command_name: str
+) -> None:
+    if context.schema_version != SCHEMA_VERSION:
+        raise OpsError("NPMplus lifecycle writes require private context schema npmplus.ops.v2")
+    if command_name not in ref["allowed_apply_actions"]:
+        raise OpsError("private NPMplus context does not allow this apply action for the selected ref")
+    if not ref.get("identity"):
+        raise OpsError("private NPMplus target identity assertions are required before apply")
+    evidence = ref.get("write_evidence")
+    if not isinstance(evidence, dict) or not all(
+        evidence.get(field) is True for field in REQUIRED_WRITE_EVIDENCE
+    ):
+        raise OpsError("private NPMplus write evidence is incomplete for the selected ref")
 
 
 class NpmplusClient:
@@ -327,9 +496,15 @@ class NpmplusClient:
         token_cookie_present = any(cookie.name in {"token", "__Host-Http-token"} for cookie in self.cookies)
         if not token_cookie_present:
             raise OpsError("NPMplus authentication did not return a token cookie")
+        principal_verified = False
+        if self.config.expected_principal is not None:
+            principal = self.request("GET", "/api/users/me")
+            verify_principal_identity(principal, self.config.expected_principal)
+            principal_verified = True
         return {
             "ok": True,
             "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+            "principal_verified": principal_verified,
             "token_cookie_present": token_cookie_present,
         }
 
@@ -349,11 +524,18 @@ class NpmplusClient:
             raise OpsError("NPMplus proxy host list contained invalid items")
         return value
 
-    def lifecycle(self, host_id: int, action: str) -> dict[str, Any]:
+    def lifecycle(self, action: str, ref: dict[str, Any]) -> dict[str, Any]:
         if action not in {"enable", "disable"}:
             raise OpsError("unsupported proxy host lifecycle action")
+        host_id = ref["id"]
+
+        preflight_host = self.get_proxy_host(host_id)
+        verify_host_identity(preflight_host, ref)
+
         result = self.request("POST", f"/api/nginx/proxy-hosts/{host_id}/{action}")
         reread = self.get_proxy_host(host_id)
+        verify_host_identity(reread, ref)
+
         expected_enabled = action == "enable"
         if bool(reread.get("enabled")) is not expected_enabled:
             raise OpsError("proxy host lifecycle action did not reach requested state")
@@ -423,12 +605,12 @@ def cmd_context_check(args: argparse.Namespace) -> None:
     context = build_context(args)
     print_json(
         {
-            "allowed_apply_actions": sorted(context.allowed_apply_actions),
             "default_pilot_ref_present": context.default_pilot_ref is not None,
             "ok": True,
             "profile": context.profile,
             "ref_count": len(context.refs),
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": context.schema_version,
+            "write_identity_ready": context.schema_version == SCHEMA_VERSION,
         }
     )
 
@@ -443,7 +625,9 @@ def cmd_proxy_host_get(args: argparse.Namespace) -> None:
     context = build_context(args)
     client = build_client(args, context)
     host_id = resolve_ref(context, args.host_ref)
-    print_json(summarize_proxy_host(client.get_proxy_host(host_id), target_ref=args.host_ref))
+    host = client.get_proxy_host(host_id)
+    verify_host_identity(host, context.refs[args.host_ref])
+    print_json(summarize_proxy_host(host, target_ref=args.host_ref))
 
 
 def cmd_proxy_hosts_list(args: argparse.Namespace) -> None:
@@ -459,10 +643,12 @@ def cmd_pilot_status(args: argparse.Namespace) -> None:
         raise OpsError("pilot-status requires --host-ref or private default_pilot_ref")
     client = build_client(args, context)
     host_id = resolve_ref(context, target_ref)
+    host = client.get_proxy_host(host_id)
+    verify_host_identity(host, context.refs[target_ref])
     print_json(
         {
             "inventory": summarize_proxy_host_inventory(client.list_proxy_hosts()),
-            "target": summarize_proxy_host(client.get_proxy_host(host_id), target_ref=target_ref),
+            "target": summarize_proxy_host(host, target_ref=target_ref),
         }
     )
 
@@ -470,17 +656,24 @@ def cmd_pilot_status(args: argparse.Namespace) -> None:
 def cmd_lifecycle(args: argparse.Namespace) -> None:
     command_name = f"proxy-host-{args.lifecycle_action}"
     context = build_context(args)
-    if args.apply and command_name not in context.allowed_apply_actions:
-        raise OpsError("private NPMplus context does not allow this apply action")
+    ref = context.refs.get(args.host_ref)
+    if ref is None:
+        raise OpsError(f"unknown private NPMplus target ref: {args.host_ref}")
+
+    if args.apply:
+        authorize_lifecycle_write(context, ref, command_name)
 
     client = build_client(args, context)
-    host_id = resolve_ref(context, args.host_ref)
+    host_id = ref["id"]
+
     if not args.apply:
+        preflight_host = client.get_proxy_host(host_id)
+        verify_host_identity(preflight_host, ref)
         print_json(
             {
                 "apply": False,
                 "planned_operation": args.lifecycle_action,
-                "target": summarize_proxy_host(client.get_proxy_host(host_id), target_ref=args.host_ref),
+                "target": summarize_proxy_host(preflight_host, target_ref=args.host_ref),
             }
         )
         return
@@ -488,7 +681,7 @@ def cmd_lifecycle(args: argparse.Namespace) -> None:
     print_json(
         {
             "apply": True,
-            **client.lifecycle(host_id, args.lifecycle_action),
+            **client.lifecycle(args.lifecycle_action, ref),
         }
     )
 
