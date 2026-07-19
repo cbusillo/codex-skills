@@ -32,6 +32,15 @@ helper never prints token values, request headers, cookies, raw request bodies,
 plaintext runtime values, secret plaintext, ciphertext, provider env dumps, or
 private API base URLs.
 
+Every configured service URL is parsed and validated as an absolute endpoint
+before a request is built. Non-loopback destinations must use HTTPS. Plain HTTP
+is accepted only for explicit loopback hosts such as `localhost`, `127.0.0.1`,
+or `::1` during local development. The helper rejects missing hosts, userinfo,
+unsupported schemes, query strings, fragments, malformed ports, and control
+characters. Redirects are followed only when they stay on the same
+scheme/host/port origin, so bearer credentials are not replayed to a different
+destination.
+
 When `--config` is supplied, its `service_url` is the explicit write target
 unless `--url` is also supplied. The helper does not also load the default `.env`
 file in that case, but it does honor an explicit `--env-config` for token,
@@ -231,6 +240,29 @@ Every response is a public-safe JSON object:
   "warnings": []
 }
 ```
+
+Successful responses use operation-specific projections instead of generic
+provider dictionary pass-through:
+
+- `merge-train-controller-run-once` may emit only documented controller fields
+  such as repository, base branch, mode, mutate, controller action, safe reason
+  codes, commit ids, source/workflow URLs, and merge-train record ids.
+- `product-config-preflight`, `product-config-dry-run`, and
+  `product-config-apply` may emit only intent status, reason code,
+  safe-to-execute, next action, managed binding keys, runtime key-safety finding
+  codes, and product-config/intent record ids.
+
+The projections recognize the current service envelopes, including idempotent
+replay metadata, nested merge-train candidate/landing/stack summaries, the
+write-intent `record`, and product-config runtime, key-safety, count, and secret
+binding metadata. Secret record ids, provider target details, actor fields,
+instructions, raw findings, and arbitrary nested dictionaries are not copied.
+
+Unexpected successful provider shapes fail closed as `invalid_response` rather
+than being recursively sanitized. Summary fields, including `trace_id`, must be
+compact safe identifiers or bounded safe text. Keys or nested payloads that look
+like secrets, credentials, cookies, tokens, plaintext values, private keys,
+opaque values, raw requests, provider env, or headers are not copied into output.
 
 Unauthorized, unavailable, denied, stale, and mismatched-intent responses keep
 the same envelope and include compact `summary.error_code`, `summary.trace_id`,

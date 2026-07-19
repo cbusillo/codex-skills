@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.error
@@ -18,6 +17,22 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_safety import (  # noqa: E402
+    LaunchplaneSafetyError,
+    assert_public_safe_shape,
+    build_launchplane_url,
+    is_denied_key,
+    public_code,
+    public_identifier,
+    public_summary_string,
+    public_timestamp,
+    public_trace_id,
+    public_url,
+    safe_urlopen,
+    validate_service_url,
+)
 
 
 SCHEMA_VERSION = "1.0"
@@ -32,30 +47,6 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
 }
-TOKEN_PATTERNS = (
-    re.compile(r"ghp_[A-Za-z0-9_]+"),
-    re.compile(r"github_pat_[A-Za-z0-9_]+"),
-    re.compile(r"sk-[A-Za-z0-9_-]+"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
-)
-DENIED_KEYS = {
-    "authorization",
-    "cookie",
-    "cookies",
-    "headers",
-    "request",
-    "request_body",
-    "raw_request",
-    "payload",
-    "value",
-    "values",
-    "plaintext",
-    "plaintext_value",
-    "ciphertext",
-    "provider_environment",
-    "github_api_base_url",
-}
-DENIED_KEY_FRAGMENTS = ("token", "password", "master_key")
 ATTENTION_CONTROLLER_ACTIONS = {
     "batch_landed",
     "candidate_failed",
@@ -65,6 +56,120 @@ ATTENTION_CONTROLLER_ACTIONS = {
     "wait_for_checks",
     "wait_for_root_checks",
     "idle",
+}
+SUCCESS_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "status",
+    "trace_id",
+    "records",
+    "result",
+    "replayed",
+    "original_trace_id",
+}
+MERGE_TRAIN_RESULT_FIELDS = {
+    "active_action",
+    "active_phase",
+    "active_pull_request_number",
+    "active_record_id",
+    "base_branch",
+    "batch_id",
+    "candidate",
+    "candidate_record_id",
+    "candidate_ref",
+    "candidate_ref_cleanup_github_status_code",
+    "candidate_ref_cleanup_message",
+    "candidate_ref_cleanup_status",
+    "candidate_sha",
+    "candidate_status",
+    "cleanup_status",
+    "code",
+    "collapse_id",
+    "completed_disposition_count",
+    "completed_entry_count",
+    "completed_mutation_count",
+    "controller_action",
+    "controller_reconciliation_status",
+    "details",
+    "dry_run_result",
+    "entries",
+    "error",
+    "github_status_code",
+    "heartbeat_at",
+    "landing_plan",
+    "landing_plan_record_id",
+    "landing_sha",
+    "last_action",
+    "last_phase",
+    "last_pull_request_number",
+    "last_record_id",
+    "lease_acquired_at",
+    "lease_expires_at",
+    "lease_owner",
+    "merge_train_batch_candidate_record_id",
+    "merge_train_batch_landing_plan_record_id",
+    "merge_train_stack_collapse_plan_record_id",
+    "message",
+    "mode",
+    "mutate",
+    "pull_requests",
+    "reason_code",
+    "reconciliation_detail",
+    "reconciliation_status",
+    "release_error_type",
+    "replacement_candidate_record_id",
+    "repository",
+    "root_merge_commit",
+    "root_merge_commit_sha",
+    "source_of_truth_url",
+    "stack_collapse_plan",
+    "stack_collapse_plan_record_id",
+    "stack_discovery",
+    "status",
+    "step_payload",
+    "superseded_candidate_record_id",
+    "superseded_merge_train_batch_candidate_record_id",
+    "trace_id",
+    "updated_at",
+    "workflow_run_url",
+}
+PRODUCT_CONFIG_INTENT_FIELDS = {
+    "schema_version",
+    "intent",
+    "mode",
+    "status",
+    "authz_action",
+    "product",
+    "context",
+    "source_url",
+    "reason_code",
+    "safe_to_execute",
+    "next_action",
+    "audit",
+    "secret_evidence",
+}
+PRODUCT_CONFIG_PREFLIGHT_RESULT_FIELDS = {
+    "intent",
+    "record",
+    "binding_keys",
+    "secret_binding_keys",
+    "managed_secret_binding_keys",
+    "runtime_key_safety_findings",
+    "key_safety_findings",
+}
+PRODUCT_CONFIG_APPLY_RESULT_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "context",
+    "instance",
+    "actor",
+    "source_label",
+    "reason",
+    "runtime_environment",
+    "runtime_key_safety",
+    "secrets",
+    "summary",
+    "next_actions",
 }
 
 
@@ -254,6 +359,11 @@ def classify_operator_config(
 
 
 def operator_config_recommendation(classification: str) -> str:
+    if classification.startswith("invalid_service_url"):
+        return (
+            "Fix the Launchplane operator URL source. It must be an absolute HTTPS URL; "
+            "HTTP is allowed only for explicit loopback hosts."
+        )
     recommendations = {
         "ready": "Operator config sources are present; proceed only through supported helper commands.",
         "ambiguous_service_url": (
@@ -274,6 +384,8 @@ def operator_config_recommendation(classification: str) -> str:
 
 
 def operator_config_message(classification: str) -> str:
+    if classification.startswith("invalid_service_url"):
+        return "Launchplane operator service URL is invalid."
     messages = {
         "ambiguous_service_url": (
             "A public Launchplane URL source is present, but no operator URL source is configured."
@@ -297,19 +409,19 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
     ).strip()
     service_url_candidates = (
         (
-            ("argument", bool(args.url)),
-            ("json_config", bool(config.get("service_url"))),
-            ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
+            ("argument", args.url or ""),
+            ("json_config", config.get("service_url") or ""),
+            ("environment", os.environ.get("LAUNCHPLANE_OPERATOR_URL") or ""),
         )
         if args.config
         else (
-            ("argument", bool(args.url)),
-            ("environment", bool(os.environ.get("LAUNCHPLANE_OPERATOR_URL"))),
-            ("private_env", bool(env_config.get("LAUNCHPLANE_OPERATOR_URL"))),
-            ("json_config", bool(config.get("service_url"))),
+            ("argument", args.url or ""),
+            ("environment", os.environ.get("LAUNCHPLANE_OPERATOR_URL") or ""),
+            ("private_env", env_config.get("LAUNCHPLANE_OPERATOR_URL") or ""),
+            ("json_config", config.get("service_url") or ""),
         )
     )
-    service_url_sources = [source for source, present in service_url_candidates if present]
+    service_url_sources = [source for source, value in service_url_candidates if value]
     public_hint_sources = public_url_hint_sources(env_config)
     token_present = bool(os.environ.get(token_env) or env_config.get(token_env))
     classification = classify_operator_config(
@@ -317,6 +429,12 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
         token_present=token_present,
         public_url_hint_present=bool(public_hint_sources),
     )
+    winning_service_url = next((value for _source, value in service_url_candidates if value), "")
+    if winning_service_url:
+        try:
+            validate_service_url(winning_service_url)
+        except LaunchplaneSafetyError as exc:
+            classification = exc.code
     return {
         "classification": classification,
         "ready": classification == "ready",
@@ -334,42 +452,8 @@ def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def _redact_token_like(value: str) -> str:
-    redacted = value
-    for pattern in TOKEN_PATTERNS:
-        redacted = pattern.sub("[redacted]", redacted)
-    return redacted
-
-
-def _is_denied_key(key: str) -> bool:
-    normalized = key.strip().lower()
-    if normalized in DENIED_KEYS:
-        return True
-    return any(fragment in normalized for fragment in DENIED_KEY_FRAGMENTS)
-
-
-def sanitize(value: Any) -> object:
-    if isinstance(value, dict):
-        sanitized: dict[str, object] = {}
-        for raw_key, raw_item in value.items():
-            key = str(raw_key)
-            if _is_denied_key(key):
-                continue
-            sanitized[key] = sanitize(raw_item)
-        return sanitized
-    if isinstance(value, list):
-        return [sanitize(item) for item in value]
-    if isinstance(value, tuple):
-        return [sanitize(item) for item in value]
-    if isinstance(value, str):
-        return _redact_token_like(value)
-    if isinstance(value, (bool, int, float)) or value is None:
-        return value
-    return str(value)
-
-
 def build_url(service_url: str, path: str) -> str:
-    return f"{service_url.rstrip('/')}{path}"
+    return build_launchplane_url(service_url, path)
 
 
 def request_launchplane(
@@ -388,11 +472,524 @@ def request_launchplane(
     request.add_header("Authorization", f"Bearer {settings['token']}")
     if idempotency_key:
         request.add_header("Idempotency-Key", idempotency_key)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with safe_urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("invalid_response")
     return payload
+
+
+def _require_dict(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise LaunchplaneSafetyError("invalid_response")
+
+
+def _project_records(records: object, allowed_keys: set[str]) -> dict[str, object]:
+    if records is None:
+        return {}
+    source = _require_dict(records)
+    projected: dict[str, object] = {}
+    for key, value in source.items():
+        key = str(key)
+        if key not in allowed_keys or is_denied_key(key):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        projected[key] = public_identifier(value)
+    return projected
+
+
+def _public_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return [public_identifier(item) for item in value]
+
+
+def _nonnegative_int(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_key_safety_findings(value: object) -> list[dict[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, object]] = []
+    for item in value:
+        source = _require_dict(item)
+        allowed = {
+            "key",
+            "binding_key",
+            "binding_id",
+            "secret_id",
+            "secret_class",
+            "detail",
+            "code",
+            "reason_code",
+            "severity",
+            "status",
+        }
+        if any(str(key) not in allowed for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        finding: dict[str, object] = {}
+        binding_key = source.get("key") or source.get("binding_key")
+        if binding_key:
+            finding["key"] = public_identifier(binding_key)
+        for key in ("code", "reason_code", "severity", "status"):
+            if key in source:
+                finding[key] = public_code(source[key])
+        projected.append(finding)
+    return projected
+
+
+def _project_secret_evidence(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    allowed = {
+        "status",
+        "destination",
+        "checked_binding_keys",
+        "policy_record_id",
+        "policy_sha256",
+        "findings",
+    }
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    destination = source.get("destination")
+    if destination is not None:
+        destination_source = _require_dict(destination)
+        if any(
+            str(key) not in {"kind", "context", "instance"}
+            for key in destination_source
+        ):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    if "status" in source:
+        projected["status"] = public_code(source["status"])
+    if "checked_binding_keys" in source:
+        projected["checked_binding_keys"] = _public_string_list(
+            source["checked_binding_keys"]
+        )
+    if "findings" in source:
+        projected["findings"] = _project_key_safety_findings(source["findings"])
+    return projected
+
+
+def _project_intent_evaluation(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in PRODUCT_CONFIG_INTENT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    audit = source.get("audit")
+    if audit is not None:
+        audit_source = _require_dict(audit)
+        if any(
+            str(key)
+            not in {
+                "decision",
+                "reason_code",
+                "subject",
+                "action",
+                "product",
+                "context",
+                "policy_source",
+                "policy_sha256",
+                "source_kind",
+            }
+            for key in audit_source
+        ):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for key in ("intent", "mode", "status", "reason_code"):
+        if key in source:
+            projected[key] = public_code(source[key])
+    for key in ("authz_action", "product", "context"):
+        if key in source:
+            projected[key] = public_identifier(source[key])
+    if source.get("source_url"):
+        projected["source_url"] = public_url(source["source_url"])
+    safe_to_execute = _optional_bool(source.get("safe_to_execute"))
+    if safe_to_execute is not None:
+        projected["safe_to_execute"] = safe_to_execute
+    if "next_action" in source:
+        projected["next_action"] = public_summary_string(source["next_action"])
+    if "secret_evidence" in source:
+        projected["secret_evidence"] = _project_secret_evidence(
+            source["secret_evidence"]
+        )
+    return projected
+
+
+def _project_product_config_preflight_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_CONFIG_PREFLIGHT_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    if "intent" in source:
+        projected["intent"] = _project_intent_evaluation(source["intent"])
+    if "record" in source:
+        record = _require_dict(source["record"])
+        if any(str(key) not in {"record_id", "recorded_at"} for key in record):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        projected_record: dict[str, object] = {}
+        if "record_id" in record:
+            projected_record["record_id"] = public_identifier(record["record_id"])
+        if "recorded_at" in record:
+            projected_record["recorded_at"] = public_timestamp(record["recorded_at"])
+        projected["record"] = projected_record
+    for source_key, target_key in (
+        ("binding_keys", "binding_keys"),
+        ("secret_binding_keys", "secret_binding_keys"),
+        ("managed_secret_binding_keys", "managed_secret_binding_keys"),
+    ):
+        if source_key in source:
+            projected[target_key] = _public_string_list(source[source_key])
+    for source_key, target_key in (
+        ("runtime_key_safety_findings", "runtime_key_safety_findings"),
+        ("key_safety_findings", "key_safety_findings"),
+    ):
+        if source_key in source:
+            projected[target_key] = _project_key_safety_findings(source[source_key])
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_runtime_environment(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    allowed = {
+        "action",
+        "scope",
+        "context",
+        "instance",
+        "keys",
+        "changed_keys",
+        "unchanged_keys",
+        "env_value_count_after",
+        "record",
+    }
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for key in ("action", "scope", "context", "instance"):
+        if key in source:
+            projected[key] = public_identifier(source[key])
+    for key in ("keys", "changed_keys", "unchanged_keys"):
+        if key in source:
+            projected[key] = _public_string_list(source[key])
+    if "env_value_count_after" in source:
+        projected["env_value_count_after"] = _nonnegative_int(
+            source["env_value_count_after"]
+        )
+    record = source.get("record")
+    if record is not None:
+        record_source = _require_dict(record)
+        if any(
+            str(key)
+            not in {
+                "scope",
+                "context",
+                "instance",
+                "updated_at",
+                "source_label",
+                "env_keys",
+                "env_value_count",
+            }
+            for key in record_source
+        ):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+    return projected
+
+
+def _project_runtime_key_safety(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    allowed = {
+        "required",
+        "status",
+        "policy_record_id",
+        "policy_sha256",
+        "target",
+        "checked_binding_keys",
+        "findings",
+    }
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    target = source.get("target")
+    if target is not None and any(
+        str(key) not in {"context", "instance", "environment_class"}
+        for key in _require_dict(target)
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    required = _optional_bool(source.get("required"))
+    if required is not None:
+        projected["required"] = required
+    if "status" in source:
+        projected["status"] = public_code(source["status"])
+    if "checked_binding_keys" in source:
+        projected["checked_binding_keys"] = _public_string_list(
+            source["checked_binding_keys"]
+        )
+    if "findings" in source:
+        projected["findings"] = _project_key_safety_findings(source["findings"])
+    return projected
+
+
+def _project_secret_results(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, object]] = []
+    allowed = {
+        "action",
+        "scope",
+        "integration",
+        "name",
+        "binding_key",
+        "context",
+        "instance",
+        "secret_id",
+    }
+    for item in value:
+        source = _require_dict(item)
+        if any(str(key) not in allowed for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        result: dict[str, object] = {}
+        for key in ("action", "integration", "binding_key"):
+            if key in source:
+                result[key] = public_identifier(source[key])
+        projected.append(result)
+    return projected
+
+
+def _project_apply_summary(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    allowed = {"runtime_changed_key_count", "secret_change_count"}
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return {
+        key: _nonnegative_int(source[key])
+        for key in ("runtime_changed_key_count", "secret_change_count")
+        if key in source
+    }
+
+
+def _project_next_actions(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: list[dict[str, object]] = []
+    allowed = {
+        "kind",
+        "required",
+        "status",
+        "target",
+        "changed_keys",
+        "dry_run",
+        "apply",
+        "instruction",
+    }
+    for item in value:
+        source = _require_dict(item)
+        if any(str(key) not in allowed for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        for nested_key, nested_allowed in (
+            ("target", {"context", "instance", "target_type", "target_name"}),
+            ("dry_run", {"method", "endpoint", "mode"}),
+            ("apply", {"method", "endpoint", "mode"}),
+        ):
+            nested = source.get(nested_key)
+            if nested is not None and any(
+                str(key) not in nested_allowed for key in _require_dict(nested)
+            ):
+                raise LaunchplaneSafetyError("unsafe_response_shape")
+        action: dict[str, object] = {}
+        for key in ("kind", "status"):
+            if key in source:
+                action[key] = public_code(source[key])
+        required = _optional_bool(source.get("required"))
+        if required is not None:
+            action["required"] = required
+        if "changed_keys" in source:
+            action["changed_keys"] = _public_string_list(source["changed_keys"])
+        projected.append(action)
+    return projected
+
+
+def _project_product_config_apply_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_CONFIG_APPLY_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    required = {
+        "status",
+        "mode",
+        "product",
+        "context",
+        "instance",
+        "runtime_environment",
+        "runtime_key_safety",
+        "secrets",
+        "summary",
+        "next_actions",
+    }
+    if not required.issubset(source):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {}
+    for key in ("status", "mode"):
+        if key in source:
+            projected[key] = public_code(source[key])
+    for key in ("product", "context", "instance"):
+        if key in source:
+            projected[key] = public_identifier(source[key])
+    for key, projector in (
+        ("runtime_environment", _project_runtime_environment),
+        ("runtime_key_safety", _project_runtime_key_safety),
+        ("secrets", _project_secret_results),
+        ("summary", _project_apply_summary),
+        ("next_actions", _project_next_actions),
+    ):
+        if key in source:
+            projected[key] = projector(source[key])
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_merge_component(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    assert_public_safe_shape(source)
+    projected: dict[str, object] = {}
+    for key in (
+        "status",
+        "mode",
+        "action",
+        "controller_action",
+        "candidate_sha",
+        "base_sha",
+        "candidate_ref",
+        "root_merge_commit_sha",
+        "record_id",
+        "landing_plan_record_id",
+        "collapse_id",
+        "code",
+    ):
+        if key in source:
+            value = source[key]
+            if value is not None and value != "":
+                projected[key] = public_identifier(value)
+    for key in (
+        "github_status_code",
+        "completed_entry_count",
+        "completed_disposition_count",
+        "completed_mutation_count",
+    ):
+        if key in source:
+            projected[key] = _nonnegative_int(source[key])
+    for key in ("entries", "pull_requests", "child_dispositions"):
+        if key in source:
+            if not isinstance(source[key], list):
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[f"{key}_count"] = len(source[key])
+    return projected
+
+
+def _project_merge_train_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in MERGE_TRAIN_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    assert_public_safe_shape(source)
+    projected: dict[str, object] = {}
+    for key in (
+        "repository",
+        "base_branch",
+        "mode",
+        "controller_action",
+        "reason_code",
+        "candidate_sha",
+        "landing_sha",
+        "root_merge_commit",
+        "root_merge_commit_sha",
+        "candidate_ref_cleanup_status",
+        "controller_reconciliation_status",
+        "status",
+    ):
+        if key in source:
+            projected[key] = public_identifier(source[key])
+    if "mutate" in source:
+        projected["mutate"] = _optional_bool(source["mutate"])
+    if "candidate_ref_cleanup_github_status_code" in source:
+        projected["candidate_ref_cleanup_github_status_code"] = _nonnegative_int(
+            source["candidate_ref_cleanup_github_status_code"]
+        )
+    for key in ("workflow_run_url", "source_of_truth_url"):
+        if key in source:
+            projected[key] = public_url(source[key])
+    for key in (
+        "candidate",
+        "landing_plan",
+        "stack_collapse_plan",
+        "stack_discovery",
+        "dry_run_result",
+        "error",
+        "details",
+    ):
+        if key in source:
+            projected[key] = _project_merge_component(source[key])
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_success_output(operation: str, provider_payload: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
+    if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    replayed = provider_payload.get("replayed")
+    if replayed is not None and not isinstance(replayed, bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    if provider_payload.get("original_trace_id"):
+        public_trace_id(provider_payload["original_trace_id"])
+    if operation == "merge-train-controller-run-once":
+        records = _project_records(
+            provider_payload.get("records"),
+            {
+                "merge_train_batch_candidate_record_id",
+                "merge_train_batch_landing_plan_record_id",
+                "merge_train_stack_collapse_plan_record_id",
+                "superseded_merge_train_batch_candidate_record_id",
+                "merge_train_landing_plan_record_id",
+                "merge_train_stack_collapse_record_id",
+                "merge_train_feedback_record_id",
+            },
+        )
+        return records, _project_merge_train_result(provider_payload.get("result"))
+    if operation == "product-config-preflight":
+        records = _project_records(
+            provider_payload.get("records"),
+            {
+                "agent_write_intent_record_id",
+                "intent_record_id",
+                "product_config_record_id",
+                "dry_run_record_id",
+                "apply_record_id",
+            },
+        )
+        return records, _project_product_config_preflight_result(
+            provider_payload.get("result")
+        )
+    if operation in {"product-config-dry-run", "product-config-apply"}:
+        records = _project_records(
+            provider_payload.get("records"),
+            {"product_config_record_id", "dry_run_record_id", "apply_record_id"},
+        )
+        result = provider_payload.get("result")
+        if isinstance(result, dict) and "intent" in result:
+            return records, _project_product_config_preflight_result(result)
+        return records, _project_product_config_apply_result(result)
+    raise LaunchplaneSafetyError("invalid_response")
 
 
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
@@ -434,37 +1031,35 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    result = provider_payload.get("result")
-    sanitized_result = sanitize(result) if isinstance(result, dict) else {}
-    records = provider_payload.get("records")
-    sanitized_records = sanitize(records) if isinstance(records, dict) else {}
-    status = str(provider_payload.get("status") or "accepted")
+    records, result = _project_success_output(operation, provider_payload)
+    status = public_code(provider_payload.get("status"), default="accepted")
     payload = base_payload(status=status, operation=operation, request=request)
-    payload["records"] = sanitized_records if isinstance(sanitized_records, dict) else {}
-    payload["result"] = sanitized_result if isinstance(sanitized_result, dict) else {}
+    payload["records"] = records
+    payload["result"] = result
 
     summary: dict[str, object] = {
         "launchplane_status": status,
-        "trace_id": str(provider_payload.get("trace_id") or ""),
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": "Review the redacted result before deciding the next action.",
     }
-    if isinstance(sanitized_result, dict):
-        controller_action = sanitized_result.get("controller_action")
-        if isinstance(controller_action, str) and controller_action:
+    if operation == "merge-train-controller-run-once":
+        controller_action = result.get("controller_action")
+        if isinstance(controller_action, str):
             summary["controller_action"] = controller_action
             summary["recommendation"] = (
                 "Stop and report this merge-train state."
                 if controller_action in ATTENTION_CONTROLLER_ACTIONS
                 else "Call the controller again only after reading this action."
             )
-        intent = sanitized_result.get("intent")
+    else:
+        intent = result.get("intent")
         if isinstance(intent, dict):
             summary["intent_status"] = intent.get("status")
             summary["reason_code"] = intent.get("reason_code")
             summary["safe_to_execute"] = intent.get("safe_to_execute")
-            summary["recommendation"] = str(
-                intent.get("next_action") or summary["recommendation"]
-            )
+            if intent.get("next_action"):
+                summary["recommendation"] = intent["next_action"]
+    assert_public_safe_shape(summary)
     payload["summary"] = {key: value for key, value in summary.items() if value not in {"", None}}
     return payload
 
@@ -480,8 +1075,8 @@ def summarize_http_error(
     payload = base_payload(status=status, operation=operation, request=request)
     payload["summary"] = {
         "http_status": exc.code,
-        "trace_id": str(provider_payload.get("trace_id") or ""),
-        "error_code": str(error.get("code") or status),
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
     payload["warnings"] = [
@@ -591,6 +1186,20 @@ def execute_post(
             )
         )
         return 2
+    if settings["service_url"]:
+        try:
+            validate_service_url(settings["service_url"])
+        except LaunchplaneSafetyError as exc:
+            emit(
+                unavailable_payload(
+                    operation=operation,
+                    request=request,
+                    status="invalid",
+                    code=exc.code,
+                    message=operator_config_message(exc.code),
+                )
+            )
+            return 2
     if not settings["service_url"] or not settings["token"]:
         classification = classify_operator_config(
             service_url_present=bool(settings["service_url"]),
@@ -619,7 +1228,36 @@ def execute_post(
         emit(summarize_success(operation=operation, request=request, provider_payload=provider_payload))
         return 0
     except urllib.error.HTTPError as exc:
-        emit(summarize_http_error(operation=operation, request=request, exc=exc))
+        try:
+            emit(summarize_http_error(operation=operation, request=request, exc=exc))
+        except LaunchplaneSafetyError:
+            emit(
+                unavailable_payload(
+                    operation=operation,
+                    request=request,
+                    status="invalid",
+                    code="invalid_response",
+                    message="Launchplane returned an invalid response.",
+                )
+            )
+        return 1
+    except LaunchplaneSafetyError as exc:
+        status = "unavailable" if exc.code == "unsafe_redirect" else "invalid"
+        code = exc.code if exc.code == "unsafe_redirect" else "invalid_response"
+        message = (
+            "Launchplane redirected to an unsafe destination."
+            if exc.code == "unsafe_redirect"
+            else "Launchplane returned an invalid response."
+        )
+        emit(
+            unavailable_payload(
+                operation=operation,
+                request=request,
+                status=status,
+                code=code,
+                message=message,
+            )
+        )
         return 1
     except (OSError, TimeoutError, urllib.error.URLError):
         emit(
