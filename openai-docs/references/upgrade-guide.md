@@ -1,181 +1,204 @@
-# Upgrading to GPT-5.5
+# Upgrading to GPT-5.6
 
-Use this guide when the user explicitly asks to upgrade an existing integration to GPT-5.5. Pair it with current OpenAI docs lookups. The default target string is `gpt-5.5`.
+Use this offline guide when the user asks to migrate an existing OpenAI API
+integration, prompt stack, agent, model router, or model picker to the GPT-5.6
+family. Pair it with current OpenAI docs whenever they are available.
+
+The default explicit flagship target is `gpt-5.6-sol`. The `gpt-5.6` alias
+currently routes to Sol; use the alias only when the integration intentionally
+prefers family aliases.
 
 ## Freshness check
 
-Before applying this bundled guide for a latest/current/default model upgrade, run `node scripts/resolve-latest-model-info.js` from the OpenAI Docs skill directory.
+Before applying this bundled guide for a latest/current/default upgrade, run
+`node scripts/resolve-latest-model-info.js` from the OpenAI Docs skill directory.
 
-- If the command returns `modelSlug: "gpt-5p5"`, continue with this bundled guide and use `references/prompting-guide.md` when prompt updates are needed.
-- If the command returns a different `modelSlug`, fetch both the returned `migrationGuideUrl` and `promptingGuideUrl` and use them as the current source of truth instead of the bundled references.
-- If the command fails, metadata is missing, or either remote guide cannot be fetched, continue with bundled fallback references and say the remote freshness check was unavailable.
-- If the user explicitly named a target model, preserve that target and use current docs only to check compatibility or caveats.
+- If the command returns `modelSlug: "gpt-5p6-sol"`, use the returned migration
+  and prompting URLs as the source of truth and use this file as an offline
+  workflow summary.
+- If it returns a different model, fetch the returned guides and do not silently
+  retarget the request to GPT-5.6.
+- If the remote guidance is unavailable, use this fallback and disclose that
+  the freshness check could not be completed.
+- If the user explicitly named a target model, preserve that target and use
+  current docs only for compatibility checks and caveats.
 
-## Upgrade posture
+## Core principle
 
-Upgrade with the narrowest safe change set:
+Do not perform a blind model-string replacement. Preserve the workload's role,
+behavior, latency and cost class, reasoning level, endpoint contract, tool
+semantics, cache behavior, output shape, and downstream parser expectations.
+Then make the smallest safe migration.
 
-- replace the model string first
-- update only the prompts that are directly tied to that model usage
-- do not automatically upgrade older or ambiguous model usages that may be intentionally pinned, such as historical docs, examples, tests, eval baselines, comparison code, or low-cost fallback/routing paths. Unless the user explicitly asks to upgrade all model usage, leave those sites unchanged and list them as confirmation-needed
-- prefer prompt-only upgrades when possible
-- if the upgrade would require API-surface changes, parameter rewrites, tool rewiring, provider migration, or broader code edits, mark it as blocked instead of stretching the scope
+Do not adopt Pro mode, persisted reasoning, explicit caching, Programmatic Tool
+Calling, or multi-agent behavior as an incidental part of a model upgrade.
+Evaluate optional capabilities separately so their effects remain measurable.
 
-## Upgrade workflow
+## Inventory before editing
 
-1. Inventory current model usage.
-   - Search for model strings, client calls, and prompt-bearing files.
-   - Include inline prompts, prompt templates, YAML or JSON configs, Markdown docs, and saved prompts when they are clearly tied to a model usage site.
-2. Pair each model usage with its prompt surface.
-   - Prefer the closest prompt surface first: inline system or developer text, then adjacent prompt files, then shared templates.
-   - If you cannot confidently tie a prompt to the model usage, say so instead of guessing.
-3. Classify the source model family.
-   - Common buckets: GPT-5.4, GPT-5.3-Codex or GPT-5.2-Codex, earlier GPT-5.x, GPT-4o or GPT-4.1, reasoning models such as o1 or o3 or o4-mini, third-party model, or mixed and unclear.
-4. Decide the upgrade class.
-   - `model string only`
-   - `model string + light prompt rewrite`
-   - `blocked without code changes`
-5. Run the compatibility gate.
-   - Check whether the current integration can accept `gpt-5.5` without API-surface changes or implementation changes.
-   - Check whether structured outputs, tool schemas, function names, and downstream parsers can remain unchanged.
-   - For long-running Responses or tool-heavy agents, check whether `phase` is already preserved or round-tripped when the host replays assistant items or uses preambles.
-   - If compatibility depends on code changes, return `blocked`.
-   - If compatibility is unclear, return `unknown` rather than improvising.
-6. Apply the upgrade when it is in scope.
-   - Default replacement string: `gpt-5.5`.
-   - Keep the intervention small and behavior-preserving.
-   - Start from the current reasoning effort when it is visible unless there is a measured reason to change it.
-   - For in-scope changes, update the model string and directly related prompts.
-   - For blocked or unknown changes, do not edit; report the blocker or uncertainty.
-7. Summarize the result.
-   - `Current model usage`
-   - `Model-string updates`
-   - `Reasoning-effort handling`
-   - `Prompt updates`
-   - `Structured output and formatting assessment`
-   - `Tool-use assessment` when the flow uses tools, retrieval, or terminal actions
-   - `Phase assessment` when the flow is long-running, replayed, or tool-heavy
-   - `Compatibility check`
-   - `Validation performed`
+Search for more than literal model IDs:
 
-Output rule:
+- model strings, aliases, environment variables, CLI flags, config defaults,
+  deployment settings, registries, allowlists, and UI model pickers;
+- Responses, Chat Completions, Batch, and provider-adapter calls;
+- reasoning settings, token budgets, sampling settings, and timeouts;
+- tool schemas, structured outputs, parsers, replay logic, cache fields, and
+  multimodal detail settings;
+- system, developer, user, and tool-description prompts tied to each usage;
+- tests, snapshots, examples, pricing metadata, capability maps, eval baselines,
+  and comparison code.
 
-- For each usage site, state the starting reasoning-effort recommendation.
-- If the repo exposes the current reasoning setting, recommend preserving it first unless current OpenAI docs say otherwise.
-- If the repo does not expose the current setting, recommend not adding one unless current OpenAI docs require it.
+Classify every result as active production usage, intentional fallback, router
+entry, test or eval fixture, historical documentation, or ambiguous. Do not
+upgrade historical, comparison, fixture, or ambiguous usages unless the user
+explicitly asks for them.
 
-## Upgrade outcomes
+## Choose the target by workload role
 
-### `model string only`
+| Existing role | Starting GPT-5.6 target |
+| --- | --- |
+| Flagship GPT-5, GPT-5.5, GPT-5.4, hardest coding, or quality-first reasoning | `gpt-5.6-sol` |
+| GPT-5.5 Pro or another old Pro route | `gpt-5.6-sol` plus `reasoning.mode: "pro"` when Pro behavior must be preserved; never invent a `gpt-5.6-pro` slug |
+| Mini-like, balanced lower-cost, or medium-throughput worker | `gpt-5.6-terra` |
+| Nano-like, classification, extraction, routing, strict-latency, or high-volume worker | `gpt-5.6-luna` |
+| Router, fallback chain, or model picker | Add or map each tier by role; do not collapse everything into Sol |
+| Third-party or provider-specific model | Leave unchanged unless provider migration is explicitly requested |
 
-Choose this when:
+Preserve existing model entries by default. Add GPT-5.6 family options rather
+than deleting older models unless the user explicitly requests replacement or
+cleanup. Do not invent pricing, limits, capability flags, or context windows;
+verify them in current docs before updating registries or UI metadata.
 
-- the source model is GPT-5.4
-- the existing prompts are already short, explicit, and task-bounded
-- the workflow does not rely on strict output formats, tool-call behavior, batch completeness, or long-horizon execution that should be validated after the upgrade
-- there are no obvious compatibility blockers
+## Preserve reasoning before tuning
 
-Default action:
+For GPT-5.5 or GPT-5.4 migrations:
 
-- replace the model string with `gpt-5.5`
-- preserve the current reasoning effort
-- keep prompts unchanged
-- validate behavior with existing tests, realistic spot checks, or an existing eval suite when one is already available
+1. Preserve the current explicit reasoning effort for the first GPT-5.6 run
+   when the target supports it.
+2. If the old effective setting was omitted or is unknown, do not guess. Verify
+   current endpoint behavior or flag the site for comparison.
+3. Run the baseline at the same setting and test one level lower on
+   representative tasks.
+4. Increase effort only when evals show a meaningful quality gain.
+5. Reserve the highest efforts and Pro mode for measured quality-first cases;
+   do not recommend them globally.
 
-### `model string + light prompt rewrite`
+Before increasing effort, check whether the real failure is a missing success
+criterion, dependency rule, tool-routing rule, state-replay bug, or validation
+loop. Current guidance says omitted GPT-5.6 effort defaults to `medium`, but
+preserving an explicit old setting remains safer for controlled comparisons.
 
-Choose this when:
+### Endpoint and tool compatibility gate
 
-- the task needs stronger completeness, citation discipline, verification, or dependency handling
-- the upgraded model becomes too verbose, too dense, or hard to scan unless formatting is constrained
-- the workflow has strict output shape requirements and lacks an explicit format contract, schema, or parser validation
-- the workflow is research-heavy and needs stronger handling of sparse or empty retrieval results
-- the workflow is coding-oriented, terminal-based, tool-heavy, or multi-agent, but the existing API surface and tool definitions can remain unchanged
+Record the old endpoint and effective effort before classifying a migration as
+model-and-prompt-only. An omitted old value that behaved as `none` is not
+preserved by omitting GPT-5.6 effort, because GPT-5.6 defaults to `medium`.
 
-Default action:
+For Chat Completions routes that use function tools, preserve effective `none`
+explicitly with `reasoning_effort: "none"`. If the workflow requires reasoning
+and function tools together, moving it to Responses is a compatibility migration,
+not an incidental model-string change. Verify SDK and endpoint support before
+editing the request shape.
 
-- replace the model string with `gpt-5.5`
-- preserve the current reasoning effort for the first pass
-- make only the smallest prompt edits needed for the observed workflow risk
-- read the [GPT-5.5 prompting guide](/api/docs/guides/prompt-guidance?model=gpt-5.5) to choose the smallest prompt changes that recover or improve behavior
-- avoid broad prompt cleanup unrelated to the upgrade
-- for research workflows, add citation rules, retrieval budgets, missing-evidence behavior, and validation guidance from the prompting guide
-- for dependency-aware or tool-heavy workflows, add prerequisite checks, missing-context handling, explicit tool budgets, stop conditions, and validation guidance
-- for coding or terminal workflows, add repo-specific constraints, acceptance criteria, and concrete validation commands
-- for multi-agent support or triage workflows, add task ownership, handoff, completeness, and stopping criteria
-- for long-running Responses agents with preambles or multiple assistant messages, explicitly review whether `phase` is already handled; if adding or preserving `phase` would require code edits, mark the path as `blocked`
-- do not classify a coding or tool-using Responses workflow as `blocked` just because the visible snippet is minimal; prefer `model string + light prompt rewrite` unless the repo clearly shows that a safe GPT-5.5 path would require host-side code changes
+## Classify the migration
 
-### `blocked`
+### Model and prompt only
 
-Choose this when:
+Use this path when the endpoint, request shape, tools, schemas, parsers, cache,
+state handling, and multimodal behavior can remain unchanged.
 
-- the upgrade appears to require API-surface changes
-- the upgrade appears to require parameter rewrites or reasoning-setting changes that are not exposed outside implementation code
-- the upgrade would require changing tool definitions, tool handler wiring, or schema contracts
-- the user is asking for a tooling, IDE, plugin, shell, or environment migration rather than a model and prompt migration
-- the integration depends on provider-specific APIs that do not map to the current OpenAI API surface without implementation work
-- you cannot confidently identify the prompt surface tied to the model usage
+- change the active model target by workload role;
+- preserve the current prompt for the first comparison;
+- make only prompt edits tied to measured failures;
+- validate the same user-visible and machine-readable contracts.
 
-Default action:
+### Compatibility migration
 
-- do not improvise a broader upgrade
-- report the blocker and explain that the fix is out of scope for this guide
-- if useful, describe the smallest follow-up implementation task that would unblock the migration
+Use this classification when a safe migration needs parameter, endpoint,
+cache, state, tool-loop, structured-output, parser, or multimodal-detail changes.
+Make those changes only when implementation work is inside the user's requested
+scope. Otherwise report the exact blocker and smallest follow-up task.
 
-## Compatibility checklist
+### Leave unchanged
 
-Before applying or recommending a model-and-prompt-only upgrade, check:
+Leave historical examples, snapshots, eval baselines, comparison code,
+intentionally pinned fallbacks, unsupported providers, and ambiguous usages
+unchanged. List them explicitly so they are not mistaken for missed work.
 
-1. Can the current host accept the `gpt-5.5` model string without changing client code or API surface?
-2. Are the related prompts identifiable and editable?
-3. Does the host depend on behavior that likely needs API-surface changes, parameter rewrites, provider migration, or tool rewiring?
-4. Would the likely fix be prompt-only, or would it need implementation changes?
-5. Is the prompt surface close enough to the model usage that you can make a targeted change instead of a broad cleanup?
-6. Do strict structured outputs, schemas, or downstream parsers still have an explicit contract?
-7. For long-running Responses or tool-heavy agents, is `phase` already preserved if the host relies on preambles, replayed assistant items, or multiple assistant messages?
-8. Are latency, token, or price assumptions validated by tests, realistic spot checks, or an existing eval suite rather than inferred from general model positioning?
+## Prompt migration judgment
 
-If item 1 is no, items 3 through 4 point to implementation work, or item 7 is no and the fix needs code changes, return `blocked`.
+Run representative traces before editing prompts. For GPT-5.6, prefer:
 
-If item 2 is no, return `unknown` unless the user can point to the prompt location.
+- shorter, outcome-oriented instructions;
+- explicit success criteria, dependencies, stopping conditions, and completion
+  boundaries;
+- preserved user-provided values and decision criteria for implicit choices;
+- explicit autonomy, approval, evidence, and tool-routing boundaries;
+- sparse, outcome-based progress updates for long-running work;
+- real validation before declaring completion.
 
-Important:
-
-- Existing use of tools, agents, or multiple usage sites is not by itself a blocker.
-- If the current host can keep the same API surface and the same tool definitions, prefer `model string + light prompt rewrite` over `blocked`.
-- Reserve `blocked` for cases that truly require implementation changes, not cases that only need stronger prompt steering.
-- Do not claim token savings without task-level validation.
+Remove repeated rules, stale model-specific scaffolding, irrelevant examples,
+and contradictory instructions. Avoid generic requests to be brief, thorough,
+or to think step by step when they do not address a measured failure.
 
 ## Scope boundaries
 
-This guide may:
+This guide may update model strings, directly related prompts, and configuration
+or registry entries needed to preserve the existing model role. It may inspect
+adjacent code, schemas, tools, caches, state handling, and tests to determine
+whether the migration is safe.
 
-- update or recommend updated model strings
-- update or recommend updated prompts
-- inspect code and prompt files to understand where those changes belong
-- inspect whether existing Responses flows already preserve `phase`
-- flag compatibility blockers
-- propose validation with existing tests, realistic spot checks, or existing eval suites
+Do not silently turn a model-and-prompt upgrade into an SDK migration, endpoint
+migration, provider migration, orchestration rewrite, tool-schema redesign,
+parser rewrite, cache redesign, or optional-feature rollout. Treat those as
+separate implementation work or explicit blockers.
 
-This guide may not:
+## Upgrade workflow
 
-- move Chat Completions code to Responses
-- move Responses code to another API surface
-- migrate SDKs, APIs, IDE configuration, shell hooks, plugins, or provider-specific tooling
-- rewrite parameter shapes
-- change tool definitions or tool-call handling
-- change structured-output wiring
-- add or retrofit `phase` handling in implementation code
-- edit business logic, orchestration logic, SDK usage, IDE configuration, shell hooks, or plugin integration behavior except for model-string replacements and directly related prompt edits
+1. Fetch current model and prompting guidance.
+2. Inventory active usage, prompts, configs, registries, parsers, and tests.
+3. Classify each usage by role and migration class.
+4. Choose Sol, Terra, Luna, unchanged, or confirmation-needed.
+5. Preserve the old effective reasoning behavior for the baseline.
+6. Check endpoint support, especially Chat Completions plus function tools.
+7. Apply the smallest safe model, prompt, and directly related metadata changes.
+8. Keep optional GPT-5.6 capabilities separate from the baseline migration.
+9. Run existing tests and representative evals.
+10. Report changed, unchanged, blocked, and confirmation-needed sites separately.
 
-If a safe GPT-5.5 upgrade requires any of those changes, mark the path as blocked and out of scope.
+## Validation matrix
 
-## Validation plan
+Prefer a controlled comparison:
 
-- Validate each upgraded usage site with existing tests, realistic spot checks, or an existing eval suite when one is already available.
-- Compare against the current GPT-5.4 baseline when available.
-- Check task success, retry count, tool-call count, total tokens, latency, output shape, and user-visible quality.
-- For specialized workflows, validate the contract that matters most instead of judging only general output quality.
-- If prompt edits were added, confirm each block is doing real work instead of adding noise.
-- If the workflow has downstream impact, add a lightweight verification pass before finalization.
+1. old model + old prompt + old settings;
+2. GPT-5.6 target + same prompt + preserved reasoning effort;
+3. GPT-5.6 target + same prompt + one lower effort;
+4. GPT-5.6 target + the smallest prompt or compatibility fix required by a
+   measured failure;
+5. any optional feature treatment, isolated from the baseline.
+
+Measure the contracts that matter: task success, completeness, output validity,
+parser success, tool choice and arguments, retries, completion rate, latency,
+token and cache use, cost per successful task, citations, preserved behavior,
+and validation evidence.
+
+For routers and pickers, test representative work for every mapped role. Verify
+that Luna or Terra is not accidentally used for quality-critical work and that
+Sol is not accidentally used for every workload.
+
+## Required final report
+
+Return:
+
+- `Current usage inventory`
+- `Target mapping`
+- `Changes made`
+- `Compatibility checks`
+- `Prompt changes`
+- `Validation`
+- `Unchanged sites`
+- `Blockers and open questions`
+
+Do not call the migration complete merely because model strings changed. It is
+complete only when affected behavior and contracts have been validated or the
+remaining gaps are stated explicitly.

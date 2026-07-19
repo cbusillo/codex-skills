@@ -19,15 +19,13 @@ pause, or handoff prompt must not end with a readiness-only final answer; the
 final answer must come from `work-closeout` and include both `Love Gate` and
 `Safe to exit`.
 
-## Core Goal
+## Outcome
 
-Leave the user with a truthful readiness answer:
-
-- What checks are required?
-- What passed?
-- What failed or is pending?
-- What was intentionally not run?
-- What blocks review, merge, ship, or handoff?
+Return a truthful verdict—ready, not ready, partially ready, or blocked—with the
+required gates, passed/failed/pending/not-run evidence, blockers, and the
+smallest next action that would change the verdict. Readiness is complete only
+when the evidence covers the changed surface and any configured code, docs,
+inspection, browser, CI, deployment, or security gates.
 
 ## Workflow
 
@@ -48,17 +46,13 @@ Leave the user with a truthful readiness answer:
 git status --short --branch
 ```
 
-4. For code changes, use `jetbrains-inspection` during the edit loop when a
-   JetBrains IDE project is available or required. Start with changed files or
-   the touched directory so the checked scope stays aligned with the session's
-   actual edits. Repeat after later edits that could affect inspected code.
-   When `.github/github.json` defines `qualityGate.inspection`, readiness for a
-   code change must include JetBrains evidence from the delegated helper
-   (`closeout` for final readiness) or an explicit not-run reason. If that
-   inspection config is blank, missing, contradictory, or surprising, do not
-   silently invent durable policy: use a safe one-off `changed_files` default
-   only when the helper can infer a correct route, and ask the user before
-   changing repo policy or treating a suspicious config as authoritative.
+4. For code changes, delegate inspection execution and triage to
+   `jetbrains-inspection` and follow the authoritative section below. When
+   `.github/github.json` defines `qualityGate.inspection`, readiness must include
+   JetBrains evidence or an explicit not-run reason. For blank, missing,
+   contradictory, or surprising config, use a safe one-off `changed_files`
+   default only when the helper can infer the route, and ask the user before
+   changing repo policy.
 
 If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:

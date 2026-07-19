@@ -20,15 +20,14 @@ the final safe-to-exit answer, and that final answer must include both
 or a generic approval sentence; write the two entries explicitly as `Love:` and
 `Do not love:`.
 
-## Core Goal
+## Outcome
 
-Leave the user with a truthful closeout answer:
-
-- What is done?
-- What remains?
-- What cleanup happened?
-- What artifacts or plans were removed, preserved, or updated?
-- Is it safe to pause, exit, or hand off?
+Closeout succeeds when the owning durable surface is current or explicitly not
+applicable, readiness evidence is preserved, safe cleanup is complete or
+clearly deferred, remaining work has a blocker and next action, and the final
+answer gives a truthful `Safe to exit: yes`, `conditional`, or `no` verdict.
+The result must also say what changed, what remains, and what was removed,
+preserved, or intentionally left in place.
 
 ## Workflow
 

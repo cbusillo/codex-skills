@@ -1,0 +1,35 @@
+{
+  "name": "fake-responses-skill-creator-outcome-contract",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $skill-creator to assess a skill update, then reply with exactly: ok",
+  "files": {
+    "README.md": "# Skill creator outcome contract fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-skill-creator-outcome-contract"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "<name>skill-creator</name>",
+          "Write Outcome-First Contracts",
+          "Success evidence",
+          "negative or ambiguity case when practical",
+          "references/skill-design-details.md"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

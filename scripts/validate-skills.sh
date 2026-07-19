@@ -35,6 +35,7 @@ helper_tests=(
 	infra-ops/scripts/test_npmplus_ops.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
+	openai-docs/scripts/test_resolve_latest_model_info.py
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_public_safety.py
 	jetbrains-inspection/tests/test_jb_inspect.py

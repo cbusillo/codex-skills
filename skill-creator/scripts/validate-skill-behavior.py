@@ -1447,8 +1447,68 @@ def test_dns_cloudflare_routes_to_local_infra_context() -> None:
     )
 
 
+def test_openai_docs_latest_target_and_fallback_contract() -> None:
+    source = (ROOT / "openai-docs" / "SKILL.md").read_text()
+    normalized = " ".join(source.lower().split())
+
+    require(
+        "latest-model.md" in normalized
+        and "node scripts/resolve-latest-model-info.js" in normalized,
+        "OpenAI Docs must resolve latest-model metadata before dynamic migrations",
+    )
+    require(
+        "non-2xx, empty, whitespace-only, or non-substantive" in normalized
+        and "mcp fetch/search or official openai web search" in normalized
+        and "bundled fallbacks" in normalized,
+        "OpenAI Docs must route empty or failed remote guides through official search before bundled fallback",
+    )
+    require(
+        "preserve explicit targets" in normalized
+        and "historical docs, examples, eval baselines, comparison code" in normalized
+        and "intentionally pinned fallbacks" in normalized,
+        "OpenAI Docs must preserve explicit, historical, evaluation, and pinned model usage",
+    )
+    require(
+        "keep optional capabilities" in normalized
+        and "separate from the baseline migration" in normalized,
+        "OpenAI Docs must keep optional GPT-5.6 capabilities out of baseline migrations",
+    )
+    require(
+        "do not install or reconfigure mcp as a side effect of a docs lookup" in normalized,
+        "OpenAI Docs must not mutate MCP configuration during ordinary docs lookup",
+    )
+    require(
+        "run the install command yourself" not in normalized,
+        "OpenAI Docs must not retain automatic MCP installation instructions",
+    )
+
+
+def test_gpt56_rollout_comparisons_preserve_pinned_baselines() -> None:
+    skill_text = " ".join((ROOT / "rollout-friction" / "SKILL.md").read_text().lower().split())
+    matrix_text = (ROOT / "rollout-friction" / "scripts" / "run_rollout_memory_long_context_matrix.py").read_text()
+
+    require(
+        "alongside the existing gpt-5.4 comparison" in skill_text
+        and "keep new family variants opt-in" in skill_text,
+        "Rollout guidance must add GPT-5.6 variants without replacing the GPT-5.4 baseline",
+    )
+    require(
+        "preserve fake `gpt-5.1-codex` harness models" in skill_text,
+        "Rollout guidance must preserve fake GPT-5.1-Codex protocol fixtures",
+    )
+    require(
+        '"gpt-5.4=code-llm:gpt-5.4"' in matrix_text,
+        "Rollout matrix must retain the pinned GPT-5.4 default comparison",
+    )
+    require(
+        "gpt-5.6-sol=code-llm:gpt-5.6-sol" not in matrix_text,
+        "GPT-5.6 cloud variants must remain opt-in instead of silently expanding the default matrix",
+    )
+
+
 def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
-    creator_text = (ROOT / "skill-creator" / "SKILL.md").read_text().lower()
+    creator_source = (ROOT / "skill-creator" / "SKILL.md").read_text()
+    creator_text = creator_source.lower()
     normalized = " ".join(creator_text.split())
 
     require(
@@ -1462,6 +1522,13 @@ def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
     require(
         "negative or ambiguity case when practical" in normalized,
         "Skill creator guidance must encourage ambiguity/negative harness cases",
+    )
+    frontmatter_end = creator_source.find("\n---", 4)
+    require(frontmatter_end >= 0, "Skill creator must have closing frontmatter")
+    body_lines = creator_source[frontmatter_end + 4 :].splitlines()
+    require(
+        len(body_lines) < 500,
+        f"Skill creator body must stay under 500 lines (got {len(body_lines)})",
     )
 
 
@@ -1487,6 +1554,8 @@ def main() -> None:
         test_infra_ops_private_context_command_detects_docs_pointer,
         test_infra_ops_private_context_command_reports_missing,
         test_dns_cloudflare_routes_to_local_infra_context,
+        test_openai_docs_latest_target_and_fallback_contract,
+        test_gpt56_rollout_comparisons_preserve_pinned_baselines,
         test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
     for test in tests:
