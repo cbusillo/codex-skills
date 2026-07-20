@@ -63,6 +63,7 @@ helper_tests=(
 	local-llm/scripts/validate_lm_studio_api.py
 	openai-docs/scripts/test_resolve_latest_model_info.py
 	people/scripts/test_resolve_person.py
+	skill-installer/scripts/test_install_skill_from_github.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
 	scripts/test_update_pep723_dependencies.py
