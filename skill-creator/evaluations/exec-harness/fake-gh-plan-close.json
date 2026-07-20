@@ -29,6 +29,18 @@
       },
       {
         "match": {
+          "contains": ["api", "repos/cbusillo/codex-skills/issues/900/dependencies/blocked_by?per_page=100&page=1"]
+        },
+        "stdout": "[]"
+      },
+      {
+        "match": {
+          "contains": ["api", "repos/cbusillo/codex-skills/issues/900/sub_issues?per_page=100&page=1"]
+        },
+        "stdout": "[]"
+      },
+      {
+        "match": {
           "contains": ["api", "repos/cbusillo/codex-skills/issues/900"]
         },
         "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
@@ -55,7 +67,7 @@
         "match": {
           "contains": ["api", "--method", "PATCH", "/repos/cbusillo/codex-skills/issues/900"]
         },
-        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:done\"}],\"state\":\"closed\",\"state_reason\":\"completed\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
+        "stdout": "{\"number\":900,\"title\":\"Completed plan\",\"body\":\"## Finish Line\\nShip the completed plan.\\n\",\"labels\":[{\"name\":\"plan\"},{\"name\":\"plan:active\"}],\"state\":\"closed\",\"state_reason\":\"completed\",\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900\"}"
       }
     ]
   },
@@ -97,6 +109,8 @@
     "gh_contains": [
       "api",
       "/user",
+      "repos/cbusillo/codex-skills/issues/900/dependencies/blocked_by?per_page=100&page=1",
+      "repos/cbusillo/codex-skills/issues/900/sub_issues?per_page=100&page=1",
       "/repos/cbusillo/codex-skills/issues/900/labels",
       "/repos/cbusillo/codex-skills/issues/900/labels/plan%3Aactive",
       "/repos/cbusillo/codex-skills/issues/900/comments",

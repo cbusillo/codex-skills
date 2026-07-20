@@ -263,13 +263,43 @@ def comment_route() -> tuple[str, str, Optional[str]]:
     raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
 
 
+def merge_completed_steps(*groups: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for step in group or []:
+            if step not in merged:
+                merged.append(step)
+    return merged
+
+
 def plan_error_from_issue(
     exc: github_issue_core.IssueError,
     *,
     completed_steps: list[str] | None = None,
 ) -> PlanError:
-    combined_steps = list(completed_steps or [])
-    combined_steps.extend(exc.failure.completed_steps or [])
+    combined_steps = merge_completed_steps(completed_steps, exc.failure.completed_steps)
+    exc.failure.completed_steps = combined_steps
+    api_result = dict(exc.api_result or {})
+    if api_result:
+        api_result["completed_steps"] = combined_steps
+        api_result["failed_step"] = api_result.get("failed_step") or exc.failure.failed_step
+        nested_failure = api_result.get("failure")
+        if isinstance(nested_failure, dict):
+            api_result["failure"] = {**nested_failure, "completed_steps": combined_steps}
+    return PlanError(
+        str(exc),
+        failure=exc.failure,
+        api_result=api_result or None,
+        payload=exc.payload,
+    )
+
+
+def plan_error_from_comment(
+    exc: github_comment_core.CommentError,
+    *,
+    completed_steps: list[str] | None = None,
+) -> PlanError:
+    combined_steps = merge_completed_steps(completed_steps, exc.failure.completed_steps)
     exc.failure.completed_steps = combined_steps
     api_result = dict(exc.api_result or {})
     if api_result:
@@ -1186,6 +1216,186 @@ def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def issue_repository_name(issue: dict[str, Any]) -> str | None:
+    repo = issue.get("repo")
+    if isinstance(repo, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        return repo
+    repository = issue.get("repository")
+    if isinstance(repository, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+        return repository
+    if isinstance(repository, dict):
+        full_name = repository.get("full_name")
+        if isinstance(full_name, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", full_name):
+            return full_name
+    for key in ("repository_url", "html_url", "url"):
+        value = issue.get(key)
+        if not isinstance(value, str):
+            continue
+        parts = [part for part in urllib.parse.urlparse(value).path.split("/") if part]
+        if len(parts) >= 3 and parts[0] == "repos":
+            candidate = f"{parts[1]}/{parts[2]}"
+            if re.fullmatch(r"[^/\s]+/[^/\s]+", candidate):
+                return candidate
+        if len(parts) >= 4 and parts[-2] == "issues":
+            candidate = f"{parts[-4]}/{parts[-3]}"
+            if re.fullmatch(r"[^/\s]+/[^/\s]+", candidate):
+                return candidate
+    return None
+
+
+def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict[str, Any]:
+    repo = issue_repository_name(issue)
+    number = issue.get("number")
+    state = issue.get("state")
+    if repo is None:
+        raise PlanError(f"GitHub {relationship} response omitted the related issue repository")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise PlanError(f"GitHub {relationship} response omitted a valid related issue number")
+    if not isinstance(state, str) or state.casefold() not in {"open", "closed"}:
+        raise PlanError(f"GitHub {relationship} response returned an ambiguous related issue state")
+    title = issue.get("title")
+    return {
+        "repo": repo,
+        "number": number,
+        "title": title if isinstance(title, str) else None,
+        "state": state.casefold(),
+        "url": issue.get("html_url") or f"https://github.com/{repo}/issues/{number}",
+    }
+
+
+def read_issue_relationships(
+    issue_repo: str,
+    number: int,
+    *,
+    include_blocking: bool,
+) -> tuple[str, dict[str, list[dict[str, Any]]]]:
+    relationships: dict[str, list[dict[str, Any]]] = {}
+    actor = ""
+    endpoints = [
+        ("blocked_by", f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by"),
+    ]
+    if include_blocking:
+        endpoints.append(("blocking", f"/repos/{issue_repo}/issues/{number}/dependencies/blocking"))
+    endpoints.append(("sub_issues", f"/repos/{issue_repo}/issues/{number}/sub_issues"))
+    for relationship, endpoint in endpoints:
+        page_actor, items = collect_paged_rest_items(
+            endpoint,
+            query={},
+            bucket="rest_core",
+            step_prefix=f"read_{relationship}",
+        )
+        actor = page_actor or actor
+        relationships[relationship] = [
+            compact_relationship_issue(item, relationship)
+            for item in items
+        ]
+    return actor, relationships
+
+
+def relationship_refs(items: list[dict[str, Any]], issue_repo: str) -> list[str]:
+    return [
+        f"#{item['number']}" if item["repo"] == issue_repo else f"{item['repo']}#{item['number']}"
+        for item in items
+    ]
+
+
+def relationship_preflight_error(
+    exc: PlanError,
+    *,
+    issue_repo: str,
+    number: int,
+) -> PlanError:
+    if exc.failure is not None:
+        failure = replace(
+            exc.failure,
+            write_outcome="not_started",
+            completed_steps=[],
+            failed_step="relationship_preflight",
+        )
+        result = "unavailable"
+    else:
+        failure = github_api_core.FailureDetail(
+            cause="invalid_response",
+            message=str(exc),
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="relationship_preflight",
+        )
+        result = "ambiguous"
+    api_result = dict(exc.api_result or {})
+    if api_result:
+        api_result["completed_steps"] = []
+        api_result["failed_step"] = "relationship_preflight"
+        api_result["failure"] = failure.as_dict()
+    return PlanError(
+        f"Cannot safely close {issue_repo}#{number}: relationship preflight {result}: {exc}",
+        failure=failure,
+        api_result=api_result or None,
+        payload={
+            **exc.payload,
+            "relationship_preflight": {
+                "result": result,
+                "issue": {"repo": issue_repo, "number": number},
+                "writes_started": False,
+            },
+        },
+    )
+
+
+def close_relationship_preflight(
+    issue_repo: str,
+    number: int,
+    close_reason: str,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        actor, relationships = read_issue_relationships(
+            issue_repo,
+            number,
+            include_blocking=False,
+        )
+    except PlanError as exc:
+        raise relationship_preflight_error(exc, issue_repo=issue_repo, number=number) from exc
+    blocked_by = relationships["blocked_by"]
+    sub_issues = relationships["sub_issues"]
+    open_blocked_by = [item for item in blocked_by if item["state"] == "open"]
+    open_sub_issues = [item for item in sub_issues if item["state"] == "open"]
+    preflight = {
+        "result": "passed" if close_reason == "completed" else "not_planned_allowed",
+        "policy": "require_closed" if close_reason == "completed" else "retain_and_report",
+        "blocking_policy": "issues_blocked_by_this_plan_do_not_prevent_closure",
+        "blocked_by": blocked_by,
+        "sub_issues": sub_issues,
+        "open_blocked_by": open_blocked_by,
+        "open_sub_issues": open_sub_issues,
+        "writes_started": False,
+    }
+    if close_reason == "completed" and (open_blocked_by or open_sub_issues):
+        details: list[str] = []
+        if open_blocked_by:
+            details.append(f"open blockers: {', '.join(relationship_refs(open_blocked_by, issue_repo))}")
+        if open_sub_issues:
+            details.append(f"open sub-issues: {', '.join(relationship_refs(open_sub_issues, issue_repo))}")
+        message = f"Cannot close {issue_repo}#{number} as completed; {'; '.join(details)}"
+        failure = github_api_core.FailureDetail(
+            cause="open_relationships",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="relationship_preflight",
+        )
+        preflight["result"] = "rejected"
+        raise PlanError(
+            message,
+            failure=failure,
+            payload={"relationship_preflight": preflight},
+        )
+    return actor, preflight
+
+
 def section_map(body: str) -> dict[str, str]:
     sections: dict[str, str] = {}
     matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body or ""))
@@ -1647,21 +1857,12 @@ def cmd_deps(args: argparse.Namespace) -> None:
     _, issue = get_issue(args.issue, repo)
     issue_repo = issue["repo"]
     number = int(issue["number"])
-    result: dict[str, Any] = {"issue": compact_issue(issue)}
-    for name, endpoint in [("blocked_by", "blocked_by"), ("blocking", "blocking")]:
-        actor, data = api_json(
-            "GET",
-            f"/repos/{issue_repo}/issues/{number}/dependencies/{endpoint}",
-            failed_step=f"read_{endpoint}",
-        )
-        result[name] = [compact_issue({**item, "repo": (item.get("repository") or {}).get("full_name")}) for item in data or []]
-    actor, data = api_json(
-        "GET",
-        f"/repos/{issue_repo}/issues/{number}/sub_issues",
-        failed_step="read_sub_issues",
+    actor, relationships = read_issue_relationships(
+        issue_repo,
+        number,
+        include_blocking=True,
     )
-    result["sub_issues"] = [compact_issue({**item, "repo": (item.get("repository") or {}).get("full_name")}) for item in data or []]
-    emit({"ok": True, "actor": actor, **result})
+    emit({"ok": True, "actor": actor, "issue": compact_issue(issue), **relationships})
 
 
 def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any] | None]:
@@ -1920,60 +2121,72 @@ def cmd_project_set(args: argparse.Namespace) -> None:
     emit({"ok": True, **result})
 
 
+def normalized_close_reason(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value.strip().casefold().replace("-", "_").replace(" ", "_")
+
+
+def issue_matches_close_reason(issue: dict[str, Any], close_reason: str) -> bool:
+    state = issue.get("state")
+    return (
+        isinstance(state, str)
+        and state.casefold() == "closed"
+        and normalized_close_reason(issue.get("state_reason")) == close_reason
+    )
+
+
+def close_error_with_recovery(
+    exc: PlanError,
+    *,
+    issue_repo: str,
+    number: int,
+    close_reason: str,
+    relationship_preflight: dict[str, Any],
+    project_result: dict[str, Any],
+    issue_closed: bool | None,
+    metadata_state: str,
+) -> PlanError:
+    if not project_result:
+        project_state = "not_configured"
+    elif project_result.get("warning"):
+        project_state = "warning"
+    else:
+        project_state = "synchronized_before_close"
+    return PlanError(
+        str(exc),
+        failure=exc.failure,
+        api_result=exc.api_result,
+        payload={
+            **exc.payload,
+            "relationship_preflight": relationship_preflight,
+            "project": project_result or None,
+            "recovery": {
+                "commit_point": "issue_closed_with_requested_reason",
+                "issue": {"repo": issue_repo, "number": number},
+                "close_reason": close_reason,
+                "issue_closed": issue_closed,
+                "completion_metadata": metadata_state,
+                "project_state": project_state,
+                "retry_safe": True,
+                "next_action": "rerun_same_close_command",
+            },
+        },
+    )
+
+
 def cmd_close(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
     issue_repo, number = issue_ref(args.issue, repo)
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
+    _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
-    current_labels = {name.casefold() for name in issue_labels(issue)}
-    done_label = plan_labels.get("done")
-    active_label = plan_labels.get("active")
-    add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
-    remove_labels = [active_label] if active_label and active_label.casefold() in current_labels else None
     actor = issue_actor
-    if add_labels or remove_labels:
-        try:
-            label_result = github_issue_core.edit_issue(
-                number,
-                repo=issue_repo,
-                add_labels=add_labels,
-                remove_labels=remove_labels,
-                gh_cmd=gh_cmd,
-                expected_actor=expected_actor,
-                operation=CURRENT_OPERATION,
-            )
-        except github_issue_core.IssueError as exc:
-            raise plan_error_from_issue(exc) from exc
-        actor = label_result.get("actor") or route_actor
-    completed_steps = ["update_labels"]
-
-    comment_result: dict[str, Any] = {}
-    if close_comment:
-        try:
-            comment_result = github_comment_core.comment(
-                "issue",
-                number,
-                close_comment,
-                repo=issue_repo,
-                gh_cmd=gh_cmd,
-                expected_actor=expected_actor,
-                operation=CURRENT_OPERATION,
-                completed_steps=completed_steps,
-                failed_step="post_close_comment",
-            )
-            actor = comment_result.get("actor") or route_actor
-            completed_steps = list(comment_result.get("completed_steps") or completed_steps)
-        except github_comment_core.CommentError as exc:
-            raise PlanError(
-                str(exc),
-                failure=exc.failure,
-                api_result=exc.api_result,
-                payload=exc.payload,
-            ) from exc
+    completed_steps: list[str] = []
 
     project_result: dict[str, Any] = {}
     project_config = config.get("projects") or {}
@@ -2014,16 +2227,14 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation="close_project_sync",
                 non_blocking=True,
             )
+            project_result["message"] = (
+                "Project synchronization needs follow-up; inspect issue and recovery state separately."
+            )
         else:
             completed_steps.append("sync_project")
 
-    issue_state = issue.get("state")
-    issue_state_reason = issue.get("state_reason")
-    if (
-        isinstance(issue_state, str)
-        and issue_state.casefold() == "closed"
-        and issue_state_reason == close_reason
-    ):
+    close_result: dict[str, Any] = {}
+    if issue_matches_close_reason(issue, close_reason):
         close_result = {"actor": actor, "expected_actor": expected_actor}
         completed_steps.append("close_issue_already_complete")
     else:
@@ -2038,9 +2249,150 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation=CURRENT_OPERATION,
             )
         except github_issue_core.IssueError as exc:
-            raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
-        actor = close_result.get("actor") or actor
-        completed_steps.append("close_issue")
+            close_error = plan_error_from_issue(exc, completed_steps=completed_steps)
+            close_failure = close_error.failure
+            observed_closed: bool | None = (
+                str(issue.get("state") or "").casefold() == "closed"
+            )
+            if close_failure and close_failure.write_outcome == "unknown":
+                try:
+                    observed_actor, observed_issue = get_issue(f"{issue_repo}#{number}", issue_repo)
+                except PlanError as read_exc:
+                    observed_closed = None
+                    close_error = PlanError(
+                        str(close_error),
+                        failure=close_error.failure,
+                        api_result=close_error.api_result,
+                        payload={
+                            **close_error.payload,
+                            "close_reconciliation": {
+                                "strategy": "read_issue_and_compare_state",
+                                "result": "unavailable",
+                                "failure": read_exc.api_result or {
+                                    "cause": read_exc.failure.cause if read_exc.failure else "read_failed"
+                                },
+                            },
+                        },
+                    )
+                else:
+                    observed_state = observed_issue.get("state")
+                    observed_closed = (
+                        isinstance(observed_state, str)
+                        and observed_state.casefold() == "closed"
+                    )
+                    if issue_matches_close_reason(observed_issue, close_reason):
+                        issue = observed_issue
+                        actor = (
+                            (close_error.api_result or {}).get("actor")
+                            or observed_actor
+                            or actor
+                        )
+                        close_result = {
+                            "actor": actor,
+                            "expected_actor": expected_actor,
+                            "reconciled": True,
+                            "reconciliation": {
+                                "strategy": "read_issue_and_compare_state",
+                                "result": "matched",
+                            },
+                        }
+                        completed_steps = merge_completed_steps(
+                            close_failure.completed_steps,
+                            ["reconcile_close_issue"],
+                        )
+                    else:
+                        close_error = PlanError(
+                            str(close_error),
+                            failure=close_error.failure,
+                            api_result=close_error.api_result,
+                            payload={
+                                **close_error.payload,
+                                "close_reconciliation": {
+                                    "strategy": "read_issue_and_compare_state",
+                                    "result": "no_match",
+                                    "observed": compact_issue(observed_issue),
+                                },
+                            },
+                        )
+            if not close_result:
+                raise close_error_with_recovery(
+                    close_error,
+                    issue_repo=issue_repo,
+                    number=number,
+                    close_reason=close_reason,
+                    relationship_preflight=relationship_preflight,
+                    project_result=project_result,
+                    issue_closed=observed_closed,
+                    metadata_state="not_started",
+                ) from exc
+        else:
+            actor = close_result.get("actor") or actor
+            completed_steps.append("close_issue")
+
+    label_source = close_result if isinstance(close_result.get("labels"), list) else issue
+    current_labels = {name.casefold() for name in issue_labels(label_source)}
+    done_label = plan_labels.get("done")
+    active_label = plan_labels.get("active")
+    add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
+    remove_labels = [active_label] if active_label and active_label.casefold() in current_labels else None
+    if add_labels or remove_labels:
+        try:
+            label_result = github_issue_core.edit_issue(
+                number,
+                repo=issue_repo,
+                add_labels=add_labels,
+                remove_labels=remove_labels,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=CURRENT_OPERATION,
+            )
+        except github_issue_core.IssueError as exc:
+            raise close_error_with_recovery(
+                plan_error_from_issue(exc, completed_steps=completed_steps),
+                issue_repo=issue_repo,
+                number=number,
+                close_reason=close_reason,
+                relationship_preflight=relationship_preflight,
+                project_result=project_result,
+                issue_closed=True,
+                metadata_state="labels_incomplete",
+            ) from exc
+        actor = label_result.get("actor") or route_actor
+        completed_steps.append("update_labels")
+    else:
+        completed_steps.append("labels_already_complete")
+
+    comment_result: dict[str, Any] = {}
+    if close_comment:
+        try:
+            comment_result = github_comment_core.comment(
+                "issue",
+                number,
+                close_comment,
+                repo=issue_repo,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=CURRENT_OPERATION,
+                completed_steps=completed_steps,
+                failed_step="post_close_comment",
+                dedupe_body=True,
+            )
+            actor = comment_result.get("actor") or route_actor
+            completed_steps = merge_completed_steps(
+                completed_steps,
+                comment_result.get("completed_steps"),
+            )
+        except github_comment_core.CommentError as exc:
+            raise close_error_with_recovery(
+                plan_error_from_comment(exc, completed_steps=completed_steps),
+                issue_repo=issue_repo,
+                number=number,
+                close_reason=close_reason,
+                relationship_preflight=relationship_preflight,
+                project_result=project_result,
+                issue_closed=True,
+                metadata_state="comment_incomplete",
+            ) from exc
 
     public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
     output_expected_actor = (
@@ -2049,13 +2401,26 @@ def cmd_close(args: argparse.Namespace) -> None:
         else close_result.get("expected_actor", expected_actor)
     )
 
+    closed_result: dict[str, Any] = {
+        "repo": issue_repo,
+        "number": number,
+        "reason": close_reason,
+        "url": issue["html_url"],
+    }
+    if close_result.get("reconciled"):
+        closed_result["reconciled"] = True
+        closed_result["reconciliation"] = close_result.get("reconciliation")
+    if "close_issue_already_complete" in completed_steps:
+        closed_result["already_complete"] = True
+
     emit({
         "ok": True,
         "actor": actor,
         "expected_actor": output_expected_actor,
-        "closed": {"repo": issue_repo, "number": number, "reason": close_reason, "url": issue["html_url"]},
+        "closed": closed_result,
         "comment": public_comment or None,
         "project": project_result,
+        "relationship_preflight": relationship_preflight,
         "completed_steps": completed_steps,
     })
 
@@ -2147,7 +2512,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.set_defaults(func=cmd_deps)
 
-    p = sub.add_parser("close", help="Close a completed plan and update Project state")
+    p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
     p.add_argument("issue")
     p.add_argument("--reason", default="completed")
     p.add_argument("--comment", dest="body")
