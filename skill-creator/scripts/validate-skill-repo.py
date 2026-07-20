@@ -27,7 +27,6 @@ SYSTEM_OVERRIDE_NAMES = {
     "plan",
     "plugin-creator",
     "skill-creator",
-    "skill-installer",
 }
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
