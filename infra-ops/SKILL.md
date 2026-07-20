@@ -113,6 +113,11 @@ remote validation commands, rollback snapshot, and service-specific guardrails
 in the private repo. Treat the public engine as reusable API/redaction/dry-run
 machinery, not as a place for site-specific defaults.
 
+NPMplus lifecycle writes require `npmplus.ops.v2` context that binds the
+canonical service origin, authenticated principal, per-ref target fingerprint,
+per-ref allowed action, and typed private readiness evidence. Legacy v1 context
+remains read-only during provider migration.
+
 For Launchplane-managed runtime state, use the `launchplane` skill once the
 resource is known to be managed by Launchplane. `infra-ops` can coordinate the
 broader infrastructure workflow and hand off bounded Launchplane mutations to
