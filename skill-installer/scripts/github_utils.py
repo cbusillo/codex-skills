@@ -8,11 +8,18 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 import urllib.request
+
+
+GITHUB_API_VERSION = "2022-11-28"
 
 
 def github_request(url: str, user_agent: str) -> bytes:
     headers = {"User-Agent": user_agent}
+    if urllib.parse.urlparse(url).hostname == "api.github.com":
+        headers["Accept"] = "application/vnd.github+json"
+        headers["X-GitHub-Api-Version"] = GITHUB_API_VERSION
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         headers["Authorization"] = f"token {token}"

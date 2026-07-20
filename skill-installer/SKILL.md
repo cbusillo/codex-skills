@@ -83,20 +83,46 @@ All of these scripts use network, so when running in the sandbox, request escala
 
 ## Behavior and Options
 
-- Defaults to direct download for public GitHub repos.
-- If download fails with auth/permission errors, falls back to git sparse checkout.
+- Resolves the requested repository and ref through the GitHub API before fetching
+  skill content. Mutable branches and tags are bound to one full commit SHA.
+- Uses that resolved SHA for both direct archive download and git sparse checkout.
+  Git fallback verifies the checked-out `HEAD` before installing anything.
+- Bare ref names must identify exactly one branch or tag. If both exist, use an
+  explicit ref such as `refs/heads/release` or `refs/tags/release`.
+- Accepts full 40-character commit SHAs. Short SHAs are rejected because their
+  identity is not stable enough for reproducible installs.
+- Resolves `tree`/`blob` URL ref and path boundaries against GitHub. Ambiguous
+  URLs fail closed; retry with explicit `--repo`, `--ref`, and `--path` values.
+- Defaults to direct download for public GitHub repos after immutable resolution.
+- If download fails with auth/permission errors, falls back to git sparse checkout
+  at the same resolved SHA.
+- Rejects symbolic links in installed skill trees and excludes git metadata so
+  archive and git transports produce the same self-contained skill content.
 - Aborts if the destination skill directory already exists.
 - Installs into `$CODE_HOME/skills/<skill-name>` when `CODE_HOME` is set. When
   `CODE_HOME` is unset, the helper scripts use `$CODEX_HOME/skills` for
   compatibility, then prefer `~/.code/skills` if present, then fall back to
   `~/.codex/skills`.
 - Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.
-- Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.
+- Options: `--ref <branch|tag|refs/...|full-sha>` (default `main`),
+  `--dest <path>`, `--method auto|download|git`.
+
+Successful installs report public-safe provenance:
+
+```text
+Repository: openai/skills
+Requested ref: main
+Resolved SHA: 0123456789abcdef0123456789abcdef01234567
+Installed:
+- skills/.curated/example-skill -> ~/.code/skills/example-skill
+```
 
 ## Notes
 
 - Curated listing is fetched from `https://github.com/openai/skills/tree/main/skills/.curated` via the GitHub API. If it is unavailable, explain the error and exit.
-- Private GitHub repos can be accessed via existing git credentials or optional `GITHUB_TOKEN`/`GH_TOKEN` for download.
+- Private GitHub repos require `GITHUB_TOKEN` or `GH_TOKEN` for repository and
+  ref resolution. Git fallback may then use existing HTTPS or SSH credentials
+  to fetch the resolved commit.
 - Git fallback tries HTTPS first, then SSH.
 - The skills at https://github.com/openai/skills/tree/main/skills/.system are preinstalled, so no need to help users install those. If they ask, just explain this. If they insist, you can download and overwrite.
 - Installed annotations use the same `$CODE_HOME`, `$CODEX_HOME`, `~/.code`,
