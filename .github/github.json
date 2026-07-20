@@ -5,6 +5,7 @@
     "index": "README.md",
     "githubSkill": "github/SKILL.md",
     "githubWorkflow": "github/references/repo-workflow.md",
+    "executionEnvironment": "github/references/execution-environment.md",
     "githubConfigSchema": "github/references/config-schema.md",
     "launchplaneSkill": "launchplane/SKILL.md",
     "launchplaneContextContract": "launchplane/references/context-helper-contract.md",
@@ -21,8 +22,8 @@
       "scopePreference": "changed_files"
     },
     "syntax": {
-      "python": "python3 -m py_compile github/scripts/github_api.py github/scripts/github_comment.py github/scripts/github_issue.py github/scripts/github_read.py github/scripts/test_github_api.py github/scripts/test_github_ci_diagnose.py github/scripts/test_github_comment.py github/scripts/test_github_issue.py github/scripts/test_github_read.py github/scripts/validate-operation-matrix.py github/scripts/gh-plan.py github/scripts/gh-pr.py github/scripts/github-ci-diagnose.py github/scripts/reconcile-runtime-checkout.py launchplane/scripts/launchplane-context.py launchplane/scripts/launchplane-write-action.py launchplane/scripts/launchplane_safety.py launchplane/scripts/test_launchplane_helpers.py scripts/test_update_pep723_dependencies.py scripts/test_validate_github_actions_security.py scripts/update_pep723_dependencies.py scripts/validate_github_actions_security.py skill-creator/scripts/generate_openai_yaml.py skill-creator/scripts/init_skill.py skill-creator/scripts/quick_validate.py skill-installer/scripts/github_utils.py skill-installer/scripts/install-skill-from-github.py skill-installer/scripts/list-skills.py",
-      "shell": "bash -n github/scripts/github-repo-snapshot.sh github/scripts/gh-with-env-token github/scripts/gh-issue github/scripts/gh-comment scripts/validate-skills.sh"
+      "python": "uv run --python 3.12 python -m py_compile github/scripts/github_api.py github/scripts/github_comment.py github/scripts/github_issue.py github/scripts/github_read.py github/scripts/test_github_api.py github/scripts/test_github_ci_diagnose.py github/scripts/test_github_comment.py github/scripts/test_github_issue.py github/scripts/test_github_read.py github/scripts/validate-operation-matrix.py github/scripts/gh-plan.py github/scripts/gh-pr.py github/scripts/github-ci-diagnose.py github/scripts/reconcile-runtime-checkout.py launchplane/scripts/launchplane-context.py launchplane/scripts/launchplane-write-action.py launchplane/scripts/launchplane_safety.py launchplane/scripts/test_launchplane_helpers.py scripts/test_update_pep723_dependencies.py scripts/test_validate_execution_environment.py scripts/test_validate_github_actions_security.py scripts/update_pep723_dependencies.py scripts/validate_execution_environment.py scripts/validate_github_actions_security.py skill-creator/scripts/generate_openai_yaml.py skill-creator/scripts/init_skill.py skill-creator/scripts/quick_validate.py skill-installer/scripts/github_utils.py skill-installer/scripts/install-skill-from-github.py skill-installer/scripts/list-skills.py",
+      "shell": "bash -n github/scripts/github-repo-snapshot.sh github/scripts/gh-with-env-token github/scripts/gh-issue github/scripts/gh-comment google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
     },
     "json": {
       "metadata": "jq empty .github/github.json"
@@ -70,7 +71,12 @@
         "workflow": "merge-train-runner.yml",
         "ref": "main",
         "runnerMode": "controller",
-        "mutateDefault": false
+        "mutateDefault": false,
+        "revisionEvidenceFields": {
+          "runnerWorkflow": "workflow_run.head_sha",
+          "candidate": "result.candidate.candidate_sha",
+          "landing": "result.landing_plan.entries[].merge_commit_sha"
+        }
       }
     }
   },
@@ -138,7 +144,8 @@
       "repo relationship changes",
       "Launchplane access routing changes",
       "cleanup policy changes",
-      "ownership boundaries change"
+      "ownership boundaries change",
+      "execution environment policy changes"
     ]
   }
 }

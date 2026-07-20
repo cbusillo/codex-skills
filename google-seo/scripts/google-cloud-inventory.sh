@@ -24,6 +24,11 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+if ! command -v gcloud >/dev/null 2>&1; then
+	printf 'error: google-cloud-inventory requires the gcloud CLI\n' >&2
+	exit 127
+fi
+
 if [[ ${#projects[@]} -eq 0 ]]; then
 	while IFS= read -r project_id; do
 		[[ -n "$project_id" ]] && projects+=("$project_id")

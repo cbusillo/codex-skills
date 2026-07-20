@@ -17,7 +17,7 @@ concurrency:
 jobs:
   update:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       AUTOMATION_BRANCH: automation/pep723-dependencies
@@ -31,6 +31,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          cache-dependency-glob: "**/*.py"
+          python-version: "3.12"
 
       - name: Resolve PEP 723 dependency updates
         id: update

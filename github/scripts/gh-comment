@@ -2,6 +2,12 @@
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-python_command=${GH_COMMENT_PYTHON:-python3}
 
-exec "$python_command" "$script_dir/github_comment.py" "$@"
+if [ -n "${GH_COMMENT_PYTHON:-}" ]; then
+	exec "$GH_COMMENT_PYTHON" "$script_dir/github_comment.py" "$@"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+	printf 'error: gh-comment requires uv or GH_COMMENT_PYTHON\n' >&2
+	exit 127
+fi
+exec uv run --no-project --no-config --python 3.12 python "$script_dir/github_comment.py" "$@"

@@ -3,7 +3,20 @@ set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 classifier=${GH_WITH_ENV_TOKEN_CLASSIFIER:-$script_dir/github_api.py}
-python_command=${GH_WITH_ENV_TOKEN_PYTHON:-python3}
+python_command=${GH_WITH_ENV_TOKEN_PYTHON:-}
+
+if [ -z "$python_command" ] && ! command -v uv >/dev/null 2>&1; then
+	printf 'error: gh-with-env-token requires uv or GH_WITH_ENV_TOKEN_PYTHON\n' >&2
+	exit 127
+fi
+
+run_python() {
+	if [ -n "$python_command" ]; then
+		"$python_command" "$@"
+	else
+		uv run --no-project --no-config --python 3.12 python "$@"
+	fi
+}
 
 if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
 	env_file=$CODEX_SKILLS_ENV_FILE
@@ -230,7 +243,7 @@ is_write_command() {
 }
 
 validate_sensitive_read_policy() {
-	"$python_command" - "$require_automation_auth" "$@" <<'PY'
+	run_python - "$require_automation_auth" "$@" <<'PY'
 import re
 import sys
 import urllib.parse
@@ -378,7 +391,7 @@ verify_bot_login_for_write() {
 		return 0
 	fi
 	login_status=0
-	"$python_command" "$classifier" --gh "$gh_command" call \
+	run_python "$classifier" --gh "$gh_command" call \
 		--method GET \
 		--read \
 		--operation github.auth.verify_actor \
@@ -418,7 +431,7 @@ classify_failure() {
 	if is_write_command "$@"; then
 		write_flag=--write
 	fi
-	"$python_command" "$classifier" --gh "$gh_command" classify-legacy \
+	run_python "$classifier" --gh "$gh_command" classify-legacy \
 		--returncode "$status_code" \
 		--stdout-file "$stdout_file" \
 		--stderr-file "$stderr_file" \
@@ -432,7 +445,7 @@ classify_failure() {
 classified_value() {
 	field=$1
 	default_value=$2
-	"$python_command" - "$classification_file" "$field" "$default_value" <<'PY'
+	run_python - "$classification_file" "$field" "$default_value" <<'PY'
 import json
 import pathlib
 import sys
