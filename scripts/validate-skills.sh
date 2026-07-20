@@ -14,6 +14,7 @@ uv run skill-creator/scripts/validate-command-policy-simulator.py
 uv run skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
+uv run scripts/update_pep723_dependencies.py --check
 uv run skill-creator/scripts/quick_validate.py --self-test
 uv run skill-creator/scripts/validate-skill-repo.py
 uv run skill-creator/scripts/quick_validate.py chronicle
@@ -40,6 +41,7 @@ helper_tests=(
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
+	scripts/test_update_pep723_dependencies.py
 	scripts/validate_github_actions_security.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_collect_exec_harness_performance.py

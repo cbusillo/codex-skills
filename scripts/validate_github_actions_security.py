@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "PyYAML>=6.0.0",
+#     "PyYAML==6.0.3",
 # ]
 # ///
 """Validate trusted GitHub Actions sources and immutable references."""

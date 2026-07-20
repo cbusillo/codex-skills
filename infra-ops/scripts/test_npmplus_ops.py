@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "pytest",
+#     "pytest==9.1.1",
 # ]
 # ///
 
