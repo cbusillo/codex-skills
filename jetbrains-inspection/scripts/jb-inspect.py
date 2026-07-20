@@ -1550,7 +1550,25 @@ def lifecycle_open_response_unknown(open_attempts: list[dict[str, Any]]) -> bool
     return any(attempt.get("request_may_have_been_accepted") is True for attempt in open_attempts)
 
 
+def lease_proves_open_not_attempted(lease: dict[str, Any]) -> bool:
+    return (
+        lease.get("state") in POTENTIAL_OPEN_LEASE_STATES
+        and lease.get("preparation_failure_stage") == "project_open"
+        and lease.get("preparation_failure_reason") == "timeout"
+        and lease.get("opened_by_helper") is False
+        and lease.get("open_request_may_have_been_accepted") is False
+        and lease.get("open_attempts") == []
+        and not lease.get("session_id")
+        and not lease.get("ide_port")
+        and not lease.get("project_instance_id")
+        and not lease.get("project_key")
+        and not lease.get("route")
+    )
+
+
 def lease_may_own_open_project(lease: dict[str, Any]) -> bool:
+    if lease_proves_open_not_attempted(lease):
+        return False
     return (
         lease.get("opened_by_helper") is True
         or lease.get("open_request_may_have_been_accepted") is True
@@ -2352,9 +2370,10 @@ def lifecycle_claim_ownership(claim: dict[str, Any], lease: dict[str, Any]) -> t
 
 def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof: str | None = None) -> dict[str, Any]:
     if not lease.get("opened_by_helper"):
+        reason = "open_not_attempted" if lease_proves_open_not_attempted(lease) else "project_preexisted"
         mark_lease_state(lease, "released")
         remove_lease(lease)
-        return {"status": "not_needed", "reason": "project_preexisted"}
+        return {"status": "not_needed", "reason": reason}
     project_instance_id = lease.get("project_instance_id")
     if not close_proof or not project_instance_id:
         mark_lease_state(lease, "cleanup_skipped")
@@ -5023,24 +5042,27 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             "failed": [],
             "unresolved": [],
         }
-    try:
-        routes, observed_sessions = discover_routes_for_cleanup(args)
-    except InspectError as error:
-        return {
-            "status": "incomplete",
-            "dry_run": False,
-            "stale": stale,
-            "removed": [],
-            "closed": [],
-            "failed": [
-                {
-                    "status": "failed",
-                    "reason": "route_discovery_failed",
-                    "message": str(error),
-                }
-            ],
-            "unresolved": [],
-        }
+    routes: list[dict[str, Any]] = []
+    observed_sessions: set[str] = set()
+    if any(lease_may_own_open_project(lease) for _, lease in stale_leases):
+        try:
+            routes, observed_sessions = discover_routes_for_cleanup(args)
+        except InspectError as error:
+            return {
+                "status": "incomplete",
+                "dry_run": False,
+                "stale": stale,
+                "removed": [],
+                "closed": [],
+                "failed": [
+                    {
+                        "status": "failed",
+                        "reason": "route_discovery_failed",
+                        "message": str(error),
+                    }
+                ],
+                "unresolved": [],
+            }
     for path, lease in stale_leases:
         cleanup_result = cleanup_stale_helper_lease(lease, routes, observed_sessions)
         if cleanup_result.get("status") == "closed":
@@ -5051,7 +5073,7 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             failed.append(cleanup_result)
         elif cleanup_result.get("status") == "skipped":
             unresolved.append(cleanup_result)
-        elif cleanup_result.get("reason") in {"project_not_open", "project_preexisted", "ownership_not_proven"}:
+        elif cleanup_result.get("reason") in {"open_not_attempted", "project_not_open", "project_preexisted", "ownership_not_proven"}:
             path.unlink(missing_ok=True)
             removed.append(str(path))
     return {
@@ -5098,6 +5120,8 @@ def cleanup_stale_helper_lease(
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None = None,
 ) -> dict[str, Any]:
+    if lease_proves_open_not_attempted(lease):
+        return {"status": "not_needed", "reason": "open_not_attempted", "lease_id": lease.get("lease_id")}
     if not lease_may_own_open_project(lease):
         return {"status": "not_needed", "reason": "project_preexisted", "lease_id": lease.get("lease_id")}
     sessions = observed_sessions if observed_sessions is not None else {

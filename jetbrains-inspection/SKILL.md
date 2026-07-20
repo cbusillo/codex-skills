@@ -170,6 +170,10 @@ asking the live plugin to prove the same lease binding. A definitive
 `not_owned` response releases the local lease without closing; unavailable or
 legacy proof remains an explicit nonzero `unresolved` result. Path/session
 matching selects a candidate route but is never itself permission to close.
+Stale cleanup may release a route-less pending lease without discovery only
+when the handled project-open timeout records explicit negative ownership and
+acceptance, no open attempts, and no route/session identity. Missing, legacy,
+interrupted, or transport-ambiguous evidence remains fail-closed and unresolved.
 Preparation failures for projects that were already open release only the local
 lease and never call lifecycle close. `cleanup-helper-leases` uses the same
 lifecycle lock as inspection commands so stale reconciliation cannot race a new
