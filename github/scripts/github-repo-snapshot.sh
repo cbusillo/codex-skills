@@ -13,7 +13,14 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
 read_helper="${GITHUB_REPO_SNAPSHOT_READ_HELPER:-$script_dir/github_read.py}"
-python_bin="${GITHUB_REPO_SNAPSHOT_PYTHON:-python3}"
+if [[ -n "${GITHUB_REPO_SNAPSHOT_PYTHON:-}" ]]; then
+  python_command=("$GITHUB_REPO_SNAPSHOT_PYTHON")
+elif command -v uv >/dev/null 2>&1; then
+  python_command=(uv run --no-project --no-config --python 3.12 python)
+else
+  printf 'error: github-repo-snapshot requires uv or GITHUB_REPO_SNAPSHOT_PYTHON\n' >&2
+  exit 127
+fi
 
 cleanup() {
   local path
@@ -114,7 +121,7 @@ capture_read_json() {
   stdout="$(mktemp)"
   stderr="$(mktemp)"
   cleanup_paths+=("$stdout" "$stderr")
-  if GITHUB_READ_GH="$gh_bin" "$python_bin" "$read_helper" --gh "$gh_bin" --repo-root "$repo_root" "$@" >"$stdout" 2>"$stderr"; then
+  if GITHUB_READ_GH="$gh_bin" "${python_command[@]}" "$read_helper" --gh "$gh_bin" --repo-root "$repo_root" "$@" >"$stdout" 2>"$stderr"; then
     if jq -e . "$stdout" >/dev/null 2>&1; then
       cat "$stdout"
     else

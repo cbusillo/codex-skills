@@ -25,6 +25,16 @@ for skill development. After a skills PR lands, reconcile the runtime checkout
 with the landed repo-local GitHub helper before relying on installed skill
 behavior or provenance-sensitive evidence.
 
+## Execution Environment
+
+Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
+compatibility lane, continuously tests current stable Python 3.14, and pins
+GitHub Actions jobs to the Ubuntu 24.04 runner major. Compatible uv/Python patch
+releases and runner image revisions intentionally float within those bounds and
+must keep passing the canonical gate. See
+[`github/references/execution-environment.md`](github/references/execution-environment.md)
+for the complete dependency-introduction and update policy.
+
 ## Local Overrides
 
 This repository is intended to be safe for public sharing. Put personal,

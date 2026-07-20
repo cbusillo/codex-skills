@@ -131,7 +131,7 @@ def context_window_from_role(role: dict[str, Any]) -> int | None:
 
 
 def run_code(args: argparse.Namespace, code_home: Path, prompt: str, summary: dict[str, Any]) -> int:
-    code_bin = shutil.which(args.code_bin) or args.code_bin
+    code_bin = resolve_code_binary(args.code_bin)
     command = build_code_command(args, code_bin)
     env = os.environ.copy()
     env["CODE_HOME"] = str(code_home)
@@ -144,6 +144,15 @@ def run_code(args: argparse.Namespace, code_home: Path, prompt: str, summary: di
     )
     result = subprocess.run(command, input=prompt, text=True, env=env)
     return result.returncode
+
+
+def resolve_code_binary(code_bin: str) -> str:
+    resolved = shutil.which(code_bin)
+    if resolved is None:
+        raise LocalCodeAgentError(
+            f"Every Code executable {code_bin!r} is unavailable; install it or pass --code-bin"
+        )
+    return resolved
 
 
 def build_code_command(args: argparse.Namespace, code_bin: str) -> list[str]:

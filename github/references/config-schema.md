@@ -7,6 +7,9 @@ Repo-local values override workspace defaults.
 ```json
 {
   "defaultBranch": "main",
+  "docs": {
+    "executionEnvironment": "github/references/execution-environment.md"
+  },
   "qualityGate": {
     "test": {
       "default": "npm test"
@@ -48,7 +51,12 @@ Repo-local values override workspace defaults.
         "workflow": "merge-train-runner.yml",
         "ref": "main",
         "runnerMode": "controller",
-        "mutateDefault": false
+        "mutateDefault": false,
+        "revisionEvidenceFields": {
+          "runnerWorkflow": "workflow_run.head_sha",
+          "candidate": "result.candidate.candidate_sha",
+          "landing": "result.landing_plan.entries[].merge_commit_sha"
+        }
       }
     }
   },
@@ -208,6 +216,10 @@ Common top-level keys:
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads,
   product/runtime endpoints, or plaintext runtime configuration.
+  `mergeTrain.githubActionsRunner.revisionEvidenceFields` names the per-run
+  GitHub/Launchplane response fields that carry workflow, candidate, and landing
+  revisions; it is a field-path contract, not a place to persist one run's SHA
+  values.
 - `jetbrains`: preferred IDE inspection target when it is not obvious. Use
   `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
   path when linked worktrees exist, `openProjectPath` for the repo-relative path

@@ -99,6 +99,16 @@ def test_build_code_command() -> None:
     ]
 
 
+def test_missing_code_binary_has_explicit_diagnostic() -> None:
+    try:
+        local_code_agent.resolve_code_binary("definitely-missing-every-code-binary")
+    except local_code_agent.LocalCodeAgentError as exc:
+        assert "unavailable" in str(exc)
+        assert "--code-bin" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected missing Every Code executable rejection")
+
+
 def test_redacted_command_hides_stdin_marker() -> None:
     assert local_code_agent.redacted_command(["code", "exec", "-"]) == ["code", "exec", "<prompt-stdin>"]
 
@@ -110,6 +120,7 @@ def main() -> int:
         test_explicit_context_window_overrides_role,
         test_rejects_non_lm_studio_endpoint,
         test_build_code_command,
+        test_missing_code_binary_has_explicit_diagnostic,
         test_redacted_command_hides_stdin_marker,
     ]
     for test in tests:

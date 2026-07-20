@@ -4,6 +4,30 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+required_commands=(bash git gh jq node uv)
+for required_command in "${required_commands[@]}"; do
+	if ! command -v "$required_command" >/dev/null 2>&1; then
+		printf 'error: required command is unavailable: %s\n' "$required_command" >&2
+		exit 127
+	fi
+done
+
+printf 'execution environment:\n'
+printf '  '
+bash --version | sed -n '1p'
+printf '  '
+git --version
+printf '  '
+gh --version | sed -n '1p'
+printf '  jq '
+jq --version
+printf '  node '
+node --version
+printf '  '
+uv --version
+printf '  selected '
+uv run python --version
+
 uv run github/scripts/validate-gh-plan.py
 github/scripts/validate-gh-issue.sh
 uv run github/scripts/validate-operation-matrix.py --self-test
@@ -42,6 +66,8 @@ helper_tests=(
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
 	scripts/test_update_pep723_dependencies.py
+	scripts/test_validate_execution_environment.py
+	scripts/validate_execution_environment.py
 	scripts/validate_github_actions_security.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_collect_exec_harness_performance.py
