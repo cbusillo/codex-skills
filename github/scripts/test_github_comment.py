@@ -116,6 +116,38 @@ def test_create_preserves_markdown_body() -> None:
     with_call_stub(callback, run)
 
 
+def test_dedupe_body_reuses_existing_actor_comment_without_write() -> None:
+    markdown = "Completed with evidence.\n"
+    existing = comment_body(
+        1002,
+        body=github_api.body_with_operation_marker(markdown, "a" * 32),
+    )
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            return success([comment_body(1001, "someone-else", body=markdown), existing])
+        raise AssertionError("deduplicated comment must not write")
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_comment.comment(
+            "issue",
+            42,
+            markdown,
+            repo="owner/repo",
+            gh_cmd="fake-gh",
+            dedupe_body=True,
+        )
+        assert payload["comment_action"] == "existing", payload
+        assert payload["deduplicated"] is True, payload
+        assert payload["comment"]["id"] == 1002, payload
+        assert payload["completed_steps"] == ["resolve_actor", "reuse_existing_comment"], payload
+        assert [call["method"] for call in calls] == ["GET", "GET"], calls
+
+    with_call_stub(callback, run)
+
+
 def test_edit_last_paginates_and_selects_latest_actor_comment() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
@@ -635,6 +667,7 @@ def test_repo_resolution_launch_failure_is_structured() -> None:
 
 TESTS = [
     test_create_preserves_markdown_body,
+    test_dedupe_body_reuses_existing_actor_comment_without_write,
     test_edit_last_paginates_and_selects_latest_actor_comment,
     test_edit_last_without_existing_comment_fails_closed,
     test_create_if_none_creates_only_when_initial_lookup_is_empty,

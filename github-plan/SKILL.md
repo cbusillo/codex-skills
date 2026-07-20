@@ -27,7 +27,7 @@ commands:
   - name: github-plan-close
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
-    purpose: Closes a completed durable plan issue through the planning helper so labels and Project focus stay in sync.
+    purpose: Closes a completed or explicitly not-planned durable plan through relationship preflight and recoverable metadata reconciliation.
 policy:
   command_policies:
     - id: prefer-gh-plan-index-for-issue-list
@@ -176,8 +176,11 @@ planning lookup, Project, and GraphQL-to-helper mappings. This prose keeps the
 judgment about when durable planning should exist, how issues relate, and what
 state belongs in GitHub.
 
-For completed durable plan issues, use `gh-plan.py close` so the planning helper
-owns `plan:done` labels, stale `plan:active` cleanup, and Project focus updates:
+For completed durable plan issues, use `gh-plan.py close`. Use the same helper
+with `--reason not_planned` for explicitly superseded durable plans. The
+planning helper owns `plan:done` labels, stale `plan:active` cleanup, and Project
+focus updates. It also owns relationship preflight and close-comment
+reconciliation:
 
 ```bash
 skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
@@ -186,10 +189,15 @@ uv run "$skills_home/github/scripts/gh-plan.py" close <issue> --comment-file <fi
 
 The generic `github/scripts/gh-issue close` helper is for non-plan issues, or as
 a fallback when `gh-plan.py close` is unavailable. Closing a durable plan with
-the generic issue helper can leave planning labels or Project fields stale. For
-other multiline writes, prefer body files or stdin. Do not pass escaped `\n`
-through shell-quoted flags. Follow `../references/every-code-formatting.md` when
-writing durable issue bodies, planning comments, handoffs, or closeout evidence.
+the generic issue helper can leave planning labels or Project fields stale. It
+also bypasses the no-write relationship preflight. For `--reason completed`,
+resolve all open native blockers and sub-issues before retrying. Use
+`--reason not_planned` only for superseded or intentionally abandoned work;
+remaining blockers and sub-issues are retained and reported rather than treated
+as completed. For other multiline writes, prefer body files or stdin. Do not
+pass escaped `\n` through shell-quoted flags. Follow
+`../references/every-code-formatting.md` when writing durable issue bodies,
+planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
 
@@ -302,11 +310,17 @@ the write blindly.
 
 `create` performs exact-title dedupe through REST issue search, ensures labels
 through REST, and delegates the non-idempotent issue write to the shared issue
-helper so unknown outcomes carry reconciliation evidence. `close` delegates
-label edits, optional timeline comments, and the final state transition to the
-shared REST issue/comment helpers. Optional Project synchronization remains the
-only GraphQL-backed phase and is reported as a non-blocking warning after the
-issue operation succeeds.
+helper so unknown outcomes carry reconciliation evidence. `close` first pages
+native `blocked_by` dependencies and sub-issues through REST and fails before
+mutation when a completed plan is incomplete or relationship reads are unsafe.
+Configured Project synchronization remains the only GraphQL-backed phase and
+runs before issue closure so the item stays discoverable. Confirmed or
+read-reconciled issue closure is the commit point for planning labels and the
+optional timeline comment. Re-running the same command reconciles partial
+metadata and reuses an identical acting-user comment instead of duplicating it.
+If closure fails after Project writes, report the helper's split `project_state`
+and rerun the same close command; do not add completion labels or comments by
+hand while the issue may still be open.
 
 Project v2, native sub-issues, and native dependency operations may require
 GraphQL. Before batching those operations, check rate limits when failures look
@@ -360,6 +374,13 @@ creating sub-issues or Project fields.
 
 Use native relationships first when the helper/API supports them. Body
 references are explanatory, not canonical.
+
+Completed closure requires every native `blocked-by` target and sub-issue to be
+closed. Issues that the plan itself blocks do not prevent closure. An unavailable
+or malformed relationship read is a no-write failure, not permission to assume
+the graph is clear. `not_planned` closure is intentionally different: it may
+retain open blockers or sub-issues, reports them in the result, and preserves the
+GitHub `not_planned` state reason as the durable supersession signal.
 
 ## Related Issue Sweep
 

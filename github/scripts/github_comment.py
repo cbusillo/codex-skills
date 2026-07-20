@@ -27,6 +27,9 @@ EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-co
 PER_PAGE = 100
 MAX_PAGES = 1000
 RECONCILIATION_CLOCK_SKEW_SECONDS = 5
+OPERATION_MARKER_LINE_RE = re.compile(
+    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
+)
 
 
 class CommentError(Exception):
@@ -437,6 +440,35 @@ def _latest_actor_comment(comments: list[dict[str, Any]], actor: str) -> Optiona
     )
 
 
+def _canonical_comment_body(body: Any) -> str:
+    if not isinstance(body, str):
+        return ""
+    return OPERATION_MARKER_LINE_RE.sub("", body).rstrip()
+
+
+def _matching_actor_comment(
+    comments: list[dict[str, Any]],
+    actor: str,
+    body: str,
+) -> Optional[dict[str, Any]]:
+    canonical_body = _canonical_comment_body(body)
+    matches = [
+        comment
+        for comment in comments
+        if str((comment.get("user") or {}).get("login") or "").casefold() == actor.casefold()
+        and _canonical_comment_body(comment.get("body")) == canonical_body
+    ]
+    if not matches:
+        return None
+    return max(
+        matches,
+        key=lambda comment: (
+            str(comment.get("created_at") or ""),
+            int(comment.get("id") or 0),
+        ),
+    )
+
+
 def _utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 
@@ -628,6 +660,7 @@ def _comment_impl(
     operation: Optional[str] = None,
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
+    dedupe_body: bool = False,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
@@ -659,6 +692,14 @@ def _comment_impl(
     if create_if_none and not edit_last:
         raise _local_error(
             "--create-if-none requires --edit-last",
+            operation=operation,
+            cause="validation_error",
+            expected_actor=expected_actor,
+            failed_step="input_validation",
+        )
+    if dedupe_body and edit_last:
+        raise _local_error(
+            "Body deduplication cannot be combined with edit-last",
             operation=operation,
             cause="validation_error",
             expected_actor=expected_actor,
@@ -768,6 +809,24 @@ def _comment_impl(
             completed_steps=steps,
             retry_summaries=collected_retry_summaries,
         )
+    if dedupe_body:
+        selected = _matching_actor_comment(existing_comments, actor, body)
+        if selected is not None:
+            steps.append("reuse_existing_comment")
+            payload = _comment_payload(
+                selected,
+                operation=operation,
+                kind=kind,
+                repo=resolved_repo,
+                number=number,
+                actor=actor,
+                expected_actor=expected_actor,
+                comment_action="existing",
+                completed_steps=steps,
+                retry_summary=github_api_core.aggregate_retry_summaries(collected_retry_summaries),
+            )
+            payload["deduplicated"] = True
+            return payload
     existing_comment_ids = {
         comment_id
         for item in existing_comments
@@ -862,6 +921,7 @@ def comment(
     operation: Optional[str] = None,
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
+    dedupe_body: bool = False,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
@@ -878,6 +938,7 @@ def comment(
             operation=operation,
             completed_steps=completed_steps,
             failed_step=failed_step,
+            dedupe_body=dedupe_body,
             retry_summaries=collected_retry_summaries,
         )
     except CommentError as error:
