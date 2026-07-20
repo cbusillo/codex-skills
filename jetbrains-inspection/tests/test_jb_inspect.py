@@ -1453,6 +1453,38 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(removed, [str(path)])
         self.assertEqual(result["closed"][0]["lease_id"], "old-lease")
 
+    def test_cleanup_command_removes_stale_never_opened_lease_without_route_discovery(self):
+        removed = []
+        path = Path("/tmp/never-opened-lease.json")
+        lease = {
+            "lease_id": "never-opened-lease",
+            "state": "cleanup_pending",
+            "preparation_failure_stage": "project_open",
+            "preparation_failure_reason": "timeout",
+            "opened_by_helper": False,
+            "open_request_may_have_been_accepted": False,
+            "open_attempts": [],
+            "pid": 999_999,
+            "updated_at_ms": jb_inspect.now_ms(),
+        }
+
+        with (
+            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch.object(jb_inspect, "pid_alive", return_value=False),
+            patch.object(jb_inspect, "discover_routes_for_cleanup") as discover_routes,
+            patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))),
+        ):
+            result = jb_inspect.cleanup_stale_helper_leases(
+                Namespace(max_age_ms=86_400_000, dry_run=False)
+            )
+
+        discover_routes.assert_not_called()
+        self.assertEqual(removed, [str(path)])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["removed"], [str(path)])
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(result["unresolved"], [])
+
     def test_cleanup_stale_helper_lease_skips_when_reclaim_fails(self):
         lease = {
             "lease_id": "old-lease",
@@ -1538,6 +1570,41 @@ class LifecycleTest(unittest.TestCase):
         cleanup.assert_not_called()
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "ownership_route_unavailable")
+
+    def test_cleanup_pending_lease_with_legacy_or_request_identity_stays_fail_closed(self):
+        leases = [
+            {
+                "lease_id": "legacy-lease",
+                "state": "cleanup_pending",
+                "opened_by_helper": False,
+                "lifecycle_target_path": "/tmp/worktree",
+            },
+            {
+                "lease_id": "requesting-lease",
+                "state": "cleanup_pending",
+                "opened_by_helper": False,
+                "open_request_may_have_been_accepted": False,
+                "open_attempts": [],
+                "session_id": "session",
+                "ide_port": 63342,
+                "lifecycle_target_path": "/tmp/worktree",
+            },
+            {
+                "lease_id": "ambiguous-lease",
+                "state": "cleanup_pending",
+                "opened_by_helper": False,
+                "open_request_may_have_been_accepted": True,
+                "open_attempts": [],
+                "lifecycle_target_path": "/tmp/worktree",
+            },
+        ]
+
+        for lease in leases:
+            with self.subTest(lease_id=lease["lease_id"]):
+                result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
+
+                self.assertEqual(result["status"], "skipped")
+                self.assertEqual(result["reason"], "ownership_route_unavailable")
 
     def test_cleanup_pending_without_project_identity_never_closes_same_session_route(self):
         lease = {
