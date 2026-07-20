@@ -33,6 +33,7 @@ helper_tests=(
 	github/scripts/test_github_read.py
 	github/scripts/test_runtime_checkout_reconciliation.py
 	infra-ops/scripts/test_npmplus_ops.py
+	launchplane/scripts/test_launchplane_helpers.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
 	openai-docs/scripts/test_resolve_latest_model_info.py

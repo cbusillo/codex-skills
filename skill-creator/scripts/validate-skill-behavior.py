@@ -378,6 +378,27 @@ def test_launchplane_write_action_helper_contract() -> None:
         "launchplane_public_url" in normalized_helper,
         "Write-action helper must detect LAUNCHPLANE_PUBLIC_URL as a diagnostic near-miss",
     )
+    require(
+        "validate_service_url" in normalized_helper and "safe_urlopen" in normalized_helper,
+        "Write-action helper must use shared endpoint validation and redirect-safe transport",
+    )
+    require(
+        "_project_success_output" in normalized_helper and "unsafe_response_shape" in normalized_helper,
+        "Write-action helper must use operation-specific output projections and fail closed",
+    )
+    require(
+        "non-loopback destinations must use https" in normalized_contract
+        and "plain http is accepted only for explicit loopback hosts" in normalized_contract,
+        "Write-action contract must document HTTPS and loopback-only HTTP endpoint policy",
+    )
+    require(
+        "redirects are followed only when they stay on the same" in normalized_contract,
+        "Write-action contract must document same-origin redirect credential safety",
+    )
+    require(
+        "operation-specific projections instead of generic provider dictionary pass-through" in normalized_contract,
+        "Write-action contract must document operation-specific public-safe projections",
+    )
 
     no_context = subprocess.run(
         [
@@ -751,8 +772,6 @@ def test_launchplane_write_action_helper_contract() -> None:
                 "repository": "example/repo",
                 "base_branch": "main",
                 "controller_action": "build_candidate",
-                "authorization": "Bearer ghp_example",
-                "runtime": {"key": "NEXT_PUBLIC_EXAMPLE", "value": "must-not-render"},
             },
         },
     )
@@ -764,6 +783,26 @@ def test_launchplane_write_action_helper_contract() -> None:
     )
     require("ghp_example" not in rendered_success, "Write-action success output must redact tokens")
     require("must-not-render" not in rendered_success, "Write-action success output must drop values")
+    try:
+        module.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={"repository": "example/repo", "base_branch": "main", "mutate": False},
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_example",
+                "records": {"merge_train_batch_candidate_record_id": "candidate-example"},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "build_candidate",
+                    "authorization": "Bearer ghp_example",
+                },
+            },
+        )
+    except ValueError as exc:
+        require(str(exc) == "unsafe_response_shape", "Unsafe provider success shapes must fail closed")
+    else:
+        raise AssertionError("Unsafe provider success shapes must fail closed")
 
     error_body = json.dumps(
         {

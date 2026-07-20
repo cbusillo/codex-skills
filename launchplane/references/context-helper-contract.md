@@ -33,6 +33,14 @@ The helper should work without configuration and return `no_context`. Private
 configuration may come from environment variables or an ignored local JSON file.
 Public examples must use fake hostnames only.
 
+Every configured service URL is parsed as an absolute endpoint before any
+request is built. Non-loopback destinations must use HTTPS. Plain HTTP is
+allowed only for explicit loopback hosts such as `localhost`, `127.0.0.1`, or
+`::1` during local development. The helper rejects missing hosts, userinfo,
+unsupported schemes, query strings, fragments, malformed ports, and control
+characters. Redirects are followed only when they remain on the same
+scheme/host/port origin, so bearer credentials are not replayed across origins.
+
 Default environment variables:
 
 - `LAUNCHPLANE_CONTEXT_URL`: Launchplane service base URL.
@@ -108,6 +116,13 @@ as `missing_config`, `auth_required`, `policy_denied`, `provider_unavailable`,
 or `invalid_response`. Do not include raw HTTP responses, internal hostnames, or
 provider payloads.
 
+The current service response nests typed sections under
+`context.sections.<name>.payload`. The helper also accepts the earlier flattened
+section form while projecting both forms into the stable public `sections`
+envelope. Only documented repository, state, URL, readiness, and summary fields
+are copied; service-model provenance, host labels, internal target details, and
+unknown payload fields remain private.
+
 ## Redaction Rules
 
 The helper output must not include:
@@ -125,6 +140,14 @@ The helper output must not include:
 
 When in doubt, emit a source URL, record id, trace id, status, and safe reason
 code instead of copied detail.
+
+Context output is projected through the documented section schema rather than
+generic provider dictionary pass-through. The helper accepts compact
+`work_graph`, `repo_product_mapping`, `every_code`, and `preview_readiness`
+fields documented by `context.available.example.json`. Unexpected section keys,
+secret-looking keys, raw payload containers, unsafe summary text, and unsafe
+trace identifiers fail closed as `invalid_response` instead of being copied into
+public output.
 
 ## Skill Behavior
 
