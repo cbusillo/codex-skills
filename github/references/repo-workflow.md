@@ -133,6 +133,55 @@ uv run scripts/test_validate_github_actions_security.py
 uv run scripts/validate_github_actions_security.py
 ```
 
+## PEP 723 Direct Dependency Policy
+
+Standalone Python helpers keep their PEP 723 execution model instead of
+sharing a repository lockfile. Every declared direct dependency must use an
+exact `==` pin, and every occurrence of the same normalized package name must
+use the same version repository-wide. A missing or empty `dependencies` field
+means the script has no direct third-party dependencies. The policy does not
+lock transitive dependencies; `uv` resolves those when each helper runs.
+
+Dependabot does not discover dependencies embedded in Python script metadata.
+The repository therefore uses `scripts/update_pep723_dependencies.py` for this
+surface. Its offline check parses each header as TOML, rejects unsupported
+direct requirement forms, and verifies exact consistent pins without network
+access. Update mode asks `uv pip compile --no-deps` to resolve the highest
+stable release compatible with Python 3.12 from PyPI, independently confirms
+that the selected release has a non-yanked PyPI file, then rewrites only the
+canonical top-level `dependencies` assignment in deterministic package-name
+order. Resolver subprocesses receive an allowlisted environment so ambient uv
+constraints, overrides, indexes, and source configuration cannot change the
+result.
+
+Run the policy and updater locally with:
+
+```sh
+uv run scripts/update_pep723_dependencies.py --check
+uv run scripts/update_pep723_dependencies.py --update --dry-run
+uv run scripts/update_pep723_dependencies.py --update
+```
+
+The weekly and manually dispatchable `Update PEP 723 Dependencies` workflow
+runs the full repository gate before replacing the automation-owned
+`automation/pep723-dependencies` branch. It then dispatches `Validate Skills`
+against the pushed commit and creates or refreshes the PR only after that run
+passes. Manual runs are accepted only from `main`. Repository Actions defaults
+remain read-only; the repository setting permitting Actions-created PRs is
+enabled, and this workflow is the only workflow granted the write permissions
+needed for that branch and PR. Checkout credentials are not persisted while
+repository code runs. Existing automation branches and PRs must retain the bot
+commit trailer, same-repository head/base identity, marker, and validated SHA
+before the workflow will replace or edit them.
+
+If automation fails, inspect the resolver or validation error before rerunning
+it. Unsupported extras, markers, URLs, or compound constraints require a
+deliberate policy change rather than an automatic rewrite. A failed run can
+leave an unreviewed automation branch without creating a PR; the next successful
+run safely replaces that branch with a newly validated commit. Direct pins can
+also be updated locally with the command above and submitted through a normal
+task branch if workflow recovery is not immediate.
+
 ## Automation Command Diagnosis
 
 Before concluding that a GitHub bot, App, or automation command was ignored or

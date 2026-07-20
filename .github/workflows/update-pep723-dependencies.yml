@@ -1,0 +1,262 @@
+name: Update PEP 723 Dependencies
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-pep723-dependencies
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AUTOMATION_BRANCH: automation/pep723-dependencies
+      PR_MARKER: "<!-- pep723-dependency-updater -->"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Resolve PEP 723 dependency updates
+        id: update
+        run: |
+          set -euo pipefail
+          uv run scripts/update_pep723_dependencies.py --update
+          if git diff --quiet -- '*.py'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate updated repository
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          ./scripts/validate-skills.sh
+
+      - name: Commit and push automation branch
+        if: steps.update.outputs.changed == 'true'
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          existing_pr="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$AUTOMATION_BRANCH" \
+            --state open \
+            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number \
+            --jq '.[0] // empty')"
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+
+          if [[ -n "$existing_pr" ]]; then
+            jq -er \
+              --arg base "main" \
+              --arg branch "$AUTOMATION_BRANCH" \
+              --arg marker "$PR_MARKER" \
+              --arg repo "$GITHUB_REPOSITORY" \
+              --arg sha "$remote_sha" \
+              '.author.is_bot == true
+                and .baseRefName == $base
+                and (.body // "" | contains($marker))
+                and .headRefName == $branch
+                and .headRefOid == $sha
+                and .headRepository.nameWithOwner == $repo' \
+              <<<"$existing_pr" >/dev/null || {
+                echo "Refusing to replace a PR that is not owned by this automation" >&2
+                exit 1
+              }
+          fi
+
+          if [[ -n "$remote_sha" ]]; then
+            git fetch --no-tags origin \
+              "refs/heads/$AUTOMATION_BRANCH:refs/remotes/origin/$AUTOMATION_BRANCH"
+            remote_author="$(git show -s --format='%ae' "$remote_sha")"
+            remote_message="$(git show -s --format='%B' "$remote_sha")"
+            if [[ "$remote_author" != "41898282+github-actions[bot]@users.noreply.github.com" ]] \
+              || ! grep -Fxq "PEP723-Automation: true" <<<"$remote_message"; then
+              echo "Refusing to replace a branch without the automation commit identity" >&2
+              exit 1
+            fi
+          fi
+
+          git switch --create "$AUTOMATION_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.py'
+          git commit \
+            -m "build(deps): update PEP 723 dependencies" \
+            -m "PEP723-Automation: true"
+          head_sha="$(git rev-parse HEAD)"
+
+          if [[ -n "$remote_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/$AUTOMATION_BRANCH:$remote_sha" \
+              origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+          fi
+          pushed_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+          if [[ "$pushed_sha" != "$head_sha" ]]; then
+            echo "Automation branch does not match the pushed commit" >&2
+            exit 1
+          fi
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate pushed commit
+        if: steps.update.outputs.changed == 'true'
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.push.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run validate-skills.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$AUTOMATION_BRANCH"
+
+          run_id=""
+          for _attempt in {1..60}; do
+            run_id="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow validate-skills.yml \
+              --branch "$AUTOMATION_BRANCH" \
+              --event workflow_dispatch \
+              --limit 10 \
+              --json databaseId,headSha \
+              --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" \
+              | head -n 1)"
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "Could not find the dispatched validation run for $HEAD_SHA" >&2
+            exit 1
+          fi
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          run_json="$(gh run view "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,event,headSha,workflowName)"
+          jq -er \
+            --arg sha "$HEAD_SHA" \
+            '.conclusion == "success"
+              and .event == "workflow_dispatch"
+              and .headSha == $sha
+              and .workflowName == "Validate Skills"' \
+            <<<"$run_json" >/dev/null || {
+              echo "Dispatched validation did not prove success for $HEAD_SHA" >&2
+              exit 1
+            }
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+          if [[ "$remote_sha" != "$HEAD_SHA" ]]; then
+            echo "Automation branch changed after validation" >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Create or refresh pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.push.outputs.head_sha }}
+          VALIDATION_RUN_ID: ${{ steps.validate.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          body_file="$(mktemp)"
+          cat >"$body_file" <<EOF
+          $PR_MARKER
+          ## Summary
+
+          - update repository-wide PEP 723 direct dependency pins from PyPI
+          - keep one exact version for each normalized direct package name
+
+          ## Validation
+
+          - \`./scripts/validate-skills.sh\`
+          - Validate Skills run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$VALIDATION_RUN_ID
+
+          This PR and its branch are automation-owned. The next scheduled or manual run may replace the branch after validating new changes.
+          EOF
+
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+          if [[ "$remote_sha" != "$HEAD_SHA" ]]; then
+            echo "Automation branch changed before PR publication" >&2
+            exit 1
+          fi
+
+          existing_pr="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$AUTOMATION_BRANCH" \
+            --state open \
+            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number \
+            --jq '.[0] // empty')"
+          pr_number="$(jq -r '.number // empty' <<<"${existing_pr:-{}}")"
+          if [[ -n "$pr_number" ]]; then
+            jq -er \
+              --arg branch "$AUTOMATION_BRANCH" \
+              --arg marker "$PR_MARKER" \
+              --arg repo "$GITHUB_REPOSITORY" \
+              --arg sha "$HEAD_SHA" \
+              '.author.is_bot == true
+                and .baseRefName == "main"
+                and (.body // "" | contains($marker))
+                and .headRefName == $branch
+                and .headRefOid == $sha
+                and .headRepository.nameWithOwner == $repo' \
+              <<<"$existing_pr" >/dev/null || {
+                echo "Refusing to edit a PR that is not owned by this automation" >&2
+                exit 1
+              }
+            gh pr edit "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "build(deps): update PEP 723 dependencies" \
+              --body-file "$body_file"
+          else
+            pr_url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$AUTOMATION_BRANCH" \
+              --title "build(deps): update PEP 723 dependencies" \
+              --body-file "$body_file")"
+            pr_number="${pr_url##*/}"
+          fi
+
+          published_pr="$(gh pr view "$pr_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number)"
+          jq -er \
+            --arg branch "$AUTOMATION_BRANCH" \
+            --arg marker "$PR_MARKER" \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$HEAD_SHA" \
+            '.author.is_bot == true
+              and .baseRefName == "main"
+              and (.body // "" | contains($marker))
+              and .headRefName == $branch
+              and .headRefOid == $sha
+              and .headRepository.nameWithOwner == $repo' \
+            <<<"$published_pr" >/dev/null || {
+              echo "Published PR does not match the validated automation commit" >&2
+              exit 1
+            }
+          final_remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+          if [[ "$final_remote_sha" != "$HEAD_SHA" ]]; then
+            echo "Automation branch changed during PR publication" >&2
+            exit 1
+          fi

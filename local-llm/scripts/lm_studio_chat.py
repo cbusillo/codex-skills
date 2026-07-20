@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "PyYAML>=6.0.0",
+#     "PyYAML==6.0.3",
 # ]
 # ///
 """Send one bounded chat prompt to a local OpenAI-compatible endpoint."""

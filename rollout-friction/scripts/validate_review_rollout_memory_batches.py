@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "PyYAML>=6.0.0",
+#     "PyYAML==6.0.3",
 # ]
 # ///
 """Focused validation for review_rollout_memory_batches.py."""
