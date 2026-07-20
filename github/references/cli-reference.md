@@ -275,7 +275,8 @@ or Project focus state.
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
   values.
 - `show <issue>`: Show selected sections. Use `--full` for the entire body.
-- `deps <issue>`: Show dependencies and sub-issues.
+- `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
+  sub-issue relationships, preserving cross-repository issue references.
 
 ### Planning: Management
 
@@ -286,10 +287,21 @@ or Project focus state.
 - `update-section <issue> <section>`: Patch a single markdown section.
 - `link <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`, or
   `subissue` relationships.
-- `close <issue>`: Mark plan as done through shared REST label, comment, and
-  issue-state helpers, then report optional Project status/focus reconciliation
-  separately. Re-running close on an already closed issue requests only missing
-  label changes, so it can safely reconcile stale plan labels or Project fields.
+- `close <issue>`: Close a durable plan with a fail-closed relationship
+  preflight and an issue-state commit point. Before any mutation, the helper
+  pages native `blocked_by` dependencies and sub-issues; `--reason completed`
+  rejects open entries with compact references and `write_outcome=not_started`.
+  Issues blocked by the plan do not prevent closure. `--reason not_planned`
+  retains and reports remaining relationships, closes with the distinct
+  `not_planned` state reason, and does not present superseded work as completed.
+  Optional Project `Done`/Focus synchronization remains before issue closure so
+  the Project item can still be found. If closure then fails, the result reports
+  that split Project state explicitly. Confirmed or read-reconciled issue
+  closure is the commit point for `plan:done`, `plan:active` removal, and an
+  optional close comment. Exact same-body comments by the acting identity are
+  reused on retry, and failures return deterministic `recovery` state so
+  rerunning the same command reconciles missing metadata without duplicating
+  evidence.
 - `ensure-labels`: Page through repository labels and create documented missing
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
