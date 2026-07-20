@@ -56,7 +56,6 @@ so they win by normal Every Code skill precedence:
 - `plan`
 - `plugin-creator`
 - `skill-creator`
-- `skill-installer`
 
 Keep that override allowlist explicit in the repo validator. Runtime `.system`
 caches can differ by Every Code build, so validation fails only when an active

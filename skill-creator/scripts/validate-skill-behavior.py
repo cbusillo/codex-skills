@@ -879,7 +879,7 @@ def test_stale_injected_override_paths_are_nonfatal() -> None:
     (ROOT / ".local").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT / ".local") as tmp:
         tmp_root = Path(tmp)
-        for name in ("plan", "skill-creator", "skill-installer"):
+        for name in ("plan", "plugin-creator", "skill-creator"):
             (tmp_root / name).mkdir()
         collect_missing = subprocess.run(
             [
@@ -896,7 +896,7 @@ def test_stale_injected_override_paths_are_nonfatal() -> None:
                     "module = importlib.util.module_from_spec(spec); "
                     "spec.loader.exec_module(module); "
                     f"root = pathlib.Path({str(tmp_root)!r}); "
-                    "print(json.dumps(module.validate_system_override_paths([root / 'plan', root / 'skill-creator', root / 'skill-installer'])))"
+                    "print(json.dumps(module.validate_system_override_paths([root / 'plan', root / 'plugin-creator', root / 'skill-creator'])))"
                 ),
             ],
             check=False,

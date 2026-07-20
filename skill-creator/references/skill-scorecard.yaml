@@ -942,28 +942,6 @@ skills:
         No live-model advisory eval currently demonstrates that the compressed
         outcome-first guidance preserves skill-authoring behavior; the fake
         Responses scenario validates request assembly only.
-  skill-installer:
-    status: active
-    risk_classes:
-      - command_execution
-      - external_api
-      - script_helper
-    checks:
-      - check_id: skill-repo-validation
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Metadata and references covered by repo validation.
-    known_gaps:
-      - >-
-        No focused installer script tests yet in this scorecard. Installer
-        utility modifies path locations and performs network requests against
-        the GitHub API; structural safety is validated statically.
   work-closeout:
     status: active
     risk_classes:
