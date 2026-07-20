@@ -38,7 +38,9 @@ helper_tests=(
 	local-llm/scripts/validate_lm_studio_api.py
 	openai-docs/scripts/test_resolve_latest_model_info.py
 	people/scripts/test_resolve_person.py
+	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
+	scripts/validate_github_actions_security.py
 	jetbrains-inspection/tests/test_jb_inspect.py
 	skill-creator/scripts/test_collect_exec_harness_performance.py
 	skill-creator/scripts/test_validate_skill_repo.py

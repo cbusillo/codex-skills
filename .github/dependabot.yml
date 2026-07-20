@@ -1,0 +1,10 @@
+---
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    # Inline release-tag comments keep immutable pin updates reviewable.
+    directory: "/"
+    open-pull-requests-limit: 5
+    schedule:
+      interval: weekly

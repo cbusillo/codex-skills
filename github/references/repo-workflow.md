@@ -101,6 +101,38 @@ $helper pr view <number> --repo OWNER/REPO \
   --json number,title,url,comments,reviews,statusCheckRollup
 ```
 
+## GitHub Actions Supply-Chain Policy
+
+Treat publisher approval and reference immutability as separate controls. This
+repository currently approves GitHub-maintained `actions/checkout` for
+repository checkout and Astral's `astral-sh/setup-uv` as a trusted third-party
+Python tool bootstrap. Approval determines which remote code sources may run;
+it does not permit their executable references to move without review.
+
+Every remote `uses:` reference in a workflow or composite action must use a
+reviewed, lowercase, full 40-character Git commit SHA and retain an inline
+release-tag provenance comment. Same-repository actions and reusable workflows
+use relative `./...` references and do not carry a remote revision. The mutable
+remote-reference allowlist defaults to empty; any future exception must be
+literal, narrowly scoped, documented, and security-reviewed.
+
+The Launchplane runner branch named in `.github/github.json` is routing
+metadata rather than an executable `uses:` reference. Keep that metadata under
+its resolved-revision audit path instead of treating it as an action pin.
+
+Dependabot tracks the current workflow pins through the `github-actions`
+ecosystem weekly. Review each generated update as a supply-chain change: verify
+the source repository, confirm the SHA matches the documented release tag,
+inspect relevant release notes, and ensure workflow permissions remain
+unchanged. If a future pin is not surfaced by Dependabot, update it manually
+with the same review steps rather than leaving it stale. Run the policy checks
+locally with:
+
+```sh
+uv run scripts/test_validate_github_actions_security.py
+uv run scripts/validate_github_actions_security.py
+```
+
 ## Automation Command Diagnosis
 
 Before concluding that a GitHub bot, App, or automation command was ignored or
