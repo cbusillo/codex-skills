@@ -86,10 +86,12 @@ ENUMS = {
     },
     "migration_status": {"planned"},
     "actor_policy": {
+        "active_human_required",
         "automation_required",
         "automation_required_with_explicit_project_override",
         "automation_required_for_writes",
         "local_bot_identity",
+        "split_identity_required",
     },
     "mutation_class": {
         "close",

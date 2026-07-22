@@ -11,6 +11,7 @@ graphql_operation_context_semantics = "GraphQL POST requests are classified expl
 retry_policy_semantics = "Runtime retries are fail-closed and matrix-gated; safe reads may retry provider-classified transient failures, while writes also require confirmed not-started/rejected outcomes or operation-specific reconciliation."
 retry_deadline_semantics = "The effective retry deadline is the earlier of GITHUB_RETRY_MAX_WAIT_SECONDS and an inherited absolute GITHUB_RETRY_DEADLINE_AT request deadline; subprocess execution, cooldown coordination, and reconciliation reads share that deadline."
 shared_cooldown_semantics = "Cross-process cooldowns are keyed by GitHub host, actor, and quota bucket under CODE_HOME/state/github-retry with advisory locking, atomic state replacement, stale expiry, and post-reset drain spacing."
+actor_policy_semantics = "Automation-required operations use the configured bot token, active-human-required operations explicitly clear token environment variables and use the active local gh account, and split-identity operations verify both roles before protected workflow mutation."
 
 [[operations]]
 id = "github.api.call"
@@ -79,6 +80,125 @@ reconciliation_strategy = "delegated_evidence"
 retained_graphql_rationale = "No GitHub or GraphQL transport is used; this command normalizes local validation failures only."
 source_refs = ["github/scripts/github_api.py:terminal_failure", "github/scripts/github_api.py:emit_terminal", "github/scripts/github_api.py:main"]
 test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-issue.sh"]
+
+[[operations]]
+id = "github.workflow.actor.read"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
+intent = "Resolve and verify the configured automation actor and active local human reviewer without changing identities implicitly."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /user through automation auth and active local gh auth with token environment variables cleared"
+quota_bucket = "rest_core"
+actor_policy = "split_identity_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST /user provides the exact authenticated login for each role."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClientTests"]
+
+[[operations]]
+id = "github.workflow.dispatch"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch"
+intent = "Dispatch one workflow with automation auth and require GitHub's exact returned run id and URL."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/actions/workflows/{workflow_id}/dispatches with X-GitHub-Api-Version: 2026-03-10"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "create"
+idempotency = "non_idempotent"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No retained GraphQL transport; the current REST dispatch response returns the authoritative workflow run."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClientTests"]
+
+[[operations]]
+id = "github.workflow.run.read"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
+intent = "Read one exact workflow run by id for bounded status polling."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST returns the exact run status, conclusion, actors, branch, and SHA."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:parse_run_snapshot"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+
+[[operations]]
+id = "github.workflow.jobs.read"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
+intent = "Read jobs for one exact workflow run to distinguish queued runner work from other waits."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST job status and runner assignment are sufficient for bounded queue diagnosis."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:queue_diagnosis"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+
+[[operations]]
+id = "github.workflow.pending_deployments.read"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
+intent = "Read pending protected-environment deployments as the active human reviewer when a run reports waiting."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/pending_deployments"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST reports environment, reviewer, wait timer, and current-user approval eligibility."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:parse_pending_environments"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+
+[[operations]]
+id = "github.workflow.approvals.read"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
+intent = "Read prior workflow environment reviews for the active human so resumed babysitting does not repeat a non-idempotent approval."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/actions/runs/{run_id}/approvals"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST review history binds prior approved environments to the verified reviewer login."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:parse_approved_environment_ids"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
+
+[[operations]]
+id = "github.workflow.pending_deployments.approve"
+entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch --approve-environment"
+intent = "Approve only exact operator-authorized pending environments with the verified active human reviewer."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/actions/runs/{run_id}/pending_deployments"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "update"
+idempotency = "non_idempotent"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No retained GraphQL transport; protected-environment review is an explicit REST deployment approval."
+source_refs = ["github/scripts/github_workflow_babysit.py:GitHubWorkflowClient", "github/scripts/github_workflow_babysit.py:protected_environment_decision"]
+test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterTests"]
 
 [[operations]]
 id = "github.pr.view"

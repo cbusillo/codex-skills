@@ -69,6 +69,47 @@ body handling, centralized auth and retry behavior, and one maintained place to
 improve workflows. For raw PR, run, or review commands that do not yet have a
 dedicated helper, route through `gh-with-env-token`.
 
+## Protected Workflow Dispatch And Waiting
+
+Use `github_workflow_babysit.py` instead of dispatching a protected operator
+workflow and then polling `gh run` by name:
+
+```sh
+uv run github/scripts/github_workflow_babysit.py dispatch \
+  --repo OWNER/REPO \
+  --workflow operator.yml \
+  --ref main \
+  --field mode=dry_run \
+  --approve-environment protected-admin \
+  --timeout-seconds 1800
+```
+
+The helper uses the configured automation token for dispatch and ordinary run
+reads. It uses the active local `gh` account for protected-environment review,
+explicitly clearing automation-token environment variables before those calls.
+When `--approve-environment` is present, the exact name is the operator's
+approval authorization; an unexpected environment stops without mutation.
+The automation and reviewer identities must differ before a protected dispatch.
+
+Workflow dispatch uses GitHub's current run-returning REST contract and treats
+the returned run ID and URL as authoritative. If GitHub does not return exact
+run details, the helper fails closed instead of rediscovering the run through a
+workflow list filtered by time, name, or unsupported CLI fields. Use the
+`watch --run-id <id>` subcommand to recover an already-known run.
+
+Every `status=waiting` poll immediately reads `pending_deployments`. Reviewer
+waits report environment names, eligible reviewer identities, wait timers, and
+`current_user_can_approve`. Eligible review is submitted only for explicitly
+authorized environments on runs GitHub attributes to the configured automation
+actor. Before submitting, the helper reads the active human's existing review
+history so a resumed watch does not repeat a non-idempotent approval.
+Triggering-actor self-review denial and reviewer ineligibility are terminal
+actionable results, not reasons to keep polling. Timer-only or custom protection
+waits remain observable until the bounded timeout. A waiting run with no pending
+deployment is distinguished from queued runner jobs and reported as a
+concurrency, workflow-queue, or protection-rule diagnostic rather than silently
+treated as ordinary execution.
+
 Agent-authored commits and pushes should use `github/scripts/git-commit-as-bot`
 and `github/scripts/git-push-as-bot` so GitHub attribution remains
 `shiny-code-bot`. Write-like `gh-with-env-token` commands verify the
