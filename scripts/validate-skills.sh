@@ -56,6 +56,7 @@ helper_tests=(
 	github/scripts/test_github_comment.py
 	github/scripts/test_github_issue.py
 	github/scripts/test_github_read.py
+	github/scripts/test_github_workflow_babysit.py
 	github/scripts/test_runtime_checkout_reconciliation.py
 	infra-ops/scripts/test_npmplus_ops.py
 	launchplane/scripts/test_launchplane_helpers.py

@@ -34,6 +34,9 @@ resources:
   - path: scripts/github-ci-diagnose.py
     kind: script
     description: Diagnose failing PR checks and summarize relevant CI log excerpts.
+  - path: scripts/github_workflow_babysit.py
+    kind: script
+    description: Dispatch or watch one exact GitHub Actions run with bounded protected-environment diagnosis and split-identity approval.
   - path: scripts/github-repo-snapshot.sh
     kind: script
     description: Capture compact repository, branch, PR, and workflow state for orientation.
@@ -198,6 +201,25 @@ commands:
     resource_path: scripts/github-ci-diagnose.py
     example_argv: ["uv", "run", "scripts/github-ci-diagnose.py", "--pr", "<pr>"]
     purpose: Diagnoses PR checks through shared REST readers, summarizes relevant job logs, and reports quota or degraded components explicitly.
+  - name: github-workflow-babysit
+    source: skill
+    resource_path: scripts/github_workflow_babysit.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/github_workflow_babysit.py",
+        "dispatch",
+        "--repo",
+        "OWNER/REPO",
+        "--workflow",
+        "operator.yml",
+        "--ref",
+        "main",
+        "--approve-environment",
+        "protected-admin",
+      ]
+    purpose: Dispatches with configured automation auth, captures the exact returned run id, diagnoses waiting runs immediately, and approves only explicitly authorized environments with the active human account.
   - name: github-repo-snapshot
     source: skill
     resource_path: scripts/github-repo-snapshot.sh
@@ -373,6 +395,26 @@ policy:
               "--failed",
             ]
           purpose: Reruns Actions through the configured automation token and fails closed for writes if bot auth is unavailable.
+    - id: prefer-bounded-workflow-run-watch
+      match:
+        argv_prefix: ["gh", "run", "watch"]
+      action: require_preferred
+      message: Raw `gh run watch` does not diagnose protected-environment waits and can poll without an operator timeout. Use the exact-run workflow babysitter.
+      preferred:
+        - kind: script
+          path: scripts/github_workflow_babysit.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/github_workflow_babysit.py",
+              "watch",
+              "--repo",
+              "OWNER/REPO",
+              "--run-id",
+              "<run-id>",
+            ]
+          purpose: Watches one exact run, diagnoses waiting states immediately, and stops on a bounded timeout.
     - id: prefer-secret-scanning-status-reader
       match:
         shell_regex: "(?:\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\bapi\\b|\\bgithub_api\\.py\\b[\\s\\S]*\\bcall\\b|\\b(?:curl|wget|http)\\b)[\\s\\S]*\\bsecret-scanning/alerts\\b"
@@ -532,13 +574,29 @@ policy:
       match:
         argv_prefix: ["gh", "workflow"]
       action: require_preferred
-      message: Raw `gh workflow` may trigger or mutate workflows as the active local account. Use the automation-token wrapper.
+      message: Raw `gh workflow` may dispatch or mutate workflows as the active local account. Use the exact-run babysitter for dispatch and the automation-token wrapper for other operations.
       preferred:
+        - kind: script
+          path: scripts/github_workflow_babysit.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/github_workflow_babysit.py",
+              "dispatch",
+              "--repo",
+              "OWNER/REPO",
+              "--workflow",
+              "<workflow>",
+              "--ref",
+              "<ref>",
+            ]
+          purpose: Dispatches with automation auth, treats GitHub's returned run id as authoritative, diagnoses waiting runs within one poll, and stops on a bounded timeout.
         - kind: script
           path: scripts/gh-with-env-token
           example_argv:
-            ["scripts/gh-with-env-token", "workflow", "run", "<workflow>"]
-          purpose: Routes workflow operations through configured automation auth; workflow writes fail closed if bot auth is unavailable.
+            ["scripts/gh-with-env-token", "workflow", "view", "<workflow>"]
+          purpose: Routes non-dispatch workflow operations through configured automation auth; writes fail closed if bot auth is unavailable.
     - id: prefer-bot-commit-helper
       match:
         argv_prefix: ["git", "commit"]

@@ -143,6 +143,17 @@ one-off command whose human-owned actor is acceptable.
 The `local.env` file is local to the user account. Do not commit real
 tokens.
 
+### Protected Workflow Review
+
+Protected operator workflows should use
+`github/scripts/github_workflow_babysit.py`. The helper dispatches with the
+configured automation token, captures GitHub's exact returned run ID, diagnoses
+`waiting` runs through `pending_deployments`, and stops on a bounded timeout.
+An environment approval requires an exact `--approve-environment` value and is
+submitted with the active local `gh` account after automation-token variables
+are cleared. Keep that active human account distinct from the automation actor;
+the helper refuses a protected dispatch when the two identities are the same.
+
 ## Public-Safety Checklist
 
 Before publishing or pushing a new skill, scan for:
