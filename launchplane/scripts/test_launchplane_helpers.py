@@ -391,6 +391,48 @@ def test_optional_public_identifier_rejects_null_values() -> None:
         raise AssertionError("expected null optional identifier to fail closed")
 
 
+def test_runtime_environment_projection_enforces_scope_identity() -> None:
+    global_result = write_action._project_runtime_environment(
+        {
+            "action": "updated",
+            "scope": "global",
+            "context": "",
+            "instance": "",
+            "keys": [],
+            "changed_keys": [],
+            "unchanged_keys": [],
+            "env_value_count_after": 0,
+            "record": None,
+        }
+    )
+    assert global_result["scope"] == "global"
+    assert "context" not in global_result
+    assert "instance" not in global_result
+
+    for invalid_target in (
+        {"scope": "context", "context": "", "instance": ""},
+        {"scope": "context", "context": "testing", "instance": "example-instance"},
+        {"scope": "instance", "context": "testing", "instance": ""},
+        {"scope": "global", "context": "testing", "instance": ""},
+    ):
+        try:
+            write_action._project_runtime_environment(
+                {
+                    "action": "updated",
+                    **invalid_target,
+                    "keys": [],
+                    "changed_keys": [],
+                    "unchanged_keys": [],
+                    "env_value_count_after": 0,
+                    "record": None,
+                }
+            )
+        except safety.LaunchplaneSafetyError as exc:
+            assert exc.code == "invalid_response"
+        else:
+            raise AssertionError(f"expected invalid runtime target to fail: {invalid_target}")
+
+
 def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
     for key in ("secret", "client_secret", "api_key", "private_key", "credential", "cookie", "token", "opaque_value"):
         try:
@@ -653,6 +695,7 @@ def main() -> int:
         test_success_projection_preserves_contracts,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
         test_optional_public_identifier_rejects_null_values,
+        test_runtime_environment_projection_enforces_scope_identity,
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,

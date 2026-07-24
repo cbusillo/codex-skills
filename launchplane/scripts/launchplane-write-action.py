@@ -686,15 +686,26 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
     }
     if any(str(key) not in allowed for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    if not {"action", "scope", "context", "instance"}.issubset(source):
+        raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {}
-    for key in ("action", "scope"):
-        if key in source:
-            projected[key] = public_identifier(source[key])
-    for key in ("context", "instance"):
-        if key in source:
-            identifier = _optional_public_identifier(source[key])
-            if identifier is not None:
-                projected[key] = identifier
+    projected["action"] = public_identifier(source["action"])
+    scope = public_identifier(source["scope"])
+    if scope not in {"global", "context", "instance"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["scope"] = scope
+    context = _optional_public_identifier(source["context"])
+    instance = _optional_public_identifier(source["instance"])
+    if scope == "global" and (context is not None or instance is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    if scope == "context" and (context is None or instance is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    if scope == "instance" and (context is None or instance is None):
+        raise LaunchplaneSafetyError("invalid_response")
+    if context is not None:
+        projected["context"] = context
+    if instance is not None:
+        projected["instance"] = instance
     for key in ("keys", "changed_keys", "unchanged_keys"):
         if key in source:
             projected[key] = _public_string_list(source[key])
@@ -859,13 +870,19 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
             projected[key] = public_code(source[key])
     if "product" in source:
         projected["product"] = public_identifier(source["product"])
-    for key in ("context", "instance"):
-        if key in source:
-            identifier = _optional_public_identifier(source[key])
-            if identifier is not None:
-                projected[key] = identifier
+    context = _optional_public_identifier(source["context"])
+    instance = _optional_public_identifier(source["instance"])
+    runtime_environment = _project_runtime_environment(source["runtime_environment"])
+    if context != runtime_environment.get("context") or instance != runtime_environment.get(
+        "instance"
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    if context is not None:
+        projected["context"] = context
+    if instance is not None:
+        projected["instance"] = instance
+    projected["runtime_environment"] = runtime_environment
     for key, projector in (
-        ("runtime_environment", _project_runtime_environment),
         ("runtime_key_safety", _project_runtime_key_safety),
         ("secrets", _project_secret_results),
         ("summary", _project_apply_summary),
