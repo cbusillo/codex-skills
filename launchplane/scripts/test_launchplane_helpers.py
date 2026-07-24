@@ -328,6 +328,69 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert "secret-record-example" not in json.dumps(apply)
 
 
+def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
+    result = write_action.summarize_success(
+        operation="product-config-dry-run",
+        request={"product": "example-product", "context": "testing"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_context_runtime",
+            "records": {},
+            "result": {
+                "status": "ok",
+                "mode": "dry-run",
+                "product": "example-product",
+                "context": "testing",
+                "instance": "",
+                "runtime_environment": {
+                    "action": "updated",
+                    "scope": "context",
+                    "context": "testing",
+                    "instance": "",
+                    "keys": ["EXAMPLE_PREVIEW_URL"],
+                    "changed_keys": ["EXAMPLE_PREVIEW_URL"],
+                    "unchanged_keys": [],
+                    "env_value_count_after": 1,
+                    "record": None,
+                },
+                "runtime_key_safety": {
+                    "required": False,
+                    "status": "skipped",
+                    "checked_binding_keys": [],
+                    "findings": [],
+                },
+                "secrets": [],
+                "summary": {
+                    "runtime_changed_key_count": 1,
+                    "secret_change_count": 0,
+                },
+                "next_actions": [],
+            },
+        },
+    )
+
+    assert "instance" not in result["result"]
+    assert result["result"]["runtime_environment"] == {
+        "action": "updated",
+        "scope": "context",
+        "context": "testing",
+        "keys": ["EXAMPLE_PREVIEW_URL"],
+        "changed_keys": ["EXAMPLE_PREVIEW_URL"],
+        "unchanged_keys": [],
+        "env_value_count_after": 1,
+    }
+
+
+def test_optional_public_identifier_rejects_null_values() -> None:
+    assert write_action._optional_public_identifier("") is None
+    try:
+        write_action._optional_public_identifier(None)
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("expected null optional identifier to fail closed")
+
+
 def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
     for key in ("secret", "client_secret", "api_key", "private_key", "credential", "cookie", "token", "opaque_value"):
         try:
@@ -588,6 +651,8 @@ def main() -> int:
         test_write_helper_validates_cli_env_and_json_url_sources,
         test_context_helper_validates_env_and_json_url_sources,
         test_success_projection_preserves_contracts,
+        test_product_config_projection_accepts_context_scoped_runtime_environment,
+        test_optional_public_identifier_rejects_null_values,
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,

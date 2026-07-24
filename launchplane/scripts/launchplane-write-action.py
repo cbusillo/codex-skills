@@ -493,6 +493,14 @@ def _optional_bool(value: object) -> bool | None:
     raise LaunchplaneSafetyError("invalid_response")
 
 
+def _optional_public_identifier(value: object) -> str | None:
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    if not value.strip():
+        return None
+    return public_identifier(value)
+
+
 def _project_records(records: object, allowed_keys: set[str]) -> dict[str, object]:
     if records is None:
         return {}
@@ -679,9 +687,14 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
     if any(str(key) not in allowed for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {}
-    for key in ("action", "scope", "context", "instance"):
+    for key in ("action", "scope"):
         if key in source:
             projected[key] = public_identifier(source[key])
+    for key in ("context", "instance"):
+        if key in source:
+            identifier = _optional_public_identifier(source[key])
+            if identifier is not None:
+                projected[key] = identifier
     for key in ("keys", "changed_keys", "unchanged_keys"):
         if key in source:
             projected[key] = _public_string_list(source[key])
@@ -844,9 +857,13 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
     for key in ("status", "mode"):
         if key in source:
             projected[key] = public_code(source[key])
-    for key in ("product", "context", "instance"):
+    if "product" in source:
+        projected["product"] = public_identifier(source["product"])
+    for key in ("context", "instance"):
         if key in source:
-            projected[key] = public_identifier(source[key])
+            identifier = _optional_public_identifier(source[key])
+            if identifier is not None:
+                projected[key] = identifier
     for key, projector in (
         ("runtime_environment", _project_runtime_environment),
         ("runtime_key_safety", _project_runtime_key_safety),
