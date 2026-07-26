@@ -28,6 +28,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.parsers.expat import ExpatError
@@ -51,13 +52,22 @@ USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
+DEPLOYMENT_MANIFEST_ENV = "JB_INSPECT_DEPLOYMENT_MANIFEST"
 UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
+OUTCOME_ASSESSMENT_COMMANDS = frozenset({"run", "closeout"})
+OUTCOME_OBSERVATION_COMMANDS = frozenset({"wait", "status", "problems"})
 UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
 INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
 LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
+OUTCOME_LOG_SCHEMA_VERSION = 2
+QUALIFICATION_SCHEMA_VERSION = 1
+QUALIFICATION_MIN_DECISIVE_RATE = 0.95
+QUALIFICATION_CLEANUP_STATUSES = frozenset({"closed", "not_needed"})
+QUALIFICATION_CONFIGURATION_CODES = frozenset({"ide_selection_required", "ide_config_ambiguous", "ide_config_missing"})
+FULL_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 RECOVERABLE_HELPER_LEASE_STATES = frozenset(
     {
         "route_resolved",
@@ -341,7 +351,7 @@ def main() -> int:
             return emit(result, args.json, exit_code, command=args.command_input, assess=exit_code != 0)
         if args.command == "summarize-outcomes":
             result = command_summarize_outcomes(args)
-            return emit(result, args.json, 0, command=args.command_input, assess=False)
+            return emit(result, args.json, summarize_outcomes_exit_code(result), command=args.command_input, assess=False)
         if args.command == "run":
             context = build_context(args)
             result = command_run(args, context)
@@ -495,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.choices["cleanup-helper-leases"].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["summarize-outcomes"].add_argument("--log", dest="log_path", help="Outcome JSONL log path. Defaults to JB_INSPECT_OUTCOME_LOG or the standard Code log path.")
     subparsers.choices["summarize-outcomes"].add_argument("--limit", type=int, default=10, help="Maximum number of recent events to include.")
+    subparsers.choices["summarize-outcomes"].add_argument("--qualification-file", help="Qualification schema v1 JSON file for strict artifact-pinned gating.")
+    subparsers.choices["summarize-outcomes"].add_argument("--sample-size", type=int, default=50, help="Required strict qualification sample size. Defaults to 50.")
     subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
     for name in ("get-problems", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
@@ -583,6 +595,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     context = {
         "repo_path": str(repo_path),
         "worktree_root": str(worktree_root),
+        "repo_head_sha": git_head_sha(worktree_root),
         "main_worktree": str(main_worktree) if main_worktree else None,
         "project_path": str(lifecycle_target_path),
         "exact_route_path": str(lifecycle_target_path),
@@ -596,6 +609,9 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "client_run_id": getattr(args, "client_run_id", None),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
+    scope_descriptor = canonical_scope_descriptor(args, context, worktree_root)
+    context["scope_descriptor"] = scope_descriptor
+    context["scope_descriptor_sha256"] = canonical_json_sha256(scope_descriptor)
     selection = resolve_ide_selection(context)
     if selection:
         context["ide_selection"] = selection.public()
@@ -608,6 +624,53 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         if selection.app_path:
             context["ide_app_path"] = str(selection.app_path)
     return context
+
+
+def canonical_scope_descriptor(args: argparse.Namespace, context: dict[str, Any], worktree_root: Path) -> dict[str, Any]:
+    files = sorted(
+        {
+            stable_value_hash(canonical_scope_path(file_path, worktree_root))
+            for file_path in (getattr(args, "files", []) or [])
+            if clean_optional(file_path)
+        }
+        - {None}
+    )
+    directory = clean_optional(getattr(args, "directory", None))
+    descriptor: dict[str, Any] = {
+        "scope": str(context.get("scope") or "changed_files").strip().lower(),
+        "include_unversioned": bool(getattr(args, "include_unversioned", True)),
+        "changed_files_mode": str(getattr(args, "changed_files_mode", "all") or "all").strip().lower(),
+        "profile": str(getattr(args, "profile", "") or ""),
+        "severity": str(getattr(args, "severity", "all") or "all").strip().lower(),
+        "problem_type": str(getattr(args, "problem_type", "all") or "all").strip().lower(),
+        "file_pattern": durable_scope_value(getattr(args, "file_pattern", "all") or "all"),
+        "allow_text_only_coverage": bool(getattr(args, "allow_text_only_coverage", False)),
+        "include_stale": bool(getattr(args, "include_stale", False)),
+    }
+    if directory:
+        descriptor["directory_hash"] = stable_value_hash(canonical_scope_path(directory, worktree_root))
+    if files:
+        descriptor["file_hashes"] = files
+    max_files = getattr(args, "max_files", None)
+    if max_files is not None:
+        descriptor["max_files"] = int(max_files)
+    if hasattr(args, "limit"):
+        descriptor["limit"] = int(getattr(args, "limit", 100))
+    if hasattr(args, "offset"):
+        descriptor["offset"] = int(getattr(args, "offset", 0))
+    return descriptor
+
+
+def canonical_scope_path(value: Any, worktree_root: Path) -> str:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = worktree_root / path
+    return str(path.resolve())
+
+
+def durable_scope_value(value: Any) -> str:
+    text = str(value)
+    return redact_durable_text(text) if is_durable_path_candidate(split_durable_path_suffix(text)[0]) else text
 
 
 def resolve_ide_selection(context: dict[str, Any]) -> IdeSelection | None:
@@ -992,7 +1055,20 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
             inspection_error = error
             result = inspection_exception_result(error)
         finally:
-            if not getattr(args, "keep_warm", False):
+            if getattr(args, "keep_warm", False):
+                if lease_may_own_open_project(lease):
+                    cleanup = {
+                        "status": "kept_warm",
+                        "reason": "keep_warm_requested",
+                        "lease_id": lease.get("lease_id"),
+                    }
+                else:
+                    cleanup = {
+                        "status": "not_needed",
+                        "reason": "helper_did_not_open_project",
+                        "lease_id": lease.get("lease_id"),
+                    }
+            else:
                 if should_defer_lifecycle_cleanup(result, lease):
                     cleanup = defer_lifecycle_cleanup(lease, result)
                 else:
@@ -1001,7 +1077,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
         result["cleanup"] = cleanup
         if cleanup.get("status") == "deferred":
             result["cleanup_deferred"] = True
-        elif cleanup.get("status") not in {"closed", "not_needed", "skipped"}:
+        elif cleanup.get("status") not in {"closed", "not_needed", "skipped", "kept_warm"}:
             result["cleanup_failed"] = True
         if cleanup.get("cleanup_skipped"):
             result["cleanup_skipped"] = True
@@ -1059,12 +1135,18 @@ def should_retry_unknown_result(result: dict[str, Any]) -> bool:
 
 def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]:
     wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
+    attribution = result.get("inspection_attribution") if isinstance(result.get("inspection_attribution"), dict) else {}
+    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
     return {
         "attempt": attempt,
         "status": result.get("status"),
         "verdict": result.get("verdict"),
         "verdict_reason": result.get("verdict_reason"),
         "bucket": result.get("bucket"),
+        "retry": retry_policy.get("retry"),
+        "attribution_class": result.get("attribution_class") or attribution.get("classification"),
+        "phase": result.get("failure_phase") or attribution.get("phase"),
+        "inspection_run_id": attribution.get("inspection_run_id") or inspection_run_id(result),
         "total_problems": result.get("total_problems"),
         "cached_total_problems": result.get("cached_total_problems"),
         "proof_failures": result.get("proof_failures"),
@@ -3514,11 +3596,27 @@ def helper_revision() -> str:
     global _HELPER_REVISION
     if _HELPER_REVISION is None:
         try:
-            digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+            digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
             _HELPER_REVISION = f"sha256:{digest}"
         except OSError:
             _HELPER_REVISION = "unavailable"
     return _HELPER_REVISION
+
+
+def file_content_sha256(path: str | Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with Path(path).expanduser().open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return f"sha256:{digest.hexdigest()}"
+
+
+def canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def stable_value_hash(value: Any) -> str | None:
@@ -3527,7 +3625,7 @@ def stable_value_hash(value: Any) -> str | None:
     text = str(value).strip()
     if not text:
         return None
-    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
 
 
 def attribution_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3557,6 +3655,14 @@ def payload_route(payload: dict[str, Any]) -> dict[str, Any]:
 
 def attribution_classification(code: str, payload: dict[str, Any]) -> str:
     normalized = normalize_reason(code)
+    if payload.get("verdict") in {"GREEN", "RED"} or normalized in {
+        "clean",
+        "clean_confirmed",
+        "findings",
+        "no_matching_findings",
+        "actionable_findings",
+    }:
+        return "decisive"
     if normalized in {
         "inspection_api_http_error",
         "identity_port_mismatch",
@@ -3568,7 +3674,6 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "inspection_trigger_empty_model",
         "non_empty_unmapped_tree",
         "open_schedule_failed",
-        SEMANTIC_COVERAGE_TRUNCATED_REASON,
     }:
         return "tool_caused"
     if normalized in {
@@ -3618,6 +3723,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "run_changed",
         "scope_mismatch",
         "scope_not_covered",
+        SEMANTIC_COVERAGE_TRUNCATED_REASON,
         "session_drift",
         "stale_results",
         "target_project_not_open",
@@ -3653,7 +3759,7 @@ def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, An
 
 
 def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
-    if payload.get("verdict") != "UNKNOWN" and not any(
+    if payload.get("verdict") not in {"GREEN", "RED", "UNKNOWN"} and not any(
         payload.get(key) for key in ("cleanup_failed", "cleanup_skipped", "cleanup_deferred")
     ):
         return payload
@@ -3662,6 +3768,15 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
     route = payload_route(payload)
     ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    if attribution.get("ide_channel"):
+        ide_channel_source = attribution.get("ide_channel_source") or "plugin_attribution"
+    elif ide.get("channel") or ide.get("ide_channel"):
+        ide_channel_source = "plugin_identity"
+    elif selection.get("channel"):
+        ide_channel_source = "selector_fallback"
+    else:
+        ide_channel_source = None
     code = str(
         attribution.get("code")
         or payload.get("error_reason")
@@ -3672,7 +3787,18 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
     )
     classification = str(attribution.get("classification") or attribution_classification(code, payload))
     phase = attribution_failure_phase(payload, attribution, code)
-    client_run_id = attribution.get("client_run_id") or payload.get("client_run_id") or context.get("client_run_id")
+    normalized_code = "unattributed_unknown" if classification == "unattributed" else normalize_reason(code)
+    cleanup_attribution = dict(attribution)
+    cleanup_attribution.update({"code": normalized_code, "phase": phase})
+    cleanup_status, cleanup_reason = derived_cleanup_status(
+        outcome_event_kind(preferred_command(str(payload.get("command") or ""))),
+        inspection_started_for_payload(payload),
+        cleanup_attribution,
+        cleanup,
+    )
+    local_client_run_id = context.get("client_run_id") or payload.get("client_run_id")
+    plugin_client_run_id = attribution.get("client_run_id")
+    client_run_id = local_client_run_id or plugin_client_run_id
     request_id = attribution.get("request_id")
     session_id = attribution.get("session_id") or payload.get("session_id") or route.get("session_id")
     run_id = attribution.get("inspection_run_id") or inspection_run_id(payload)
@@ -3688,12 +3814,12 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
             "source": attribution.get("source") or "helper",
             "observed_by": "helper",
             "classification": classification,
-            "code": "unattributed_unknown" if classification == "unattributed" else normalize_reason(code),
+            "code": normalized_code,
             "phase": phase,
             "endpoint": attribution.get("endpoint") or payload.get("endpoint"),
             "http_status": attribution.get("http_status") or payload.get("http_status"),
             "request_id": request_id,
-            "client_run_id": client_run_id,
+            "client_run_id": plugin_client_run_id or client_run_id,
             "session_id": session_id,
             "project_instance_id": project_instance_id,
             "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
@@ -3702,9 +3828,16 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
             "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
             "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
             "ide_version": attribution.get("ide_version") or ide.get("version"),
+            "ide_channel": (
+                attribution.get("ide_channel")
+                or ide.get("channel")
+                or ide.get("ide_channel")
+                or selection.get("channel")
+            ),
+            "ide_channel_source": ide_channel_source,
             "helper_revision": helper_revision(),
-            "cleanup_status": cleanup.get("status"),
-            "cleanup_reason": cleanup.get("reason"),
+            "cleanup_status": cleanup_status,
+            "cleanup_reason": cleanup_reason,
         }
     )
     attribution = {key: value for key, value in attribution.items() if value not in (None, "", {}, [])}
@@ -3719,7 +3852,7 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
     payload["attribution_class"] = classification
     payload["failure_phase"] = phase
     payload["evidence_ids"] = {key: value for key, value in evidence_ids.items() if value not in (None, "")}
-    if classification == "unattributed":
+    if payload.get("verdict") == "UNKNOWN" and classification == "unattributed":
         payload["unattributed_unknown"] = True
     return payload
 
@@ -3858,9 +3991,7 @@ def log_unknown_verdict(payload: dict[str, Any]) -> None:
         return
     record = unknown_log_record(payload)
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        append_jsonl_record(log_path, record)
     except OSError as error:
         payload["unknown_log_error"] = str(error)
         return
@@ -3875,9 +4006,7 @@ def log_outcome(payload: dict[str, Any], exit_code: int) -> None:
         return
     record = outcome_log_record(payload, exit_code)
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        append_jsonl_record(log_path, record)
     except OSError as error:
         payload["outcome_log_error"] = str(error)
         return
@@ -3942,59 +4071,240 @@ def code_home() -> Path:
     return Path(os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or str(Path.home() / ".code")).expanduser()
 
 
-def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
+def append_jsonl_record(log_path: Path, record: dict[str, Any]) -> None:
+    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    original_size: int | None = None
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        original_size = os.lseek(descriptor, 0, os.SEEK_END)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("JSONL append made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException:
+        if original_size is not None:
+            try:
+                os.ftruncate(descriptor, original_size)
+                os.fsync(descriptor)
+            except OSError:
+                pass
+        raise
+    finally:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def ensure_outcome_event_metadata(payload: dict[str, Any]) -> tuple[str, str, int, str | None]:
+    event_id = clean_optional(payload.get("_outcome_event_id"))
+    if event_id is None:
+        event_id = str(uuid.uuid4())
+        payload["_outcome_event_id"] = event_id
+    timestamp_ms = payload.get("_outcome_timestamp_ms")
+    if not isinstance(timestamp_ms, int):
+        timestamp_ms = int(time.time() * 1000)
+        payload["_outcome_timestamp_ms"] = timestamp_ms
+    timestamp = clean_optional(payload.get("_outcome_timestamp"))
+    if timestamp is None:
+        timestamp = utc_timestamp(timestamp_ms)
+        payload["_outcome_timestamp"] = timestamp
+    if "_deployment_manifest_sha256" not in payload:
+        manifest_path = discover_deployment_manifest_file()
+        payload["_deployment_manifest_sha256"] = file_content_sha256(manifest_path) if manifest_path else None
+    manifest_sha256 = clean_optional(payload.get("_deployment_manifest_sha256"))
+    return event_id, timestamp, timestamp_ms, manifest_sha256
+
+
+def outcome_event_kind(command: Any) -> str | None:
+    canonical = canonical_command(str(command or ""))
+    if canonical in OUTCOME_ASSESSMENT_COMMANDS:
+        return "inspection_assessment"
+    if canonical in OUTCOME_OBSERVATION_COMMANDS:
+        return "inspection_observation"
+    return None
+
+
+def inspection_started_for_payload(payload: dict[str, Any]) -> bool:
+    explicit_values = []
+    for candidate in attribution_payloads(payload):
+        value = candidate.get("inspection_started")
+        if isinstance(value, bool):
+            explicit_values.append(value)
+        attribution = candidate.get("inspection_attribution")
+        if isinstance(attribution, dict) and isinstance(attribution.get("inspection_started"), bool):
+            explicit_values.append(attribution["inspection_started"])
+    if any(explicit_values):
+        return True
+    if explicit_values:
+        return False
+    if any(inspection_run_id(candidate) is not None for candidate in attribution_payloads(payload)):
+        return True
+    if payload.get("verdict") in {"GREEN", "RED"}:
+        return True
+    if payload.get("status") in {"clean", "findings", "results_available"}:
+        return True
+    for key in ("trigger", "wait", "problems"):
+        candidate = payload.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("status") in {"triggered", "running", "clean", "findings", "results_available"}:
+            return True
+        if candidate.get("inspection_in_progress") is True or candidate.get("has_inspection_results") is True:
+            return True
+    return False
+
+
+def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal: bool) -> dict[str, Any]:
+    retry_policy = source.get("retry_policy") if isinstance(source.get("retry_policy"), dict) else {}
+    attribution = source.get("inspection_attribution") if isinstance(source.get("inspection_attribution"), dict) else {}
+    retry = source.get("retry")
+    if not isinstance(retry, bool):
+        retry = retry_policy.get("retry")
+    if not isinstance(retry, bool) and not terminal:
+        retry = source.get("verdict") == "UNKNOWN" and source.get("bucket") in INTERNAL_RETRY_BUCKETS
+    summary = {
+        "attempt_index": attempt_index,
+        "terminal": terminal,
+        "status": source.get("status"),
+        "verdict": source.get("verdict"),
+        "verdict_reason": source.get("verdict_reason") or source.get("reason"),
+        "bucket": source.get("bucket"),
+        "retry": retry,
+        "attribution_class": source.get("attribution_class") or attribution.get("classification"),
+        "phase": source.get("failure_phase") or attribution.get("phase"),
+        "inspection_run_id": source.get("inspection_run_id") or attribution.get("inspection_run_id"),
+        "cleanup_status": source.get("cleanup_status"),
+        "total_problems": source.get("total_problems"),
+        "proof_failures": source.get("proof_failures"),
+        "wait_completion_reason": source.get("wait_completion_reason"),
+        "snapshot_change_kind": source.get("snapshot_change_kind"),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, {}, [])}
+
+
+def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    next_index = 0
+    for retry in retries:
+        if not isinstance(retry, dict):
+            continue
+        raw_index = retry.get("attempt_index", retry.get("attempt", next_index))
+        attempt_index = int(raw_index) if isinstance(raw_index, int) or str(raw_index).isdigit() else next_index
+        attempts.append(logged_attempt_summary(retry, attempt_index, terminal=False))
+        next_index = max(next_index, attempt_index + 1)
+    attempts.append(logged_attempt_summary(payload, next_index, terminal=True))
+    return attempts
+
+
+def derived_cleanup_status(
+    event_kind: str | None,
+    inspection_started: bool,
+    attribution: dict[str, Any],
+    cleanup: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    status = clean_optional(cleanup.get("status") or attribution.get("cleanup_status"))
+    reason = clean_optional(cleanup.get("reason") or attribution.get("cleanup_reason"))
+    if status is None and event_kind == "inspection_observation":
+        return "not_applicable", reason
+    code = normalize_reason(attribution.get("code") or "")
+    phase = normalize_reason(attribution.get("phase") or "")
+    if status is None and not inspection_started and code in QUALIFICATION_CONFIGURATION_CODES and phase == "selection":
+        return "not_needed", reason or "inspection_not_started"
+    return status, reason
+
+
+def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    event_id, timestamp, timestamp_ms, manifest_sha256 = ensure_outcome_event_metadata(payload)
     public = public_payload(payload)
-    command = public.get("command")
     context = public.get("context") if isinstance(public.get("context"), dict) else {}
-    route = public.get("route") if isinstance(public.get("route"), dict) else {}
-    wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
+    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
     cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
+    route = payload_route(public)
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
     attribution = public.get("inspection_attribution") if isinstance(public.get("inspection_attribution"), dict) else {}
     evidence_ids = public.get("evidence_ids") if isinstance(public.get("evidence_ids"), dict) else {}
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    command = preferred_command(str(public.get("command"))) if public.get("command") else None
+    event_kind = outcome_event_kind(command)
+    client_run_id = evidence_ids.get("client_run_id") or attribution.get("client_run_id") or public.get("client_run_id") or context.get("client_run_id")
+    started = inspection_started_for_payload(public)
+    cleanup_status, cleanup_reason = derived_cleanup_status(event_kind, started, attribution, cleanup)
+    scope_descriptor = context.get("scope_descriptor") if isinstance(context.get("scope_descriptor"), dict) else public.get("scope_descriptor")
+    scope_descriptor_sha256 = context.get("scope_descriptor_sha256") or public.get("scope_descriptor_sha256")
+    worktree_root = clean_optional(context.get("worktree_root") or public.get("worktree_root"))
+    worktree_path = Path(worktree_root) if worktree_root else None
+    repo_head_sha = git_head_sha(worktree_path) if worktree_path is not None and worktree_path.exists() else context.get("repo_head_sha") or public.get("repo_head_sha")
     record: dict[str, Any] = {
-        "timestamp": utc_timestamp(),
-        "command": preferred_command(str(command)) if command else None,
+        "schema_version": OUTCOME_LOG_SCHEMA_VERSION,
+        "event_id": event_id,
+        "event_kind": event_kind,
+        "assessment_id": client_run_id,
+        "timestamp": timestamp,
+        "timestamp_ms": timestamp_ms,
+        "command": command,
         "verdict": public.get("verdict"),
         "bucket": public.get("bucket"),
-        "retry": (public.get("retry_policy") or {}).get("retry") if isinstance(public.get("retry_policy"), dict) else None,
         "verdict_reason": public.get("verdict_reason"),
-        "verdict_message": public.get("verdict_message"),
-        "verdict_next_action": public.get("verdict_next_action"),
         "status": public.get("status"),
+        "scope": (scope_descriptor or {}).get("scope") if isinstance(scope_descriptor, dict) else context.get("scope") or public.get("scope"),
+        "scope_descriptor": scope_descriptor,
+        "scope_descriptor_sha256": scope_descriptor_sha256,
         "repo_path_hash": stable_value_hash(context.get("repo_path") or public.get("repo_path")),
-        "worktree_root_hash": stable_value_hash(context.get("worktree_root") or public.get("worktree_root")),
-        "scope": context.get("scope") or public.get("scope"),
-        "ide": ide.get("name") or public.get("ide"),
+        "worktree_root_hash": stable_value_hash(worktree_root),
+        "repo_head_sha": repo_head_sha,
+        "ide": attribution.get("ide_name") or ide.get("name") or selection.get("product") or context.get("ide") or public.get("ide"),
+        "ide_channel": attribution.get("ide_channel") or ide.get("channel") or ide.get("ide_channel") or selection.get("channel"),
+        "ide_channel_source": attribution.get("ide_channel_source"),
         "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
-        "ide_version": attribution.get("ide_version") or ide.get("version"),
-        "project_name": route.get("project_name"),
+        "ide_version": attribution.get("ide_version") or ide.get("version") or selection.get("version"),
+        "eap_explicit": selection.get("explicit_eap"),
         "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
         "base_path_hash": stable_value_hash(route.get("base_path")),
-        "project_instance_id": evidence_ids.get("project_instance_id") or route.get("project_instance_id"),
+        "project_instance_id": evidence_ids.get("project_instance_id") or attribution.get("project_instance_id") or route.get("project_instance_id"),
         "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
         "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
-        "helper_revision": attribution.get("helper_revision") or helper_revision(),
+        "helper_revision": helper_revision(),
+        "deployment_manifest_sha256": manifest_sha256,
+        "rollout_file_hash": manifest_sha256,
         "failure_phase": public.get("failure_phase") or attribution.get("phase"),
         "attribution_class": public.get("attribution_class") or attribution.get("classification"),
         "response_code": public.get("response_code") or attribution.get("code"),
+        "endpoint": attribution.get("endpoint"),
         "http_status": public.get("http_status") or attribution.get("http_status"),
-        "client_run_id": evidence_ids.get("client_run_id") or attribution.get("client_run_id"),
+        "observed_by": attribution.get("observed_by"),
+        "client_run_id": client_run_id,
         "request_id": evidence_ids.get("request_id") or attribution.get("request_id"),
-        "session_id": evidence_ids.get("session_id") or attribution.get("session_id"),
+        "session_id": evidence_ids.get("session_id") or attribution.get("session_id") or route.get("session_id"),
         "inspection_run_id": evidence_ids.get("inspection_run_id") or attribution.get("inspection_run_id"),
+        "inspection_started": started,
         "inspection_attribution": attribution,
         "unattributed_unknown": public.get("unattributed_unknown"),
+        "cleanup_status": cleanup_status,
+        "cleanup_reason": cleanup_reason,
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
+        "internal_attempts": ordered_internal_attempts(public),
+    }
+    return public, record
+
+
+def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
+    public, record = outcome_record_base(payload)
+    wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
+    retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
+    record.update({
+        "retry": retry_policy.get("retry"),
+        "verdict_message": public.get("verdict_message"),
+        "verdict_next_action": public.get("verdict_next_action"),
         "capture_incomplete_reason": public.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason"),
         "snapshot_change_kind": public.get("snapshot_change_kind"),
-        "cleanup_status": cleanup.get("status"),
-        "cleanup_reason": cleanup.get("reason"),
-    }
-    rollout_file = discover_rollout_file()
-    if rollout_file:
-        record["rollout_file_hash"] = stable_value_hash(rollout_file)
+    })
     for key in ("capture_diagnostic", "route_diagnostic", "blocked_diagnostic"):
         if key in public:
             record[key] = public[key]
@@ -4003,69 +4313,39 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any]:
-    public = public_payload(payload)
-    context = public.get("context") if isinstance(public.get("context"), dict) else {}
-    cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    public, record = outcome_record_base(payload)
     retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
     agent_result = public.get("agent_result") if isinstance(public.get("agent_result"), dict) else {}
     agent_retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
-    route = payload_route(public)
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
-    attribution = public.get("inspection_attribution") if isinstance(public.get("inspection_attribution"), dict) else {}
-    evidence_ids = public.get("evidence_ids") if isinstance(public.get("evidence_ids"), dict) else {}
-    record: dict[str, Any] = {
-        "timestamp": utc_timestamp(),
-        "command": public.get("command"),
+    record.update({
         "exit_code": exit_code,
-        "verdict": public.get("verdict"),
-        "bucket": public.get("bucket"),
-        "verdict_reason": public.get("verdict_reason"),
         "retry": retry_policy.get("retry"),
         "retry_max_attempts": retry_policy.get("max_attempts"),
         "retry_wait_ms": agent_retry_policy.get("wait_ms") or retry_policy.get("wait_ms"),
         "next_action": agent_result.get("next_action") or public.get("verdict_next_action"),
         "agent_report": agent_result.get("agent_report") or public.get("agent_report"),
-        "status": public.get("status"),
-        "scope": context.get("scope") or public.get("scope"),
-        "repo_path_hash": stable_value_hash(context.get("repo_path") or public.get("repo_path")),
-        "worktree_root_hash": stable_value_hash(context.get("worktree_root") or public.get("worktree_root")),
-        "ide": selection.get("product") or context.get("ide") or public.get("ide"),
-        "ide_channel": selection.get("channel"),
-        "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
-        "ide_version": attribution.get("ide_version") or ide.get("version") or selection.get("version"),
-        "eap_explicit": selection.get("explicit_eap"),
-        "project_name": route.get("project_name"),
-        "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
-        "base_path_hash": stable_value_hash(route.get("base_path")),
-        "project_instance_id": evidence_ids.get("project_instance_id") or route.get("project_instance_id"),
-        "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
-        "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
-        "helper_revision": attribution.get("helper_revision") or helper_revision(),
-        "failure_phase": public.get("failure_phase") or attribution.get("phase"),
-        "attribution_class": public.get("attribution_class") or attribution.get("classification"),
-        "response_code": public.get("response_code") or attribution.get("code"),
-        "http_status": public.get("http_status") or attribution.get("http_status"),
-        "client_run_id": evidence_ids.get("client_run_id") or attribution.get("client_run_id"),
-        "request_id": evidence_ids.get("request_id") or attribution.get("request_id"),
-        "session_id": evidence_ids.get("session_id") or attribution.get("session_id"),
-        "inspection_run_id": evidence_ids.get("inspection_run_id") or attribution.get("inspection_run_id"),
-        "inspection_attribution": attribution,
-        "unattributed_unknown": public.get("unattributed_unknown"),
-        "cleanup_status": cleanup.get("status"),
-        "cleanup_reason": cleanup.get("reason"),
-        "total_problems": public.get("total_problems"),
-        "problems_shown": public.get("problems_shown"),
-    }
-    rollout_file = discover_rollout_file()
-    if rollout_file:
-        record["rollout_file_hash"] = stable_value_hash(rollout_file)
+    })
     bounded = {key: value for key, value in record.items() if value not in (None, {}, [])}
     return redact_durable_log(bounded)
 
 
 def command_summarize_outcomes(args: argparse.Namespace) -> dict[str, Any]:
     log_path = Path(args.log_path).expanduser().resolve() if getattr(args, "log_path", None) else outcome_log_path()
+    qualification_file = clean_optional(getattr(args, "qualification_file", None))
+    if qualification_file:
+        sample_size = int(getattr(args, "sample_size", 50))
+        criteria, error = load_qualification_criteria(Path(qualification_file).expanduser())
+        if error is not None:
+            return qualification_error_summary(error[0], error[1], sample_size)
+        assert criteria is not None
+        if log_path is None:
+            return qualification_error_summary(
+                "outcome_log_disabled",
+                f"Outcome logging is disabled by {OUTCOME_LOG_ENV}.",
+                sample_size,
+                criteria,
+            )
+        return summarize_qualified_outcomes(log_path, criteria, sample_size)
     if log_path is None:
         return {
             "status": "disabled",
@@ -4074,6 +4354,12 @@ def command_summarize_outcomes(args: argparse.Namespace) -> dict[str, Any]:
             "invalid_lines": 0,
         }
     return summarize_outcome_log(log_path, limit=max(0, int(getattr(args, "limit", 10))))
+
+
+def summarize_outcomes_exit_code(result: dict[str, Any]) -> int:
+    if result.get("mode") != "qualification":
+        return 0
+    return 0 if result.get("gate_status") == "pass" else 1
 
 
 def summarize_outcome_log(log_path: Path, limit: int = 10) -> dict[str, Any]:
@@ -4192,8 +4478,749 @@ def count_by(events: list[dict[str, Any]], key: str) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def utc_timestamp() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def load_qualification_criteria(path: Path) -> tuple[dict[str, Any] | None, tuple[str, str] | None]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None, ("qualification_file_unreadable", "The qualification file could not be read.")
+    except json.JSONDecodeError:
+        return None, ("qualification_file_invalid", "The qualification file is not valid JSON.")
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value.get("schema_version") != QUALIFICATION_SCHEMA_VERSION:
+        return None, ("qualification_schema_invalid", "Qualification schema_version must be 1.")
+    boundary = value.get("boundary")
+    if not isinstance(boundary, dict):
+        return None, ("qualification_boundary_invalid", "Qualification boundary must be an object.")
+    if not isinstance(boundary.get("since"), str):
+        return None, ("qualification_boundary_invalid", "Qualification boundary.since must be an ISO-8601 timestamp with an offset.")
+    since = clean_optional(boundary.get("since"))
+    since_ms = parse_iso_timestamp_ms(since)
+    if since is None or since_ms is None:
+        return None, ("qualification_boundary_invalid", "Qualification boundary.since must be an ISO-8601 timestamp with an offset.")
+    after_event_id = boundary.get("after_event_id")
+    if after_event_id is not None and (not isinstance(after_event_id, str) or clean_optional(after_event_id) is None):
+        return None, ("qualification_boundary_invalid", "Qualification boundary.after_event_id must be a non-empty string when present.")
+    helper = clean_optional(value.get("helper_revision")) if isinstance(value.get("helper_revision"), str) else None
+    deployment = clean_optional(value.get("deployment_manifest_sha256")) if isinstance(value.get("deployment_manifest_sha256"), str) else None
+    plugin = clean_optional(value.get("plugin_build_fingerprint")) if isinstance(value.get("plugin_build_fingerprint"), str) else None
+    if helper is None or FULL_SHA256_PATTERN.fullmatch(helper) is None:
+        return None, ("qualification_helper_revision_invalid", "Qualification helper_revision must be a full sha256 digest.")
+    if deployment is None or FULL_SHA256_PATTERN.fullmatch(deployment) is None:
+        return None, ("qualification_deployment_manifest_invalid", "Qualification deployment_manifest_sha256 must be a full sha256 digest.")
+    if plugin is None:
+        return None, ("qualification_plugin_fingerprint_invalid", "Qualification plugin_build_fingerprint must be non-empty.")
+    normalized_boundary = {"since": since}
+    if after_event_id is not None:
+        normalized_boundary["after_event_id"] = str(after_event_id).strip()
+    return {
+        "schema_version": QUALIFICATION_SCHEMA_VERSION,
+        "boundary": normalized_boundary,
+        "helper_revision": helper,
+        "plugin_build_fingerprint": plugin,
+        "deployment_manifest_sha256": deployment,
+        "_since_ms": since_ms,
+    }, None
+
+
+def public_qualification_criteria(criteria: dict[str, Any], sample_size: int) -> dict[str, Any]:
+    return {
+        "schema_version": criteria.get("schema_version"),
+        "boundary": criteria.get("boundary"),
+        "helper_revision": criteria.get("helper_revision"),
+        "plugin_build_fingerprint": criteria.get("plugin_build_fingerprint"),
+        "deployment_manifest_sha256": criteria.get("deployment_manifest_sha256"),
+        "sample_size": sample_size,
+        "minimum_decisive_rate": QUALIFICATION_MIN_DECISIVE_RATE,
+    }
+
+
+def qualification_error_summary(
+    reason: str,
+    message: str,
+    sample_size: int,
+    criteria: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "error",
+        "mode": "qualification",
+        "gate_status": "fail",
+        "error_reason": reason,
+        "error_message": message,
+        "sample_count": 0,
+        "remaining_to_sample": max(0, sample_size),
+        "decisive_count": 0,
+        "decisive_rate": 0.0,
+        "hard_failure_count": 1,
+        "hard_failure_counts": {reason: 1},
+        "exclusions": [],
+        "exclusion_counts": {},
+        "groups": [],
+        "qualifying_sample": [],
+        "summaries": empty_qualification_summaries(),
+        "concentration": empty_qualification_concentration(),
+    }
+    if criteria is not None:
+        result["qualification"] = public_qualification_criteria(criteria, sample_size)
+    return result
+
+
+def parse_iso_timestamp_ms(value: Any) -> int | None:
+    text = clean_optional(value)
+    if text is None:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        instant = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if instant.tzinfo is None:
+        return None
+    return int(instant.timestamp() * 1000)
+
+
+def strict_event_timestamp_ms(event: dict[str, Any]) -> int | None:
+    timestamp_ms = event.get("timestamp_ms")
+    parsed = parse_iso_timestamp_ms(event.get("timestamp"))
+    if not isinstance(timestamp_ms, int) or isinstance(timestamp_ms, bool) or parsed is None:
+        return None
+    return timestamp_ms if abs(timestamp_ms - parsed) <= 1 else None
+
+
+def qualification_boundary_timestamp_ms(event: dict[str, Any]) -> int | None:
+    has_timestamp = "timestamp" in event
+    has_timestamp_ms = "timestamp_ms" in event
+    parsed = parse_iso_timestamp_ms(event.get("timestamp")) if has_timestamp else None
+    timestamp_ms = event.get("timestamp_ms")
+    numeric = timestamp_ms if isinstance(timestamp_ms, int) and not isinstance(timestamp_ms, bool) else None
+    if has_timestamp and has_timestamp_ms:
+        if parsed is None or numeric is None or abs(numeric - parsed) > 1:
+            return None
+        return numeric
+    if has_timestamp:
+        return parsed
+    if has_timestamp_ms:
+        return numeric
+    return None
+
+
+def qualification_exclusion(
+    event: dict[str, Any] | None,
+    line_number: int,
+    reason: str,
+    hard_failure: bool,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    exclusion: dict[str, Any] = {
+        "line_number": line_number,
+        "reason": reason,
+        "hard_failure": hard_failure,
+    }
+    if isinstance(event, dict):
+        for key in ("event_id", "assessment_id", "timestamp", "command", "verdict", "bucket"):
+            if event.get(key) not in (None, "", {}, []):
+                exclusion[key] = event[key]
+    if detail:
+        exclusion["detail"] = detail
+    return exclusion
+
+
+def qualification_post_boundary_rows(
+    rows: list[tuple[int, dict[str, Any] | None]],
+    criteria: dict[str, Any],
+) -> tuple[list[tuple[int, dict[str, Any] | None]], tuple[str, str] | None]:
+    boundary = criteria["boundary"]
+    after_event_id = boundary.get("after_event_id")
+    anchor_line: int | None = None
+    if after_event_id:
+        anchors = [line_number for line_number, event in rows if isinstance(event, dict) and event.get("event_id") == after_event_id]
+        if not anchors:
+            return [], ("boundary_event_not_found", "The boundary after_event_id was not found in the outcome log.")
+        if len(anchors) > 1:
+            return [], ("boundary_event_ambiguous", "The boundary after_event_id occurs more than once in the outcome log.")
+        anchor_line = anchors[0]
+    elif any(event is None or qualification_boundary_timestamp_ms(event) is None for _, event in rows):
+        return [], (
+            "boundary_event_required_for_invalid_log",
+            "The outcome log contains malformed or timestamp-indeterminate rows, so qualification requires boundary.after_event_id to prove which rows are post-boundary.",
+        )
+    since_ms = int(criteria["_since_ms"])
+    post_boundary: list[tuple[int, dict[str, Any] | None]] = []
+    timestamp_boundary_reached = False
+    for line_number, event in rows:
+        if anchor_line is not None and line_number <= anchor_line:
+            continue
+        boundary_timestamp = qualification_boundary_timestamp_ms(event) if isinstance(event, dict) else None
+        if boundary_timestamp is not None:
+            if boundary_timestamp < since_ms:
+                continue
+            timestamp_boundary_reached = True
+            post_boundary.append((line_number, event))
+            continue
+        if anchor_line is not None or timestamp_boundary_reached:
+            post_boundary.append((line_number, event))
+    return post_boundary, None
+
+
+def normalize_qualification_attempts(event: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    raw_attempts = event.get("internal_attempts")
+    if not isinstance(raw_attempts, list) or not raw_attempts:
+        return None, "malformed_internal_attempts"
+    attempts: list[dict[str, Any]] = []
+    indexes: list[int] = []
+    for raw in raw_attempts:
+        if not isinstance(raw, dict) or not isinstance(raw.get("attempt_index"), int):
+            return None, "malformed_internal_attempts"
+        verdict = raw.get("verdict")
+        if verdict not in {"GREEN", "RED", "UNKNOWN"}:
+            return None, "malformed_internal_attempts"
+        indexes.append(raw["attempt_index"])
+        attempt = {
+            key: raw[key]
+            for key in (
+                "attempt_index",
+                "terminal",
+                "status",
+                "verdict",
+                "verdict_reason",
+                "bucket",
+                "retry",
+                "attribution_class",
+                "phase",
+                "inspection_run_id",
+                "cleanup_status",
+                "total_problems",
+                "proof_failures",
+                "wait_completion_reason",
+                "snapshot_change_kind",
+            )
+            if key in raw and raw[key] not in (None, {}, [])
+        }
+        attempts.append(attempt)
+    if indexes != sorted(set(indexes)) or attempts[-1].get("terminal") is not True:
+        return None, "malformed_internal_attempts"
+    if any(attempt.get("terminal") is True for attempt in attempts[:-1]):
+        return None, "malformed_internal_attempts"
+    if attempts[-1].get("verdict") != event.get("verdict"):
+        return None, "internal_attempt_outcome_mismatch"
+    return attempts, None
+
+
+def plugin_attribution_mismatches(event: dict[str, Any]) -> list[str]:
+    attribution = event.get("inspection_attribution")
+    if not isinstance(attribution, dict):
+        return ["inspection_attribution"]
+    mismatches: list[str] = []
+    if attribution.get("schema_version") != INSPECTION_ATTRIBUTION_SCHEMA_VERSION:
+        mismatches.append("schema_version")
+    if attribution.get("source") != "plugin":
+        mismatches.append("source")
+    if event.get("ide_channel_source") != "plugin_attribution":
+        mismatches.append("ide_channel_source")
+    required = {
+        "classification": event.get("attribution_class"),
+        "code": event.get("response_code"),
+        "phase": event.get("failure_phase"),
+        "endpoint": event.get("endpoint"),
+        "http_status": event.get("http_status"),
+        "request_id": event.get("request_id"),
+        "observed_by": event.get("observed_by"),
+        "client_run_id": event.get("client_run_id"),
+        "session_id": event.get("session_id"),
+        "project_instance_id": event.get("project_instance_id"),
+        "project_key_hash": event.get("project_key_hash"),
+        "inspection_run_id": event.get("inspection_run_id"),
+        "plugin_version": event.get("plugin_version"),
+        "plugin_build_fingerprint": event.get("plugin_build_fingerprint"),
+        "ide_product_code": event.get("ide_product_code"),
+        "ide_version": event.get("ide_version"),
+        "ide_channel": event.get("ide_channel"),
+        "ide_channel_source": event.get("ide_channel_source"),
+        "helper_revision": event.get("helper_revision"),
+        "cleanup_status": event.get("cleanup_status"),
+    }
+    for key, expected in required.items():
+        if expected in (None, "", {}, []) or attribution.get(key) != expected:
+            mismatches.append(key)
+    return sorted(set(mismatches))
+
+
+def configuration_attribution_mismatches(event: dict[str, Any]) -> list[str]:
+    attribution = event.get("inspection_attribution")
+    if not isinstance(attribution, dict):
+        return ["inspection_attribution"]
+    required = {
+        "schema_version": INSPECTION_ATTRIBUTION_SCHEMA_VERSION,
+        "source": "helper",
+        "observed_by": "helper",
+        "classification": event.get("attribution_class"),
+        "code": event.get("response_code"),
+        "phase": event.get("failure_phase"),
+        "client_run_id": event.get("client_run_id"),
+        "helper_revision": event.get("helper_revision"),
+        "cleanup_status": event.get("cleanup_status"),
+    }
+    mismatches = [
+        key
+        for key, expected in required.items()
+        if expected in (None, "", {}, []) or attribution.get(key) != expected
+    ]
+    for key in ("endpoint", "http_status", "request_id", "ide_channel_source"):
+        expected = event.get(key)
+        actual = attribution.get(key)
+        if expected not in (None, "", {}, []) or actual not in (None, "", {}, []):
+            if actual != expected:
+                mismatches.append(key)
+    return sorted(set(mismatches))
+
+
+def positive_inspection_run_id(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def qualification_event_candidate(
+    event: dict[str, Any],
+    line_number: int,
+    criteria: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    client_run_id = clean_optional(event.get("client_run_id"))
+    assessment_id = clean_optional(event.get("assessment_id"))
+    if client_run_id is None or assessment_id is None:
+        return None, qualification_exclusion(event, line_number, "missing_client_run_id", True)
+    if client_run_id != assessment_id:
+        return None, qualification_exclusion(event, line_number, "assessment_id_mismatch", True)
+    if event.get("helper_revision") != criteria.get("helper_revision"):
+        return None, qualification_exclusion(
+            event,
+            line_number,
+            "helper_revision_mismatch",
+            True,
+            {"actual": event.get("helper_revision"), "expected": criteria.get("helper_revision")},
+        )
+    if event.get("deployment_manifest_sha256") != criteria.get("deployment_manifest_sha256"):
+        return None, qualification_exclusion(
+            event,
+            line_number,
+            "deployment_manifest_mismatch",
+            True,
+            {"actual": event.get("deployment_manifest_sha256"), "expected": criteria.get("deployment_manifest_sha256")},
+        )
+    scope_descriptor = event.get("scope_descriptor")
+    scope_sha256 = event.get("scope_descriptor_sha256")
+    if not isinstance(scope_descriptor, dict) or not scope_descriptor or not isinstance(scope_sha256, str):
+        return None, qualification_exclusion(event, line_number, "missing_scope", True)
+    if scope_sha256 != canonical_json_sha256(scope_descriptor):
+        return None, qualification_exclusion(event, line_number, "scope_hash_mismatch", True)
+    inspection_started = event.get("inspection_started")
+    if not isinstance(inspection_started, bool):
+        return None, qualification_exclusion(event, line_number, "missing_inspection_started", True)
+    classification = clean_optional(event.get("attribution_class"))
+    raw_response_code = clean_optional(event.get("response_code"))
+    raw_phase = clean_optional(event.get("failure_phase"))
+    if classification is None:
+        return None, qualification_exclusion(event, line_number, "missing_attribution_class", True)
+    if raw_response_code is None:
+        return None, qualification_exclusion(event, line_number, "missing_response_code", True)
+    if raw_phase is None:
+        return None, qualification_exclusion(event, line_number, "missing_failure_phase", True)
+    response_code = normalize_reason(raw_response_code)
+    phase = normalize_reason(raw_phase)
+    cleanup_status = clean_optional(event.get("cleanup_status"))
+    if cleanup_status is None:
+        return None, qualification_exclusion(event, line_number, "missing_cleanup_status", True)
+    attempts, attempts_error = normalize_qualification_attempts(event)
+    if attempts_error is not None:
+        return None, qualification_exclusion(event, line_number, attempts_error, True)
+    assert attempts is not None
+    verdict = event.get("verdict")
+    if classification == "configuration_blocked" and inspection_started is False:
+        if cleanup_status not in QUALIFICATION_CLEANUP_STATUSES:
+            return None, qualification_exclusion(event, line_number, "non_clean_cleanup", True)
+        attribution_mismatches = configuration_attribution_mismatches(event)
+        if attribution_mismatches == ["inspection_attribution"]:
+            return None, qualification_exclusion(event, line_number, "missing_inspection_attribution", True)
+        if attribution_mismatches:
+            return None, qualification_exclusion(
+                event,
+                line_number,
+                "inspection_attribution_mismatch",
+                True,
+                {"fields": attribution_mismatches},
+            )
+        if verdict == "UNKNOWN" and raw_response_code in QUALIFICATION_CONFIGURATION_CODES and raw_phase == "selection":
+            return None, qualification_exclusion(event, line_number, "configuration_blocked_before_start", False)
+        return None, qualification_exclusion(
+            event,
+            line_number,
+            "configuration_blocked_not_excludable",
+            True,
+            {"response_code": response_code, "phase": phase, "inspection_started": False},
+        )
+    if inspection_started is False:
+        return None, qualification_exclusion(event, line_number, "inspection_not_started", True)
+    inspection_run = event.get("inspection_run_id")
+    if not positive_inspection_run_id(inspection_run):
+        return None, qualification_exclusion(event, line_number, "missing_inspection_run_id", True)
+    for key, reason in (
+        ("ide_product_code", "missing_ide_product_code"),
+        ("ide_version", "missing_ide_version"),
+        ("ide_channel", "missing_ide_channel"),
+    ):
+        if clean_optional(event.get(key)) is None:
+            return None, qualification_exclusion(event, line_number, reason, True)
+    if event.get("plugin_build_fingerprint") != criteria.get("plugin_build_fingerprint"):
+        return None, qualification_exclusion(
+            event,
+            line_number,
+            "plugin_fingerprint_mismatch",
+            True,
+            {"actual": event.get("plugin_build_fingerprint"), "expected": criteria.get("plugin_build_fingerprint")},
+        )
+    for key, reason in (
+        ("repo_path_hash", "missing_repo_hash"),
+        ("worktree_root_hash", "missing_worktree_hash"),
+        ("project_key_hash", "missing_project_hash"),
+    ):
+        value = clean_optional(event.get(key))
+        if value is None or FULL_SHA256_PATTERN.fullmatch(value) is None:
+            return None, qualification_exclusion(event, line_number, reason, True)
+    for key, reason in (
+        ("plugin_version", "missing_plugin_version"),
+        ("repo_head_sha", "missing_repo_head_sha"),
+        ("session_id", "missing_session_id"),
+        ("project_instance_id", "missing_project_instance_id"),
+    ):
+        if clean_optional(event.get(key)) is None:
+            return None, qualification_exclusion(event, line_number, reason, True)
+    if re.fullmatch(r"[0-9a-fA-F]{40,64}", str(event.get("repo_head_sha"))) is None:
+        return None, qualification_exclusion(event, line_number, "missing_repo_head_sha", True)
+    semantic_failures: list[str] = []
+    attribution_mismatches = plugin_attribution_mismatches(event)
+    if attribution_mismatches == ["inspection_attribution"]:
+        semantic_failures.append("missing_inspection_attribution")
+    elif attribution_mismatches:
+        semantic_failures.append("inspection_attribution_mismatch")
+    if verdict == "UNKNOWN" and (classification in {None, "unattributed"} or event.get("unattributed_unknown") is True):
+        semantic_failures.append("unattributed_unknown")
+    if cleanup_status not in QUALIFICATION_CLEANUP_STATUSES:
+        semantic_failures.append("non_clean_cleanup")
+    if classification == "configuration_blocked":
+        semantic_failures.append("configuration_blocked_after_start")
+    candidate = {
+        "assessment_id": assessment_id,
+        "event_id": event.get("event_id"),
+        "timestamp": event.get("timestamp"),
+        "timestamp_ms": event.get("timestamp_ms"),
+        "command": event.get("command"),
+        "verdict": verdict,
+        "bucket": event.get("bucket"),
+        "classification": classification,
+        "phase": event.get("failure_phase"),
+        "response_code": event.get("response_code"),
+        "cleanup_status": cleanup_status,
+        "cleanup_reason": event.get("cleanup_reason"),
+        "inspection_run_id": inspection_run,
+        "repo_path_hash": event.get("repo_path_hash"),
+        "worktree_root_hash": event.get("worktree_root_hash"),
+        "project_key_hash": event.get("project_key_hash"),
+        "repo_head_sha": event.get("repo_head_sha"),
+        "scope_descriptor_sha256": scope_sha256,
+        "internal_attempts": attempts,
+        "_line_number": line_number,
+        "_hard_failures": sorted(set(semantic_failures)),
+    }
+    return candidate, None
+
+
+def qualification_group(candidate_events: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(candidate_events, key=lambda event: (event["_line_number"], event.get("timestamp_ms", 0), str(event.get("event_id") or "")))
+    attempts: list[dict[str, Any]] = []
+    hard_failures = {reason for event in ordered for reason in event.get("_hard_failures", [])}
+    if len(ordered) > 1:
+        hard_failures.add("multiple_assessment_events")
+    for event_order, event in enumerate(ordered):
+        for attempt in event["internal_attempts"]:
+            attempts.append(dict(attempt) | {"event_id": event.get("event_id"), "event_order": event_order})
+    decisive = {attempt.get("verdict") for attempt in attempts if attempt.get("verdict") in {"GREEN", "RED"}}
+    conflicting = len(decisive) > 1
+    if conflicting:
+        hard_failures.add("conflicting_outcomes")
+    last_attempt = attempts[-1]
+    final_verdict = "CONFLICT" if conflicting else last_attempt.get("verdict")
+    unknown_before_final = any(attempt.get("verdict") == "UNKNOWN" for attempt in attempts[:-1])
+    hidden_terminal_failure = any(
+        attempt.get("verdict") == "UNKNOWN" and attempt.get("retry") is not True
+        for attempt in attempts[:-1]
+    ) or (last_attempt.get("verdict") == "UNKNOWN" and bool(decisive))
+    if hidden_terminal_failure:
+        hard_failures.add("hidden_terminal_failure")
+    identity_fields = ("repo_path_hash", "worktree_root_hash", "project_key_hash", "repo_head_sha", "scope_descriptor_sha256")
+    for field in identity_fields:
+        if len({event.get(field) for event in ordered}) > 1:
+            hard_failures.add("assessment_identity_conflict")
+    final = ordered[-1]
+    inspection_run_ids = []
+    for event in ordered:
+        run_id = event.get("inspection_run_id")
+        if run_id not in inspection_run_ids:
+            inspection_run_ids.append(run_id)
+    return {
+        "assessment_id": final["assessment_id"],
+        "event_ids": [event.get("event_id") for event in ordered],
+        "event_count": len(ordered),
+        "first_timestamp": ordered[0].get("timestamp"),
+        "final_timestamp": final.get("timestamp"),
+        "verdict": final_verdict,
+        "classification": final.get("classification"),
+        "phase": final.get("phase"),
+        "cleanup_status": final.get("cleanup_status"),
+        "inspection_run_ids": inspection_run_ids,
+        "repo_path_hash": final.get("repo_path_hash"),
+        "worktree_root_hash": final.get("worktree_root_hash"),
+        "project_key_hash": final.get("project_key_hash"),
+        "repo_head_sha": final.get("repo_head_sha"),
+        "scope_descriptor_sha256": final.get("scope_descriptor_sha256"),
+        "recovered_from_unknown": (
+            len(ordered) == 1
+            and final_verdict in {"GREEN", "RED"}
+            and unknown_before_final
+            and not hidden_terminal_failure
+        ),
+        "conflicting_decisive_outcomes": conflicting,
+        "hidden_terminal_failure": hidden_terminal_failure,
+        "hard_failures": sorted(hard_failures),
+        "internal_attempts": attempts,
+        "_first_line_number": ordered[0]["_line_number"],
+    }
+
+
+def public_qualification_group(group: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in group.items() if not key.startswith("_") and value not in (None, {}, [])}
+
+
+def repeated_counts(groups: list[dict[str, Any]], key: str) -> dict[str, int]:
+    return {label: count for label, count in count_by(groups, key).items() if label != "unknown" and count > 1}
+
+
+def empty_qualification_summaries() -> dict[str, Any]:
+    return {
+        "by_verdict": {},
+        "by_classification": {},
+        "by_phase": {},
+        "by_cleanup_status": {},
+        "recovered_from_unknown": 0,
+        "conflicting_decisive_outcomes": 0,
+        "hidden_terminal_failures": 0,
+    }
+
+
+def empty_qualification_concentration() -> dict[str, Any]:
+    return {"repeated_repositories": {}, "repeated_projects": {}}
+
+
+def summarize_qualified_outcomes(log_path: Path, criteria: dict[str, Any], sample_size: int) -> dict[str, Any]:
+    if sample_size <= 0:
+        return qualification_error_summary("invalid_sample_size", "sample-size must be greater than zero.", sample_size, criteria)
+    base = {
+        "status": "ok",
+        "mode": "qualification",
+        "qualification": public_qualification_criteria(criteria, sample_size),
+    }
+    if not log_path.exists():
+        return base | {
+            "gate_status": "incomplete",
+            "post_boundary_events": 0,
+            "sample_count": 0,
+            "remaining_to_sample": sample_size,
+            "decisive_count": 0,
+            "decisive_rate": 0.0,
+            "hard_failure_count": 0,
+            "hard_failure_counts": {},
+            "exclusions": [],
+            "exclusion_counts": {},
+            "groups": [],
+            "qualifying_sample": [],
+            "summaries": empty_qualification_summaries(),
+            "concentration": empty_qualification_concentration(),
+            "gate_failures": ["sample_incomplete"],
+        }
+    rows: list[tuple[int, dict[str, Any] | None]] = []
+    try:
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    value = json.loads(stripped)
+                except json.JSONDecodeError:
+                    value = None
+                rows.append((line_number, value if isinstance(value, dict) else None))
+    except OSError:
+        return qualification_error_summary("outcome_log_unreadable", "The outcome log could not be read.", sample_size, criteria)
+    post_boundary, boundary_error = qualification_post_boundary_rows(rows, criteria)
+    if boundary_error is not None:
+        return qualification_error_summary(boundary_error[0], boundary_error[1], sample_size, criteria)
+    exclusions: list[dict[str, Any]] = []
+    candidates_by_assessment: dict[str, list[dict[str, Any]]] = {}
+    post_boundary_lines = {line_number for line_number, _ in post_boundary}
+    seen_event_ids: dict[str, str] = {}
+    for line_number, event in rows:
+        if line_number in post_boundary_lines or not isinstance(event, dict):
+            continue
+        event_id = clean_optional(event.get("event_id"))
+        if event_id is None:
+            continue
+        event_signature = canonical_json_sha256(event)
+        previous_signature = seen_event_ids.get(event_id)
+        if previous_signature is None:
+            seen_event_ids[event_id] = event_signature
+        elif previous_signature != event_signature:
+            seen_event_ids[event_id] = "pre_boundary_conflict"
+    for line_number, event in post_boundary:
+        if event is None:
+            exclusions.append(qualification_exclusion(None, line_number, "invalid_json", True))
+            continue
+        if event.get("schema_version") != OUTCOME_LOG_SCHEMA_VERSION:
+            exclusions.append(qualification_exclusion(event, line_number, "legacy_schema", True))
+            continue
+        if strict_event_timestamp_ms(event) is None:
+            exclusions.append(qualification_exclusion(event, line_number, "invalid_timestamp", True))
+            continue
+        event_id = clean_optional(event.get("event_id"))
+        if event_id is None:
+            exclusions.append(qualification_exclusion(event, line_number, "missing_event_id", True))
+            continue
+        event_signature = canonical_json_sha256(event)
+        if event_id in seen_event_ids:
+            if seen_event_ids[event_id] == event_signature:
+                exclusions.append(qualification_exclusion(event, line_number, "duplicate_event", False))
+            else:
+                exclusions.append(qualification_exclusion(event, line_number, "conflicting_event_id", True))
+            continue
+        seen_event_ids[event_id] = event_signature
+        if event.get("event_kind") != "inspection_assessment":
+            exclusions.append(qualification_exclusion(event, line_number, "non_assessment_command", False))
+            continue
+        if canonical_command(str(event.get("command") or "")) not in OUTCOME_ASSESSMENT_COMMANDS:
+            exclusions.append(qualification_exclusion(event, line_number, "non_assessment_command", True))
+            continue
+        candidate, exclusion = qualification_event_candidate(event, line_number, criteria)
+        if exclusion is not None:
+            exclusions.append(exclusion)
+            continue
+        assert candidate is not None
+        candidates_by_assessment.setdefault(candidate["assessment_id"], []).append(candidate)
+    groups = sorted(
+        (qualification_group(events) for events in candidates_by_assessment.values()),
+        key=lambda group: (group["_first_line_number"], str(group["assessment_id"])),
+    )
+    selected_assessment_ids = [group["assessment_id"] for group in groups[:sample_size]]
+    if len(selected_assessment_ids) == sample_size:
+        frozen_sample_cutoff_line = groups[sample_size - 1]["_first_line_number"]
+        sample_candidates_by_assessment = {
+            assessment_id: [
+                candidate
+                for candidate in candidates_by_assessment[assessment_id]
+                if candidate["_line_number"] <= frozen_sample_cutoff_line
+            ]
+            for assessment_id in selected_assessment_ids
+        }
+    else:
+        frozen_sample_cutoff_line = max((line_number for line_number, _ in post_boundary), default=0)
+        sample_candidates_by_assessment = {
+            assessment_id: list(candidates_by_assessment[assessment_id])
+            for assessment_id in selected_assessment_ids
+        }
+    sample = [
+        qualification_group(sample_candidates_by_assessment[assessment_id])
+        for assessment_id in selected_assessment_ids
+    ]
+    sample_exclusions = [
+        exclusion
+        for exclusion in exclusions
+        if int(exclusion.get("line_number") or 0) <= frozen_sample_cutoff_line
+    ]
+    decisive_count = sum(1 for group in sample if group.get("verdict") in {"GREEN", "RED"})
+    decisive_rate = decisive_count / len(sample) if sample else 0.0
+    exclusion_counts = count_by(exclusions, "reason")
+    sample_exclusion_counts = count_by(sample_exclusions, "reason")
+    hard_failure_counts: dict[str, int] = {}
+    for exclusion in sample_exclusions:
+        if exclusion.get("hard_failure") is True:
+            reason = str(exclusion.get("reason"))
+            hard_failure_counts[reason] = hard_failure_counts.get(reason, 0) + 1
+    for group in sample:
+        for reason in group.get("hard_failures", []):
+            hard_failure_counts[reason] = hard_failure_counts.get(reason, 0) + 1
+    hard_failure_counts = dict(sorted(hard_failure_counts.items()))
+    hard_failure_count = sum(hard_failure_counts.values())
+    all_hard_failure_counts: dict[str, int] = {}
+    for exclusion in exclusions:
+        if exclusion.get("hard_failure") is True:
+            reason = str(exclusion.get("reason"))
+            all_hard_failure_counts[reason] = all_hard_failure_counts.get(reason, 0) + 1
+    for group in groups:
+        for reason in group.get("hard_failures", []):
+            all_hard_failure_counts[reason] = all_hard_failure_counts.get(reason, 0) + 1
+    post_sample_hard_failure_counts = {
+        reason: count - hard_failure_counts.get(reason, 0)
+        for reason, count in sorted(all_hard_failure_counts.items())
+        if count > hard_failure_counts.get(reason, 0)
+    }
+    remaining = max(0, sample_size - len(sample))
+    gate_failures = list(hard_failure_counts)
+    if remaining:
+        gate_status = "fail" if hard_failure_count else "incomplete"
+        gate_failures.append("sample_incomplete")
+    elif decisive_rate < QUALIFICATION_MIN_DECISIVE_RATE:
+        gate_status = "fail"
+        gate_failures.append("decisive_rate_below_threshold")
+    elif hard_failure_count:
+        gate_status = "fail"
+    else:
+        gate_status = "pass"
+    public_groups = [public_qualification_group(group) for group in groups]
+    public_sample = [public_qualification_group(group) for group in sample]
+    summaries = {
+        "by_verdict": count_by(sample, "verdict"),
+        "by_classification": count_by(sample, "classification"),
+        "by_phase": count_by(sample, "phase"),
+        "by_cleanup_status": count_by(sample, "cleanup_status"),
+        "recovered_from_unknown": sum(1 for group in sample if group.get("recovered_from_unknown") is True),
+        "conflicting_decisive_outcomes": sum(1 for group in sample if group.get("conflicting_decisive_outcomes") is True),
+        "hidden_terminal_failures": sum(1 for group in sample if group.get("hidden_terminal_failure") is True),
+    }
+    concentration = {
+        "repeated_repositories": repeated_counts(sample, "repo_path_hash"),
+        "repeated_projects": repeated_counts(sample, "project_key_hash"),
+    }
+    result = base | {
+        "gate_status": gate_status,
+        "post_boundary_events": len(post_boundary),
+        "sample_cutoff_line": frozen_sample_cutoff_line,
+        "post_sample_events": sum(1 for line_number, _ in post_boundary if line_number > frozen_sample_cutoff_line),
+        "assessment_groups": len(groups),
+        "sample_count": len(sample),
+        "remaining_to_sample": remaining,
+        "decisive_count": decisive_count,
+        "decisive_rate": round(decisive_rate, 6),
+        "hard_failure_count": hard_failure_count,
+        "hard_failure_counts": hard_failure_counts,
+        "post_sample_hard_failure_counts": post_sample_hard_failure_counts,
+        "exclusions": exclusions,
+        "exclusion_counts": exclusion_counts,
+        "sample_window_exclusion_counts": sample_exclusion_counts,
+        "groups": public_groups,
+        "qualifying_sample": public_sample,
+        "summaries": summaries,
+        "concentration": concentration,
+        "gate_failures": sorted(set(gate_failures)),
+    }
+    return redact_durable_log(result)
+
+
+def utc_timestamp(timestamp_ms: int | None = None) -> str:
+    instant = datetime.fromtimestamp((timestamp_ms if timestamp_ms is not None else int(time.time() * 1000)) / 1000, tz=timezone.utc)
+    return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def discover_rollout_file() -> str | None:
@@ -4202,6 +5229,13 @@ def discover_rollout_file() -> str | None:
         if value:
             return str(Path(value).expanduser())
     return None
+
+
+def discover_deployment_manifest_file() -> str | None:
+    configured = os.environ.get(DEPLOYMENT_MANIFEST_ENV)
+    if configured and configured.strip():
+        return str(Path(configured).expanduser())
+    return discover_rollout_file()
 
 
 def verdict_exit_code(payload: dict[str, Any], success_verdicts: set[str]) -> int:
@@ -4392,6 +5426,9 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
 
 
 def print_outcome_summary(payload: dict[str, Any]) -> None:
+    if payload.get("mode") == "qualification":
+        print_qualification_summary(payload)
+        return
     summary = payload.get("summary")
     if not isinstance(summary, dict):
         return
@@ -4416,6 +5453,27 @@ def print_outcome_summary(payload: dict[str, Any]) -> None:
     print(safe_text("RETRYABLE_UNKNOWNS: {count}", {
         "count": summary.get("retryable_unknowns", 0),
     }))
+
+
+def print_qualification_summary(payload: dict[str, Any]) -> None:
+    qualification = payload.get("qualification") if isinstance(payload.get("qualification"), dict) else {}
+    print(safe_text(
+        "QUALIFICATION_GATE: status={gate_status} sample={sample_count}/{sample_size} decisive_rate={decisive_rate} remaining={remaining} hard_failures={hard_failures}",
+        {
+            "gate_status": payload.get("gate_status"),
+            "sample_count": payload.get("sample_count", 0),
+            "sample_size": qualification.get("sample_size", 0),
+            "decisive_rate": payload.get("decisive_rate", 0.0),
+            "remaining": payload.get("remaining_to_sample", 0),
+            "hard_failures": payload.get("hard_failure_count", 0),
+        },
+    ))
+    exclusions = payload.get("exclusion_counts")
+    if isinstance(exclusions, dict) and exclusions:
+        print("QUALIFICATION_EXCLUSIONS: " + " ".join(f"{reason}={count}" for reason, count in exclusions.items()))
+    failures = payload.get("hard_failure_counts")
+    if isinstance(failures, dict) and failures:
+        print("QUALIFICATION_FAILURES: " + " ".join(f"{reason}={count}" for reason, count in failures.items()))
 
 
 def print_error_details(payload: dict[str, Any]) -> None:
@@ -4804,6 +5862,18 @@ def git_root(path: Path) -> Path | None:
         return Path(output.strip()).resolve()
     except subprocess.CalledProcessError:
         return None
+
+
+def git_head_sha(path: Path) -> str | None:
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return output if re.fullmatch(r"[0-9a-fA-F]{40,64}", output) else None
 
 
 def git_common_worktree(path: Path) -> Path | None:
