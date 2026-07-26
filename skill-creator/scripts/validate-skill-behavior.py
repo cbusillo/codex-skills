@@ -1072,6 +1072,45 @@ def test_github_merges_land_through_prs() -> None:
     )
 
 
+def test_github_unanswered_comment_gate_is_shared() -> None:
+    rollup = " ".join((ROOT / "github-work-rollup" / "SKILL.md").read_text().lower().split())
+    github = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
+    github_plan = " ".join((ROOT / "github-plan" / "SKILL.md").read_text().lower().split())
+    closeout = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
+    babysit = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
+    watcher = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text()
+    scanner = ROOT / "github-work-rollup" / "scripts" / "github_unanswered_comments.py"
+
+    require(scanner.exists(), "GitHub work rollup must bundle the unanswered-comment scanner")
+    require(
+        "generic completion or closeout comment must not hide an unrelated human comment" in rollup,
+        "Unanswered-comment guidance must preserve human comments across generic bot closeout comments",
+    )
+    require(
+        "actors with no repository association" in rollup
+        and "`none` repository association" in babysit,
+        "Comment monitoring must surface unknown external commenters regardless of association",
+    )
+    for skill_name, text in (
+        ("github", github),
+        ("github-plan", github_plan),
+        ("work-closeout", closeout),
+    ):
+        require(
+            "github_unanswered_comments.py" in text,
+            f"{skill_name} must route close/closeout work through the unanswered-comment scanner",
+        )
+        require(
+            "--thread owner/repo#number" in text,
+            f"{skill_name} must use full-history thread scans for close/closeout gates",
+        )
+    require(
+        "TRUSTED_AUTHOR_ASSOCIATIONS" not in watcher
+        and "is_external_human_review_author" in watcher,
+        "PR babysitting must not filter external humans by repository association",
+    )
+
+
 def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     github_text = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
     babysit_text = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
@@ -1622,6 +1661,7 @@ def main() -> None:
         test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
+        test_github_unanswered_comment_gate_is_shared,
         test_runtime_checkout_reconciliation_is_safe_and_delegated,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_safe_exit_requires_love_gate_closeout,

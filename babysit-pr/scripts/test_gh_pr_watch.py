@@ -201,6 +201,64 @@ def test_recommend_actions_prioritizes_review_comments():
     ]
 
 
+def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
+    external_comment = {
+        "id": 10,
+        "user": {"login": "new-contributor"},
+        "author_association": "NONE",
+        "created_at": "2026-07-26T12:00:00Z",
+        "body": "I can help test this.",
+        "html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
+    }
+
+    def fake_api(endpoint, repo=None):
+        if endpoint.endswith("/issues/123/comments"):
+            return [external_comment]
+        return []
+
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", fake_api)
+
+    state = {}
+    items = gh_pr_watch.fetch_new_review_items(
+        sample_pr(),
+        state,
+        fresh_state=True,
+        authenticated_login="shiny-code-bot",
+    )
+
+    assert [(item["author"], item["author_association"]) for item in items] == [
+        ("new-contributor", "NONE")
+    ]
+
+
+def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
+    automation_comment = {
+        "id": 10,
+        "user": {"login": "shiny-code-bot"},
+        "author_association": "COLLABORATOR",
+        "created_at": "2026-07-26T12:00:00Z",
+        "body": "Completed through PR #123.",
+        "html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
+    }
+
+    def fake_api(endpoint, repo=None):
+        if endpoint.endswith("/issues/123/comments"):
+            return [automation_comment]
+        return []
+
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", fake_api)
+
+    assert (
+        gh_pr_watch.fetch_new_review_items(
+            sample_pr(),
+            {},
+            fresh_state=True,
+            authenticated_login="shiny-code-bot",
+        )
+        == []
+    )
+
+
 def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():
     actions = gh_pr_watch.recommend_actions(
         sample_pr(),

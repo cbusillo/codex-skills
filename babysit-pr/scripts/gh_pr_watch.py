@@ -38,10 +38,8 @@ PENDING_CHECK_STATES = {
 REVIEW_BOT_LOGIN_KEYWORDS = {
     "codex",
 }
-TRUSTED_AUTHOR_ASSOCIATIONS = {
-    "OWNER",
-    "MEMBER",
-    "COLLABORATOR",
+AUTOMATION_BOT_LOGINS = {
+    "shiny-code-bot",
 }
 MERGE_BLOCKING_REVIEW_DECISIONS = {
     "REVIEW_REQUIRED",
@@ -521,7 +519,8 @@ def extract_login(user_obj):
 
 
 def is_bot_login(login):
-    return bool(login) and login.endswith("[bot]")
+    normalized = str(login or "").casefold()
+    return bool(normalized) and (normalized.endswith("[bot]") or normalized in AUTOMATION_BOT_LOGINS)
 
 
 def is_actionable_review_bot_login(login):
@@ -531,14 +530,13 @@ def is_actionable_review_bot_login(login):
     return any(keyword in lower_login for keyword in REVIEW_BOT_LOGIN_KEYWORDS)
 
 
-def is_trusted_human_review_author(item, authenticated_login):
+def is_external_human_review_author(item, authenticated_login):
     author = str(item.get("author") or "")
     if not author:
         return False
-    if authenticated_login and author == authenticated_login:
-        return True
-    association = str(item.get("author_association") or "").upper()
-    return association in TRUSTED_AUTHOR_ASSOCIATIONS
+    if authenticated_login and author.casefold() == str(authenticated_login).casefold():
+        return False
+    return not is_bot_login(author)
 
 
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
@@ -574,7 +572,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         if is_bot_login(author):
             if not is_actionable_review_bot_login(author):
                 continue
-        elif not is_trusted_human_review_author(item, authenticated_login):
+        elif not is_external_human_review_author(item, authenticated_login):
             continue
 
         kind = item["kind"]

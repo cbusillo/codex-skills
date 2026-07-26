@@ -98,6 +98,15 @@ preserved, or intentionally left in place.
    Use `github-plan` for planning issue indexes, Project state, blocker graphs,
    and planning issue closure. This skill owns closeout judgment and hygiene;
    the GitHub skills own helper-backed GitHub writes and planning mutations.
+   Before declaring an owning GitHub issue or PR settled, run the installed
+   `github-work-rollup/scripts/github_unanswered_comments.py` helper with
+   `--thread OWNER/REPO#NUMBER` so the exact thread's full history is checked.
+   Surface every external comment without a later response;
+   include closed items, and do not treat a generic automation closeout comment
+   as a response. Unanswered comments make safe-to-exit conditional or no until
+   they are answered or explicitly handed off. Exit code `2` means attention is
+   required; exit code `3` means coverage is incomplete and cannot support an
+   all-clear.
    When an open PR still needs ongoing CI, review, mergeability, or
    merged/closed follow-through, transfer that loop to `babysit-pr` before
    declaring the work parked or safe to exit. For an already merged or closed PR,
