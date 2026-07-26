@@ -1545,6 +1545,45 @@ def test_gpt56_rollout_comparisons_preserve_pinned_baselines() -> None:
     )
 
 
+def test_upstream_convergence_preserves_repository_authority() -> None:
+    source = (ROOT / "upstream-convergence" / "SKILL.md").read_text()
+    adapter = (
+        ROOT / "upstream-convergence" / "references" / "repo-adapter.md"
+    ).read_text()
+    normalized = " ".join(source.lower().split())
+    normalized_adapter = " ".join(adapter.lower().split())
+
+    require(
+        "update, refresh, synchronize, converge, or forward-port" in normalized
+        and "do not use for an ordinary feature-branch merge" in normalized,
+        "Upstream convergence must have a narrow maintained-fork trigger boundary",
+    )
+    require(
+        "the repository owns all product policy and enforcement" in normalized
+        and "do not copy repository-specific rules into this skill" in normalized,
+        "Upstream convergence must keep product contracts repository-local",
+    )
+    require(
+        "never regenerate a pre-anchor ownership baseline" in normalized
+        and "never rewrite an existing snapshot" in normalized,
+        "Upstream convergence must preserve immutable baselines and snapshot history",
+    )
+    require(
+        "discard reviews performed against the wrong checkout" in normalized,
+        "Upstream convergence must reject stale or wrong-worktree reviews",
+    )
+    require(
+        "not a generic policy language" in normalized_adapter
+        and "do not add arbitrary executable hooks" in normalized_adapter,
+        "The repository adapter must remain a small non-executable identity boundary",
+    )
+    require(
+        "must not fetch, merge, resolve conflicts, build, commit, push, open a pr"
+        in normalized_adapter,
+        "The repository driver must retain explicit phase boundaries",
+    )
+
+
 def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
     creator_source = (ROOT / "skill-creator" / "SKILL.md").read_text()
     creator_text = creator_source.lower()
@@ -1595,6 +1634,7 @@ def main() -> None:
         test_dns_cloudflare_routes_to_local_infra_context,
         test_openai_docs_latest_target_and_fallback_contract,
         test_gpt56_rollout_comparisons_preserve_pinned_baselines,
+        test_upstream_convergence_preserves_repository_authority,
         test_skill_creator_mentions_exec_harness_for_behavior_changes,
     ]
     for test in tests:

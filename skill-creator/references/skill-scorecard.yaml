@@ -942,6 +942,58 @@ skills:
         No live-model advisory eval currently demonstrates that the compressed
         outcome-first guidance preserves skill-authoring behavior; the fake
         Responses scenario validates request assembly only.
+  upstream-convergence:
+    status: active
+    risk_classes:
+      - command_execution
+      - planning
+      - security
+    checks:
+      - check_id: behavior-validation
+        kind: static_validator
+        mode: ci
+        dimension: routing
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/upstream-convergence-skill
+          notes: >-
+            Static behavior validation preserves the maintained-fork trigger,
+            repository-authority boundary, immutable history, and phased driver
+            contract.
+      - check_id: explicit-invocation-scenario
+        kind: exec_harness
+        mode: fake_responses_api
+        dimension: routing
+        gate: conditional
+        scenario: >-
+          upstream-convergence/tests/exec-harness/explicit-invocation.json
+        baseline:
+          outcome: pass
+          score: 1000
+          command_count: 0
+          tool_call_count: 0
+          token_estimate: 0
+          last_validated_ref: feat/upstream-convergence-skill
+          notes: >-
+            Fake Responses API scenario verifies explicit invocation loads the
+            repository-authority, immutable baseline, and completion-evidence
+            guidance without model tokens.
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: feat/upstream-convergence-skill
+          notes: Metadata, references, commands, and UI configuration validate.
+    known_gaps:
+      - >-
+        Live-model implicit-trigger and adjacent non-trigger behavior remains
+        advisory rather than a required CI gate.
   work-closeout:
     status: active
     risk_classes:
