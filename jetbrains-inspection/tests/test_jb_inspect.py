@@ -132,6 +132,139 @@ def scope_capture_diagnostic(*files: dict) -> dict:
     }
 
 
+def qualification_payload(
+    *,
+    since: str = "2026-07-26T00:00:00.000Z",
+    after_event_id: str | None = None,
+    helper_revision: str = "sha256:" + "1" * 64,
+    plugin_build_fingerprint: str = "a" * 40 + "-clean",
+    deployment_manifest_sha256: str = "sha256:" + "2" * 64,
+) -> dict:
+    boundary = {"since": since}
+    if after_event_id is not None:
+        boundary["after_event_id"] = after_event_id
+    return {
+        "schema_version": 1,
+        "boundary": boundary,
+        "helper_revision": helper_revision,
+        "plugin_build_fingerprint": plugin_build_fingerprint,
+        "deployment_manifest_sha256": deployment_manifest_sha256,
+    }
+
+
+def qualification_event(
+    event_id: str,
+    *,
+    assessment_id: str | None = None,
+    timestamp: str = "2026-07-26T00:00:01.000Z",
+    verdict: str = "GREEN",
+    inspection_run_id: int = 1,
+    repo_path_hash: str = "sha256:" + "3" * 64,
+    project_key_hash: str = "sha256:" + "4" * 64,
+    event_kind: str = "inspection_assessment",
+    command: str = "inspect-closeout",
+) -> dict:
+    assessment_id = assessment_id or f"assessment-{event_id}"
+    scope_descriptor = {
+        "scope": "changed_files",
+        "include_unversioned": True,
+        "changed_files_mode": "all",
+        "profile": "",
+        "severity": "all",
+        "problem_type": "all",
+        "file_pattern": "all",
+        "allow_text_only_coverage": False,
+        "include_stale": False,
+        "limit": 100,
+        "offset": 0,
+    }
+    decisive = verdict in {"GREEN", "RED"}
+    classification = "decisive" if decisive else "legitimate_fail_closed"
+    response_code = "no_matching_findings" if verdict == "GREEN" else "actionable_findings" if verdict == "RED" else "timeout"
+    cleanup_status = "closed"
+    attribution = {
+        "schema_version": 1,
+        "source": "plugin",
+        "observed_by": "helper",
+        "classification": classification,
+        "code": response_code,
+        "phase": "problems",
+        "endpoint": "/api/inspection/problems",
+        "http_status": 200,
+        "request_id": f"request-{event_id}",
+        "client_run_id": assessment_id,
+        "session_id": "session-1",
+        "project_instance_id": "project-instance-1",
+        "project_key_hash": project_key_hash,
+        "inspection_run_id": inspection_run_id,
+        "plugin_version": "1.13.17",
+        "plugin_build_fingerprint": "a" * 40 + "-clean",
+        "ide_product_code": "PY",
+        "ide_version": "2026.2",
+        "ide_channel": "eap",
+        "ide_channel_source": "plugin_attribution",
+        "helper_revision": "sha256:" + "1" * 64,
+        "cleanup_status": cleanup_status,
+    }
+    return {
+        "schema_version": 2,
+        "event_id": event_id,
+        "event_kind": event_kind,
+        "assessment_id": assessment_id,
+        "timestamp": timestamp,
+        "timestamp_ms": jb_inspect.parse_iso_timestamp_ms(timestamp),
+        "command": command,
+        "verdict": verdict,
+        "bucket": "clean" if verdict == "GREEN" else "findings" if verdict == "RED" else "ide_not_ready",
+        "verdict_reason": response_code,
+        "status": "results_available" if decisive else "running",
+        "scope": "changed_files",
+        "scope_descriptor": scope_descriptor,
+        "scope_descriptor_sha256": jb_inspect.canonical_json_sha256(scope_descriptor),
+        "repo_path_hash": repo_path_hash,
+        "worktree_root_hash": "sha256:" + "5" * 64,
+        "repo_head_sha": "b" * 40,
+        "ide": "PyCharm",
+        "ide_channel": "eap",
+        "ide_channel_source": "plugin_attribution",
+        "ide_product_code": "PY",
+        "ide_version": "2026.2",
+        "project_key_hash": project_key_hash,
+        "project_instance_id": "project-instance-1",
+        "plugin_build_fingerprint": "a" * 40 + "-clean",
+        "plugin_version": "1.13.17",
+        "helper_revision": "sha256:" + "1" * 64,
+        "deployment_manifest_sha256": "sha256:" + "2" * 64,
+        "failure_phase": "problems",
+        "attribution_class": classification,
+        "response_code": response_code,
+        "endpoint": "/api/inspection/problems",
+        "http_status": 200,
+        "observed_by": "helper",
+        "client_run_id": assessment_id,
+        "request_id": f"request-{event_id}",
+        "session_id": "session-1",
+        "inspection_run_id": inspection_run_id,
+        "inspection_started": True,
+        "inspection_attribution": attribution,
+        "cleanup_status": cleanup_status,
+        "internal_attempts": [
+            {
+                "attempt_index": 0,
+                "terminal": True,
+                "verdict": verdict,
+                "verdict_reason": response_code,
+                "bucket": "clean" if verdict == "GREEN" else "findings" if verdict == "RED" else "ide_not_ready",
+                "retry": False,
+                "attribution_class": classification,
+                "phase": "problems",
+                "inspection_run_id": inspection_run_id,
+                "cleanup_status": cleanup_status,
+            }
+        ],
+    }
+
+
 class ParserCommandAliasTest(unittest.TestCase):
     def test_preferred_commands_parse_and_canonicalize(self):
         parser = jb_inspect.build_parser()
@@ -214,6 +347,20 @@ class ParserCommandAliasTest(unittest.TestCase):
         args = parser.parse_args(["cleanup-helper-leases", "--lifecycle-lock-timeout-ms", "1234"])
 
         self.assertEqual(args.lifecycle_lock_timeout_ms, 1234)
+
+    def test_summarize_outcomes_accepts_strict_qualification_options(self):
+        parser = jb_inspect.build_parser()
+
+        args = parser.parse_args([
+            "summarize-outcomes",
+            "--qualification-file",
+            "/tmp/qualification.json",
+            "--sample-size",
+            "50",
+        ])
+
+        self.assertEqual(args.qualification_file, "/tmp/qualification.json")
+        self.assertEqual(args.sample_size, 50)
 
 
 class BuildContextTest(unittest.TestCase):
@@ -1954,6 +2101,33 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["status"], "clean")
         self.assertEqual(calls, [{"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}])
         self.assertNotIn("_lease", result["prepared"])
+
+    def test_keep_warm_marks_helper_opened_project_as_not_cleanup_clean(self):
+        route = {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}
+        lease = {"lease_id": "lease-1", "opened_by_helper": True}
+        original_prepare = jb_inspect.prepare_lifecycle_details
+        original_run = jb_inspect.run_inspection_on_route
+        original_cleanup = jb_inspect.cleanup_lifecycle
+        jb_inspect.prepare_lifecycle_details = lambda args, context: ({"status": "prepared", "route": route}, lease, None)
+        jb_inspect.run_inspection_on_route = lambda args, context, active_route: {
+            "status": "clean",
+            "clean": True,
+            "route": active_route,
+        }
+        jb_inspect.cleanup_lifecycle = lambda *args: self.fail("keep-warm must not close the helper-opened project")
+        try:
+            result = jb_inspect.command_closeout(Namespace(keep_warm=True), {})
+        finally:
+            jb_inspect.prepare_lifecycle_details = original_prepare
+            jb_inspect.run_inspection_on_route = original_run
+            jb_inspect.cleanup_lifecycle = original_cleanup
+
+        self.assertEqual(result["verdict"], "GREEN")
+        self.assertEqual(
+            result["cleanup"],
+            {"status": "kept_warm", "reason": "keep_warm_requested", "lease_id": "lease-1"},
+        )
+        self.assertFalse(result.get("cleanup_failed", False))
 
     def test_closeout_retries_retryable_unknown_once_before_cleanup(self):
         calls = []
@@ -4935,6 +5109,26 @@ class AttributionContractTest(unittest.TestCase):
         self.assertEqual(payload["inspection_attribution"]["code"], "unattributed_unknown")
         self.assertEqual(payload["bucket"], "tool_bug")
 
+    def test_prestart_configuration_attribution_records_cleanup_not_needed(self):
+        payload = {
+            "command": "inspect-closeout",
+            "status": "error",
+            "error_reason": "ide_selection_required",
+            "context": {"client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+            "cleanup": {},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        attribution = payload["inspection_attribution"]
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(attribution["source"], "helper")
+        self.assertEqual(attribution["classification"], "configuration_blocked")
+        self.assertEqual(attribution["code"], "ide_selection_required")
+        self.assertEqual(attribution["phase"], "selection")
+        self.assertEqual(attribution["cleanup_status"], "not_needed")
+        self.assertEqual(attribution["cleanup_reason"], "inspection_not_started")
+
     def test_outcome_record_keeps_provenance_without_paths_or_tokens(self):
         payload = {
             "status": "error",
@@ -4993,6 +5187,191 @@ class AttributionContractTest(unittest.TestCase):
         self.assertNotIn("/private/", unknown_serialized)
         self.assertNotIn("must-not-leak", serialized)
         self.assertIn("scope_directory_requested_hash", unknown_record["capture_diagnostic"])
+
+    def test_helper_and_manifest_revisions_use_full_content_sha256(self):
+        self.assertRegex(jb_inspect.helper_revision(), r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(jb_inspect.stable_value_hash("repo") or "", r"^sha256:[0-9a-f]{64}$")
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "deployment.json"
+            manifest.write_text('{"revision":1}\n', encoding="utf-8")
+            first = jb_inspect.file_content_sha256(manifest)
+            manifest.write_text('{"revision":2}\n', encoding="utf-8")
+            second = jb_inspect.file_content_sha256(manifest)
+
+        self.assertRegex(first or "", r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(second or "", r"^sha256:[0-9a-f]{64}$")
+        self.assertNotEqual(first, second)
+
+    def test_green_and_red_preserve_plugin_attribution_and_authoritative_channel(self):
+        for verdict, total_problems, reason in (
+            ("GREEN", 0, "no_matching_findings"),
+            ("RED", 1, "actionable_findings"),
+        ):
+            with self.subTest(verdict=verdict):
+                payload = {
+                    "status": "results_available",
+                    "total_problems": total_problems,
+                    "problems": [] if total_problems == 0 else [{"description": "fixture"}],
+                    "context": {
+                        "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "ide_selection": {"channel": "stable"},
+                    },
+                    "route": {
+                        "session_id": "session-1",
+                        "project_instance_id": "project-1",
+                        "ide": {
+                            "channel": "eap",
+                            "product_code": "PY",
+                            "version": "2026.2",
+                            "plugin_version": "1.13.17",
+                            "plugin_build_fingerprint": "a" * 40 + "-clean",
+                        },
+                    },
+                    "inspection_attribution": {
+                        "schema_version": 1,
+                        "source": "plugin",
+                        "classification": "decisive",
+                        "code": reason,
+                        "phase": "problems",
+                        "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "inspection_run_id": 7,
+                        "plugin_version": "1.13.17",
+                        "plugin_build_fingerprint": "a" * 40 + "-clean",
+                        "ide_product_code": "PY",
+                        "ide_version": "2026.2",
+                        "ide_channel": "eap",
+                    },
+                    "cleanup": {"status": "closed"},
+                }
+
+                jb_inspect.apply_verdict(payload)
+
+                attribution = payload["inspection_attribution"]
+                self.assertEqual(payload["verdict"], verdict)
+                self.assertEqual(attribution["source"], "plugin")
+                self.assertEqual(attribution["classification"], "decisive")
+                self.assertEqual(attribution["ide_channel"], "eap")
+                self.assertEqual(attribution["ide_channel_source"], "plugin_attribution")
+                self.assertEqual(attribution["helper_revision"], jb_inspect.helper_revision())
+                self.assertEqual(attribution["cleanup_status"], "closed")
+
+    def test_local_client_run_id_remains_authoritative_when_plugin_echo_differs(self):
+        local_client_run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        plugin_client_run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        payload = {
+            "status": "results_available",
+            "total_problems": 0,
+            "problems": [],
+            "context": {
+                "repo_path": "/repo",
+                "worktree_root": "/repo",
+                "client_run_id": local_client_run_id,
+            },
+            "route": {
+                "project_key": "path:/repo",
+                "project_instance_id": "project-1",
+                "session_id": "session-1",
+                "ide": {
+                    "product_code": "PY",
+                    "version": "2026.2",
+                    "channel": "eap",
+                    "plugin_version": "1.13.17",
+                    "plugin_build_fingerprint": "a" * 40 + "-clean",
+                },
+            },
+            "inspection_attribution": {
+                "schema_version": 1,
+                "source": "plugin",
+                "classification": "decisive",
+                "code": "no_matching_findings",
+                "phase": "problems",
+                "client_run_id": plugin_client_run_id,
+                "inspection_run_id": 7,
+                "plugin_version": "1.13.17",
+                "plugin_build_fingerprint": "a" * 40 + "-clean",
+                "ide_product_code": "PY",
+                "ide_version": "2026.2",
+                "ide_channel": "eap",
+            },
+            "cleanup": {"status": "closed"},
+        }
+
+        jb_inspect.apply_verdict(payload)
+        record = jb_inspect.outcome_log_record(payload, 0)
+
+        self.assertEqual(payload["evidence_ids"]["client_run_id"], local_client_run_id)
+        self.assertEqual(payload["inspection_attribution"]["client_run_id"], plugin_client_run_id)
+        self.assertEqual(record["client_run_id"], local_client_run_id)
+        self.assertEqual(record["inspection_attribution"]["client_run_id"], plugin_client_run_id)
+        self.assertIn("client_run_id", jb_inspect.plugin_attribution_mismatches(record))
+
+    def test_outcome_record_v2_contains_identity_scope_and_internal_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "deployment.json"
+            manifest.write_text('{"artifact":"fixture"}\n', encoding="utf-8")
+            scope_descriptor = {"scope": "changed_files", "include_unversioned": True}
+            payload = {
+                "command": "inspect-closeout",
+                "status": "results_available",
+                "total_problems": 0,
+                "problems": [],
+                "context": {
+                    "repo_path": "/repo",
+                    "worktree_root": "/repo",
+                    "repo_head_sha": "b" * 40,
+                    "scope": "changed_files",
+                    "scope_descriptor": scope_descriptor,
+                    "scope_descriptor_sha256": jb_inspect.canonical_json_sha256(scope_descriptor),
+                    "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                },
+                "route": {
+                    "project_key": "path:/repo",
+                    "project_instance_id": "project-1",
+                    "session_id": "session-1",
+                    "ide": {
+                        "product_code": "PY",
+                        "version": "2026.2",
+                        "channel": "eap",
+                        "plugin_version": "1.13.17",
+                        "plugin_build_fingerprint": "a" * 40 + "-clean",
+                    },
+                },
+                "inspection_attribution": {
+                    "schema_version": 1,
+                    "source": "plugin",
+                    "classification": "decisive",
+                    "code": "no_matching_findings",
+                    "phase": "problems",
+                    "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "inspection_run_id": 7,
+                    "plugin_version": "1.13.17",
+                    "plugin_build_fingerprint": "a" * 40 + "-clean",
+                    "ide_product_code": "PY",
+                    "ide_version": "2026.2",
+                    "ide_channel": "eap",
+                },
+                "cleanup": {"status": "closed"},
+            }
+            jb_inspect.apply_verdict(payload)
+
+            with patch.dict(os.environ, {jb_inspect.DEPLOYMENT_MANIFEST_ENV: str(manifest)}, clear=False):
+                record = jb_inspect.outcome_log_record(payload, 0)
+            manifest_sha256 = jb_inspect.file_content_sha256(manifest)
+
+        self.assertEqual(record["schema_version"], 2)
+        self.assertEqual(record["event_kind"], "inspection_assessment")
+        self.assertEqual(record["assessment_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        self.assertEqual(record["client_run_id"], record["assessment_id"])
+        self.assertEqual(record["inspection_run_id"], 7)
+        self.assertTrue(record["inspection_started"])
+        self.assertEqual(record["repo_head_sha"], "b" * 40)
+        self.assertEqual(record["scope_descriptor"], scope_descriptor)
+        self.assertEqual(record["scope_descriptor_sha256"], jb_inspect.canonical_json_sha256(scope_descriptor))
+        self.assertEqual(record["deployment_manifest_sha256"], manifest_sha256)
+        self.assertRegex(record["event_id"], r"^[0-9a-f-]{36}$")
+        self.assertRegex(record["timestamp"], r"\.\d{3}Z$")
+        self.assertEqual(record["internal_attempts"][-1]["verdict"], "GREEN")
+        self.assertTrue(record["internal_attempts"][-1]["terminal"])
 
 
 class HumanOutputTest(unittest.TestCase):
@@ -6027,6 +6406,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "unknown.jsonl"
             rollout_path = Path(tmp) / "rollout-123.jsonl"
+            rollout_path.write_text('{"deployment":"fixture"}\n', encoding="utf-8")
             payload = {
                 "command": "inspect-closeout",
                 "status": "capture_incomplete",
@@ -6067,7 +6447,9 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(record["bucket"], "tool_bug")
             self.assertFalse(record["retry"])
             self.assertEqual(record["verdict_reason"], "non_empty_unmapped_tree")
-            self.assertEqual(record["rollout_file_hash"], jb_inspect.stable_value_hash(str(rollout_path)))
+            self.assertEqual(record["schema_version"], 2)
+            self.assertEqual(record["rollout_file_hash"], jb_inspect.file_content_sha256(rollout_path))
+            self.assertEqual(record["deployment_manifest_sha256"], jb_inspect.file_content_sha256(rollout_path))
             self.assertEqual(record["repo_path_hash"], jb_inspect.stable_value_hash("/repo"))
             self.assertEqual(record["ide"], "IntelliJ IDEA")
             self.assertEqual(record["capture_diagnostic"]["exit_reason"], "non_empty_unmapped_tree")
@@ -6398,6 +6780,634 @@ class UnknownVerdictLogTest(unittest.TestCase):
 
             self.assertFalse(log_path.exists())
             self.assertNotIn("unknown_log_path", payload)
+
+    def test_jsonl_append_uses_one_locked_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "events.jsonl"
+            with patch.object(jb_inspect.os, "write", wraps=jb_inspect.os.write) as write_call:
+                if jb_inspect.fcntl is None:
+                    jb_inspect.append_jsonl_record(log_path, {"event_id": "one"})
+                    lock_calls = []
+                else:
+                    with patch.object(jb_inspect.fcntl, "flock", wraps=jb_inspect.fcntl.flock) as lock_call:
+                        jb_inspect.append_jsonl_record(log_path, {"event_id": "one"})
+                    lock_calls = [call.args[1] for call in lock_call.call_args_list]
+            written_record = json.loads(log_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(write_call.call_count, 1)
+        if jb_inspect.fcntl is not None:
+            self.assertEqual(lock_calls, [jb_inspect.fcntl.LOCK_EX, jb_inspect.fcntl.LOCK_UN])
+        self.assertEqual(written_record, {"event_id": "one"})
+
+    def test_jsonl_append_rolls_back_partial_write_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "events.jsonl"
+            log_path.write_bytes(b'{"event_id":"existing"}\n')
+            original = log_path.read_bytes()
+            real_write = jb_inspect.os.write
+            call_count = 0
+
+            def partial_then_fail(descriptor, payload):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return real_write(descriptor, bytes(payload[:5]))
+                raise OSError("simulated append failure")
+
+            with patch.object(jb_inspect.os, "write", side_effect=partial_then_fail):
+                with self.assertRaisesRegex(OSError, "simulated append failure"):
+                    jb_inspect.append_jsonl_record(log_path, {"event_id": "new"})
+
+            self.assertEqual(log_path.read_bytes(), original)
+
+
+class StrictOutcomeQualificationTest(unittest.TestCase):
+    def summarize(self, events: list[dict | str], *, criteria: dict | None = None, sample_size: int = 1) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "outcomes.jsonl"
+            qualification_path = root / "qualification.json"
+            log_path.write_text(
+                "\n".join(event if isinstance(event, str) else json.dumps(event, sort_keys=True) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            write_json(qualification_path, criteria or qualification_payload())
+            return jb_inspect.command_summarize_outcomes(
+                Namespace(
+                    log_path=str(log_path),
+                    limit=10,
+                    qualification_file=str(qualification_path),
+                    sample_size=sample_size,
+                )
+            )
+
+    def test_mixed_historical_logs_preserve_diagnostic_mode_and_strict_boundary(self):
+        historical = {
+            "timestamp": "2026-07-25T23:59:59Z",
+            "command": "inspect-closeout",
+            "verdict": "GREEN",
+            "bucket": "clean",
+        }
+        current = qualification_event("current")
+        observation = qualification_event(
+            "observation",
+            assessment_id="observation-assessment",
+            timestamp="2026-07-26T00:00:02.000Z",
+            event_kind="inspection_observation",
+            command="get-status",
+        )
+
+        strict = self.summarize([historical, current, observation])
+
+        self.assertEqual(strict["gate_status"], "pass")
+        self.assertEqual(strict["sample_count"], 1)
+        self.assertEqual(strict["qualifying_sample"][0]["assessment_id"], "assessment-current")
+        self.assertEqual(strict["exclusion_counts"], {"non_assessment_command": 1})
+        self.assertNotIn("2026-07-25", json.dumps(strict))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "outcomes.jsonl"
+            log_path.write_text(json.dumps(historical) + "\n" + json.dumps(current) + "\n", encoding="utf-8")
+            diagnostic = jb_inspect.command_summarize_outcomes(Namespace(log_path=str(log_path), limit=10))
+
+        self.assertEqual(diagnostic["status"], "ok")
+        self.assertEqual(diagnostic["events"], 2)
+        self.assertEqual(diagnostic["summary"]["by_verdict"], {"GREEN": 2})
+
+    def test_boundary_event_and_exact_duplicate_handling_are_deterministic(self):
+        before = qualification_event("before", timestamp="2026-07-26T00:00:01.000Z")
+        anchor = qualification_event(
+            "anchor",
+            assessment_id="anchor-assessment",
+            timestamp="2026-07-26T00:00:02.000Z",
+            event_kind="inspection_observation",
+            command="get-status",
+        )
+        current = qualification_event("current", timestamp="2026-07-26T00:00:03.000Z")
+        criteria = qualification_payload(after_event_id="anchor")
+
+        result = self.summarize([before, anchor, before, current, current], criteria=criteria)
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertEqual(result["sample_count"], 1)
+        self.assertEqual(result["qualifying_sample"][0]["assessment_id"], "assessment-current")
+        self.assertEqual(result["exclusion_counts"], {"duplicate_event": 2})
+        self.assertNotIn("assessment-before", json.dumps(result["groups"]))
+
+    def test_timestamp_only_boundary_rejects_malformed_logs(self):
+        result = self.summarize(['{"broken"', qualification_event("current")])
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["error_reason"], "boundary_event_required_for_invalid_log")
+
+        indeterminate = qualification_event("indeterminate")
+        indeterminate.pop("timestamp")
+        indeterminate.pop("timestamp_ms")
+        indeterminate_result = self.summarize([indeterminate, qualification_event("current")])
+
+        self.assertEqual(indeterminate_result["gate_status"], "fail")
+        self.assertEqual(indeterminate_result["error_reason"], "boundary_event_required_for_invalid_log")
+
+        boolean_timestamp = qualification_event("boolean-timestamp")
+        boolean_timestamp.pop("timestamp")
+        boolean_timestamp["timestamp_ms"] = True
+        boolean_result = self.summarize([boolean_timestamp, qualification_event("current")])
+
+        self.assertEqual(boolean_result["gate_status"], "fail")
+        self.assertEqual(boolean_result["error_reason"], "boundary_event_required_for_invalid_log")
+
+        mixed_timestamp = qualification_event(
+            "mixed-timestamp",
+            timestamp="2026-07-25T23:59:59.000Z",
+        )
+        mixed_timestamp["timestamp_ms"] = True
+        mixed_result = self.summarize([mixed_timestamp, qualification_event("current")])
+
+        self.assertEqual(mixed_result["gate_status"], "fail")
+        self.assertEqual(mixed_result["error_reason"], "boundary_event_required_for_invalid_log")
+
+    def test_boundary_event_exposes_post_boundary_invalid_json(self):
+        anchor = qualification_event(
+            "anchor",
+            assessment_id="anchor-assessment",
+            event_kind="inspection_observation",
+            command="get-status",
+        )
+        current = qualification_event("current", timestamp="2026-07-26T00:00:03.000Z")
+        result = self.summarize(
+            [anchor, '{"broken"', current],
+            criteria=qualification_payload(after_event_id="anchor"),
+        )
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["hard_failure_counts"]["invalid_json"], 1)
+
+    def test_post_boundary_legacy_and_missing_event_identity_are_hard_exclusions(self):
+        legacy = {
+            "schema_version": 1,
+            "timestamp": "2026-07-26T00:00:01.000Z",
+            "command": "inspect-closeout",
+            "verdict": "GREEN",
+        }
+        missing_event_id = qualification_event("missing-id", timestamp="2026-07-26T00:00:02.000Z")
+        missing_event_id.pop("event_id")
+
+        result = self.summarize([legacy, missing_event_id])
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["hard_failure_counts"]["legacy_schema"], 1)
+        self.assertEqual(result["hard_failure_counts"]["missing_event_id"], 1)
+
+    def test_missing_identity_and_provenance_reasons_fail_closed(self):
+        mutations = {
+            "missing_client_run_id": ("client_run_id", "assessment_id"),
+            "missing_inspection_run_id": ("inspection_run_id",),
+            "missing_scope": ("scope_descriptor",),
+            "missing_cleanup_status": ("cleanup_status",),
+            "missing_ide_product_code": ("ide_product_code",),
+            "missing_ide_version": ("ide_version",),
+            "missing_ide_channel": ("ide_channel",),
+        }
+        for expected_reason, removed_keys in mutations.items():
+            with self.subTest(reason=expected_reason):
+                event = qualification_event(expected_reason)
+                for key in removed_keys:
+                    event.pop(key, None)
+                result = self.summarize([event])
+
+                self.assertEqual(result["gate_status"], "fail")
+                self.assertEqual(result["hard_failure_counts"].get(expected_reason), 1)
+
+        mismatched_assessment = qualification_event("assessment-mismatch")
+        mismatched_assessment["assessment_id"] = "different-assessment"
+        mismatch_result = self.summarize([mismatched_assessment])
+
+        self.assertEqual(mismatch_result["gate_status"], "fail")
+        self.assertEqual(mismatch_result["hard_failure_counts"].get("assessment_id_mismatch"), 1)
+
+        for key, expected_reason in (
+            ("repo_path_hash", "missing_repo_hash"),
+            ("worktree_root_hash", "missing_worktree_hash"),
+            ("project_key_hash", "missing_project_hash"),
+        ):
+            with self.subTest(invalid_hash=key):
+                event = qualification_event(f"invalid-{key}")
+                event[key] = "sha256:not-a-full-digest"
+                if key == "project_key_hash":
+                    event["inspection_attribution"][key] = event[key]
+                result = self.summarize([event])
+
+                self.assertEqual(result["gate_status"], "fail")
+                self.assertEqual(result["hard_failure_counts"].get(expected_reason), 1)
+
+    def test_artifact_mismatches_are_hard_failures(self):
+        helper_mismatch = qualification_event("helper")
+        helper_mismatch["helper_revision"] = "sha256:" + "3" * 64
+        plugin_mismatch = qualification_event("plugin")
+        plugin_mismatch["plugin_build_fingerprint"] = "c" * 40 + "-clean"
+        deployment_mismatch = qualification_event("deployment")
+        deployment_mismatch["deployment_manifest_sha256"] = "sha256:" + "4" * 64
+
+        result = self.summarize([helper_mismatch, plugin_mismatch, deployment_mismatch])
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["hard_failure_counts"]["helper_revision_mismatch"], 1)
+        self.assertEqual(result["hard_failure_counts"]["plugin_fingerprint_mismatch"], 1)
+        self.assertEqual(result["hard_failure_counts"]["deployment_manifest_mismatch"], 1)
+
+    def test_rows_fail_when_plugin_attribution_or_authoritative_channel_is_absent(self):
+        missing_attribution = qualification_event("missing-attribution")
+        missing_attribution["inspection_attribution"] = {
+            "source": "helper",
+            "classification": "decisive",
+        }
+        missing_channel_source = qualification_event("missing-channel-source")
+        missing_channel_source["ide_channel_source"] = "selector_fallback"
+
+        result = self.summarize([missing_attribution, missing_channel_source], sample_size=2)
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["hard_failure_counts"]["inspection_attribution_mismatch"], 2)
+
+        unknown = qualification_event("unknown", verdict="UNKNOWN")
+        unknown["inspection_attribution"]["classification"] = "unattributed"
+        unknown_result = self.summarize([unknown])
+
+        self.assertEqual(unknown_result["gate_status"], "fail")
+        self.assertEqual(unknown_result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
+
+        decisive = qualification_event("decisive")
+        decisive["inspection_attribution"]["code"] = "actionable_findings"
+        decisive_result = self.summarize([decisive])
+
+        self.assertEqual(decisive_result["gate_status"], "fail")
+        self.assertEqual(decisive_result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
+
+        for field, mismatch in (
+            ("endpoint", "/api/inspection/status"),
+            ("http_status", 500),
+            ("request_id", "different-request"),
+            ("observed_by", "different-observer"),
+            ("ide_channel_source", "selector_fallback"),
+        ):
+            with self.subTest(attribution_field=field):
+                event = qualification_event(f"mismatch-{field}")
+                event["inspection_attribution"][field] = mismatch
+                result = self.summarize([event])
+
+                self.assertEqual(result["gate_status"], "fail")
+                self.assertEqual(result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
+
+    def test_configuration_blocked_is_excluded_only_before_start_with_exact_selector_code(self):
+        valid = qualification_event("valid-config", verdict="UNKNOWN")
+        valid.update({
+            "inspection_started": False,
+            "attribution_class": "configuration_blocked",
+            "response_code": "ide_selection_required",
+            "failure_phase": "selection",
+            "cleanup_status": "not_needed",
+            "observed_by": "helper",
+            "status": "error",
+            "bucket": "policy_required",
+            "verdict_reason": "ide_selection_required",
+        })
+        for key in (
+            "inspection_run_id",
+            "plugin_build_fingerprint",
+            "plugin_version",
+            "ide_product_code",
+            "ide_version",
+            "ide_channel",
+            "ide_channel_source",
+            "session_id",
+            "project_instance_id",
+            "endpoint",
+            "http_status",
+            "request_id",
+        ):
+            valid.pop(key, None)
+        valid["inspection_attribution"] = {
+            "schema_version": 1,
+            "source": "helper",
+            "observed_by": "helper",
+            "classification": "configuration_blocked",
+            "code": "ide_selection_required",
+            "phase": "selection",
+            "client_run_id": valid["client_run_id"],
+            "helper_revision": valid["helper_revision"],
+            "cleanup_status": "not_needed",
+        }
+        valid["internal_attempts"][0].update({
+            "verdict": "UNKNOWN",
+            "verdict_reason": "ide_selection_required",
+            "bucket": "policy_required",
+            "retry": False,
+            "attribution_class": "configuration_blocked",
+            "phase": "selection",
+            "cleanup_status": "not_needed",
+        })
+        valid["internal_attempts"][0].pop("inspection_run_id", None)
+        decisive = qualification_event("decisive", timestamp="2026-07-26T00:00:02.000Z")
+
+        valid_result = self.summarize([valid, decisive])
+
+        self.assertEqual(valid_result["gate_status"], "pass")
+        self.assertEqual(valid_result["exclusion_counts"], {"configuration_blocked_before_start": 1})
+
+        non_clean = json.loads(json.dumps(valid))
+        non_clean["cleanup_status"] = "kept_warm"
+        non_clean["inspection_attribution"]["cleanup_status"] = "kept_warm"
+        non_clean["internal_attempts"][0]["cleanup_status"] = "kept_warm"
+        non_clean_result = self.summarize([non_clean])
+        self.assertEqual(non_clean_result["hard_failure_counts"]["non_clean_cleanup"], 1)
+
+        malformed_attempts = json.loads(json.dumps(valid))
+        malformed_attempts["internal_attempts"] = []
+        malformed_result = self.summarize([malformed_attempts])
+        self.assertEqual(malformed_result["hard_failure_counts"]["malformed_internal_attempts"], 1)
+
+        attribution_mismatch = json.loads(json.dumps(valid))
+        attribution_mismatch["inspection_attribution"]["code"] = "ide_config_missing"
+        mismatch_result = self.summarize([attribution_mismatch])
+        self.assertEqual(mismatch_result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
+
+        for field, alias in (
+            ("response_code", "ide-selection-required"),
+            ("failure_phase", "Selection"),
+        ):
+            with self.subTest(noncanonical_field=field):
+                noncanonical = json.loads(json.dumps(valid))
+                noncanonical[field] = alias
+                nested_field = "code" if field == "response_code" else "phase"
+                noncanonical["inspection_attribution"][nested_field] = alias
+                noncanonical_result = self.summarize([noncanonical])
+
+                self.assertEqual(noncanonical_result["gate_status"], "fail")
+                self.assertEqual(
+                    noncanonical_result["hard_failure_counts"]["configuration_blocked_not_excludable"],
+                    1,
+                )
+
+        invalid = qualification_event("invalid-config", verdict="UNKNOWN")
+        invalid.update({
+            "attribution_class": "configuration_blocked",
+            "response_code": "timeout",
+            "failure_phase": "wait",
+            "inspection_started": True,
+        })
+        invalid["inspection_attribution"]["classification"] = "configuration_blocked"
+        invalid_result = self.summarize([invalid])
+
+        self.assertEqual(invalid_result["gate_status"], "fail")
+        self.assertEqual(invalid_result["hard_failure_counts"]["configuration_blocked_after_start"], 1)
+
+    def test_distinct_terminal_events_for_one_assessment_fail_closed(self):
+        first = qualification_event("event-1", assessment_id="assessment-shared", verdict="UNKNOWN")
+        first["internal_attempts"][0]["retry"] = True
+        repeated = qualification_event(
+            "event-2",
+            assessment_id="assessment-shared",
+            timestamp="2026-07-26T00:00:02.000Z",
+            inspection_run_id=2,
+        )
+
+        result = self.summarize([first, first, repeated], sample_size=2)
+
+        self.assertEqual(result["gate_status"], "fail")
+        self.assertEqual(result["sample_count"], 1)
+        self.assertEqual(result["assessment_groups"], 1)
+        self.assertEqual(result["groups"][0]["event_count"], 2)
+        self.assertFalse(result["groups"][0]["recovered_from_unknown"])
+        self.assertEqual(result["hard_failure_counts"]["multiple_assessment_events"], 1)
+        self.assertEqual(result["exclusion_counts"], {"duplicate_event": 1})
+
+    def test_internal_unknown_to_decisive_recovery_stays_visible(self):
+        event = qualification_event("recovery")
+        event["internal_attempts"] = [
+            {
+                "attempt_index": 0,
+                "terminal": False,
+                "verdict": "UNKNOWN",
+                "verdict_reason": "stale_results",
+                "bucket": "stale_results",
+                "retry": True,
+                "inspection_run_id": 1,
+            },
+            {
+                "attempt_index": 1,
+                "terminal": True,
+                "verdict": "GREEN",
+                "verdict_reason": "no_matching_findings",
+                "bucket": "clean",
+                "retry": False,
+                "inspection_run_id": 2,
+                "cleanup_status": "closed",
+            },
+        ]
+
+        result = self.summarize([event])
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertTrue(result["groups"][0]["recovered_from_unknown"])
+        self.assertEqual(result["summaries"]["recovered_from_unknown"], 1)
+        self.assertEqual([attempt["verdict"] for attempt in result["groups"][0]["internal_attempts"]], ["UNKNOWN", "GREEN"])
+
+    def test_conflicting_decisive_outcomes_and_hidden_terminal_failures_fail(self):
+        green = qualification_event("green", assessment_id="assessment-conflict")
+        red = qualification_event(
+            "red",
+            assessment_id="assessment-conflict",
+            timestamp="2026-07-26T00:00:02.000Z",
+            verdict="RED",
+            inspection_run_id=2,
+        )
+        conflict = self.summarize([green, red], sample_size=2)
+
+        self.assertEqual(conflict["gate_status"], "fail")
+        self.assertTrue(conflict["groups"][0]["conflicting_decisive_outcomes"])
+        self.assertEqual(conflict["hard_failure_counts"]["conflicting_outcomes"], 1)
+
+        terminal = qualification_event("terminal", assessment_id="assessment-terminal", verdict="UNKNOWN")
+        terminal["timestamp"] = "2026-07-26T00:00:02.000Z"
+        terminal["timestamp_ms"] = jb_inspect.parse_iso_timestamp_ms(terminal["timestamp"])
+        terminal["internal_attempts"][0]["verdict"] = "UNKNOWN"
+        terminal["internal_attempts"][0]["retry"] = False
+        terminal_result = self.summarize(
+            [
+                qualification_event("initial", assessment_id="assessment-terminal"),
+                terminal,
+            ],
+            sample_size=2,
+        )
+
+        self.assertEqual(terminal_result["gate_status"], "fail")
+        self.assertTrue(terminal_result["groups"][0]["hidden_terminal_failure"])
+        self.assertEqual(terminal_result["hard_failure_counts"]["hidden_terminal_failure"], 1)
+
+    def test_non_clean_cleanup_and_unattributed_unknown_count_as_gate_failures(self):
+        cleanup = qualification_event("cleanup")
+        cleanup["cleanup_status"] = "deferred"
+        cleanup["internal_attempts"][0]["cleanup_status"] = "deferred"
+        cleanup_result = self.summarize([cleanup])
+
+        self.assertEqual(cleanup_result["gate_status"], "fail")
+        self.assertEqual(cleanup_result["sample_count"], 1)
+        self.assertEqual(cleanup_result["hard_failure_counts"]["non_clean_cleanup"], 1)
+
+        kept_warm = qualification_event("kept-warm")
+        kept_warm["cleanup_status"] = "kept_warm"
+        kept_warm["inspection_attribution"]["cleanup_status"] = "kept_warm"
+        kept_warm["internal_attempts"][0]["cleanup_status"] = "kept_warm"
+        kept_warm_result = self.summarize([kept_warm])
+
+        self.assertEqual(kept_warm_result["gate_status"], "fail")
+        self.assertEqual(kept_warm_result["hard_failure_counts"]["non_clean_cleanup"], 1)
+
+        unknown = qualification_event("unknown", verdict="UNKNOWN")
+        unknown["attribution_class"] = "unattributed"
+        unknown["unattributed_unknown"] = True
+        unknown["inspection_attribution"]["classification"] = "unattributed"
+        unknown_result = self.summarize([unknown])
+
+        self.assertEqual(unknown_result["gate_status"], "fail")
+        self.assertEqual(unknown_result["sample_count"], 1)
+        self.assertEqual(unknown_result["hard_failure_counts"]["unattributed_unknown"], 1)
+
+    def test_repeated_repository_and_project_concentration_is_reported(self):
+        shared_repo = "sha256:" + "6" * 64
+        shared_project = "sha256:" + "7" * 64
+        events = [
+            qualification_event("one", repo_path_hash=shared_repo, project_key_hash=shared_project),
+            qualification_event(
+                "two",
+                timestamp="2026-07-26T00:00:02.000Z",
+                repo_path_hash=shared_repo,
+                project_key_hash=shared_project,
+            ),
+        ]
+
+        result = self.summarize(events, sample_size=2)
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertEqual(result["concentration"]["repeated_repositories"], {shared_repo: 2})
+        self.assertEqual(result["concentration"]["repeated_projects"], {shared_project: 2})
+
+    def test_gate_status_requires_sample_and_at_least_ninety_five_percent_decisive(self):
+        incomplete = self.summarize([qualification_event("only")], sample_size=2)
+        self.assertEqual(incomplete["gate_status"], "incomplete")
+        self.assertEqual(incomplete["remaining_to_sample"], 1)
+
+        passing_events = [
+            qualification_event(
+                f"pass-{index}",
+                timestamp=f"2026-07-26T00:00:{index + 1:02d}.000Z",
+            )
+            for index in range(19)
+        ]
+        passing_events.append(
+            qualification_event(
+                "pass-unknown",
+                timestamp="2026-07-26T00:00:20.000Z",
+                verdict="UNKNOWN",
+            )
+        )
+        passing = self.summarize(passing_events, sample_size=20)
+        self.assertEqual(passing["gate_status"], "pass")
+        self.assertEqual(passing["decisive_rate"], 0.95)
+
+        failing_events = passing_events[:18] + [
+            qualification_event("fail-unknown-1", timestamp="2026-07-26T00:00:19.000Z", verdict="UNKNOWN"),
+            qualification_event("fail-unknown-2", timestamp="2026-07-26T00:00:20.000Z", verdict="UNKNOWN"),
+        ]
+        failing = self.summarize(failing_events, sample_size=20)
+        self.assertEqual(failing["gate_status"], "fail")
+        self.assertIn("decisive_rate_below_threshold", failing["gate_failures"])
+
+    def test_first_sample_is_stable_when_later_events_fail(self):
+        anchor = qualification_event(
+            "anchor",
+            assessment_id="anchor-assessment",
+            event_kind="inspection_observation",
+            command="get-status",
+        )
+        first = qualification_event("first", timestamp="2026-07-26T00:00:02.000Z")
+        later_cleanup = qualification_event("later-cleanup", timestamp="2026-07-26T00:00:03.000Z")
+        later_cleanup["cleanup_status"] = "deferred"
+        later_cleanup["inspection_attribution"]["cleanup_status"] = "deferred"
+        later_cleanup["internal_attempts"][0]["cleanup_status"] = "deferred"
+        result = self.summarize(
+            [anchor, first, later_cleanup, '{"broken"'],
+            criteria=qualification_payload(after_event_id="anchor"),
+        )
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertEqual(result["sample_count"], 1)
+        self.assertEqual(result["qualifying_sample"][0]["assessment_id"], "assessment-first")
+        self.assertEqual(result["hard_failure_counts"], {})
+        self.assertEqual(result["post_sample_hard_failure_counts"]["invalid_json"], 1)
+        self.assertEqual(result["post_sample_hard_failure_counts"]["non_clean_cleanup"], 1)
+
+    def test_frozen_sample_ignores_later_same_assessment_recovery(self):
+        anchor = qualification_event(
+            "anchor",
+            assessment_id="anchor-assessment",
+            event_kind="inspection_observation",
+            command="get-status",
+        )
+        decisive = [
+            qualification_event(
+                f"decisive-{index}",
+                timestamp=f"2026-07-26T00:00:{index + 2:02d}.000Z",
+            )
+            for index in range(19)
+        ]
+        first_unknown = qualification_event(
+            "first-unknown",
+            assessment_id="assessment-retry",
+            timestamp="2026-07-26T00:00:21.000Z",
+            verdict="UNKNOWN",
+        )
+        first_unknown["internal_attempts"][0]["retry"] = True
+        recovery = qualification_event(
+            "recovery",
+            assessment_id="assessment-retry",
+            timestamp="2026-07-26T00:00:23.000Z",
+            inspection_run_id=2,
+        )
+        result = self.summarize(
+            [anchor, *decisive, first_unknown, '{"broken"', recovery],
+            criteria=qualification_payload(after_event_id="anchor"),
+            sample_size=20,
+        )
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertEqual(result["sample_cutoff_line"], 21)
+        self.assertEqual(result["decisive_rate"], 0.95)
+        frozen = next(group for group in result["qualifying_sample"] if group["assessment_id"] == "assessment-retry")
+        self.assertEqual(frozen["verdict"], "UNKNOWN")
+        self.assertFalse(frozen["recovered_from_unknown"])
+        full = next(group for group in result["groups"] if group["assessment_id"] == "assessment-retry")
+        self.assertFalse(full["recovered_from_unknown"])
+        self.assertEqual(result["post_sample_hard_failure_counts"]["invalid_json"], 1)
+        self.assertEqual(result["post_sample_hard_failure_counts"]["multiple_assessment_events"], 1)
+
+    def test_strict_command_exit_and_human_output_follow_gate_status(self):
+        result = self.summarize([qualification_event("pass")])
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = jb_inspect.emit(
+                result,
+                json_only=False,
+                exit_code=jb_inspect.summarize_outcomes_exit_code(result),
+                command="summarize-outcomes",
+                assess=False,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("QUALIFICATION_GATE: status=pass sample=1/1", output.getvalue())
+        self.assertFalse(any(line.startswith("VERDICT:") for line in output.getvalue().splitlines()))
+
 
 class Issue458RegressionTest(unittest.TestCase):
     def test_unproven_conflicts_fail_closed_with_stable_attribution(self):
@@ -6738,7 +7748,7 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["semantic_coverage"]["diagnostic_file_count"], 2)
         self.assertEqual(payload["semantic_coverage"]["unproven_file_count"], 1)
         self.assertEqual(payload["inspection_attribution"]["code"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
-        self.assertEqual(payload["attribution_class"], "tool_caused")
+        self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
         self.assertEqual(payload["bucket"], "tool_bug")
 
     def test_truncation_handles_missing_malformed_and_text_only_diagnostics(self):
