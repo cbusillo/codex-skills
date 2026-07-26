@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upstream Convergence"
+  short_description: "Safely synchronize a maintained fork upstream"
+  default_prompt: "Use $upstream-convergence to refresh this maintained fork against its canonical upstream safely."

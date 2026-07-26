@@ -1,0 +1,33 @@
+{
+  "name": "upstream-convergence-explicit-invocation",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $upstream-convergence and reply with exactly: ok",
+  "files": {
+    "README.md": "# Synthetic maintained fork\n"
+  },
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-upstream-convergence-explicit"
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "count": {
+          "<name>upstream-convergence</name>": 1,
+          "The repository owns all product policy and enforcement": 1,
+          "Never regenerate a pre-anchor ownership baseline": 1,
+          "Never describe a refresh as complete merely because it compiles or merges": 1
+        }
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}
