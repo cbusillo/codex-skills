@@ -182,6 +182,10 @@ planning helper owns `plan:done` labels, stale `plan:active` cleanup, and Projec
 focus updates. It also owns relationship preflight and close-comment
 reconciliation:
 
+Before closing a planning issue, run `github-unanswered-comments --thread
+OWNER/REPO#NUMBER`. Any attention result or degraded coverage requires a response
+or explicit handoff; a bot response never proves owner acknowledgement.
+
 ```bash
 skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
 uv run "$skills_home/github/scripts/gh-plan.py" close <issue> --comment-file <file>

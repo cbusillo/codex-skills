@@ -763,6 +763,10 @@ invocation rules.
   canonical PR merges, sweep referenced issues and close only those whose finish
   line is conclusively satisfied; otherwise comment/update durable state and
   leave them open.
+- **Human Comment Gate**: Before a merge or close settles an issue or PR, use
+  `github-unanswered-comments --thread OWNER/REPO#NUMBER`. Any attention result
+  or degraded coverage requires a response or explicit handoff before the
+  thread is settled; a bot response never proves owner acknowledgement.
 - **Handoffs**: For GitHub-backed work, put recovery-critical handoff content in
   the owning issue or PR comment. Local handoff files are scratch unless they
   are intentionally committed docs.

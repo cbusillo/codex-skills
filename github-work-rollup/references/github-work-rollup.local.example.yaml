@@ -22,6 +22,11 @@ workflow_collection_limit: 1000
 output_path: .local/github-work-rollup/latest.md
 include_external_activity: false
 include_bots: false
+comment_window: 30d
+comment_self_logins:
+  - example-user
+comment_bot_logins:
+  - example-code-bot
 noise_filters:
   labels:
     - dependencies

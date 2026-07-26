@@ -47,6 +47,7 @@ helper_tests=(
 	babysit-pr/scripts/test_gh_pr_watch.py
 	google-seo/scripts/test_bing_webmaster.py
 	google-seo/scripts/test_google_search_console.py
+	github-work-rollup/scripts/test_github_unanswered_comments.py
 	github-work-rollup/scripts/test_github_work_rollup.py
 	github-work-rollup/scripts/test_synthesize_work_brief.py
 	github-work-rollup/scripts/test_verify_work_brief.py

@@ -1072,6 +1072,55 @@ def test_github_merges_land_through_prs() -> None:
     )
 
 
+def test_github_unanswered_comment_gate_is_shared() -> None:
+    rollup = " ".join((ROOT / "github-work-rollup" / "SKILL.md").read_text().lower().split())
+    github = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
+    github_plan = " ".join((ROOT / "github-plan" / "SKILL.md").read_text().lower().split())
+    closeout = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
+    babysit = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
+    watcher = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text()
+    scanner = ROOT / "github-work-rollup" / "scripts" / "github_unanswered_comments.py"
+
+    require(scanner.exists(), "GitHub work rollup must bundle the unanswered-comment scanner")
+    require(
+        "owner acknowledgement separately from public response" in rollup
+        and "owner awareness requires an owner reaction after the latest edit" in rollup,
+        "Comment-radar guidance must distinguish owner acknowledgement from public response",
+    )
+    require(
+        "do not add commenters to a people index" in rollup
+        and "surface every external human regardless of repository association" in babysit,
+        "Comment monitoring must surface unknown external commenters regardless of association",
+    )
+    for skill_name, text in (
+        ("github", github),
+        ("github-plan", github_plan),
+        ("work-closeout", closeout),
+    ):
+        require(
+            "github-unanswered-comments" in text,
+            f"{skill_name} must route close/closeout work through the unanswered-comment scanner",
+        )
+        require(
+            "--thread owner/repo#number" in text,
+            f"{skill_name} must use full-history thread scans for close/closeout gates",
+        )
+        require(
+            "bot response never proves owner acknowledgement" in text,
+            f"{skill_name} must not treat bot responses as owner acknowledgement",
+        )
+    require(
+        "TRUSTED_AUTHOR_ASSOCIATIONS" not in watcher
+        and "is_external_human_review_author" in watcher,
+        "PR babysitting must not filter external humans by repository association",
+    )
+    require(
+        "github-unanswered-comments --thread owner/repo#number" in babysit
+        and "any attention or degraded result" in babysit,
+        "PR readiness handoffs must run the full-history comment radar",
+    )
+
+
 def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     github_text = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
     babysit_text = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
@@ -1622,6 +1671,7 @@ def main() -> None:
         test_github_and_github_plan_command_boundaries_are_partitioned,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
+        test_github_unanswered_comment_gate_is_shared,
         test_runtime_checkout_reconciliation_is_safe_and_delegated,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_safe_exit_requires_love_gate_closeout,
