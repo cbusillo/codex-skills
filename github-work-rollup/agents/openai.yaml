@@ -1,7 +1,7 @@
 interface:
   display_name: "GitHub Work Rollup"
-  short_description: "Roll up work and unanswered comments"
-  default_prompt: "Use $github-work-rollup to summarize active, blocked, waiting, ready, stale, recently completed, and unanswered external GitHub comments."
+  short_description: "Roll up work and external comments"
+  default_prompt: "Use $github-work-rollup to summarize GitHub work or find external comments that still need the owner's attention."
 
 policy:
   allow_implicit_invocation: true

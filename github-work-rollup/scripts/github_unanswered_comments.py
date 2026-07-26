@@ -5,7 +5,7 @@
 #     "PyYAML==6.0.3",
 # ]
 # ///
-"""Find external GitHub comments that have not received a later response."""
+"""Find external GitHub comments that still need the owner's attention."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,23 @@ MAX_WORKERS = 8
 EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
+REACTIONS_QUERY = """
+query($id: ID!, $after: String) {
+  node(id: $id) {
+    ... on Comment { lastEditedAt }
+    ... on Reactable {
+      reactions(first: 100, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+        nodes {
+          content
+          createdAt
+          user { login }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".strip()
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,7 @@ class Comment:
     updated_at: str
     body: str
     url: str
+    node_id: str = ""
     in_reply_to_id: int | None = None
 
     @property
@@ -63,17 +81,28 @@ class Comment:
     def thread_key(self) -> tuple[str, int]:
         return self.repo, self.number
 
+    @property
+    def global_key(self) -> tuple[str, int, str, int]:
+        return self.repo, self.number, self.kind, self.comment_id
+
+
+@dataclass(frozen=True)
+class Reaction:
+    actor: str
+    content: str
+    created_at: str
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Report external issue and PR comments without a later response from the user or automation bot."
+        description="Report external issue and PR comments that still need the owner's attention."
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Optional GitHub work rollup YAML config.")
     parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
     parser.add_argument("--repo-owner", action="append", default=[], help="Owner whose non-archived repos should be scanned.")
     parser.add_argument("--thread", action="append", default=[], help="Full-history OWNER/REPO#NUMBER or GitHub issue/PR URL.")
-    parser.add_argument("--self-login", action="append", default=[], help="Human login whose later comment counts as a response.")
-    parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose direct reply counts as a response.")
+    parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
+    parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose targeted replies count.")
     parser.add_argument("--window", help="Lookback such as 24h, 30d, or 12w.")
     parser.add_argument("--since", help="UTC ISO timestamp for the scan start.")
     parser.add_argument("--until", help="UTC ISO timestamp for the scan end.")
@@ -148,8 +177,13 @@ def run_json(command: list[str]) -> Any:
 def api_list(endpoint: str) -> list[dict[str, Any]]:
     payload = run_json([GH, "api", endpoint, "--paginate", "--slurp"])
     if not isinstance(payload, list):
-        return []
-    pages = payload if all(isinstance(page, list) for page in payload) else [payload]
+        raise rollup.RollupError(f"GitHub returned an invalid paginated payload for {endpoint}.")
+    if all(isinstance(page, list) for page in payload):
+        pages = payload
+    elif all(isinstance(item, dict) for item in payload):
+        pages = [payload]
+    else:
+        raise rollup.RollupError(f"GitHub returned a mixed paginated payload for {endpoint}.")
     return [item for page in pages for item in page if isinstance(item, dict)]
 
 
@@ -283,6 +317,7 @@ def normalize_issue_comment(repo: str, item: dict[str, Any]) -> Comment | None:
         updated_at=str(item.get("updated_at") or item.get("created_at") or ""),
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
+        node_id=str(item.get("node_id") or ""),
     )
 
 
@@ -304,6 +339,7 @@ def normalize_review_comment(repo: str, item: dict[str, Any]) -> Comment | None:
         updated_at=str(item.get("updated_at") or item.get("created_at") or ""),
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
+        node_id=str(item.get("node_id") or ""),
         in_reply_to_id=reply_id if isinstance(reply_id, int) else None,
     )
 
@@ -325,6 +361,7 @@ def normalize_review(repo: str, number: int, item: dict[str, Any]) -> Comment | 
         updated_at=submitted_at,
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
+        node_id=str(item.get("node_id") or ""),
     )
 
 
@@ -417,8 +454,117 @@ def collect_thread(
     return thread, comments, errors
 
 
+def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], str]:
+    if not comment.node_id:
+        raise rollup.RollupError(f"Comment {comment.comment_id} has no GraphQL node id.")
+    reactions: list[Reaction] = []
+    last_edited_at = ""
+    after = ""
+    seen_cursors: set[str] = set()
+    while True:
+        command = [GH, "api", "graphql", "-f", f"query={REACTIONS_QUERY}", "-F", f"id={comment.node_id}"]
+        if after:
+            command.extend(["-F", f"after={after}"])
+        payload = run_json(command)
+        if not isinstance(payload, dict) or payload.get("errors"):
+            raise rollup.RollupError(f"GitHub returned an invalid reaction payload for comment {comment.comment_id}.")
+        data = payload.get("data")
+        node = data.get("node") if isinstance(data, dict) else None
+        connection = node.get("reactions") if isinstance(node, dict) else None
+        if not isinstance(connection, dict):
+            raise rollup.RollupError(f"GitHub did not expose reactions for comment {comment.comment_id}.")
+        node_last_edited_at = str(node.get("lastEditedAt") or "")
+        if node_last_edited_at:
+            last_edited_at = node_last_edited_at
+        nodes = connection.get("nodes")
+        if not isinstance(nodes, list):
+            raise rollup.RollupError(f"GitHub returned invalid reactions for comment {comment.comment_id}.")
+        for item in nodes:
+            if not isinstance(item, dict):
+                continue
+            user = item.get("user") if isinstance(item.get("user"), dict) else {}
+            actor = str(user.get("login") or "")
+            created_at = str(item.get("createdAt") or "")
+            if actor and created_at:
+                reactions.append(
+                    Reaction(
+                        actor=actor,
+                        content=str(item.get("content") or ""),
+                        created_at=created_at,
+                    )
+                )
+        page_info = connection.get("pageInfo")
+        if not isinstance(page_info, dict) or not page_info.get("hasNextPage"):
+            return reactions, last_edited_at
+        next_cursor = str(page_info.get("endCursor") or "")
+        if not next_cursor or next_cursor in seen_cursors:
+            raise rollup.RollupError(f"GitHub reaction pagination stalled for comment {comment.comment_id}.")
+        seen_cursors.add(next_cursor)
+        after = next_cursor
+
+
+def collect_candidate_reactions(
+    comments: list[Comment],
+) -> tuple[
+    dict[tuple[str, int, str, int], list[Reaction]],
+    dict[tuple[str, int, str, int], str],
+    list[dict[str, str]],
+]:
+    unique_comments = {comment.global_key: comment for comment in comments}
+    reactions: dict[tuple[str, int, str, int], list[Reaction]] = {}
+    last_edits: dict[tuple[str, int, str, int], str] = {}
+    errors: list[dict[str, str]] = []
+    if not unique_comments:
+        return reactions, last_edits, errors
+    worker_count = min(MAX_WORKERS, max(1, len(unique_comments)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(collect_comment_reactions, comment): comment
+            for comment in unique_comments.values()
+        }
+        for future in as_completed(futures):
+            comment = futures[future]
+            try:
+                comment_reactions, last_edited_at = future.result()
+                reactions[comment.global_key] = comment_reactions
+                if last_edited_at:
+                    last_edits[comment.global_key] = last_edited_at
+            except rollup.RollupError as exc:
+                errors.append(
+                    {
+                        "repo": comment.repo,
+                        "lane": f"reactions/{comment.kind}/{comment.comment_id}",
+                        "error": rollup.trim(str(exc)),
+                    }
+                )
+    return reactions, last_edits, errors
+
+
 def event_sort_key(comment: Comment) -> tuple[str, int]:
     return comment.created_at, comment.comment_id
+
+
+def comment_activity_through(comment: Comment, until: datetime) -> datetime:
+    created_at = comment_timestamp(comment.created_at)
+    updated_at = comment_timestamp(comment.updated_at)
+    return max(created_at, updated_at if updated_at <= until else created_at)
+
+
+def response_is_after(response: Comment, external: Comment, until: datetime) -> bool:
+    response_time = comment_activity_through(response, until)
+    external_time = comment_activity_through(external, until)
+    if response_time != external_time:
+        return response_time > external_time
+    return (
+        comment_timestamp(response.updated_at) == comment_timestamp(response.created_at)
+        and comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
+        and response.comment_id > external.comment_id
+    )
+
+
+def reaction_is_after(reaction: Reaction, external: Comment, until: datetime) -> bool:
+    reaction_time = comment_timestamp(reaction.created_at)
+    return reaction_time <= until and reaction_time > comment_activity_through(external, until)
 
 
 def mentions_login(body: str, login: str) -> bool:
@@ -426,47 +572,91 @@ def mentions_login(body: str, login: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9-])@{escaped}(?![A-Za-z0-9-])", body, flags=re.IGNORECASE))
 
 
-def bot_comment_responds(response: Comment, external: Comment) -> bool:
-    if response.kind == "review_comment" and external.kind == "review_comment":
-        response_root = response.in_reply_to_id or response.comment_id
-        external_root = external.in_reply_to_id or external.comment_id
-        if response_root == external_root:
-            return True
-    if mentions_login(response.body, external.author):
-        return True
-    if external.url and external.url in response.body:
-        return True
-    fragments = (f"issuecomment-{external.comment_id}", f"discussion_r{external.comment_id}")
-    return any(fragment in response.body for fragment in fragments)
+def review_thread_root(comment: Comment) -> int | None:
+    if comment.kind != "review_comment":
+        return None
+    return comment.in_reply_to_id or comment.comment_id
 
 
-def response_for(
+def exact_comment_reference(response: Comment, external: Comment) -> bool:
+    if external.url and re.search(rf"{re.escape(external.url)}(?![A-Za-z0-9])", response.body):
+        return True
+    fragments = (
+        rf"issuecomment-{external.comment_id}(?!\d)",
+        rf"discussion_r{external.comment_id}(?!\d)",
+        rf"pullrequestreview-{external.comment_id}(?!\d)",
+    )
+    return any(re.search(fragment, response.body) for fragment in fragments)
+
+
+def response_targets(
+    response: Comment,
+    external: Comment,
+    external_comments: list[Comment],
+    until: datetime,
+    *,
+    allow_unambiguous_mention: bool,
+) -> bool:
+    if exact_comment_reference(response, external):
+        return True
+    external_root = review_thread_root(external)
+    if external_root is not None and review_thread_root(response) == external_root:
+        eligible = [
+            candidate
+            for candidate in external_comments
+            if review_thread_root(candidate) == external_root
+            and response_is_after(response, candidate, until)
+        ]
+        return len(eligible) == 1 and eligible[0].key == external.key
+    if allow_unambiguous_mention and mentions_login(response.body, external.author):
+        eligible = [
+            candidate
+            for candidate in external_comments
+            if normalize_login(candidate.author) == normalize_login(external.author)
+            and response_is_after(response, candidate, until)
+        ]
+        return len(eligible) == 1 and eligible[0].key == external.key
+    return False
+
+
+def targeted_response_for(
     external: Comment,
     comments: list[Comment],
-    self_logins: set[str],
-    bot_logins: set[str],
+    external_comments: list[Comment],
+    actor_logins: set[str],
     until: datetime,
+    *,
+    allow_unambiguous_mention: bool = False,
 ) -> Comment | None:
-    external_created_at = comment_timestamp(external.created_at)
-    external_updated_at = comment_timestamp(external.updated_at)
-    external_activity_time = max(
-        external_created_at,
-        external_updated_at if external_updated_at <= until else external_created_at,
-    )
-    for response in sorted(comments, key=event_sort_key):
-        response_time = comment_timestamp(response.created_at)
-        if response_time < external_activity_time:
+    responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
+    for response in responses:
+        if normalize_login(response.author) not in actor_logins or not response.body.strip():
             continue
-        if response_time == external_activity_time and response.comment_id <= external.comment_id:
+        if not response_is_after(response, external, until):
             continue
-        if not response.body.strip():
-            continue
-        author = normalize_login(response.author)
-        if author in self_logins:
-            return response
-        if author in bot_logins and bot_comment_responds(response, external):
+        if response_targets(
+            response,
+            external,
+            external_comments,
+            until,
+            allow_unambiguous_mention=allow_unambiguous_mention,
+        ):
             return response
     return None
+
+
+def owner_reaction_for(
+    external: Comment,
+    reactions: list[Reaction],
+    self_logins: set[str],
+    until: datetime,
+) -> Reaction | None:
+    candidates = [
+        reaction
+        for reaction in reactions
+        if normalize_login(reaction.actor) in self_logins and reaction_is_after(reaction, external, until)
+    ]
+    return min(candidates, key=lambda reaction: reaction.created_at) if candidates else None
 
 
 def compact_body(body: str, limit: int = 240) -> str:
@@ -474,23 +664,87 @@ def compact_body(body: str, limit: int = 240) -> str:
     return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
 
 
-def unanswered_for_thread(
+def comment_states_for_thread(
     thread: dict[str, Any],
     comments: list[Comment],
     candidate_ids: set[tuple[str, int]],
     self_logins: set[str],
     bot_logins: set[str],
+    reactions_by_comment: dict[tuple[str, int], list[Reaction] | None],
     until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     effective_until = until or datetime.max.replace(tzinfo=timezone.utc)
+    owner_logins = self_logins - bot_logins
     is_pull_request = isinstance(thread.get("pull_request"), dict)
     thread_kind = "pull_request" if is_pull_request else "issue"
+    external_comments = [
+        comment
+        for comment in comments
+        if is_external_comment(comment, owner_logins, bot_logins)
+    ]
     results = []
-    for comment in sorted(comments, key=event_sort_key):
-        if comment.key not in candidate_ids or not is_external_comment(comment, self_logins, bot_logins):
+    for comment in sorted(external_comments, key=event_sort_key):
+        if comment.key not in candidate_ids:
             continue
-        if response_for(comment, comments, self_logins, bot_logins, effective_until) is not None:
-            continue
+        owner_response = targeted_response_for(
+            comment,
+            comments,
+            external_comments,
+            owner_logins,
+            effective_until,
+        )
+        bot_response = targeted_response_for(
+            comment,
+            comments,
+            external_comments,
+            bot_logins,
+            effective_until,
+            allow_unambiguous_mention=True,
+        )
+        reaction_coverage_known = comment.key in reactions_by_comment
+        owner_reaction = owner_reaction_for(
+            comment,
+            reactions_by_comment.get(comment.key) or [],
+            owner_logins,
+            effective_until,
+        )
+        if owner_response is not None:
+            owner_seen: bool | None = True
+            owner_seen_evidence = {
+                "kind": "reply",
+                "actor": owner_response.author,
+                "url": owner_response.url,
+                "created_at": owner_response.created_at,
+            }
+        elif owner_reaction is not None:
+            owner_seen = True
+            owner_seen_evidence = {
+                "kind": "reaction",
+                "actor": owner_reaction.actor,
+                "content": owner_reaction.content,
+                "created_at": owner_reaction.created_at,
+            }
+        elif reaction_coverage_known:
+            owner_seen = False
+            owner_seen_evidence = None
+        else:
+            owner_seen = None
+            owner_seen_evidence = None
+
+        public_response = owner_response or bot_response
+        publicly_addressed = public_response is not None
+        public_response_actor = "owner" if owner_response is not None else "bot" if bot_response is not None else None
+        if owner_seen is None:
+            attention_state = "coverage_unknown"
+        elif not owner_seen and public_response_actor == "bot":
+            attention_state = "bot_answered_needs_your_eyes"
+        elif not owner_seen:
+            attention_state = "needs_your_eyes"
+        elif not publicly_addressed:
+            attention_state = "seen_unanswered"
+        else:
+            attention_state = "handled"
+
         results.append(
             {
                 "repo": comment.repo,
@@ -506,6 +760,12 @@ def unanswered_for_thread(
                 "created_at": comment.created_at,
                 "updated_at": comment.updated_at,
                 "body_excerpt": compact_body(comment.body),
+                "owner_seen": owner_seen,
+                "owner_seen_evidence": owner_seen_evidence,
+                "publicly_addressed": publicly_addressed,
+                "public_response_actor": public_response_actor,
+                "public_response_url": public_response.url if public_response is not None else None,
+                "attention_state": attention_state,
             }
         )
     return results
@@ -532,6 +792,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
 
     repositories = resolve_repositories(settings)
     self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
+    self_logins.difference_update(bot_logins)
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
 
@@ -558,7 +819,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     for thread_key in full_history_threads:
         candidate_ids.setdefault(thread_key, set())
 
-    unanswered: list[dict[str, Any]] = []
+    collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []
+    reaction_candidates: list[Comment] = []
     scanned_threads = 0
     thread_worker_count = min(MAX_WORKERS, max(1, len(candidate_ids)))
     with ThreadPoolExecutor(max_workers=thread_worker_count) as executor:
@@ -585,24 +847,64 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                     for comment in comments_through_until
                     if is_external_comment(comment, self_logins, bot_logins)
                 }
-            unanswered.extend(
-                unanswered_for_thread(
-                    thread,
-                    comments_through_until,
-                    effective_ids,
-                    self_logins,
-                    bot_logins,
-                    settings["until"],
-                )
+            collected_threads.append((thread, comments_through_until, effective_ids))
+            reaction_candidates.extend(
+                comment
+                for comment in comments_through_until
+                if comment.key in effective_ids and is_external_comment(comment, self_logins, bot_logins)
             )
 
-    unanswered.sort(key=lambda item: (item.get("created_at") or "", item.get("comment_id") or 0), reverse=True)
+    reactions_by_global_key, last_edits_by_global_key, reaction_errors = collect_candidate_reactions(
+        reaction_candidates
+    )
+    coverage_errors.extend(reaction_errors)
+    comment_states: list[dict[str, Any]] = []
+    for thread, comments, effective_ids in collected_threads:
+        enriched_comments = [
+            replace(comment, updated_at=last_edits_by_global_key[comment.global_key])
+            if comment.global_key in last_edits_by_global_key
+            and comment_timestamp(last_edits_by_global_key[comment.global_key]) > comment_timestamp(comment.updated_at)
+            else comment
+            for comment in comments
+        ]
+        reactions_by_comment = {
+            comment.key: reactions_by_global_key.get(comment.global_key)
+            for comment in enriched_comments
+            if comment.key in effective_ids and comment.global_key in reactions_by_global_key
+        }
+        comment_states.extend(
+            comment_states_for_thread(
+                thread,
+                enriched_comments,
+                effective_ids,
+                self_logins,
+                bot_logins,
+                reactions_by_comment,
+                settings["until"],
+            )
+        )
+
+    comment_states.sort(
+        key=lambda item: (item.get("created_at") or "", item.get("comment_id") or 0),
+        reverse=True,
+    )
+    attention = [item for item in comment_states if item["attention_state"] != "handled"]
+    state_counts = {
+        state: sum(1 for item in comment_states if item["attention_state"] == state)
+        for state in (
+            "needs_your_eyes",
+            "bot_answered_needs_your_eyes",
+            "seen_unanswered",
+            "coverage_unknown",
+            "handled",
+        )
+    }
     coverage_errors.sort(key=lambda item: (item.get("repo") or "", item.get("lane") or "", item.get("error") or ""))
-    status = "degraded" if coverage_errors else "attention" if unanswered else "clear"
+    status = "degraded" if coverage_errors else "attention" if attention else "clear"
     return {
         "ok": not coverage_errors,
-        "schema_version": 1,
-        "script_version": 1,
+        "schema_version": 2,
+        "script_version": 2,
         "generated_at": format_api_timestamp(datetime.now(timezone.utc)),
         "status": status,
         "window": {
@@ -620,11 +922,16 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "scanned_thread_count": scanned_threads,
             "errors": coverage_errors,
         },
-        "unanswered_count": len(unanswered),
-        "unanswered": unanswered,
+        "counts": {
+            "external_comments": len(comment_states),
+            "attention": len(attention),
+            **state_counts,
+        },
+        "attention": attention,
         "limitations": [
             "Repository scans cover issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover non-empty PR review bodies.",
-            "A human-account response counts when it is later in the same thread; an automation response must directly mention or reply to the external commenter.",
+            "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
+            "A targeted automation reply may also use an unambiguous single-author mention, but it never proves the owner saw the comment.",
             "External comments outside the configured lookback window are not included.",
         ],
     }
@@ -632,27 +939,48 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
 
 def render_markdown(payload: dict[str, Any]) -> str:
     window = payload["window"]
+    counts = payload["counts"]
     lines = [
-        "# Unanswered GitHub Comments",
+        "# External GitHub Comment Radar",
         "",
         f"- Status: `{payload['status']}`",
         f"- Portfolio window: `{window['since']}` through `{window['until']}`",
         f"- Full-history threads: {payload['coverage']['full_history_thread_count']}",
         f"- Repositories scanned: {payload['coverage']['repository_count']}",
-        f"- Unanswered comments: {payload['unanswered_count']}",
+        f"- Comments needing attention: {counts['attention']}",
+        f"- Handled comments: {counts['handled']}",
     ]
-    if payload["unanswered"]:
-        lines.extend(["", "## Needs Response"])
-        for item in payload["unanswered"]:
+    sections = (
+        ("needs_your_eyes", "Needs Your Eyes"),
+        ("bot_answered_needs_your_eyes", "Bot Answered — Needs Your Eyes"),
+        ("seen_unanswered", "Seen — No Public Response"),
+        ("coverage_unknown", "Acknowledgement Coverage Unknown"),
+    )
+    for state, heading in sections:
+        items = [item for item in payload["attention"] if item["attention_state"] == state]
+        if not items:
+            continue
+        lines.extend(["", f"## {heading}"])
+        for item in items:
             label = f"{item['repo']}#{item['number']}"
             title = item["title"] or label
             lines.append("")
             lines.append(f"- [{label}: {title}]({item['thread_url']}) — `@{item['author']}` at `{item['created_at']}`")
             lines.append(f"  - [Open comment]({item['comment_url']})")
+            if item["public_response_actor"] == "bot":
+                lines.append(f"  - [Bot response]({item['public_response_url']})")
+            evidence = item.get("owner_seen_evidence")
+            if isinstance(evidence, dict) and evidence.get("kind") == "reaction":
+                lines.append(f"  - Owner reaction: `{evidence.get('content') or 'reaction'}`")
             if item["body_excerpt"]:
                 lines.append(f"  - {item['body_excerpt']}")
-    else:
-        lines.extend(["", "No unanswered external comments were found in the scanned window."])
+    if not payload["attention"]:
+        message = (
+            "No surfaced comments require attention, but coverage is incomplete; this is not an all-clear."
+            if payload["status"] == "degraded"
+            else "No external comments need attention in the scanned window."
+        )
+        lines.extend(["", message])
 
     errors = payload["coverage"]["errors"]
     if errors:
@@ -667,15 +995,15 @@ def render_markdown(payload: dict[str, Any]) -> str:
 def render_failure(error: str, fmt: str) -> str:
     payload = {
         "ok": False,
-        "schema_version": 1,
-        "script_version": 1,
+        "schema_version": 2,
+        "script_version": 2,
         "generated_at": format_api_timestamp(datetime.now(timezone.utc)),
         "status": "degraded",
         "error": error,
     }
     if fmt == "json":
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    return f"# Unanswered GitHub Comments\n\n- Status: `degraded`\n- Error: {error}\n"
+    return f"# External GitHub Comment Radar\n\n- Status: `degraded`\n- Error: {error}\n"
 
 
 def main() -> int:

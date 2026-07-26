@@ -1083,12 +1083,13 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
 
     require(scanner.exists(), "GitHub work rollup must bundle the unanswered-comment scanner")
     require(
-        "generic completion or closeout comment must not hide an unrelated human comment" in rollup,
-        "Unanswered-comment guidance must preserve human comments across generic bot closeout comments",
+        "owner acknowledgement separately from public response" in rollup
+        and "owner awareness requires an owner reaction after the latest edit" in rollup,
+        "Comment-radar guidance must distinguish owner acknowledgement from public response",
     )
     require(
-        "actors with no repository association" in rollup
-        and "`none` repository association" in babysit,
+        "do not add commenters to a people index" in rollup
+        and "surface every external human regardless of repository association" in babysit,
         "Comment monitoring must surface unknown external commenters regardless of association",
     )
     for skill_name, text in (
@@ -1097,17 +1098,26 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
         ("work-closeout", closeout),
     ):
         require(
-            "github_unanswered_comments.py" in text,
+            "github-unanswered-comments" in text,
             f"{skill_name} must route close/closeout work through the unanswered-comment scanner",
         )
         require(
             "--thread owner/repo#number" in text,
             f"{skill_name} must use full-history thread scans for close/closeout gates",
         )
+        require(
+            "bot response never proves owner acknowledgement" in text,
+            f"{skill_name} must not treat bot responses as owner acknowledgement",
+        )
     require(
         "TRUSTED_AUTHOR_ASSOCIATIONS" not in watcher
         and "is_external_human_review_author" in watcher,
         "PR babysitting must not filter external humans by repository association",
+    )
+    require(
+        "github-unanswered-comments --thread owner/repo#number" in babysit
+        and "any attention or degraded result" in babysit,
+        "PR readiness handoffs must run the full-history comment radar",
     )
 
 

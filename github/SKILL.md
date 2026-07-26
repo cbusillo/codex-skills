@@ -763,17 +763,10 @@ invocation rules.
   canonical PR merges, sweep referenced issues and close only those whose finish
   line is conclusively satisfied; otherwise comment/update durable state and
   leave them open.
-- **Human Comment Gate**: Before merging or closing work that settles an issue
-  or PR, run the installed
-  `github-work-rollup/scripts/github_unanswered_comments.py` helper with
-  `--thread OWNER/REPO#NUMBER` to inspect the target thread's full history.
-  Surface comments from every
-  external non-bot author, including unknown actors with no repository
-  association. A later human-account comment counts as a response; an
-  automation comment counts only when it directly mentions, links, or replies
-  to that external comment. Generic completion and closeout comments do not
-  clear unrelated human follow-up. Respond through the safe comment helper or
-  explicitly hand the comment off before claiming the workstream is settled.
+- **Human Comment Gate**: Before a merge or close settles an issue or PR, use
+  `github-unanswered-comments --thread OWNER/REPO#NUMBER`. Any attention result
+  or degraded coverage requires a response or explicit handoff before the
+  thread is settled; a bot response never proves owner acknowledgement.
 - **Handoffs**: For GitHub-backed work, put recovery-critical handoff content in
   the owning issue or PR comment. Local handoff files are scratch unless they
   are intentionally committed docs.
