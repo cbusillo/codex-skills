@@ -132,12 +132,13 @@ background activation by default to reduce focus stealing; when the target IDE i
 not already running, the helper launches the app hidden first and then asks the
 plugin to open the exact worktree. Use `--foreground-open` only when debugging
 IDE launch behavior.
-If an inspection wait times out while a run is still active, the helper asks the
-plugin to cancel that exact `inspection_run_id` and waits briefly for
-cancellation to settle. If the run changed, the helper leaves the newer run
-untouched. If the trigger/wait transport itself times out, the helper probes
-status first; an unproven active run or unreachable status keeps the owned
-project warm instead of closing it blindly.
+If an inspection wait times out while a helper-started run is still active, the
+helper asks the plugin to cancel that exact `inspection_run_id` and waits briefly
+for cancellation to settle. A compatible run adopted from a concurrent 409 is
+foreign-owned and is never cancelled. If the run changed, the helper leaves the
+newer run untouched. If the trigger/wait transport itself times out, the helper
+probes status first; an unproven or foreign active run, or unreachable status,
+keeps the owned project warm instead of closing it blindly.
 Once settled, it closes the helper-owned project normally. If indexing,
 scanning, or inspection churn remains active, the helper leaves the project warm
 and reports `cleanup.status=deferred` with `cleanup_deferred=true`. Treat that as
@@ -301,6 +302,16 @@ preferred IDE and must clean it up afterward when it owns the open.
   supplies one `client_run_id` per invocation and preserves plugin `request_id`
   values. `unattributed_unknown: true` is a helper/tool failure, not a neutral
   unknown bucket.
+  A concurrent `inspection_in_progress` response is adoptable only when it
+  includes an unambiguous positive run ID plus explicit scope/profile proof that
+  exactly matches the trigger request. For `changed_files`, it must also prove
+  the same unversioned-file policy and changed-files mode. Legacy, missing,
+  partial, mismatched, or contradictory conflict payloads fail closed as
+  `inspection_proof_failed` at the trigger phase and must not supply GREEN/RED
+  evidence. Adopted conflict runs remain foreign-owned and are never cancelled.
+  During `inspect` and `inspect-closeout`, problems retrieval reuses the trigger's
+  scope, unversioned-file policy, changed-files mode, profile, and targeted file
+  selectors rather than reconstructing a broader request.
   If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
   `ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
   metadata in `.github/github.json`; do not frame that as merely optional when
@@ -311,9 +322,9 @@ preferred IDE and must clean it up afterward when it owns the open.
   disable logging, set it to a path to override the log file, or set
   `JB_INSPECT_ROLLOUT_FILE` to include the current rollout/session transcript in
   the record. Durable unknown/outcome rows hash local paths and project keys,
-  redact token-like fields, and retain helper revision, plugin fingerprint, IDE
-  product/build, failure phase, attribution class, cleanup status/reason, and
-  evidence IDs.
+  redact token-like fields and path tokens embedded in diagnostic prose, and
+  retain helper revision, plugin fingerprint, IDE product/build, failure phase,
+  attribution class, cleanup status/reason, and evidence IDs.
   When inspection evidence is used to qualify changes to this helper or another
   installed runtime-bound skill, compare the recorded helper/source revision
   with the intended landed revision or a fresh runtime-reconciliation receipt.
@@ -334,11 +345,17 @@ preferred IDE and must clean it up afterward when it owns the open.
   suggesting a language plugin. When a file is outside project content, the
   next action points to the intended module/content root rather than language
   support. Otherwise, install or enable the needed language plugin, select a
-  compatible IDE, or update the repo's preferred IDE metadata before rerunning. Use
-  `--allow-text-only-coverage` only when generic text coverage is intentionally
+  compatible IDE, or update the repo's preferred IDE metadata before rerunning.
+  Use `--allow-text-only-coverage` only when generic text coverage is intentionally
   sufficient; it does not allow invalid files or files outside project content.
   The helper preserves actionable `RED` findings while attaching the semantic
   coverage gap so real findings are not hidden.
+- `scope_semantic_coverage_truncated` is `UNKNOWN` for an otherwise clean result:
+  the plugin resolved more files than it emitted semantic diagnostics for, so
+  the helper cannot prove complete scope coverage. Text-only allowance does not
+  override missing diagnostic entries; update the plugin/helper proof path and
+  rerun. Actionable current RED findings remain visible with the coverage gap
+  attached.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.

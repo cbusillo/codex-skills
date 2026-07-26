@@ -115,11 +115,72 @@ VERDICT_SOURCE_KEYS = (
     "proof_failures",
 )
 SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
+SEMANTIC_COVERAGE_TRUNCATED_REASON = "scope_semantic_coverage_truncated"
 PROJECT_METADATA_COVERAGE_REASON = "project_metadata_coverage_not_required"
 NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
 NON_SEMANTIC_PSI_CLASS_MARKERS = frozenset({"plaintext", "textmate"})
 PROJECT_METADATA_FILE_TYPES = frozenset({"ideamodule"})
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
+DURABLE_POSIX_PATH_ROOTS = frozenset(
+    {
+        "Applications",
+        "Library",
+        "System",
+        "Users",
+        "Volumes",
+        "bin",
+        "dev",
+        "etc",
+        "home",
+        "lib",
+        "lib64",
+        "media",
+        "mnt",
+        "nix",
+        "opt",
+        "private",
+        "proc",
+        "root",
+        "run",
+        "sbin",
+        "srv",
+        "sys",
+        "tmp",
+        "usr",
+        "var",
+        "workspace",
+        "workspaces",
+    }
+)
+DURABLE_QUOTED_PATH_PATTERN = re.compile(
+    r'''(?P<quote>["'])(?P<path>(?:file://(?:localhost)?/|(?:path|file):/|[A-Za-z]:[\\/]|\\\\|~/|/(?!/))[^"'\r\n]+)(?P=quote)'''
+)
+DURABLE_SPACED_FILE_PATH_PATTERN = re.compile(
+    r'''(?<![A-Za-z0-9._/\\-])(?P<path>
+        (?:file://(?:localhost)?/|(?:path|file):/|[A-Za-z]:[\\/]|\\\\|~/|/(?!/))
+        (?:[^\\/"'<>\r\n|,;!?]+[\\/])+
+        [^\\/"'<>\r\n|,;!?]*?\.[A-Za-z0-9][A-Za-z0-9._-]{0,15}
+        (?::\d+(?::\d+)*)?
+    )''',
+    re.VERBOSE,
+)
+DURABLE_SPACED_PATH_TAIL_PATTERN = re.compile(
+    rf'''(?<![A-Za-z0-9._/\\-])(?P<path>
+        (?:
+            file://(?:localhost)?/
+            |(?:path|file):/
+            |[A-Za-z]:[\\/]
+            |\\\\
+            |~/
+            |/(?:{"|".join(re.escape(root) for root in sorted(DURABLE_POSIX_PATH_ROOTS))})(?:/|(?=\s|$))
+        )
+        [^"'<>\r\n|]+
+    )''',
+    re.VERBOSE,
+)
+DURABLE_PATH_TOKEN_PATTERN = re.compile(
+    r'''(?<![A-Za-z0-9._/\\-])(?P<path>(?:file://(?:localhost)?/|(?:path|file):/|[A-Za-z]:[\\/]|\\\\|~/|/(?!/))[^\s"'<>|]+)'''
+)
 PROJECT_OPEN_BLOCKED_REASON = "jetbrains_project_open_blocked"
 PROJECT_OPEN_BLOCKED_HINT = (
     "JetBrains may be waiting on a Trust Project, safe-mode, or open-project prompt "
@@ -1041,15 +1102,166 @@ def inspection_exception_result(error: BaseException) -> dict[str, Any]:
     return result
 
 
+def is_inspection_in_progress_conflict(payload: dict[str, Any]) -> bool:
+    return (
+        payload.get("status") == "inspection_in_progress"
+        or payload.get("error") == "inspection_in_progress"
+        or payload.get("inspection_in_progress") is True
+    )
+
+
+def inspection_conflict_request_proof(payload: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
+    layouts: list[tuple[str, dict[str, Any], str, str]] = [
+        ("requested", payload, "requested_scope", "requested_profile"),
+        ("active", payload, "active_scope", "active_profile"),
+        ("direct", payload, "scope", "profile"),
+    ]
+    for key in ("active_request", "requested_request"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            layouts.append((key, nested, "scope", "profile"))
+
+    proofs: list[tuple[str, str]] = []
+    partial_layout = False
+    invalid_layout = False
+    for _, source, scope_key, profile_key in layouts:
+        has_scope = scope_key in source
+        has_profile = profile_key in source
+        if has_scope != has_profile:
+            partial_layout = True
+            continue
+        if not has_scope:
+            continue
+        scope = source.get(scope_key)
+        profile = source.get(profile_key)
+        if not isinstance(scope, str) or not scope.strip() or not isinstance(profile, str):
+            invalid_layout = True
+            continue
+        proofs.append((scope.strip().casefold(), profile.strip()))
+
+    if partial_layout or invalid_layout:
+        return None, "inspection_in_progress_scope_profile_proof_ambiguous"
+    if not proofs:
+        return None, "inspection_in_progress_scope_profile_proof_missing"
+    if len(set(proofs)) != 1:
+        return None, "inspection_in_progress_scope_profile_proof_ambiguous"
+    return proofs[0], None
+
+
+def inspection_conflict_run_id(payload: dict[str, Any]) -> tuple[int | None, str | None]:
+    values: list[int] = []
+    invalid = False
+    for key in ("inspection_run_id", "run_id"):
+        if key not in payload:
+            continue
+        value = positive_run_id(payload.get(key))
+        if value is None:
+            invalid = True
+        else:
+            values.append(value)
+    if invalid or len(set(values)) > 1:
+        return None, "inspection_in_progress_run_id_ambiguous"
+    if not values:
+        return None, "inspection_in_progress_run_id_missing"
+    return values[0], None
+
+
+def inspection_conflict_proof_failures(
+    payload: dict[str, Any],
+    trigger_request: dict[str, Any],
+) -> tuple[list[str], int | None]:
+    failures: list[str] = []
+    proof, proof_error = inspection_conflict_request_proof(payload)
+    if proof_error is not None:
+        failures.append(proof_error)
+    else:
+        expected_scope = str(trigger_request.get("scope") or "").strip().casefold()
+        expected_profile = str(trigger_request.get("profile") or "").strip()
+        assert proof is not None
+        proof_scope, proof_profile = proof
+        if proof_scope != expected_scope:
+            failures.append("inspection_in_progress_scope_mismatch")
+        if proof_profile != expected_profile:
+            failures.append("inspection_in_progress_profile_mismatch")
+
+    expected_scope = str(trigger_request.get("scope") or "").strip().casefold()
+    for key in ("include_unversioned", "changed_files_mode"):
+        proof_values = []
+        for proof_key in (f"requested_{key}", key):
+            if proof_key not in payload:
+                continue
+            value = payload.get(proof_key)
+            if key == "include_unversioned" and isinstance(value, bool):
+                proof_values.append(str(value).lower())
+            elif isinstance(value, str):
+                proof_values.append(value.strip().casefold())
+            else:
+                proof_values.append("<invalid>")
+        if not proof_values and expected_scope == "changed_files":
+            failures.append(f"inspection_in_progress_{key}_proof_missing")
+        elif len(set(proof_values)) > 1 or "<invalid>" in proof_values:
+            failures.append(f"inspection_in_progress_{key}_proof_ambiguous")
+        elif proof_values:
+            expected_value = str(trigger_request.get(key) or "").strip().casefold()
+            if proof_values[0] != expected_value:
+                failures.append(f"inspection_in_progress_{key}_mismatch")
+
+    run_id, run_id_error = inspection_conflict_run_id(payload)
+    if run_id_error is not None:
+        failures.append(run_id_error)
+    return failures, run_id
+
+
+def unproven_inspection_conflict_result(
+    route: dict[str, Any],
+    trigger: dict[str, Any],
+    proof_failures: list[str],
+) -> dict[str, Any]:
+    existing_attribution = trigger.get("inspection_attribution")
+    attribution = dict(existing_attribution) if isinstance(existing_attribution, dict) else {}
+    attribution.update(
+        {
+            "source": "helper",
+            "classification": "tool_caused",
+            "code": "inspection_proof_failed",
+            "phase": "trigger",
+            "endpoint": "trigger",
+            "http_status": 409,
+        }
+    )
+    result = {
+        "status": "inspection_in_progress_unproven",
+        "error_reason": "inspection_proof_failed",
+        "endpoint": "trigger",
+        "http_status": 409,
+        "response_code": "inspection_in_progress",
+        "transport_state_unknown": True,
+        "route": route,
+        "trigger": trigger,
+        "proof_failures": proof_failures,
+        "inspection_attribution": attribution,
+    }
+    apply_verdict(result)
+    return result
+
+
 def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
     try:
-        trigger = call_endpoint(route, "trigger", trigger_params(args, context, route))
+        trigger_request = trigger_params(args, context, route)
+        trigger = call_endpoint(route, "trigger", trigger_request)
     except InspectError as error:
         if infer_error_reason(error, error.payload) != "inspection_api_timeout":
             raise
         return recover_inspection_transport_timeout(args, context, route, error)
     active_route = trigger.get("route") or route
-    accepted_run_id = inspection_run_id(trigger)
+
+    adopted_conflicting_run = is_inspection_in_progress_conflict(trigger)
+    if adopted_conflicting_run:
+        proof_failures, accepted_run_id = inspection_conflict_proof_failures(trigger, trigger_request)
+        if proof_failures:
+            return unproven_inspection_conflict_result(active_route, trigger, proof_failures)
+    else:
+        accepted_run_id = inspection_run_id(trigger)
     timeout_ms = getattr(args, "timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)
     wait_params = route_params(args, context, active_route) | {
         "timeout_ms": timeout_ms,
@@ -1062,7 +1274,14 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
     except InspectError as error:
         if infer_error_reason(error, error.payload) != "inspection_api_timeout":
             raise
-        return recover_inspection_transport_timeout(args, context, active_route, error, trigger)
+        return recover_inspection_transport_timeout(
+            args,
+            context,
+            active_route,
+            error,
+            trigger,
+            owns_run=not adopted_conflicting_run,
+        )
     wait_run_id = inspection_run_id(wait)
     if accepted_run_id is not None and wait_result_run_changed(wait, accepted_run_id):
         return inspection_run_changed_result(active_route, trigger, wait)
@@ -1072,6 +1291,7 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
         active_route,
         wait,
         expected_run_id=accepted_run_id or wait_run_id,
+        owns_run=not adopted_conflicting_run,
     )
     problems_request = problems_params(args, context, active_route)
     if accepted_run_id is not None:
@@ -1189,6 +1409,7 @@ def recover_inspection_transport_timeout(
     route: dict[str, Any],
     error: InspectError,
     trigger: dict[str, Any] | None = None,
+    owns_run: bool = True,
 ) -> dict[str, Any]:
     expected_run_id = inspection_run_id(trigger or {})
     status: dict[str, Any] = {}
@@ -1213,6 +1434,7 @@ def recover_inspection_transport_timeout(
                 route,
                 wait,
                 expected_run_id=expected_run_id,
+                owns_run=owns_run,
             )
         else:
             cancellation = {
@@ -1265,10 +1487,20 @@ def cancel_timed_out_inspection(
     route: dict[str, Any],
     wait: dict[str, Any],
     expected_run_id: int | None = None,
+    owns_run: bool = True,
 ) -> dict[str, Any] | None:
     if wait.get("timed_out") is not True or wait.get("inspection_in_progress") is not True:
         return None
     expected_run_id = expected_run_id or inspection_run_id(wait)
+    if not owns_run:
+        return {
+            "status": "not_requested",
+            "requested": False,
+            "settled": False,
+            "reason": "foreign_run_not_owned",
+            "expected_inspection_run_id": expected_run_id,
+            "last_status": wait,
+        }
     if expected_run_id is None:
         return {
             "status": "not_requested",
@@ -2634,7 +2866,7 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
             return HttpResult(response.status, body, display_url)
     except urllib.error.HTTPError as error:
         body = parse_http_json(error.read(), endpoint, error.code, clean_params.get("client_run_id"))
-        if error.code == 409 and body.get("status") == "inspection_in_progress":
+        if error.code == 409 and is_inspection_in_progress_conflict(body):
             return HttpResult(error.code, body, display_url)
         payload = dict(body)
         payload.setdefault("endpoint", endpoint)
@@ -2728,14 +2960,17 @@ def route_params(args: argparse.Namespace, context: dict[str, Any], route: dict[
     return params
 
 
-def trigger_params(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
-    params = route_params(args, context, route)
-    params.update({
-        "scope": getattr(args, "scope", None) or context.get("scope") or "changed_files",
+def inspection_scope_params(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    default_scope: str = "changed_files",
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "scope": getattr(args, "scope", None) or context.get("scope") or default_scope,
         "include_unversioned": str(getattr(args, "include_unversioned", True)).lower(),
-        "changed_files_mode": getattr(args, "changed_files_mode", "all"),
-        "profile": getattr(args, "profile", ""),
-    })
+        "changed_files_mode": getattr(args, "changed_files_mode", "all") or "all",
+        "profile": getattr(args, "profile", "") or "",
+    }
     directory = getattr(args, "directory", None)
     if directory:
         params["dir"] = directory
@@ -2748,25 +2983,22 @@ def trigger_params(args: argparse.Namespace, context: dict[str, Any], route: dic
     return params
 
 
+def trigger_params(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+    params = route_params(args, context, route)
+    params.update(inspection_scope_params(args, context))
+    return params
+
+
 def problems_params(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
     params = route_params(args, context, route)
+    params.update(inspection_scope_params(args, context))
     params.update({
-        "scope": getattr(args, "scope", None) or context.get("scope") or "whole_project",
         "severity": getattr(args, "severity", "all"),
         "problem_type": getattr(args, "problem_type", "all"),
         "file_pattern": getattr(args, "file_pattern", "all"),
         "limit": getattr(args, "limit", 100),
         "offset": getattr(args, "offset", 0),
     })
-    directory = getattr(args, "directory", None)
-    if directory:
-        params["dir"] = directory
-    files = getattr(args, "files", []) or []
-    if files:
-        params["files"] = "\n".join(files)
-    max_files = getattr(args, "max_files", None)
-    if max_files:
-        params["max_files"] = max_files
     if getattr(args, "include_stale", False):
         params["include_stale"] = "true"
     return params
@@ -2930,19 +3162,20 @@ def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> lis
 
 def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     existing = payload.get("semantic_coverage")
-    if isinstance(existing, dict):
-        return existing
     diagnostic = payload.get("capture_diagnostic")
     if not isinstance(diagnostic, dict):
-        return None
-    scope_files = diagnostic.get("scope_file_diagnostics")
-    if not isinstance(scope_files, list) or not scope_files:
-        return None
+        return existing if isinstance(existing, dict) else None
+    raw_scope_files = diagnostic.get("scope_file_diagnostics")
+    scope_files = [item for item in raw_scope_files if isinstance(item, dict)] if isinstance(raw_scope_files, list) else []
+    resolved_value = diagnostic.get("scope_file_resolved_count")
+    resolved_count = resolved_value if isinstance(resolved_value, int) and not isinstance(resolved_value, bool) else None
+    diagnostic_count = len(scope_files)
+    truncated = resolved_count is not None and resolved_count > diagnostic_count
+    if not scope_files and not truncated:
+        return existing if isinstance(existing, dict) else None
     missing_files: list[dict[str, Any]] = []
     metadata_files: list[dict[str, Any]] = []
     for item in scope_files:
-        if not isinstance(item, dict):
-            continue
         if scope_file_is_project_metadata(item):
             path = item.get("path")
             metadata_summary = {
@@ -2972,13 +3205,19 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
             "reasons": reasons,
         }
         missing_files.append({key: value for key, value in file_summary.items() if value is not None})
-    if not missing_files and not metadata_files:
-        return None
+    if not missing_files and not metadata_files and not truncated:
+        return existing if isinstance(existing, dict) else None
     allow_text_only = payload.get("allow_text_only_coverage") is True
-    text_only = all(file.get("reasons") == ["non_semantic_fallback"] for file in missing_files)
-    if missing_files:
-        status = "text_only_allowed" if allow_text_only and text_only else "missing"
-        reason = "text_only_coverage_allowed" if status == "text_only_allowed" else SEMANTIC_COVERAGE_MISSING_REASON
+    text_only = bool(missing_files) and all(
+        file.get("reasons") == ["non_semantic_fallback"] for file in missing_files
+    )
+    if missing_files or truncated:
+        status = "text_only_allowed" if (allow_text_only and text_only and not truncated) else "missing"
+        reason = (
+            SEMANTIC_COVERAGE_TRUNCATED_REASON
+            if truncated
+            else "text_only_coverage_allowed" if status == "text_only_allowed" else SEMANTIC_COVERAGE_MISSING_REASON
+        )
     else:
         status = "satisfied"
         reason = PROJECT_METADATA_COVERAGE_REASON
@@ -2989,6 +3228,8 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         "scope_resolution_status": diagnostic.get("scope_resolution_status"),
         "requested_file_count": diagnostic.get("scope_file_requested_count"),
         "resolved_file_count": diagnostic.get("scope_file_resolved_count"),
+        "diagnostic_file_count": diagnostic_count,
+        "unproven_file_count": max(0, resolved_count - diagnostic_count) if resolved_count is not None else None,
         "missing_file_count": len(missing_files),
         "files": missing_files,
         "metadata_file_count": len(metadata_files),
@@ -3010,11 +3251,16 @@ def semantic_coverage_unknown_verdict(payload: dict[str, Any]) -> dict[str, str]
     coverage = semantic_coverage_for_payload(payload)
     if coverage is None or coverage.get("status") != "missing":
         return None
+    reason = str(coverage.get("reason") or SEMANTIC_COVERAGE_MISSING_REASON)
     return {
         "verdict": "UNKNOWN",
-        "verdict_reason": SEMANTIC_COVERAGE_MISSING_REASON,
-        "verdict_message": "Inspection could not prove language-aware coverage for every requested file.",
-        "verdict_next_action": next_action_for_unknown(SEMANTIC_COVERAGE_MISSING_REASON, payload),
+        "verdict_reason": reason,
+        "verdict_message": (
+            "Inspection did not emit semantic diagnostics for every resolved file."
+            if reason == SEMANTIC_COVERAGE_TRUNCATED_REASON
+            else "Inspection could not prove language-aware coverage for every requested file."
+        ),
+        "verdict_next_action": next_action_for_unknown(reason, payload),
     }
 
 
@@ -3198,6 +3444,11 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    if reason == SEMANTIC_COVERAGE_TRUNCATED_REASON:
+        return (
+            "Treat this as a plugin/helper proof gap: update the inspection plugin or helper so it emits one semantic "
+            "diagnostic per resolved file, then rerun."
+        )
     if reason == SEMANTIC_COVERAGE_MISSING_REASON:
         coverage = semantic_coverage_for_payload(payload) or {}
         coverage_files = [file for file in coverage.get("files", []) if isinstance(file, dict)]
@@ -3317,6 +3568,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "inspection_trigger_empty_model",
         "non_empty_unmapped_tree",
         "open_schedule_failed",
+        SEMANTIC_COVERAGE_TRUNCATED_REASON,
     }:
         return "tool_caused"
     if normalized in {
@@ -3524,7 +3776,16 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "route_not_ready"
     if normalized.startswith("cleanup_") or payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
         return "cleanup_not_clean"
-    if normalized in {"invalid_api_response", "inspection_api_http_error", "extractor_failure", "helper_plugin_error", "inspection_trigger_empty_model", "non_empty_unmapped_tree", "inspection_proof_failed"}:
+    if normalized in {
+        "invalid_api_response",
+        "inspection_api_http_error",
+        "extractor_failure",
+        "helper_plugin_error",
+        "inspection_trigger_empty_model",
+        "non_empty_unmapped_tree",
+        "inspection_proof_failed",
+        SEMANTIC_COVERAGE_TRUNCATED_REASON,
+    }:
         return "tool_bug"
     if normalized in {
         "inspection_api_unavailable",
@@ -4348,6 +4609,86 @@ def redact_payload(value: Any) -> Any:
     return value
 
 
+def split_durable_path_suffix(value: str) -> tuple[str, str]:
+    path = value
+    suffix = ""
+    while path and path[-1] in '.,;!?)]}':
+        suffix = path[-1] + suffix
+        path = path[:-1]
+    line_suffix = re.fullmatch(r"(.+?)(:\d+(?::\d+)*)", path)
+    if line_suffix is not None:
+        path = line_suffix.group(1)
+        suffix = line_suffix.group(2) + suffix
+    return path, suffix
+
+
+def is_durable_path_candidate(value: str) -> bool:
+    lowered = value.casefold()
+    if lowered.startswith(("file://", "file:/", "path:/", "~/")):
+        return True
+    if re.match(r"^[a-z]:[\\/]", value, re.IGNORECASE) or value.startswith("\\\\"):
+        return True
+    if not value.startswith("/") or value.startswith("//"):
+        return False
+    parts = [part for part in value.split("/") if part]
+    if not parts:
+        return False
+    return parts[0] in DURABLE_POSIX_PATH_ROOTS
+
+
+def redact_durable_path_candidate(value: str) -> str:
+    path, suffix = split_durable_path_suffix(value)
+    if not is_durable_path_candidate(path):
+        return value
+    return f"<path:{stable_value_hash(path)}>{suffix}"
+
+
+def redact_ambiguous_spaced_path_tail(value: str) -> str:
+    path, suffix = split_durable_path_suffix(value)
+    if not any(character.isspace() for character in path):
+        return value
+    first_token, _, remainder = path.partition(" ")
+    if not is_durable_path_candidate(first_token):
+        return value
+    non_posix_prefix = first_token.casefold().startswith(("file://", "file:/", "path:/", "~/")) or bool(
+        re.match(r"^[a-z]:[\\/]", first_token, re.IGNORECASE)
+    ) or first_token.startswith("\\\\")
+    root = next((part for part in first_token.split("/") if part), "")
+    likely_space_bearing_root = root in {
+        "Users",
+        "Volumes",
+        "home",
+        "media",
+        "mnt",
+        "private",
+        "tmp",
+        "var",
+        "workspace",
+        "workspaces",
+    }
+    if not non_posix_prefix and not likely_space_bearing_root and "/" not in remainder and "\\" not in remainder:
+        return value
+    return f"<path:{stable_value_hash(path)}>{suffix}"
+
+
+def redact_durable_text(value: str) -> str:
+    def replace_quoted(match: re.Match[str]) -> str:
+        quote = match.group("quote")
+        path = match.group("path")
+        return f"{quote}{redact_durable_path_candidate(path)}{quote}"
+
+    def replace_token(match: re.Match[str]) -> str:
+        return redact_durable_path_candidate(match.group("path"))
+
+    def replace_ambiguous_tail(match: re.Match[str]) -> str:
+        return redact_ambiguous_spaced_path_tail(match.group("path"))
+
+    quoted_redacted = DURABLE_QUOTED_PATH_PATTERN.sub(replace_quoted, value)
+    spaced_redacted = DURABLE_SPACED_FILE_PATH_PATTERN.sub(replace_token, quoted_redacted)
+    ambiguous_redacted = DURABLE_SPACED_PATH_TAIL_PATTERN.sub(replace_ambiguous_tail, spaced_redacted)
+    return DURABLE_PATH_TOKEN_PATTERN.sub(replace_token, ambiguous_redacted)
+
+
 def redact_durable_log(value: Any) -> Any:
     if isinstance(value, dict):
         durable: dict[str, Any] = {}
@@ -4380,6 +4721,8 @@ def redact_durable_log(value: Any) -> Any:
         return durable
     if isinstance(value, list):
         return [redact_durable_log(item) for item in value]
+    if isinstance(value, str):
+        return redact_durable_text(value)
     return value
 
 
