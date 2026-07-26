@@ -158,6 +158,10 @@ Commit and push only a focused task branch. Open or update a PR rather than
 pushing directly to the default or shared candidate branch. Read
 `references/review-handoff.md` before updating durable status or PR evidence.
 
+When a repository adds routing to this skill in the same rollout, land the
+shared skill first and reconcile the active runtime skills checkout before
+landing the repository route.
+
 ## Refuse or Stop
 
 Refuse write phases when any of these are true:

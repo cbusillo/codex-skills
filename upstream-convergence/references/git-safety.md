@@ -42,3 +42,6 @@
 - Keep acquisition, structural inspection, merge application, and executable
   validation as separate phases so untrusted execution is never a prerequisite
   for understanding the change.
+- Treat required checks, code-owner review, and workflow-change restrictions as
+  external Git-host controls. Candidate-controlled validation cannot prove its
+  own integrity when a change modifies the validator and its wiring together.
