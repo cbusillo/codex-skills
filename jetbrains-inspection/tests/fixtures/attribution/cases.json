@@ -235,6 +235,25 @@
     }
   },
   {
+    "name": "scope-semantic-coverage-truncated",
+    "payload": {
+      "status": "results_available",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "scope_semantic_coverage_truncated",
+      "verdict_reason": "scope_semantic_coverage_truncated",
+      "inspection_verdict_message": "Semantic coverage diagnostics were incomplete.",
+      "inspection_verdict_next_action": "Update the plugin or helper and rerun inspection.",
+      "command": "get-problems",
+      "client_run_id": "15151515-1515-4515-8515-151515151515"
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "scope_semantic_coverage_truncated",
+      "phase": "problems",
+      "helper_bucket": "tool_bug"
+    }
+  },
+  {
     "name": "unattributed-unknown",
     "payload": {
       "status": "mystery",
