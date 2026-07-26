@@ -6399,6 +6399,447 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertFalse(log_path.exists())
             self.assertNotIn("unknown_log_path", payload)
 
+class Issue458RegressionTest(unittest.TestCase):
+    def test_unproven_conflicts_fail_closed_with_stable_attribution(self):
+        cases = [
+            (
+                "legacy",
+                "strict",
+                {"status": "inspection_in_progress", "inspection_in_progress": True, "inspection_run_id": 42},
+                "inspection_in_progress_scope_profile_proof_missing",
+            ),
+            (
+                "legacy-error-only",
+                "strict",
+                {"error": "inspection_in_progress", "inspection_run_id": 42},
+                "inspection_in_progress_scope_profile_proof_missing",
+            ),
+            (
+                "legacy-flag-only",
+                "strict",
+                {"inspection_in_progress": True, "inspection_run_id": 42},
+                "inspection_in_progress_scope_profile_proof_missing",
+            ),
+            (
+                "missing-default-profile-proof",
+                "",
+                {"status": "inspection_in_progress", "requested_scope": "changed_files", "inspection_run_id": 42},
+                "inspection_in_progress_scope_profile_proof_ambiguous",
+            ),
+            (
+                "scope-mismatch",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "whole_project",
+                    "requested_profile": "strict",
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_scope_mismatch",
+            ),
+            (
+                "missing-changed-files-selector-proof",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_include_unversioned_proof_missing",
+            ),
+            (
+                "profile-mismatch",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "default",
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_profile_mismatch",
+            ),
+            (
+                "include-unversioned-mismatch",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "include_unversioned": False,
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_include_unversioned_mismatch",
+            ),
+            (
+                "changed-files-mode-mismatch",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "changed_files_mode": "staged",
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_changed_files_mode_mismatch",
+            ),
+            (
+                "ambiguous-layouts",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "scope": "whole_project",
+                    "profile": "strict",
+                    "inspection_run_id": 42,
+                },
+                "inspection_in_progress_scope_profile_proof_ambiguous",
+            ),
+            (
+                "ambiguous-run-id",
+                "strict",
+                {
+                    "status": "inspection_in_progress",
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "requested_include_unversioned": True,
+                    "requested_changed_files_mode": "all",
+                    "inspection_run_id": 42,
+                    "run_id": 43,
+                },
+                "inspection_in_progress_run_id_ambiguous",
+            ),
+        ]
+        route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
+
+        for name, profile, trigger_response, expected_failure in cases:
+            with self.subTest(name=name), patch.object(
+                jb_inspect,
+                "call_endpoint",
+                return_value=trigger_response,
+            ) as call:
+                result = jb_inspect.run_inspection_on_route(
+                    helper_args(scope="changed_files", profile=profile),
+                    {"scope": "changed_files"},
+                    route,
+                )
+
+            self.assertEqual(call.call_count, 1)
+            self.assertEqual(result["status"], "inspection_in_progress_unproven")
+            self.assertEqual(result["verdict"], "UNKNOWN")
+            self.assertEqual(result["verdict_reason"], "inspection_proof_failed")
+            self.assertIn(expected_failure, result["proof_failures"])
+            self.assertTrue(result["transport_state_unknown"])
+            self.assertEqual(result["inspection_attribution"]["code"], "inspection_proof_failed")
+            self.assertEqual(result["inspection_attribution"]["phase"], "trigger")
+            self.assertEqual(result["inspection_attribution"]["http_status"], 409)
+            self.assertTrue(jb_inspect.should_defer_lifecycle_cleanup(result, {"opened_by_helper": True}))
+
+    def test_matching_conflict_proof_adopts_only_the_proven_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append((endpoint, params))
+            if endpoint == "trigger":
+                return {
+                    "status": "inspection_in_progress",
+                    "inspection_in_progress": True,
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "requested_include_unversioned": True,
+                    "requested_changed_files_mode": "all",
+                    "inspection_run_id": 42,
+                    "route": route,
+                }
+            if endpoint == "wait":
+                return {"status": "results_available", "inspection_run_id": 42, "snapshot_run_id": 42}
+            if endpoint == "problems":
+                return {
+                    "status": "results_available",
+                    "inspection_run_id": 42,
+                    "snapshot_run_id": 42,
+                    "total_problems": 0,
+                    "problems": [],
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
+                {"scope": "changed_files"},
+                route,
+            )
+
+        self.assertEqual(result["verdict"], "GREEN")
+        self.assertEqual([endpoint for endpoint, _ in calls], ["trigger", "wait", "problems"])
+        self.assertEqual(calls[1][1]["inspection_run_id"], 42)
+        self.assertEqual(calls[2][1]["inspection_run_id"], 42)
+
+    def test_matching_conflict_timeout_never_cancels_foreign_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append(endpoint)
+            if endpoint == "trigger":
+                return {
+                    "status": "inspection_in_progress",
+                    "inspection_in_progress": True,
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "requested_include_unversioned": True,
+                    "requested_changed_files_mode": "all",
+                    "inspection_run_id": 42,
+                    "route": route,
+                }
+            if endpoint == "wait":
+                return {
+                    "status": "timed_out",
+                    "timed_out": True,
+                    "inspection_in_progress": True,
+                    "inspection_run_id": 42,
+                }
+            if endpoint == "problems":
+                return {
+                    "status": "running",
+                    "inspection_in_progress": True,
+                    "inspection_run_id": 42,
+                    "problems": [],
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
+                {"scope": "changed_files"},
+                route,
+            )
+
+        self.assertEqual(calls, ["trigger", "wait", "problems"])
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertEqual(result["cancellation"]["status"], "not_requested")
+        self.assertEqual(result["cancellation"]["reason"], "foreign_run_not_owned")
+        self.assertFalse(result["cancellation"]["requested"])
+
+    def test_matching_conflict_transport_timeout_never_cancels_foreign_run(self):
+        route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
+        calls = []
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            calls.append(endpoint)
+            if endpoint == "trigger":
+                return {
+                    "status": "inspection_in_progress",
+                    "inspection_in_progress": True,
+                    "requested_scope": "changed_files",
+                    "requested_profile": "strict",
+                    "requested_include_unversioned": True,
+                    "requested_changed_files_mode": "all",
+                    "inspection_run_id": 42,
+                    "route": route,
+                }
+            if endpoint == "wait":
+                raise jb_inspect.InspectError(
+                    "Inspection API timed out on port 63342: timed out",
+                    3,
+                    {"error_reason": "inspection_api_timeout", "endpoint": "wait", "port": 63342},
+                )
+            if endpoint == "status":
+                return {
+                    "status": "running",
+                    "inspection_in_progress": True,
+                    "inspection_run_id": 42,
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
+                {"scope": "changed_files"},
+                route,
+            )
+
+        self.assertEqual(calls, ["trigger", "wait", "status"])
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertEqual(result["cancellation"]["status"], "not_requested")
+        self.assertEqual(result["cancellation"]["reason"], "foreign_run_not_owned")
+        self.assertFalse(result["cancellation"]["requested"])
+
+    def test_trigger_and_problems_preserve_scope_parameters(self):
+        route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
+        for include_unversioned, changed_files_mode in ((False, "staged"), (True, "unstaged"), (True, "all")):
+            calls = []
+
+            def fake_call(active_route, endpoint, params, timeout=None):
+                calls.append((endpoint, params))
+                if endpoint == "trigger":
+                    return {"status": "triggered", "run_id": 7, "route": route}
+                if endpoint == "wait":
+                    return {"status": "results_available", "inspection_run_id": 7, "snapshot_run_id": 7}
+                if endpoint == "problems":
+                    return {
+                        "status": "results_available",
+                        "inspection_run_id": 7,
+                        "snapshot_run_id": 7,
+                        "total_problems": 0,
+                        "problems": [],
+                    }
+                self.fail(f"unexpected endpoint: {endpoint}")
+
+            args = helper_args(
+                scope="changed_files",
+                include_unversioned=include_unversioned,
+                changed_files_mode=changed_files_mode,
+                profile="strict",
+                max_files=25,
+                timeout_ms=1000,
+                poll_ms=1,
+            )
+            with self.subTest(include_unversioned=include_unversioned, changed_files_mode=changed_files_mode), patch.object(
+                jb_inspect,
+                "call_endpoint",
+                side_effect=fake_call,
+            ):
+                jb_inspect.run_inspection_on_route(args, {"scope": "changed_files"}, route)
+
+            trigger_request = calls[0][1]
+            problems_request = calls[2][1]
+            for key in ("scope", "include_unversioned", "changed_files_mode", "profile", "max_files"):
+                self.assertEqual(problems_request[key], trigger_request[key])
+
+    def test_truncated_semantic_diagnostics_override_green_with_stable_reason(self):
+        semantic_file = {
+            "path": "/tmp/a.py",
+            "valid": True,
+            "directory": False,
+            "file_type": "Python",
+            "psi_language": "Python",
+            "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content": True,
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 3,
+                "scope_file_diagnostics": [semantic_file, {**semantic_file, "path": "/tmp/b.py"}],
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
+        self.assertEqual(payload["semantic_coverage"]["diagnostic_file_count"], 2)
+        self.assertEqual(payload["semantic_coverage"]["unproven_file_count"], 1)
+        self.assertEqual(payload["inspection_attribution"]["code"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
+        self.assertEqual(payload["attribution_class"], "tool_caused")
+        self.assertEqual(payload["bucket"], "tool_bug")
+
+    def test_truncation_handles_missing_malformed_and_text_only_diagnostics(self):
+        cases = [
+            [],
+            [{"path": "/tmp/a.py", "valid": True, "file_type": "Python", "psi_language": "Python", "in_content": True}, "invalid"],
+            [{"path": "/tmp/a.swift", "valid": True, "file_type": "TextMate", "psi_language": "TextMate", "in_content": True}],
+        ]
+        for diagnostics in cases:
+            with self.subTest(diagnostics=diagnostics):
+                coverage = jb_inspect.semantic_coverage_for_payload(
+                    {
+                        "allow_text_only_coverage": True,
+                        "capture_diagnostic": {
+                            "scope_file_resolved_count": len(diagnostics) + 1,
+                            "scope_file_diagnostics": diagnostics,
+                        },
+                    }
+                )
+
+                self.assertIsNotNone(coverage)
+                self.assertEqual(coverage["status"], "missing")
+                self.assertEqual(coverage["reason"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
+
+    def test_durable_redaction_hashes_embedded_paths(self):
+        posix_path = "/Users/cbusillo/project/src/main.py"
+        windows_path = r"C:\Users\cbusillo\project\main.py"
+        quoted_path = "/Users/Chris Busillo/My Project/test.py"
+        unquoted_path = "/Users/Chris Busillo/My Project/unquoted.py"
+        unquoted_windows_path = r"C:\Users\Chris Busillo\My Project\unquoted.py"
+        no_extension_path = "/Users/Chris Busillo/My Project"
+        no_extension_windows_path = r"C:\Users\Chris Busillo\My Project"
+        no_extension_file_uri = "file:///Users/Chris Busillo/My Project"
+        file_uri = "file:///private/tmp/inspection.log"
+        redacted = jb_inspect.redact_durable_log(
+            {
+                "capture_diagnostic": {
+                    "exception_message": f"Read {posix_path}:12:4, then {windows_path}.",
+                    "engine_errors": [
+                        f'Failed at "{quoted_path}".',
+                        f"Trace: {file_uri}!",
+                        f"Read {unquoted_path}:9 before continuing.",
+                        f"Read {unquoted_windows_path}:11 before continuing.",
+                        no_extension_path,
+                        no_extension_windows_path,
+                        no_extension_file_uri,
+                        f"Read {no_extension_path} before continuing.",
+                    ],
+                }
+            }
+        )["capture_diagnostic"]
+
+        self.assertEqual(
+            redacted["exception_message"],
+            f"Read <path:{jb_inspect.stable_value_hash(posix_path)}>:12:4, then "
+            f"<path:{jb_inspect.stable_value_hash(windows_path)}>.",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][0],
+            f'Failed at "<path:{jb_inspect.stable_value_hash(quoted_path)}>".',
+        )
+        self.assertEqual(
+            redacted["engine_errors"][1],
+            f"Trace: <path:{jb_inspect.stable_value_hash(file_uri)}>!",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][2],
+            f"Read <path:{jb_inspect.stable_value_hash(unquoted_path)}>:9 before continuing.",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][3],
+            f"Read <path:{jb_inspect.stable_value_hash(unquoted_windows_path)}>:11 before continuing.",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][4],
+            f"<path:{jb_inspect.stable_value_hash(no_extension_path)}>",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][5],
+            f"<path:{jb_inspect.stable_value_hash(no_extension_windows_path)}>",
+        )
+        self.assertEqual(
+            redacted["engine_errors"][6],
+            f"<path:{jb_inspect.stable_value_hash(no_extension_file_uri)}>",
+        )
+        self.assertTrue(redacted["engine_errors"][7].startswith("Read <path:sha256:"))
+        self.assertNotIn("Chris Busillo", redacted["engine_errors"][7])
+        self.assertNotIn("My Project", redacted["engine_errors"][7])
+
+    def test_durable_redaction_preserves_urls_routes_and_identifiers(self):
+        values = [
+            "See " + "ht" + "tps://example.com/docs/ref and " + "ht" + "tp://127.0.0.1:63342/api/inspection/status.",
+            "Endpoints /api/v1/problems and /v2/projects/42 remain stable.",
+            "Routes /users/42 and /projects/abc/status remain stable.",
+            "Identifiers org/example/Foo, owner/repo/issues/458, scope/profile, and/or remain unchanged.",
+            "Package-like /com/example/Foo.java identifiers remain unchanged.",
+            "MIME application/x-www-form-urlencoded is not a local path.",
+        ]
+
+        self.assertEqual(jb_inspect.redact_durable_log(values), values)
+
 
 if __name__ == "__main__":
     unittest.main()
