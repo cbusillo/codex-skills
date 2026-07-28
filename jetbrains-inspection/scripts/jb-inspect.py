@@ -130,6 +130,28 @@ PROJECT_METADATA_COVERAGE_REASON = "project_metadata_coverage_not_required"
 NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
 NON_SEMANTIC_PSI_CLASS_MARKERS = frozenset({"plaintext", "textmate"})
 PROJECT_METADATA_FILE_TYPES = frozenset({"ideamodule"})
+PROJECT_METADATA_COVERAGE_ROLE = "project_metadata"
+EXCLUDED_DEPENDENCY_LOCKFILE_COVERAGE_ROLE = "excluded_dependency_lockfile"
+DEPENDENCY_LOCKFILE_NAMES = frozenset(
+    {
+        "bun.lock",
+        "bun.lockb",
+        "cargo.lock",
+        "composer.lock",
+        "flake.lock",
+        "gemfile.lock",
+        "go.sum",
+        "npm-shrinkwrap.json",
+        "package-lock.json",
+        "package.resolved",
+        "packages.lock.json",
+        "pipfile.lock",
+        "pnpm-lock.yaml",
+        "poetry.lock",
+        "uv.lock",
+        "yarn.lock",
+    }
+)
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
 DURABLE_POSIX_PATH_ROOTS = frozenset(
     {
@@ -2307,12 +2329,20 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
         else:
             stable_ready_count = 0
         time.sleep(max(DEFAULT_POLL_MS, 1_000) / 1000.0)
+    lifecycle_readiness = lifecycle_readiness_from_payload(last_status or {})
+    readiness_reason = str(lifecycle_readiness.get("reason") or "") if lifecycle_readiness else ""
+    content_root_failure = readiness_reason in {"no_content_roots", "content_roots_outside_target"}
     raise InspectError(
-        "Timed out waiting for JetBrains indexing/scanning to settle.",
+        (
+            "JetBrains opened the worktree but did not establish a content root covering it."
+            if content_root_failure
+            else "Timed out waiting for JetBrains indexing/scanning to settle."
+        ),
         3,
         {
             "status": "timeout",
-            "error_reason": "ide_not_ready_timeout",
+            "error_reason": "project_content_roots_missing" if content_root_failure else "ide_not_ready_timeout",
+            "lifecycle_readiness": lifecycle_readiness,
             "last_status": last_status or {},
             "route": route,
         }
@@ -2325,10 +2355,23 @@ def route_status_ready(body: dict[str, Any]) -> bool:
         return False
     if body.get("indexing") or body.get("is_scanning") or body.get("inspection_in_progress"):
         return False
+    lifecycle_readiness = lifecycle_readiness_from_payload(body)
+    if lifecycle_readiness and lifecycle_readiness.get("ready") is False:
+        return False
     status = str(body.get("status") or body.get("completion_reason") or "").lower()
     if status in {"indexing", "running", "timed_out", "session_drift", "ambiguous", "unavailable"}:
         return False
     return True
+
+
+def lifecycle_readiness_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    direct = payload.get("lifecycle_readiness")
+    if isinstance(direct, dict):
+        return direct
+    route = payload.get("route")
+    if isinstance(route, dict) and isinstance(route.get("lifecycle_readiness"), dict):
+        return route["lifecycle_readiness"]
+    return None
 
 
 def open_attempt_payload(
@@ -2649,6 +2692,7 @@ def claim_lifecycle(
         "session_id": claimed_route.get("session_id"),
         "lease_id": lease.get("lease_id"),
         "claimed_at_ms": now_ms(),
+        "lifecycle_readiness": lifecycle_readiness_from_payload(claim),
     }
     return claim_metadata, close_proof, ownership_proven is True, claimed_route
 
@@ -3220,10 +3264,55 @@ def scope_file_is_project_metadata(file_diagnostic: dict[str, Any]) -> bool:
     )
 
 
+def scope_file_is_excluded_dependency_lockfile(file_diagnostic: dict[str, Any]) -> bool:
+    path = file_diagnostic.get("path")
+    filename = Path(str(path)).name.casefold() if path else ""
+    return (
+        file_diagnostic.get("directory") is not True
+        and file_diagnostic.get("valid") is True
+        and not file_diagnostic.get("diagnostic_error")
+        and file_diagnostic.get("in_content") is False
+        and file_diagnostic.get("is_excluded") is True
+        and filename in DEPENDENCY_LOCKFILE_NAMES
+    )
+
+
+def scope_file_declared_coverage_role(file_diagnostic: dict[str, Any]) -> str | None:
+    classification = file_diagnostic.get("classification")
+    coverage_role = file_diagnostic.get("coverage_role")
+    if classification is not None and coverage_role is not None and str(classification) != str(coverage_role):
+        return None
+    role = classification if classification is not None else coverage_role
+    return str(role) if role is not None else None
+
+
+def scope_file_has_declared_coverage_role(file_diagnostic: dict[str, Any]) -> bool:
+    return file_diagnostic.get("classification") is not None or file_diagnostic.get("coverage_role") is not None
+
+
+def scope_file_metadata_classification(file_diagnostic: dict[str, Any]) -> str | None:
+    declared_role = scope_file_declared_coverage_role(file_diagnostic)
+    if declared_role == PROJECT_METADATA_COVERAGE_ROLE:
+        return declared_role if scope_file_is_project_metadata(file_diagnostic) else None
+    if declared_role == EXCLUDED_DEPENDENCY_LOCKFILE_COVERAGE_ROLE:
+        return declared_role if scope_file_is_excluded_dependency_lockfile(file_diagnostic) else None
+    if declared_role is not None:
+        return None
+    if scope_file_has_declared_coverage_role(file_diagnostic):
+        return None
+    if scope_file_is_project_metadata(file_diagnostic):
+        return PROJECT_METADATA_COVERAGE_ROLE
+    return None
+
+
 def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> list[str]:
     if file_diagnostic.get("directory") is True:
         return []
+    if scope_file_metadata_classification(file_diagnostic) is not None:
+        return []
     reasons: list[str] = []
+    if scope_file_has_declared_coverage_role(file_diagnostic):
+        reasons.append("invalid_metadata_role")
     file_type = normalized_psi_marker(file_diagnostic.get("file_type"))
     psi_language = normalized_psi_marker(file_diagnostic.get("psi_language"))
     psi_class = normalized_psi_marker(file_diagnostic.get("psi_class"))
@@ -3231,7 +3320,7 @@ def scope_file_semantic_coverage_reasons(file_diagnostic: dict[str, Any]) -> lis
         file_type in NON_SEMANTIC_PSI_VALUES
         or psi_language in NON_SEMANTIC_PSI_VALUES
         or any(marker in psi_class for marker in NON_SEMANTIC_PSI_CLASS_MARKERS)
-    ) and not scope_file_is_project_metadata(file_diagnostic):
+    ):
         reasons.append("non_semantic_fallback")
     if file_diagnostic.get("valid") is False:
         reasons.append("invalid_file")
@@ -3269,6 +3358,13 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         if isinstance(reason, str) and isinstance(count, int) and not isinstance(count, bool) and count > 0
     } if isinstance(raw_reason_counts, dict) else None
     reason_count_total = sum(summary_reason_counts.values()) if summary_reason_counts is not None else None
+    raw_summary_metadata_files = summary.get("metadata_files") if summary is not None else None
+    summary_metadata_rows = [
+        item for item in raw_summary_metadata_files if isinstance(item, dict)
+    ] if isinstance(raw_summary_metadata_files, list) else []
+    invalid_summary_metadata_rows = [
+        item for item in summary_metadata_rows if scope_file_metadata_classification(item) is None
+    ]
     summary_counts_consistent = (
         evaluated_count is not None
         and evaluated_count >= 0
@@ -3290,6 +3386,7 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         and summary is not None
         and summary_unproven_count == 0
         and summary_reason_counts is not None
+        and not invalid_summary_metadata_rows
         and summary_counts_consistent
         and (resolved_count is None or evaluated_count == resolved_count)
     )
@@ -3313,10 +3410,11 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         else [] if aggregate_proof_complete else scope_files
     )
     for item in coverage_metadata_files:
-        if scope_file_is_project_metadata(item):
+        classification = scope_file_metadata_classification(item)
+        if classification is not None:
             path = item.get("path")
             metadata_summary = {
-                "classification": "project_metadata",
+                "classification": classification,
                 "coverage_required": False,
                 "path": path,
                 "requested_language_hint": Path(str(path)).suffix.lstrip(".").casefold() if path else None,
@@ -3325,6 +3423,7 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
                 "psi_class": item.get("psi_class"),
                 "in_content": item.get("in_content"),
                 "in_source": item.get("in_source"),
+                "is_excluded": item.get("is_excluded"),
             }
             metadata_files.append({key: value for key, value in metadata_summary.items() if value is not None})
     for item in coverage_scope_files:
@@ -3345,6 +3444,15 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
             "reasons": reasons,
         }
         missing_files.append({key: value for key, value in file_summary.items() if value is not None})
+    for item in invalid_summary_metadata_rows:
+        path = item.get("path")
+        missing_files.append(
+            {
+                "path": path,
+                "classification": scope_file_declared_coverage_role(item),
+                "reasons": ["invalid_metadata_role"],
+            }
+        )
     missing_file_count = summary_missing_count if aggregate_proof_complete else len(missing_files)
     metadata_file_count = summary_metadata_count if aggregate_proof_complete else len(metadata_files)
     if missing_file_count == 0 and metadata_file_count == 0 and not truncated:
@@ -3421,8 +3529,8 @@ def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str]
         return {
             "verdict": "GREEN",
             "verdict_reason": PROJECT_METADATA_COVERAGE_REASON,
-            "verdict_message": "Inspection found no actionable findings; classified JetBrains project metadata does not require language-aware PSI.",
-            "verdict_next_action": "No inspection action required for classified JetBrains project metadata.",
+            "verdict_message": "Inspection found no actionable findings; classified project metadata does not require language-aware PSI.",
+            "verdict_next_action": "No inspection action required for classified project metadata.",
         }
     if coverage.get("status") != "text_only_allowed":
         return None

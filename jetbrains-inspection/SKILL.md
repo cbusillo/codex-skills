@@ -198,8 +198,12 @@ worktree open with the IDE's current `session_id`. Current plugin builds use
 that session-verified lifecycle request to mark the path trusted inside the
 running IDE immediately before `ProjectManagerEx.openProject`, which avoids
 stale on-disk Trusted Locations state in already-running IDEs. The helper polls
-until the exact route appears before it inspects; a lifecycle open response alone
-is not proof that the IDE finished opening the project.
+until the exact route appears, claims cleanup authority, and then requires two
+consecutive ready status observations before it inspects. For helper-owned
+projects, `lifecycle_readiness.ready` also requires a content root covering the
+requested worktree. `no_content_roots` and `content_roots_outside_target` fail
+preparation as `project_content_roots_missing` and trigger lease-bound cleanup;
+a lifecycle open response or routable project alone is not readiness proof.
 Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`:
 
 ```json
@@ -399,7 +403,11 @@ side of the boundary they occupy.
   `IDEA_MODULE` file role is classified as `project_metadata`, even when the IDE
   exposes it as `PsiPlainTextFile`; it does not require language-aware PSI. The
   helper reports that classification with no-action guidance instead of
-  suggesting a language plugin. When a file is outside project content, the
+  suggesting a language plugin. A recognized dependency lockfile may likewise
+  be classified as `excluded_dependency_lockfile`, but only when the plugin
+  reports `is_excluded: true` and the matching stable role. A basename without
+  explicit IDE exclusion, an unknown role, or a blanket `*.lock` pattern stays
+  fail-closed. When a file is outside project content, the
   next action points to the intended module/content root rather than language
   support. Otherwise, install or enable the needed language plugin, select a
   compatible IDE, or update the repo's preferred IDE metadata before rerunning.

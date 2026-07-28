@@ -4357,6 +4357,67 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(calls, ["status", "status", "status", "status", "status"])
 
+    def test_route_status_ready_requires_helper_owned_content_roots(self):
+        self.assertFalse(
+            jb_inspect.route_status_ready(
+                {
+                    "indexing": False,
+                    "is_scanning": False,
+                    "route": {
+                        "lifecycle_readiness": {
+                            "ready": False,
+                            "reason": "no_content_roots",
+                            "content_root_count": 0,
+                        }
+                    },
+                }
+            )
+        )
+        self.assertTrue(
+            jb_inspect.route_status_ready(
+                {
+                    "indexing": False,
+                    "is_scanning": False,
+                    "route": {
+                        "lifecycle_readiness": {
+                            "ready": True,
+                            "reason": "ready",
+                            "content_root_count": 1,
+                        }
+                    },
+                }
+            )
+        )
+
+    def test_wait_until_route_ready_reports_missing_content_roots(self):
+        status = {
+            "indexing": False,
+            "is_scanning": False,
+            "route": {
+                "lifecycle_readiness": {
+                    "ready": False,
+                    "reason": "no_content_roots",
+                    "content_root_count": 0,
+                }
+            },
+        }
+        times = iter([0, 0, 1])
+        with (
+            patch.object(jb_inspect, "call_endpoint", return_value=status),
+            patch.object(jb_inspect.time, "sleep"),
+            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(times)),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_until_route_ready(
+                    helper_args(port=None),
+                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    {"port": 63342},
+                    0,
+                )
+
+        self.assertEqual(raised.exception.payload["error_reason"], "project_content_roots_missing")
+        self.assertEqual(raised.exception.payload["lifecycle_readiness"]["reason"], "no_content_roots")
+
     def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "Library" / "Application Support" / "JetBrains"
@@ -5531,7 +5592,7 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["semantic_coverage"]["files"], [])
         self.assertEqual(
             payload["verdict_next_action"],
-            "No inspection action required for classified JetBrains project metadata.",
+            "No inspection action required for classified project metadata.",
         )
 
         output = io.StringIO()
@@ -5584,6 +5645,177 @@ class HumanOutputTest(unittest.TestCase):
         metadata_file = payload["semantic_coverage"]["metadata_files"][0]
         self.assertEqual(metadata_file["psi_language"], "TEXT")
         self.assertEqual(metadata_file["psi_class"], "com.intellij.psi.impl.light.LightPsiFile")
+
+    def test_explicitly_excluded_dependency_lockfile_is_classified_as_metadata(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/tool.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": True,
+                    "in_source": True,
+                    "is_excluded": False,
+                },
+                {
+                    "path": "/tmp/uv.lock",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "PLAIN_TEXT",
+                    "psi_language": "TEXT",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": False,
+                    "in_source": False,
+                    "is_excluded": True,
+                    "coverage_role": "excluded_dependency_lockfile",
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["semantic_coverage"]["status"], "satisfied")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 0)
+        self.assertEqual(payload["semantic_coverage"]["metadata_file_count"], 1)
+        metadata_file = payload["semantic_coverage"]["metadata_files"][0]
+        self.assertEqual(metadata_file["classification"], "excluded_dependency_lockfile")
+        self.assertTrue(metadata_file["is_excluded"])
+
+    def test_dependency_lockfile_without_explicit_exclusion_stays_unknown(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/uv.lock",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "PLAIN_TEXT",
+                    "psi_language": "TEXT",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": False,
+                    "in_source": False,
+                    "is_excluded": False,
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertIn("outside_project_content", payload["semantic_coverage"]["files"][0]["reasons"])
+
+    def test_excluded_lockfile_does_not_hide_source_outside_content(self):
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "capture_diagnostic": scope_capture_diagnostic(
+                {
+                    "path": "/tmp/uv.lock",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "PLAIN_TEXT",
+                    "psi_language": "TEXT",
+                    "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+                    "in_content": False,
+                    "in_source": False,
+                    "is_excluded": True,
+                    "coverage_role": "excluded_dependency_lockfile",
+                },
+                {
+                    "path": "/tmp/tool.py",
+                    "valid": True,
+                    "directory": False,
+                    "file_type": "Python",
+                    "psi_language": "Python",
+                    "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+                    "in_content": False,
+                    "in_source": False,
+                    "is_excluded": False,
+                },
+            ),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 1)
+        self.assertTrue(payload["semantic_coverage"]["files"][0]["path"].endswith("tool.py"))
+
+    def test_malformed_dependency_lockfile_role_fails_closed(self):
+        lockfile = {
+            "path": "/tmp/uv.lock",
+            "valid": True,
+            "directory": False,
+            "file_type": "PLAIN_TEXT",
+            "psi_language": "TEXT",
+            "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content": False,
+            "in_source": False,
+            "is_excluded": False,
+            "coverage_role": "excluded_dependency_lockfile",
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "capture_diagnostic": scope_capture_diagnostic(lockfile),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertIn("invalid_metadata_role", payload["semantic_coverage"]["files"][0]["reasons"])
+
+    def test_conflicting_dependency_lockfile_roles_fail_closed(self):
+        lockfile = {
+            "path": "/tmp/uv.lock",
+            "valid": True,
+            "directory": False,
+            "file_type": "PLAIN_TEXT",
+            "psi_language": "TEXT",
+            "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content": False,
+            "in_source": False,
+            "is_excluded": True,
+            "coverage_role": "excluded_dependency_lockfile",
+            "classification": "project_metadata",
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "capture_diagnostic": scope_capture_diagnostic(lockfile),
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertIn("invalid_metadata_role", payload["semantic_coverage"]["files"][0]["reasons"])
 
     def test_idea_module_requires_explicit_valid_true(self):
         missing = object()
@@ -7797,6 +8029,67 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["verdict"], "GREEN")
         self.assertEqual(payload["verdict_reason"], "no_matching_findings")
         self.assertNotIn("semantic_coverage", payload)
+
+    def test_aggregate_semantic_proof_preserves_excluded_lockfile_role_beyond_detail_limit(self):
+        semantic_file = {
+            "path": "/tmp/a.py",
+            "valid": True,
+            "directory": False,
+            "file_type": "Python",
+            "psi_language": "Python",
+            "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content": True,
+            "is_excluded": False,
+        }
+        lockfile = {
+            "path": "/tmp/uv.lock",
+            "valid": True,
+            "directory": False,
+            "file_type": "PLAIN_TEXT",
+            "psi_language": "TEXT",
+            "psi_class": "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content": False,
+            "in_source": False,
+            "is_excluded": True,
+            "coverage_role": "excluded_dependency_lockfile",
+            "classification": "excluded_dependency_lockfile",
+            "coverage_required": False,
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 30,
+                "scope_file_diagnostics": [semantic_file],
+                "scope_file_diagnostics_truncated": True,
+                "scope_file_diagnostics_complete": False,
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 30,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 0,
+                    "reason_counts": {},
+                    "missing_files": [],
+                    "metadata_file_count": 1,
+                    "metadata_files": [lockfile],
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["semantic_coverage"]["status"], "satisfied")
+        self.assertEqual(payload["semantic_coverage"]["metadata_file_count"], 1)
+        self.assertEqual(
+            payload["semantic_coverage"]["metadata_files"][0]["classification"],
+            "excluded_dependency_lockfile",
+        )
 
     def test_aggregate_semantic_proof_preserves_missing_file_beyond_detail_limit(self):
         semantic_file = {
