@@ -4527,8 +4527,9 @@ class ClassificationTest(unittest.TestCase):
             "status": "results_available",
             "total_problems": 0,
             "problems": [],
-            "inspection_verdict": "GREEN",
-            "inspection_verdict_reason": "no_matching_findings",
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
         }
         wait = {"timed_out": True}
 
@@ -5397,8 +5398,9 @@ class HumanOutputTest(unittest.TestCase):
             "clean": True,
             "total_problems": 0,
             "problems": [],
-            "inspection_verdict": "GREEN",
-            "inspection_verdict_reason": "no_matching_findings",
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
             "capture_diagnostic": scope_capture_diagnostic(
                 {
                     "path": "/tmp/PlaybackValidation.swift",
@@ -5673,6 +5675,9 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["verdict"], "GREEN")
         self.assertEqual(payload["verdict_reason"], "text_only_coverage_allowed")
         self.assertEqual(payload["semantic_coverage"]["status"], "text_only_allowed")
+        self.assertEqual(payload["attribution_class"], "decisive")
+        self.assertEqual(payload["inspection_attribution"]["code"], "text_only_coverage_allowed")
+        self.assertEqual(payload["inspection_attribution"]["source"], "helper")
         self.assertIn("explicitly allowed", payload["agent_report"])
 
     def test_text_only_override_does_not_allow_outside_project_content(self):
@@ -7750,6 +7755,202 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["inspection_attribution"]["code"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
         self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
         self.assertEqual(payload["bucket"], "tool_bug")
+
+    def test_aggregate_semantic_proof_allows_bounded_diagnostic_details(self):
+        semantic_file = {
+            "path": "/tmp/a.py",
+            "valid": True,
+            "directory": False,
+            "file_type": "Python",
+            "psi_language": "Python",
+            "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content": True,
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "no_matching_findings",
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 30,
+                "scope_file_diagnostics": [semantic_file, {**semantic_file, "path": "/tmp/b.py"}],
+                "scope_file_diagnostics_truncated": True,
+                "scope_file_diagnostics_complete": False,
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 30,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 0,
+                    "reason_counts": {},
+                    "missing_files": [],
+                    "metadata_file_count": 0,
+                    "metadata_files": [],
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["verdict_reason"], "no_matching_findings")
+        self.assertNotIn("semantic_coverage", payload)
+
+    def test_aggregate_semantic_proof_preserves_missing_file_beyond_detail_limit(self):
+        semantic_file = {
+            "path": "/tmp/a.py",
+            "valid": True,
+            "directory": False,
+            "file_type": "Python",
+            "psi_language": "Python",
+            "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content": True,
+        }
+        text_only_file = {
+            "path": "/tmp/View.swift",
+            "valid": True,
+            "directory": False,
+            "file_type": "TextMate",
+            "psi_language": "textmate",
+            "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+            "in_content": True,
+            "reasons": ["non_semantic_fallback"],
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 30,
+                "scope_file_diagnostics": [semantic_file, {**semantic_file, "path": "/tmp/b.py"}],
+                "scope_file_diagnostics_truncated": True,
+                "scope_file_diagnostics_complete": False,
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 30,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 1,
+                    "reason_counts": {"non_semantic_fallback": 1},
+                    "missing_files": [text_only_file],
+                    "metadata_file_count": 0,
+                    "metadata_files": [],
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON)
+        self.assertEqual(payload["semantic_coverage"]["evaluated_file_count"], 30)
+        self.assertEqual(payload["semantic_coverage"]["diagnostic_file_count"], 2)
+        self.assertEqual(payload["semantic_coverage"]["unproven_file_count"], 0)
+        self.assertEqual(payload["semantic_coverage"]["missing_file_count"], 1)
+        self.assertEqual(payload["semantic_coverage"]["files"][0]["path"], "/tmp/View.swift")
+
+    def test_aggregate_text_only_semantic_proof_can_be_explicitly_allowed(self):
+        text_only_file = {
+            "path": "/tmp/View.swift",
+            "valid": True,
+            "directory": False,
+            "file_type": "TextMate",
+            "psi_language": "textmate",
+            "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+            "in_content": True,
+            "reasons": ["non_semantic_fallback"],
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
+            "allow_text_only_coverage": True,
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 30,
+                "scope_file_diagnostics": [],
+                "scope_file_diagnostics_truncated": True,
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 30,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 1,
+                    "reason_counts": {"non_semantic_fallback": 1},
+                    "missing_files": [text_only_file],
+                    "metadata_file_count": 0,
+                    "metadata_files": [],
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "GREEN")
+        self.assertEqual(payload["verdict_reason"], "text_only_coverage_allowed")
+        self.assertEqual(payload["semantic_coverage"]["status"], "text_only_allowed")
+
+    def test_malformed_aggregate_semantic_proof_still_fails_closed(self):
+        semantic_file = {
+            "path": "/tmp/a.py",
+            "valid": True,
+            "directory": False,
+            "file_type": "Python",
+            "psi_language": "Python",
+            "psi_class": "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content": True,
+        }
+        payload = {
+            "status": "results_available",
+            "clean": True,
+            "total_problems": 0,
+            "inspection_verdict": "GREEN",
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 3,
+                "scope_file_diagnostics": [semantic_file, {**semantic_file, "path": "/tmp/b.py"}],
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 3,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 0,
+                    "reason_counts": {"non_semantic_fallback": 1},
+                    "metadata_file_count": 0,
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON)
+
+    def test_inspection_inputs_changed_is_retryable_and_attributed(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "inspection_inputs_changed",
+            "total_problems": 0,
+            "problems": [],
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "inspection_inputs_changed")
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
+        self.assertTrue(jb_inspect.should_retry_unknown_result(payload))
 
     def test_truncation_handles_missing_malformed_and_text_only_diagnostics(self):
         cases = [
