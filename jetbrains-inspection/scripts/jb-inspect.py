@@ -3251,13 +3251,68 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
     scope_files = [item for item in raw_scope_files if isinstance(item, dict)] if isinstance(raw_scope_files, list) else []
     resolved_value = diagnostic.get("scope_file_resolved_count")
     resolved_count = resolved_value if isinstance(resolved_value, int) and not isinstance(resolved_value, bool) else None
-    diagnostic_count = len(scope_files)
-    truncated = resolved_count is not None and resolved_count > diagnostic_count
+    emitted_diagnostic_count = len(scope_files)
+    raw_summary = diagnostic.get("scope_file_semantic_coverage")
+    summary = raw_summary if isinstance(raw_summary, dict) and raw_summary.get("schema_version") == 1 else None
+    evaluated_value = summary.get("evaluated_file_count") if summary is not None else None
+    evaluated_count = evaluated_value if isinstance(evaluated_value, int) and not isinstance(evaluated_value, bool) else None
+    unproven_value = summary.get("unproven_file_count") if summary is not None else None
+    summary_unproven_count = unproven_value if isinstance(unproven_value, int) and not isinstance(unproven_value, bool) else None
+    missing_count_value = summary.get("missing_file_count") if summary is not None else None
+    summary_missing_count = missing_count_value if isinstance(missing_count_value, int) and not isinstance(missing_count_value, bool) else None
+    metadata_count_value = summary.get("metadata_file_count") if summary is not None else None
+    summary_metadata_count = metadata_count_value if isinstance(metadata_count_value, int) and not isinstance(metadata_count_value, bool) else None
+    raw_reason_counts = summary.get("reason_counts") if summary is not None else None
+    summary_reason_counts = {
+        str(reason): count
+        for reason, count in raw_reason_counts.items()
+        if isinstance(reason, str) and isinstance(count, int) and not isinstance(count, bool) and count > 0
+    } if isinstance(raw_reason_counts, dict) else None
+    reason_count_total = sum(summary_reason_counts.values()) if summary_reason_counts is not None else None
+    summary_counts_consistent = (
+        evaluated_count is not None
+        and evaluated_count >= 0
+        and summary_unproven_count is not None
+        and summary_unproven_count >= 0
+        and summary_missing_count is not None
+        and summary_missing_count >= 0
+        and summary_metadata_count is not None
+        and summary_metadata_count >= 0
+        and summary_missing_count + summary_metadata_count <= evaluated_count
+        and reason_count_total is not None
+        and (
+            (summary_missing_count == 0 and reason_count_total == 0)
+            or (summary_missing_count > 0 and reason_count_total >= summary_missing_count)
+        )
+    )
+    aggregate_proof_complete = (
+        diagnostic.get("scope_file_semantic_evidence_complete") is True
+        and summary is not None
+        and summary_unproven_count == 0
+        and summary_reason_counts is not None
+        and summary_counts_consistent
+        and (resolved_count is None or evaluated_count == resolved_count)
+    )
+    proven_file_count = evaluated_count if aggregate_proof_complete else emitted_diagnostic_count
+    truncated = resolved_count is not None and resolved_count > proven_file_count
     if not scope_files and not truncated:
-        return existing if isinstance(existing, dict) else None
+        if not aggregate_proof_complete or (summary_missing_count == 0 and summary_metadata_count == 0):
+            return existing if isinstance(existing, dict) else None
     missing_files: list[dict[str, Any]] = []
     metadata_files: list[dict[str, Any]] = []
-    for item in scope_files:
+    summary_missing_files = summary.get("missing_files") if aggregate_proof_complete and summary is not None else None
+    summary_metadata_files = summary.get("metadata_files") if aggregate_proof_complete and summary is not None else None
+    coverage_scope_files = (
+        [item for item in summary_missing_files if isinstance(item, dict)]
+        if isinstance(summary_missing_files, list)
+        else [] if aggregate_proof_complete else scope_files
+    )
+    coverage_metadata_files = (
+        [item for item in summary_metadata_files if isinstance(item, dict)]
+        if isinstance(summary_metadata_files, list)
+        else [] if aggregate_proof_complete else scope_files
+    )
+    for item in coverage_metadata_files:
         if scope_file_is_project_metadata(item):
             path = item.get("path")
             metadata_summary = {
@@ -3272,7 +3327,10 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
                 "in_source": item.get("in_source"),
             }
             metadata_files.append({key: value for key, value in metadata_summary.items() if value is not None})
+    for item in coverage_scope_files:
         reasons = scope_file_semantic_coverage_reasons(item)
+        if not reasons and isinstance(item.get("reasons"), list):
+            reasons = [reason for reason in item["reasons"] if isinstance(reason, str) and reason]
         if not reasons:
             continue
         path = item.get("path")
@@ -3287,13 +3345,20 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
             "reasons": reasons,
         }
         missing_files.append({key: value for key, value in file_summary.items() if value is not None})
-    if not missing_files and not metadata_files and not truncated:
+    missing_file_count = summary_missing_count if aggregate_proof_complete else len(missing_files)
+    metadata_file_count = summary_metadata_count if aggregate_proof_complete else len(metadata_files)
+    if missing_file_count == 0 and metadata_file_count == 0 and not truncated:
         return existing if isinstance(existing, dict) else None
     allow_text_only = payload.get("allow_text_only_coverage") is True
-    text_only = bool(missing_files) and all(
-        file.get("reasons") == ["non_semantic_fallback"] for file in missing_files
+    text_only = (
+        missing_file_count > 0
+        and (
+            summary_reason_counts == {"non_semantic_fallback": missing_file_count}
+            if aggregate_proof_complete
+            else all(file.get("reasons") == ["non_semantic_fallback"] for file in missing_files)
+        )
     )
-    if missing_files or truncated:
+    if missing_file_count > 0 or truncated:
         status = "text_only_allowed" if (allow_text_only and text_only and not truncated) else "missing"
         reason = (
             SEMANTIC_COVERAGE_TRUNCATED_REASON
@@ -3310,11 +3375,13 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         "scope_resolution_status": diagnostic.get("scope_resolution_status"),
         "requested_file_count": diagnostic.get("scope_file_requested_count"),
         "resolved_file_count": diagnostic.get("scope_file_resolved_count"),
-        "diagnostic_file_count": diagnostic_count,
-        "unproven_file_count": max(0, resolved_count - diagnostic_count) if resolved_count is not None else None,
-        "missing_file_count": len(missing_files),
+        "diagnostic_file_count": emitted_diagnostic_count,
+        "evaluated_file_count": evaluated_count if aggregate_proof_complete else None,
+        "diagnostic_details_truncated": diagnostic.get("scope_file_diagnostics_truncated"),
+        "unproven_file_count": max(0, resolved_count - proven_file_count) if resolved_count is not None else None,
+        "missing_file_count": missing_file_count,
         "files": missing_files,
-        "metadata_file_count": len(metadata_files),
+        "metadata_file_count": metadata_file_count,
         "metadata_files": metadata_files,
     }
     if allow_text_only:
@@ -3370,6 +3437,7 @@ def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str]
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
     wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
     cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    plugin_verdict = payload.get("inspection_verdict")
     blocker_reason = blocking_unknown_reason(payload, wait)
     if blocker_reason is not None:
         return {
@@ -3397,6 +3465,16 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_next_action": next_action_for_unknown(reason, payload),
         }
 
+    semantic_coverage_verdict = semantic_coverage_allowed_verdict(payload)
+    if semantic_coverage_verdict is not None and plugin_verdict in {"GREEN", "UNKNOWN"}:
+        proof_failures = payload.get("proof_failures")
+        normalized_failures = {
+            normalize_reason(str(reason))
+            for reason in proof_failures
+        } if isinstance(proof_failures, list) else set()
+        if not normalized_failures or normalized_failures <= {SEMANTIC_COVERAGE_MISSING_REASON}:
+            return semantic_coverage_verdict
+
     proof_failure_reason = proof_failure_unknown_reason(payload)
     if proof_failure_reason is not None:
         return {
@@ -3406,7 +3484,6 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_next_action": next_action_for_unknown(proof_failure_reason, payload),
         }
 
-    plugin_verdict = payload.get("inspection_verdict")
     if plugin_verdict == "GREEN":
         semantic_coverage_verdict = semantic_coverage_unknown_verdict(payload)
         if semantic_coverage_verdict is not None:
@@ -3493,6 +3570,10 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
     if not isinstance(failures, list) or not failures:
         return None
     normalized_failures = [normalize_reason(str(reason)) for reason in failures]
+    if SEMANTIC_COVERAGE_MISSING_REASON in normalized_failures:
+        return SEMANTIC_COVERAGE_MISSING_REASON
+    if SEMANTIC_COVERAGE_TRUNCATED_REASON in normalized_failures:
+        return SEMANTIC_COVERAGE_TRUNCATED_REASON
     retryable_reasons = (
         "no_results",
         "view_not_ready",
@@ -3501,6 +3582,7 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
         "capture_incomplete",
         "inspection_trigger_empty_model",
         "current_run_psi_churn",
+        "inspection_inputs_changed",
         "stale_results",
         "timeout",
         "inspection_still_running",
@@ -3569,6 +3651,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
     if reason == "current_run_psi_churn":
         return "Save documents and rerun inspection after the IDE finishes updating PSI state."
+    if reason == "inspection_inputs_changed":
+        return "Rerun inspection after project files, VCS state, and inspection settings finish changing."
     if reason == "stale_results":
         return "Rerun inspection; stale cached findings must not be treated as current."
     if reason == "timeout":
@@ -3704,6 +3788,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "cleanup_skipped",
         "close_failed",
         "current_run_psi_churn",
+        "inspection_inputs_changed",
         "inspection_in_progress",
         "inspection_still_running",
         "interrupted",
@@ -3785,7 +3870,17 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
         or payload.get("status")
         or "unknown"
     )
-    classification = str(attribution.get("classification") or attribution_classification(code, payload))
+    helper_decisive_override = (
+        payload.get("verdict") == "GREEN"
+        and payload.get("verdict_reason") == "text_only_coverage_allowed"
+        and attribution.get("classification") not in (None, "", "decisive")
+    )
+    if helper_decisive_override:
+        code = str(payload.get("verdict_reason") or code)
+        classification = "decisive"
+        attribution["source"] = "helper"
+    else:
+        classification = str(attribution.get("classification") or attribution_classification(code, payload))
     phase = attribution_failure_phase(payload, attribution, code)
     normalized_code = "unattributed_unknown" if classification == "unattributed" else normalize_reason(code)
     cleanup_attribution = dict(attribution)
@@ -3903,7 +3998,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
         return "stale_results"
-    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered"}:
+    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered", "inspection_inputs_changed"}:
         return "capture_not_ready"
     if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable", "route_mismatch", "project_not_open", "ownership_not_proven"}:
         return "route_not_ready"

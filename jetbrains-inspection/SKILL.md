@@ -408,11 +408,13 @@ side of the boundary they occupy.
   The helper preserves actionable `RED` findings while attaching the semantic
   coverage gap so real findings are not hidden.
 - `scope_semantic_coverage_truncated` is `UNKNOWN` for an otherwise clean result:
-  the plugin resolved more files than it emitted semantic diagnostics for, so
-  the helper cannot prove complete scope coverage. Text-only allowance does not
-  override missing diagnostic entries; update the plugin/helper proof path and
-  rerun. Actionable current RED findings remain visible with the coverage gap
-  attached.
+  the plugin resolved more files than it proved through either detailed rows or
+  the aggregate semantic-coverage summary, so the helper cannot prove complete
+  scope coverage. Bounded detail rows alone are not truncation when the
+  aggregate summary proves every resolved file and preserves missing-coverage
+  counts/examples. Text-only allowance does not override genuinely unproven
+  files; update the plugin/helper proof path and rerun. Actionable current RED
+  findings remain visible with the coverage gap attached.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.
@@ -428,7 +430,7 @@ side of the boundary they occupy.
 - `get-status` is informational and exits zero only when the helper can retrieve
   a route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
-- `stale_results`, `capture_incomplete`, timeout, indexing, session drift,
+- `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
   when `retry_policy.retry=true`; otherwise narrow scope, open the project in
   the preferred IDE, or report the blocker. Do not invent retry loops.
