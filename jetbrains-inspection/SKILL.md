@@ -201,7 +201,14 @@ stale on-disk Trusted Locations state in already-running IDEs. The helper polls
 until the exact route appears, claims cleanup authority, and then requires two
 consecutive ready status observations before it inspects. For helper-owned
 projects, `lifecycle_readiness.ready` also requires a content root covering the
-requested worktree. `no_content_roots` and `content_roots_outside_target` fail
+requested worktree after project configuration stabilizes. If configurators
+remove the initial raw-directory module, current plugin builds may install a
+non-persistent fallback module rooted at the requested worktree. Repair is
+limited to the exact lease-bound project instance, is exposed as
+`fallback_module_count`, and must not alter preexisting/coalesced projects or
+create tracked `.idea` or `.iml` files. Readiness that appears too close to the
+guard deadline remains fail-closed as `project_configuration_unstable`.
+`no_content_roots` and `content_roots_outside_target` fail
 preparation as `project_content_roots_missing` and trigger lease-bound cleanup;
 a lifecycle open response or routable project alone is not readiness proof.
 Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`:
