@@ -420,6 +420,11 @@ side of the boundary they occupy.
   compatible IDE, or update the repo's preferred IDE metadata before rerunning.
   Use `--allow-text-only-coverage` only when generic text coverage is intentionally
   sufficient; it does not allow invalid files or files outside project content.
+  For older plugin builds that left this settled state waiting until timeout,
+  the helper accepts the explicit override only when the same-run snapshot is
+  clean, complete, current, and blocked solely by `non_semantic_fallback`.
+  Generic, indexing, stale, incomplete, or contradictory timeouts remain
+  `UNKNOWN`.
   The helper preserves actionable `RED` findings while attaching the semantic
   coverage gap so real findings are not hidden.
 - `scope_semantic_coverage_truncated` is `UNKNOWN` for an otherwise clean result:
