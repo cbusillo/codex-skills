@@ -4390,33 +4390,35 @@ class LifecycleTest(unittest.TestCase):
         )
 
     def test_wait_until_route_ready_reports_missing_content_roots(self):
-        status = {
-            "indexing": False,
-            "is_scanning": False,
-            "route": {
-                "lifecycle_readiness": {
-                    "ready": False,
-                    "reason": "no_content_roots",
-                    "content_root_count": 0,
+        for reason, content_root_count in (("no_content_roots", 0), ("content_roots_outside_target", 2)):
+            with self.subTest(reason=reason):
+                status = {
+                    "indexing": False,
+                    "is_scanning": False,
+                    "route": {
+                        "lifecycle_readiness": {
+                            "ready": False,
+                            "reason": reason,
+                            "content_root_count": content_root_count,
+                        }
+                    },
                 }
-            },
-        }
-        times = iter([0, 0, 1])
-        with (
-            patch.object(jb_inspect, "call_endpoint", return_value=status),
-            patch.object(jb_inspect.time, "sleep"),
-            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(times)),
-        ):
-            with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.wait_until_route_ready(
-                    helper_args(port=None),
-                    {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
-                    {"port": 63342},
-                    0,
-                )
+                times = iter([0, 0, 1])
+                with (
+                    patch.object(jb_inspect, "call_endpoint", return_value=status),
+                    patch.object(jb_inspect.time, "sleep"),
+                    patch.object(jb_inspect, "now_ms", side_effect=lambda: next(times)),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.wait_until_route_ready(
+                            helper_args(port=None),
+                            {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                            {"port": 63342},
+                            0,
+                        )
 
-        self.assertEqual(raised.exception.payload["error_reason"], "project_content_roots_missing")
-        self.assertEqual(raised.exception.payload["lifecycle_readiness"]["reason"], "no_content_roots")
+                self.assertEqual(raised.exception.payload["error_reason"], "project_content_roots_missing")
+                self.assertEqual(raised.exception.payload["lifecycle_readiness"]["reason"], reason)
 
     def test_jetbrains_config_dirs_requires_ide_when_multiple_configs_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4603,6 +4605,109 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(summary["verdict"], "UNKNOWN")
         self.assertEqual(summary["verdict_reason"], "timeout")
         self.assertEqual(jb_inspect.classify_run_exit(summary), 1)
+
+    def test_text_only_override_recovers_settled_semantic_coverage_wait_timeout(self):
+        text_only_file = {
+            "path": "/tmp/View.swift",
+            "valid": True,
+            "directory": False,
+            "file_type": "TextMate",
+            "psi_language": "textmate",
+            "psi_class": "org.jetbrains.plugins.textmate.psi.TextMateFile",
+            "in_content": True,
+            "reasons": ["non_semantic_fallback"],
+        }
+        problems = {
+            "status": "results_available",
+            "snapshot_outcome": "clean_confirmed",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
+            "capture_diagnostic": {
+                "scope_file_resolved_count": 1,
+                "scope_file_diagnostics": [text_only_file],
+                "scope_file_diagnostics_complete": True,
+                "scope_file_semantic_evidence_complete": True,
+                "scope_file_semantic_coverage": {
+                    "schema_version": 1,
+                    "evaluated_file_count": 1,
+                    "unproven_file_count": 0,
+                    "missing_file_count": 1,
+                    "reason_counts": {"non_semantic_fallback": 1},
+                    "missing_files": [text_only_file],
+                    "metadata_file_count": 0,
+                    "metadata_files": [],
+                },
+            },
+        }
+        wait = {
+            "timed_out": True,
+            "wait_completed": False,
+            "completion_reason": "timeout",
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+        }
+
+        summary = jb_inspect.summarize_problems({}, {}, problems, allow_text_only_coverage=True)
+        summary["wait"] = wait
+        summary["status"] = jb_inspect.classify_run_status(wait, problems)
+        jb_inspect.apply_verdict(summary)
+
+        self.assertEqual(summary["status"], "clean")
+        self.assertEqual(summary["verdict"], "GREEN")
+        self.assertEqual(summary["verdict_reason"], "text_only_coverage_allowed")
+        self.assertTrue(summary["semantic_coverage_wait_timeout_recovered"])
+        self.assertEqual(jb_inspect.classify_run_exit(summary), 0)
+
+    def test_text_only_override_does_not_recover_running_wait_timeout(self):
+        payload = {
+            "status": "timed_out",
+            "clean": True,
+            "snapshot_outcome": "clean_confirmed",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
+            "semantic_coverage": {"status": "text_only_allowed"},
+            "wait": {
+                "status": "running",
+                "timed_out": True,
+                "wait_completed": False,
+                "completion_reason": "timeout",
+                "inspection_verdict": "UNKNOWN",
+                "inspection_verdict_reason": "inspection_still_running",
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["status"], "timed_out")
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "timeout")
+        self.assertNotIn("semantic_coverage_wait_timeout_recovered", payload)
+
+    def test_text_only_override_does_not_recover_transport_timeout(self):
+        payload = {
+            "status": "error",
+            "error_reason": "inspection_api_timeout",
+            "clean": True,
+            "snapshot_outcome": "clean_confirmed",
+            "total_problems": 0,
+            "problems": [],
+            "inspection_verdict": "UNKNOWN",
+            "inspection_verdict_reason": jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            "proof_failures": [jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON],
+            "semantic_coverage": {"status": "text_only_allowed"},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "inspection_api_timeout")
+        self.assertNotIn("semantic_coverage_wait_timeout_recovered", payload)
 
     def test_status_findings_is_usable_but_not_clean(self):
         body = {"status": "findings"}
@@ -5190,6 +5295,23 @@ class AttributionContractTest(unittest.TestCase):
         self.assertEqual(attribution["phase"], "selection")
         self.assertEqual(attribution["cleanup_status"], "not_needed")
         self.assertEqual(attribution["cleanup_reason"], "inspection_not_started")
+
+    def test_missing_project_content_roots_is_configuration_blocked(self):
+        payload = {
+            "command": "inspect-closeout",
+            "status": "error",
+            "error_reason": jb_inspect.PROJECT_CONTENT_ROOTS_MISSING_REASON,
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        attribution = payload["inspection_attribution"]
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], jb_inspect.PROJECT_CONTENT_ROOTS_MISSING_REASON)
+        self.assertEqual(attribution["classification"], "configuration_blocked")
+        self.assertEqual(attribution["phase"], "readiness_wait")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertNotIn("unattributed_unknown", payload)
 
     def test_outcome_record_keeps_provenance_without_paths_or_tokens(self):
         payload = {

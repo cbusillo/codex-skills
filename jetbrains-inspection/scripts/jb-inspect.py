@@ -126,6 +126,7 @@ VERDICT_SOURCE_KEYS = (
 )
 SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 SEMANTIC_COVERAGE_TRUNCATED_REASON = "scope_semantic_coverage_truncated"
+PROJECT_CONTENT_ROOTS_MISSING_REASON = "project_content_roots_missing"
 PROJECT_METADATA_COVERAGE_REASON = "project_metadata_coverage_not_required"
 NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
 NON_SEMANTIC_PSI_CLASS_MARKERS = frozenset({"plaintext", "textmate"})
@@ -3667,10 +3668,56 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
             return "run_changed"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
+        if text_only_coverage_wait_timeout_is_recoverable(payload, wait):
+            return None
         return "timeout"
     if payload.get("indexing") or payload.get("is_scanning") or payload.get("inspection_in_progress") or payload.get("status") in {"indexing", "running"}:
         return "inspection_still_running"
     return None
+
+
+def text_only_coverage_wait_timeout_is_recoverable(payload: dict[str, Any], wait: dict[str, Any]) -> bool:
+    if wait.get("timed_out") is not True or wait.get("completion_reason") != "timeout":
+        return False
+    if wait.get("wait_completed") is True:
+        return False
+    if normalize_reason(wait.get("status")) in {"indexing", "running", "inspection_in_progress", "run_changed"}:
+        return False
+    if wait.get("inspection_verdict") != "UNKNOWN":
+        return False
+    if normalize_reason(wait.get("inspection_verdict_reason")) != SEMANTIC_COVERAGE_MISSING_REASON:
+        return False
+    coverage = payload.get("semantic_coverage")
+    if not isinstance(coverage, dict):
+        coverage = semantic_coverage_for_payload(payload)
+    if not isinstance(coverage, dict) or coverage.get("status") != "text_only_allowed":
+        return False
+    if payload.get("clean") is not True or payload.get("total_problems") != 0 or payload.get("problems"):
+        return False
+    if payload.get("snapshot_outcome") != "clean_confirmed":
+        return False
+    if any(
+        source.get(key)
+        for source in (payload, wait)
+        for key in (
+            "capture_incomplete",
+            "results_may_be_stale",
+            "indexing",
+            "is_scanning",
+            "inspection_in_progress",
+        )
+    ):
+        return False
+    if payload.get("inspection_verdict") != "UNKNOWN":
+        return False
+    if normalize_reason(payload.get("inspection_verdict_reason")) != SEMANTIC_COVERAGE_MISSING_REASON:
+        return False
+    failures = payload.get("proof_failures")
+    normalized_failures = {
+        normalize_reason(str(reason))
+        for reason in failures
+    } if isinstance(failures, list) else set()
+    return normalized_failures == {SEMANTIC_COVERAGE_MISSING_REASON}
 
 
 def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
@@ -3882,6 +3929,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "ide_open_failed",
         "project_open_blocked",
         PROJECT_OPEN_BLOCKED_REASON,
+        PROJECT_CONTENT_ROOTS_MISSING_REASON,
         "profile_resolution_error",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
@@ -3941,7 +3989,12 @@ def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, An
     normalized = normalize_reason(code)
     if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
         return "selection"
-    if normalized in {"ide_not_ready_timeout", "project_open_blocked", PROJECT_OPEN_BLOCKED_REASON}:
+    if normalized in {
+        "ide_not_ready_timeout",
+        "project_open_blocked",
+        PROJECT_OPEN_BLOCKED_REASON,
+        PROJECT_CONTENT_ROOTS_MISSING_REASON,
+    }:
         return "readiness_wait"
     if isinstance(payload.get("wait"), dict) or normalized in {"timeout", "run_changed", "inspection_api_timeout"}:
         return "wait"
@@ -4063,6 +4116,10 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
 def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
     apply_semantic_coverage(payload)
     payload.update(verdict_for_payload(payload))
+    wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
+    if payload.get("verdict") == "GREEN" and text_only_coverage_wait_timeout_is_recoverable(payload, wait):
+        payload["status"] = "clean"
+        payload["semantic_coverage_wait_timeout_recovered"] = True
     apply_inspection_attribution(payload)
     apply_agent_result(payload)
     return payload
@@ -4129,6 +4186,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "untrusted_auto_open_root",
         "project_open_blocked",
         "ide_not_ready_timeout",
+        PROJECT_CONTENT_ROOTS_MISSING_REASON,
         SEMANTIC_COVERAGE_MISSING_REASON,
     }:
         return "environment_blocked"
