@@ -2131,8 +2131,8 @@ class LifecycleTest(unittest.TestCase):
 
     def test_closeout_retries_retryable_unknown_once_before_cleanup(self):
         calls = []
-        sleeps = []
         route = {"port": 1, "project_key": "path:/tmp/worktree", "base_path": "/tmp/worktree"}
+        readiness = {"status": "ready", "ready": True, "exit_reason": "ready"}
 
         def fake_run(args, context, active_route):
             calls.append(active_route)
@@ -2158,22 +2158,22 @@ class LifecycleTest(unittest.TestCase):
 
         original_prepare = jb_inspect.prepare_lifecycle_details
         original_run = jb_inspect.run_inspection_on_route
-        original_sleep = jb_inspect.time.sleep
+        original_readiness = jb_inspect.wait_for_internal_retry_readiness
         jb_inspect.prepare_lifecycle_details = lambda args, context: ({"status": "prepared", "route": route}, {"opened_by_helper": False}, None)
         jb_inspect.run_inspection_on_route = fake_run
-        jb_inspect.time.sleep = lambda seconds: sleeps.append(seconds)
+        jb_inspect.wait_for_internal_retry_readiness = lambda args, context, active_route, first_result: readiness
         try:
             result = jb_inspect.command_closeout(Namespace(keep_warm=True), {})
         finally:
             jb_inspect.prepare_lifecycle_details = original_prepare
             jb_inspect.run_inspection_on_route = original_run
-            jb_inspect.time.sleep = original_sleep
+            jb_inspect.wait_for_internal_retry_readiness = original_readiness
 
         self.assertEqual(result["verdict"], "RED")
         self.assertEqual(result["total_problems"], 1)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(sleeps, [30.0])
         self.assertEqual(result["internal_retry_count"], 1)
+        self.assertEqual(result["internal_retry_readiness"], readiness)
         self.assertTrue(result["recovered_from_unknown"])
         self.assertEqual(result["internal_retries"][0]["verdict_reason"], "stale_results")
 
@@ -2223,14 +2223,159 @@ class LifecycleTest(unittest.TestCase):
             ]
         )
 
-        with patch.object(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)):
+        with (
+            patch.object(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
+            patch.object(
+                jb_inspect,
+                "wait_for_internal_retry_readiness",
+                return_value={"status": "ready", "ready": True, "exit_reason": "ready"},
+            ),
+        ):
             result = jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, {"port": 63342})
         jb_inspect.apply_verdict(result)
 
         self.assertTrue(result["retry_exhausted"])
         self.assertFalse(result["retry_policy"]["retry"])
         self.assertEqual(result["retry_policy"]["max_attempts"], 0)
-        self.assertIn("already used", result["agent_result"]["next_action"])
+        self.assertIn("Do not attribute it to source edits", result["agent_result"]["next_action"])
+
+    def test_internal_retry_treats_prior_stale_result_as_idle_but_resets_on_indexing(self):
+        statuses = iter(
+            [
+                {"status": "indexing", "indexing": True},
+                {"status": "stale_results", "results_may_be_stale": True},
+                {"status": "indexing", "indexing": True},
+                {"status": "stale_results", "results_may_be_stale": True},
+                {"status": "stale_results", "results_may_be_stale": True},
+                {"status": "stale_results", "results_may_be_stale": True},
+            ]
+        )
+        times = iter([0, 0, 0, 1_000, 1_000, 2_000, 2_000, 3_000, 3_000, 4_000, 4_000, 5_000, 5_000])
+        first_result = {
+            "verdict_reason": "stale_results",
+            "bucket": "stale_results",
+            "retry_policy": {"wait_ms": 0},
+        }
+
+        with (
+            patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params: next(statuses)),
+            patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            readiness = jb_inspect.wait_for_internal_retry_readiness(
+                helper_args(poll_ms=1_000),
+                {"worktree_root": "/tmp/worktree"},
+                {"port": 63342, "project_key": "path:/tmp/worktree"},
+                first_result,
+            )
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(readiness["status"], "ready")
+        self.assertEqual(readiness["sample_count"], 6)
+        self.assertEqual(readiness["stable_observations"], 3)
+        self.assertEqual(readiness["first_status"]["status"], "indexing")
+        self.assertEqual(readiness["last_status"]["status"], "stale_results")
+        self.assertEqual(readiness["same_worktree_writer_observation"], "not_available")
+
+    def test_internal_retry_skips_when_readiness_is_not_proven(self):
+        calls = []
+        stale_result = {
+            "status": "stale_results",
+            "verdict": "UNKNOWN",
+            "verdict_reason": "stale_results",
+            "bucket": "stale_results",
+            "retry_policy": {"retry": True, "max_attempts": 1, "wait_ms": 30_000},
+            "results_may_be_stale": True,
+            "stale_reasons": ["project_changed_since_inspection"],
+        }
+        readiness = {
+            "status": "timeout",
+            "ready": False,
+            "exit_reason": "indexing",
+            "observation_scope": "ide_status_only",
+            "same_worktree_writer_observation": "not_available",
+        }
+
+        with (
+            patch.object(
+                jb_inspect,
+                "run_inspection_on_route",
+                side_effect=lambda *args: calls.append(args) or stale_result.copy(),
+            ),
+            patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value=readiness),
+        ):
+            result = jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, {"port": 63342})
+        jb_inspect.apply_verdict(result)
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result["internal_retry_skipped"])
+        self.assertEqual(result["internal_retry_count"], 0)
+        self.assertNotIn("internal_retries", result)
+        self.assertTrue(result["retry_exhausted"])
+        self.assertFalse(result["retry_policy"]["retry"])
+        self.assertIn("withheld its internal retry", result["agent_result"]["next_action"])
+        self.assertIn("does not identify", result["unknown_diagnosis"]["not_proven"])
+        self.assertEqual(result["unknown_diagnosis"]["readiness_barrier_exit_reason"], "indexing")
+        self.assertEqual(len(jb_inspect.ordered_internal_attempts(result)), 1)
+        record = jb_inspect.unknown_log_record(result)
+        self.assertTrue(record["internal_retry_skipped"])
+        self.assertEqual(record["internal_retry_readiness"]["exit_reason"], "indexing")
+        self.assertEqual(record["unknown_diagnosis"]["classification"], "inspection_state_changed")
+
+    def test_internal_retry_readiness_timeout_is_bounded(self):
+        times = iter([0, 0, 0, 1_000, 1_000, 2_000, 2_000, 3_000, 3_000, 4_000, 4_000])
+        first_result = {
+            "verdict_reason": "stale_results",
+            "bucket": "stale_results",
+            "retry_policy": {"wait_ms": 0},
+        }
+
+        with (
+            patch.object(jb_inspect, "INTERNAL_RETRY_READY_TIMEOUT_MS", 2_000),
+            patch.object(jb_inspect, "call_endpoint", return_value={"status": "indexing", "indexing": True}),
+            patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            readiness = jb_inspect.wait_for_internal_retry_readiness(
+                helper_args(poll_ms=1_000),
+                {"worktree_root": "/tmp/worktree"},
+                {"port": 63342, "project_key": "path:/tmp/worktree"},
+                first_result,
+            )
+
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["status"], "timeout")
+        self.assertEqual(readiness["exit_reason"], "indexing")
+        self.assertEqual(readiness["sample_count"], 4)
+        self.assertEqual(readiness["timeout_ms"], 3_000)
+
+    def test_internal_retry_readiness_probe_error_fails_closed(self):
+        first_result = {
+            "verdict_reason": "stale_results",
+            "bucket": "stale_results",
+            "retry_policy": {"wait_ms": 30_000},
+        }
+        error = jb_inspect.InspectError(
+            "status unavailable",
+            3,
+            {"error_reason": "inspection_api_unavailable"},
+        )
+
+        with (
+            patch.object(jb_inspect, "call_endpoint", side_effect=error),
+            patch.object(jb_inspect, "monotonic_ms", side_effect=[0, 0, 0]),
+        ):
+            readiness = jb_inspect.wait_for_internal_retry_readiness(
+                helper_args(poll_ms=1_000),
+                {"worktree_root": "/tmp/worktree"},
+                {"port": 63342, "project_key": "path:/tmp/worktree"},
+                first_result,
+            )
+
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["status"], "unavailable")
+        self.assertEqual(readiness["exit_reason"], "inspection_api_unavailable")
+        self.assertEqual(readiness["sample_count"], 0)
 
     def test_timed_out_inspection_requests_cancellation_and_waits_for_settlement(self):
         cancel_params = []
@@ -4151,7 +4296,7 @@ class LifecycleTest(unittest.TestCase):
         original_running = jb_inspect.open_via_running_ide
         original_bootstrap = jb_inspect.bootstrap_ide_app
         original_wait = jb_inspect.wait_for_matching_ide_identity
-        original_now = jb_inspect.now_ms
+        original_now = jb_inspect.monotonic_ms
         original_sleep = jb_inspect.time.sleep
 
         def fake_running(args, context, attempts=None, method="running_ide", lease=None):
@@ -4165,7 +4310,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.open_via_running_ide = fake_running
         jb_inspect.bootstrap_ide_app = lambda context, background=True: calls.append(("bootstrap", background)) or {"method": "bootstrap_ide", "accepted": True}
         jb_inspect.wait_for_matching_ide_identity = lambda args, context, timeout_ms: calls.append(("wait", timeout_ms)) or {"port": 63342}
-        jb_inspect.now_ms = lambda: 0
+        jb_inspect.monotonic_ms = lambda: 0
         jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
         try:
             result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1234), {"ide": "IntelliJ IDEA"})
@@ -4173,7 +4318,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
             jb_inspect.wait_for_matching_ide_identity = original_wait
-            jb_inspect.now_ms = original_now
+            jb_inspect.monotonic_ms = original_now
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result[0], "bootstrapped_ide")
@@ -4335,6 +4480,7 @@ class LifecycleTest(unittest.TestCase):
             {"indexing": True},
             {"indexing": False, "is_scanning": False},
             {"indexing": False, "is_scanning": False},
+            {"indexing": False, "is_scanning": False},
         ])
         calls = []
         original_call = jb_inspect.call_endpoint
@@ -4355,7 +4501,7 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
             jb_inspect.now_ms = original_now
 
-        self.assertEqual(calls, ["status", "status", "status", "status", "status"])
+        self.assertEqual(calls, ["status", "status", "status", "status", "status", "status"])
 
     def test_route_status_ready_requires_helper_owned_content_roots(self):
         self.assertFalse(
@@ -4403,11 +4549,11 @@ class LifecycleTest(unittest.TestCase):
                         }
                     },
                 }
-                times = iter([0, 0, 1])
+                times = iter([0, 0, 1, 1])
                 with (
                     patch.object(jb_inspect, "call_endpoint", return_value=status),
                     patch.object(jb_inspect.time, "sleep"),
-                    patch.object(jb_inspect, "now_ms", side_effect=lambda: next(times)),
+                    patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
                 ):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.wait_until_route_ready(

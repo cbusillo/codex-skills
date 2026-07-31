@@ -60,6 +60,10 @@ UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "t
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
 INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
+INTERNAL_RETRY_READY_TIMEOUT_MS = 90_000
+INTERNAL_RETRY_READY_STABLE_OBSERVATIONS = 3
+ROUTE_READY_STABLE_OBSERVATIONS = 3
+READINESS_BARRIER_SCHEMA_VERSION = 1
 LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 OUTCOME_LOG_SCHEMA_VERSION = 2
@@ -1134,16 +1138,190 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
     result = run_inspection_on_route(args, context, route)
     if not should_retry_unknown_result(result):
         return result
-    retry_wait_ms = int((result.get("retry_policy") or {}).get("wait_ms") or 0)
     retry_summaries = [compact_retry_result(result, attempt=0)]
-    if retry_wait_ms > 0:
-        time.sleep(retry_wait_ms / 1000.0)
+    readiness = wait_for_internal_retry_readiness(args, context, route, result)
+    if readiness.get("ready") is not True:
+        result["internal_retry_count"] = 0
+        result["internal_retry_skipped"] = True
+        result["internal_retry_skip_reason"] = "retry_readiness_not_proven"
+        result["internal_retry_readiness"] = readiness
+        result["retry_exhausted"] = True
+        return result
     retry_result = run_inspection_on_route(args, context, route)
     retry_result["internal_retries"] = retry_summaries
     retry_result["internal_retry_count"] = 1
+    retry_result["internal_retry_readiness"] = readiness
     retry_result["recovered_from_unknown"] = retry_result.get("verdict") in {"GREEN", "RED"}
     retry_result["retry_exhausted"] = retry_result.get("verdict") == "UNKNOWN"
     return retry_result
+
+
+def wait_for_internal_retry_readiness(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    first_result: dict[str, Any],
+) -> dict[str, Any]:
+    retry_policy = first_result.get("retry_policy") if isinstance(first_result.get("retry_policy"), dict) else {}
+    min_wait_ms = max(0, int(retry_policy.get("wait_ms") or 0))
+    poll_ms = max(DEFAULT_POLL_MS, int(getattr(args, "poll_ms", DEFAULT_POLL_MS) or DEFAULT_POLL_MS))
+    timeout_ms = max(INTERNAL_RETRY_READY_TIMEOUT_MS, min_wait_ms + poll_ms * INTERNAL_RETRY_READY_STABLE_OBSERVATIONS)
+    started_at_ms = monotonic_ms()
+    deadline_ms = started_at_ms + timeout_ms
+    sample_count = 0
+    stable_observations = 0
+    first_status: dict[str, Any] | None = None
+    last_status: dict[str, Any] | None = None
+    exit_reason = "not_observed"
+
+    while monotonic_ms() <= deadline_ms:
+        try:
+            body = call_endpoint(route, "status", route_params(args, context, route))
+        except InspectError as error:
+            return retry_readiness_result(
+                first_result,
+                status="unavailable",
+                ready=False,
+                exit_reason=infer_error_reason(error, error.payload),
+                min_wait_ms=min_wait_ms,
+                timeout_ms=timeout_ms,
+                poll_ms=poll_ms,
+                sample_count=sample_count,
+                stable_observations=stable_observations,
+                elapsed_ms=max(0, monotonic_ms() - started_at_ms),
+                first_status=first_status,
+                last_status=last_status,
+            )
+        sample_count += 1
+        compact_status = compact_retry_status(body)
+        if first_status is None:
+            first_status = compact_status
+        last_status = compact_status
+        ready, exit_reason = retry_activity_ready(body)
+        stable_observations = stable_observations + 1 if ready else 0
+        elapsed_ms = max(0, monotonic_ms() - started_at_ms)
+        if elapsed_ms >= min_wait_ms and stable_observations >= INTERNAL_RETRY_READY_STABLE_OBSERVATIONS:
+            return retry_readiness_result(
+                first_result,
+                status="ready",
+                ready=True,
+                exit_reason="ready",
+                min_wait_ms=min_wait_ms,
+                timeout_ms=timeout_ms,
+                poll_ms=poll_ms,
+                sample_count=sample_count,
+                stable_observations=stable_observations,
+                elapsed_ms=elapsed_ms,
+                first_status=first_status,
+                last_status=last_status,
+            )
+        time.sleep(poll_ms / 1000.0)
+
+    return retry_readiness_result(
+        first_result,
+        status="timeout",
+        ready=False,
+        exit_reason=exit_reason,
+        min_wait_ms=min_wait_ms,
+        timeout_ms=timeout_ms,
+        poll_ms=poll_ms,
+        sample_count=sample_count,
+        stable_observations=stable_observations,
+        elapsed_ms=max(0, monotonic_ms() - started_at_ms),
+        first_status=first_status,
+        last_status=last_status,
+    )
+
+
+def retry_readiness_result(
+    first_result: dict[str, Any],
+    *,
+    status: str,
+    ready: bool,
+    exit_reason: str,
+    min_wait_ms: int,
+    timeout_ms: int,
+    poll_ms: int,
+    sample_count: int,
+    stable_observations: int,
+    elapsed_ms: int,
+    first_status: dict[str, Any] | None,
+    last_status: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": READINESS_BARRIER_SCHEMA_VERSION,
+        "strategy": "route_activity_quiet_gate_v1",
+        "status": status,
+        "ready": ready,
+        "exit_reason": exit_reason,
+        "trigger_bucket": first_result.get("bucket"),
+        "trigger_reason": first_result.get("verdict_reason"),
+        "min_wait_ms": min_wait_ms,
+        "timeout_ms": timeout_ms,
+        "poll_ms": poll_ms,
+        "required_stable_observations": INTERNAL_RETRY_READY_STABLE_OBSERVATIONS,
+        "stable_observations": stable_observations,
+        "sample_count": sample_count,
+        "elapsed_ms": elapsed_ms,
+        "first_status": first_status,
+        "last_status": last_status,
+        "observation_scope": "ide_status_only",
+        "same_worktree_writer_observation": "not_available",
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def retry_activity_ready(body: dict[str, Any]) -> tuple[bool, str]:
+    if body.get("session_drift"):
+        return False, "session_drift"
+    if body.get("ambiguous"):
+        return False, "ambiguous"
+    if body.get("unavailable"):
+        return False, "unavailable"
+    if body.get("timed_out"):
+        return False, "timed_out"
+    if body.get("indexing"):
+        return False, "indexing"
+    if body.get("is_scanning"):
+        return False, "scanning"
+    if body.get("inspection_in_progress"):
+        return False, "inspection_in_progress"
+    lifecycle_readiness = lifecycle_readiness_from_payload(body)
+    if lifecycle_readiness and lifecycle_readiness.get("ready") is False:
+        return False, str(lifecycle_readiness.get("reason") or "lifecycle_not_ready")
+    status = normalize_reason(body.get("status") or body.get("completion_reason"))
+    if status in {
+        "indexing",
+        "running",
+        "timed_out",
+        "session_drift",
+        "ambiguous",
+        "unavailable",
+    }:
+        return False, status
+    return True, "ready"
+
+
+def compact_retry_status(body: dict[str, Any]) -> dict[str, Any]:
+    lifecycle_readiness = lifecycle_readiness_from_payload(body) or {}
+    summary = {
+        "status": status_label(body),
+        "completion_reason": body.get("completion_reason"),
+        "indexing": body.get("indexing"),
+        "is_scanning": body.get("is_scanning"),
+        "inspection_in_progress": body.get("inspection_in_progress"),
+        "results_may_be_stale": body.get("results_may_be_stale"),
+        "capture_incomplete": body.get("capture_incomplete"),
+        "capture_incomplete_reason": body.get("capture_incomplete_reason"),
+        "timed_out": body.get("timed_out"),
+        "session_drift": body.get("session_drift"),
+        "ambiguous": body.get("ambiguous"),
+        "unavailable": body.get("unavailable"),
+        "inspection_run_id": inspection_run_id(body),
+        "lifecycle_ready": lifecycle_readiness.get("ready"),
+        "lifecycle_reason": lifecycle_readiness.get("reason"),
+    }
+    return {key: value for key, value in summary.items() if value is not None}
 
 
 def should_retry_unknown_result(result: dict[str, Any]) -> bool:
@@ -1175,6 +1353,12 @@ def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]
         "proof_failures": result.get("proof_failures"),
         "wait_completion_reason": wait.get("completion_reason"),
         "snapshot_change_kind": result.get("snapshot_change_kind"),
+        "results_may_be_stale": result.get("results_may_be_stale"),
+        "stale_reasons": result.get("stale_reasons"),
+        "capture_incomplete_reason": result.get("capture_incomplete_reason"),
+        "snapshot_run_id": result.get("snapshot_run_id"),
+        "snapshot_trigger_time_ms": result.get("snapshot_trigger_time_ms"),
+        "results_timestamp_ms": result.get("results_timestamp_ms"),
     }
 
 
@@ -1780,7 +1964,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             claim_metadata=claim_metadata,
         )
         preparation_stage = "readiness_wait"
-        wait_until_route_ready(args, context, validated_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+        readiness = wait_until_route_ready(args, context, validated_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
         persist_preparation_lease(
             lease,
             state="prepared",
@@ -1802,6 +1986,8 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             "open_attempts": open_attempts,
             "claim": claim_metadata,
         }
+        if isinstance(readiness, dict):
+            prepared["readiness_barrier"] = readiness
         return prepared, lease, close_proof
     except BaseException as error:
         cleanup = cleanup_failed_preparation(
@@ -2316,17 +2502,32 @@ def flat_project_matches_context(project: dict[str, Any], context: dict[str, Any
         return str(base_path) == str(target)
 
 
-def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any], timeout_ms: int) -> None:
-    deadline = now_ms() + timeout_ms
+def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+    started_at_ms = monotonic_ms()
+    deadline = started_at_ms + timeout_ms
     last_status: dict[str, Any] | None = None
     stable_ready_count = 0
-    while now_ms() <= deadline:
+    sample_count = 0
+    while monotonic_ms() <= deadline:
         body = call_endpoint(route, "status", route_params(args, context, route))
         last_status = body
+        sample_count += 1
         if route_status_ready(body):
             stable_ready_count += 1
-            if stable_ready_count >= 2:
-                return
+            if stable_ready_count >= ROUTE_READY_STABLE_OBSERVATIONS:
+                return {
+                    "schema_version": READINESS_BARRIER_SCHEMA_VERSION,
+                    "strategy": "route_activity_ready_gate_v1",
+                    "status": "ready",
+                    "ready": True,
+                    "required_stable_observations": ROUTE_READY_STABLE_OBSERVATIONS,
+                    "stable_observations": stable_ready_count,
+                    "sample_count": sample_count,
+                    "elapsed_ms": max(0, monotonic_ms() - started_at_ms),
+                    "last_status": compact_retry_status(body),
+                    "observation_scope": "ide_status_only",
+                    "same_worktree_writer_observation": "not_available",
+                }
         else:
             stable_ready_count = 0
         time.sleep(max(DEFAULT_POLL_MS, 1_000) / 1000.0)
@@ -2345,6 +2546,19 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
             "error_reason": "project_content_roots_missing" if content_root_failure else "ide_not_ready_timeout",
             "lifecycle_readiness": lifecycle_readiness,
             "last_status": last_status or {},
+            "readiness_barrier": {
+                "schema_version": READINESS_BARRIER_SCHEMA_VERSION,
+                "strategy": "route_activity_ready_gate_v1",
+                "status": "timeout",
+                "ready": False,
+                "required_stable_observations": ROUTE_READY_STABLE_OBSERVATIONS,
+                "stable_observations": stable_ready_count,
+                "sample_count": sample_count,
+                "elapsed_ms": max(0, monotonic_ms() - started_at_ms),
+                "last_status": compact_retry_status(last_status or {}),
+                "observation_scope": "ide_status_only",
+                "same_worktree_writer_observation": "not_available",
+            },
             "route": route,
         }
         | route_diagnostic_payload(args, context),
@@ -3807,9 +4021,9 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "current_run_psi_churn":
         return "Save documents and rerun inspection after the IDE finishes updating PSI state."
     if reason == "inspection_inputs_changed":
-        return "Rerun inspection after project files, VCS state, and inspection settings finish changing."
+        return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun after project files, VCS state, and inspection settings stop changing."
     if reason == "stale_results":
-        return "Rerun inspection; stale cached findings must not be treated as current."
+        return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun; stale cached findings must not be treated as current."
     if reason == "timeout":
         return "Wait for indexing/scanning to settle or rerun with a larger timeout."
     if reason == "inspection_still_running":
@@ -4132,7 +4346,10 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     retry_policy = retry_policy_for(verdict, bucket)
     if verdict == "UNKNOWN" and payload.get("retry_exhausted") is True:
         retry_policy = {"retry": False, "max_attempts": 0, "wait_ms": 0}
-        payload["verdict_next_action"] = "The helper already used its one internal retry. Stop retrying this result and report the diagnostic payload."
+        payload["verdict_next_action"] = exhausted_retry_next_action(reason, payload)
+    diagnosis = unknown_diagnosis_for(reason, payload) if verdict == "UNKNOWN" else None
+    if diagnosis is not None:
+        payload["unknown_diagnosis"] = diagnosis
     report = agent_report_for(verdict, bucket, reason, payload)
     payload["bucket"] = bucket
     payload["retry_policy"] = retry_policy
@@ -4145,6 +4362,43 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         "agent_report": report,
     }
     return payload
+
+
+def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
+    if reason not in {"stale_results", "inspection_inputs_changed"}:
+        return "The helper already used its one internal retry. Stop retrying this result and report the diagnostic payload."
+    readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
+    if payload.get("internal_retry_skipped") is True:
+        return (
+            "The helper withheld its internal retry because IDE readiness did not remain stable. Stop retrying this result in this run; "
+            "wait for same-worktree writers and IDE indexing/project-model updates to settle, then start a new inspection and include "
+            "internal_retry_readiness if it remains UNKNOWN."
+        )
+    barrier_status = str(readiness.get("status") or "unknown")
+    return (
+        f"The helper waited for sustained IDE readiness ({barrier_status}) and used its one internal retry, but the result remained {reason}. "
+        "Stop retrying this result and report both attempts plus internal_retry_readiness. Do not attribute it to source edits unless "
+        "changed-file evidence identifies them."
+    )
+
+
+def unknown_diagnosis_for(reason: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if reason not in {"stale_results", "inspection_inputs_changed"}:
+        return None
+    readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
+    diagnosis = {
+        "classification": "inspection_state_changed",
+        "proven": "The inspection result was rejected because the IDE could not prove a current, stable project snapshot.",
+        "not_proven": "This result does not identify the changing process or prove that requested source files changed.",
+        "worktree_isolation_limit": (
+            "A linked Git worktree isolates checkout state; it does not stop same-worktree processes or IDE VFS, indexing, and project-model churn."
+        ),
+        "readiness_barrier_status": readiness.get("status"),
+        "readiness_barrier_exit_reason": readiness.get("exit_reason"),
+        "stale_reasons": payload.get("stale_reasons"),
+        "snapshot_change_kind": payload.get("snapshot_change_kind"),
+    }
+    return {key: value for key, value in diagnosis.items() if value not in (None, "", [], {})}
 
 
 def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
@@ -4445,6 +4699,12 @@ def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal:
         "proof_failures": source.get("proof_failures"),
         "wait_completion_reason": source.get("wait_completion_reason"),
         "snapshot_change_kind": source.get("snapshot_change_kind"),
+        "results_may_be_stale": source.get("results_may_be_stale"),
+        "stale_reasons": source.get("stale_reasons"),
+        "capture_incomplete_reason": source.get("capture_incomplete_reason"),
+        "snapshot_run_id": source.get("snapshot_run_id"),
+        "snapshot_trigger_time_ms": source.get("snapshot_trigger_time_ms"),
+        "results_timestamp_ms": source.get("results_timestamp_ms"),
     }
     return {key: value for key, value in summary.items() if value not in (None, {}, [])}
 
@@ -4551,6 +4811,11 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
+        "internal_retry_count": public.get("internal_retry_count"),
+        "internal_retry_skipped": public.get("internal_retry_skipped"),
+        "internal_retry_skip_reason": public.get("internal_retry_skip_reason"),
+        "internal_retry_readiness": public.get("internal_retry_readiness"),
+        "unknown_diagnosis": public.get("unknown_diagnosis"),
     }
     return public, record
 
@@ -6567,6 +6832,10 @@ class lifecycle_lock:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def monotonic_ms() -> int:
+    return int(time.monotonic() * 1000)
 
 
 def create_local_lease(context: dict[str, Any], state: str) -> dict[str, Any]:

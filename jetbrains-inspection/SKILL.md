@@ -150,7 +150,14 @@ and reports `cleanup.status=deferred` with `cleanup_deferred=true`. Treat that a
 `UNKNOWN`, rerun `inspect-closeout` after the IDE settles, and use
 `cleanup-helper-leases` only if the warm lease becomes stale. Full inspection
 timeouts are not retried internally; the one automatic retry is reserved for
-safe stale/capture-readiness outcomes.
+safe stale/capture-readiness outcomes. That retry is gated by a bounded,
+route-pinned IDE activity quiet period instead of a blind sleep. A previous
+stale/capture outcome remains visible in status until the next run and does not
+itself prove current activity; indexing, scanning, inspection, route, and
+lifecycle signals control the gate. If activity does not remain quiet, the
+helper preserves the first `UNKNOWN`, skips the second inspection, and reports
+`internal_retry_readiness`. The retry result must still independently prove
+`GREEN` or `RED`; another stale/capture result remains `UNKNOWN`.
 Preparation is failure-atomic for handled failures and interrupts. With plugin
 protocol `lease_bound_v1`, the helper persists `state=open_requesting` before
 sending its local `lease_id` to `lifecycle/open`. An open response registers the
@@ -299,6 +306,13 @@ For readiness inspection, require an exact worktree route. A containing main
 checkout is not enough; `inspect-closeout` may open the linked worktree in the
 preferred IDE and must clean it up afterward when it owns the open.
 
+A linked worktree isolates Git checkout state; it does not serialize processes
+inside that worktree or stop IDE VFS refreshes, indexing, and project-model
+updates. Before inspection, await builds, installs, generators, formatters, and
+other same-worktree writers, then avoid new writes until lifecycle cleanup
+finishes. The helper's readiness barrier observes IDE status only; it cannot
+identify arbitrary writers or prove that ignored files are quiet.
+
 ## Result Policy
 
 - `GREEN`: inspection worked and found no actionable findings for the selected
@@ -312,6 +326,10 @@ preferred IDE and must clean it up afterward when it owns the open.
   `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`; do not
   inspect raw route, cleanup, wait, or capture diagnostics unless debugging the
   helper itself.
+  For `stale_results` and `inspection_inputs_changed`, `unknown_diagnosis`
+  separates proven snapshot invalidation from unproven source-edit or process
+  attribution. Do not blame an agent or source edit without changed-file or
+  process evidence.
   Every `GREEN`, `RED`, or `UNKNOWN` result and cleanup anomaly carries
   `inspection_attribution` schema version 1 with a stable classification, code,
   phase, endpoint, HTTP status, helper/plugin provenance, cleanup state, and
@@ -453,7 +471,9 @@ side of the boundary they occupy.
 - `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
   when `retry_policy.retry=true`; otherwise narrow scope, open the project in
-  the preferred IDE, or report the blocker. Do not invent retry loops.
+  the preferred IDE, or report the blocker. Before a new helper invocation,
+  await same-worktree writers and let IDE indexing/project-model updates settle.
+  Do not invent retry loops.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
