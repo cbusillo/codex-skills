@@ -7174,7 +7174,13 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             failed.append(cleanup_result)
         elif cleanup_result.get("status") == "skipped":
             unresolved.append(cleanup_result)
-        elif cleanup_result.get("reason") in {"open_not_attempted", "project_not_open", "project_preexisted", "ownership_not_proven"}:
+        elif cleanup_result.get("reason") in {
+            "open_not_attempted",
+            "project_not_open",
+            "project_preexisted",
+            "ownership_not_proven",
+            "original_ide_process_dead_no_route",
+        }:
             path.unlink(missing_ok=True)
             removed.append(str(path))
     return {
@@ -7232,6 +7238,13 @@ def cleanup_stale_helper_lease(
     if route is None:
         if lease_has_exact_route_identity(lease) and lease.get("session_id") in sessions:
             return {"status": "not_needed", "reason": "project_not_open", "lease_id": lease.get("lease_id")}
+        if can_release_dead_original_ide_lease(lease, routes, observed_sessions):
+            return {
+                "status": "not_needed",
+                "reason": "original_ide_process_dead_no_route",
+                "lease_id": lease.get("lease_id"),
+                "released_without_close": True,
+            }
         return {
             "status": "skipped",
             "reason": "ownership_route_unavailable",
@@ -7260,6 +7273,57 @@ def cleanup_stale_helper_lease(
     result = cleanup_lifecycle(lease, claimed_route, str(close_proof))
     result.setdefault("lease_id", lease.get("lease_id"))
     return result
+
+
+def can_release_dead_original_ide_lease(
+    lease: dict[str, Any],
+    routes: list[dict[str, Any]],
+    observed_sessions: set[str] | None,
+) -> bool:
+    if observed_sessions is None or lease.get("state") != "cleanup_pending":
+        return False
+    if lease.get("opened_by_helper") is not True or lease.get("open_request_may_have_been_accepted") is True:
+        return False
+    lease_id = lease.get("lease_id")
+    session_id = lease.get("session_id")
+    target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    if not lease_id or not session_id or not target or str(session_id) in observed_sessions:
+        return False
+    for route in routes:
+        route_path = route.get("base_path") or route.get("project_file_path")
+        if not route_path or paths_same(target, route_path):
+            return False
+    attempts = lease.get("open_attempts")
+    if not isinstance(attempts, list) or any(
+        isinstance(attempt, dict) and attempt.get("request_may_have_been_accepted") is True
+        for attempt in attempts
+    ):
+        return False
+    accepted_identities: list[tuple[str, int]] = []
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        accepted = attempt.get("accepted") is True
+        ownership_registered = attempt.get("ownership_registered") is True
+        if not accepted and not ownership_registered:
+            continue
+        if not accepted or not ownership_registered:
+            return False
+        if attempt.get("lease_id") != lease_id or attempt.get("lifecycle_ownership_protocol") != LIFECYCLE_OWNERSHIP_PROTOCOL:
+            return False
+        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        attempt_session = identity.get("session_id") or attempt.get("session_id")
+        ide_pid = identity.get("pid")
+        if attempt_session != session_id or not isinstance(ide_pid, int) or ide_pid <= 0:
+            return False
+        lease_port = lease.get("ide_port")
+        identity_port = identity.get("port")
+        if lease_port is not None and identity_port != lease_port:
+            return False
+        accepted_identities.append((str(attempt_session), ide_pid))
+    if len(accepted_identities) != 1:
+        return False
+    return pid_definitively_dead(accepted_identities[0][1])
 
 
 def reclaim_lifecycle_claim(
@@ -7353,6 +7417,18 @@ def configured_ports() -> list[int]:
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def pid_definitively_dead(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return False
+    except ProcessLookupError:
         return True
     except OSError:
         return False
