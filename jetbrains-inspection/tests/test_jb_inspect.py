@@ -1741,6 +1741,200 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "ownership_route_unavailable")
 
+    def test_cleanup_pending_lease_releases_after_original_ide_process_dies_without_route(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "ide_port": 63343,
+            "open_attempts": [
+                {
+                    "accepted": True,
+                    "ownership_registered": True,
+                    "lease_id": "pending-lease",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                    "identity": {
+                        "session_id": "old-session",
+                        "port": 63343,
+                        "pid": 753,
+                    },
+                }
+            ],
+        }
+
+        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
+
+        self.assertEqual(result["status"], "not_needed")
+        self.assertEqual(result["reason"], "original_ide_process_dead_no_route")
+        self.assertTrue(result["released_without_close"])
+
+    def test_cleanup_pending_lease_retains_dead_original_session_when_target_is_open_elsewhere(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "ide_port": 63343,
+            "open_attempts": [
+                {
+                    "accepted": True,
+                    "ownership_registered": True,
+                    "lease_id": "pending-lease",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                    "identity": {
+                        "session_id": "old-session",
+                        "port": 63343,
+                        "pid": 753,
+                    },
+                }
+            ],
+        }
+        route = {
+            "base_path": "/tmp/worktree",
+            "session_id": "new-session",
+            "project_instance_id": "new-session:1",
+        }
+
+        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [route], {"new-session"})
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "ownership_route_unavailable")
+
+    def test_cleanup_pending_lease_retains_unknown_or_live_original_ide_process(self):
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "ide_port": 63343,
+            "open_attempts": [
+                {
+                    "accepted": True,
+                    "ownership_registered": True,
+                    "lease_id": "pending-lease",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                    "identity": {
+                        "session_id": "old-session",
+                        "port": 63343,
+                        "pid": 753,
+                    },
+                }
+            ],
+        }
+
+        with patch.object(jb_inspect, "pid_definitively_dead", return_value=False):
+            result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "ownership_route_unavailable")
+
+    def test_cleanup_pending_lease_retains_ambiguous_or_conflicting_open_attempts(self):
+        base_attempt = {
+            "accepted": True,
+            "ownership_registered": True,
+            "lease_id": "pending-lease",
+            "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+            "identity": {
+                "session_id": "old-session",
+                "port": 63343,
+                "pid": 753,
+            },
+        }
+        attempts = [
+            [base_attempt | {"ownership_registered": False}],
+            [base_attempt | {"request_may_have_been_accepted": True}],
+            [base_attempt | {"identity": base_attempt["identity"] | {"pid": None}}],
+            [base_attempt, base_attempt | {"identity": base_attempt["identity"] | {"pid": 754}}],
+        ]
+
+        for open_attempts in attempts:
+            lease = {
+                "lease_id": "pending-lease",
+                "state": "cleanup_pending",
+                "opened_by_helper": True,
+                "open_request_may_have_been_accepted": False,
+                "lifecycle_target_path": "/tmp/worktree",
+                "session_id": "old-session",
+                "ide_port": 63343,
+                "open_attempts": open_attempts,
+            }
+            with self.subTest(open_attempts=open_attempts), patch.object(
+                jb_inspect, "pid_definitively_dead", return_value=True
+            ):
+                result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "ownership_route_unavailable")
+
+    def test_cleanup_command_removes_dead_original_ide_lease_without_closing(self):
+        removed = []
+        path = Path("/tmp/pending-lease.json")
+        lease = {
+            "lease_id": "pending-lease",
+            "state": "cleanup_pending",
+            "opened_by_helper": True,
+            "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "ide_port": 63343,
+            "pid": 999_999,
+            "updated_at_ms": jb_inspect.now_ms(),
+            "open_attempts": [
+                {
+                    "accepted": True,
+                    "ownership_registered": True,
+                    "lease_id": "pending-lease",
+                    "lifecycle_ownership_protocol": jb_inspect.LIFECYCLE_OWNERSHIP_PROTOCOL,
+                    "identity": {
+                        "session_id": "old-session",
+                        "port": 63343,
+                        "pid": 753,
+                    },
+                }
+            ],
+        }
+
+        with (
+            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch.object(jb_inspect, "pid_alive", return_value=False),
+            patch.object(jb_inspect, "pid_definitively_dead", return_value=True),
+            patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
+            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch.object(jb_inspect, "private_http_get_body") as claim,
+            patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))),
+        ):
+            result = jb_inspect.cleanup_stale_helper_leases(
+                Namespace(max_age_ms=86_400_000, dry_run=False)
+            )
+
+        cleanup.assert_not_called()
+        claim.assert_not_called()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["removed"], [str(path)])
+        self.assertEqual(result["closed"], [])
+        self.assertEqual(result["unresolved"], [])
+        self.assertEqual(removed, [str(path)])
+
+    def test_pid_definitively_dead_fails_closed_for_unknown_process_state(self):
+        with patch.object(jb_inspect.os, "kill", side_effect=ProcessLookupError()):
+            self.assertTrue(jb_inspect.pid_definitively_dead(753))
+        with patch.object(jb_inspect.os, "kill", side_effect=PermissionError()):
+            self.assertFalse(jb_inspect.pid_definitively_dead(753))
+        with patch.object(jb_inspect.os, "kill", side_effect=OSError("unknown")):
+            self.assertFalse(jb_inspect.pid_definitively_dead(753))
+        with patch.object(jb_inspect.os, "kill", return_value=None):
+            self.assertFalse(jb_inspect.pid_definitively_dead(753))
+        self.assertFalse(jb_inspect.pid_definitively_dead(0))
+
     def test_cleanup_pending_lease_with_legacy_or_request_identity_stays_fail_closed(self):
         leases = [
             {
