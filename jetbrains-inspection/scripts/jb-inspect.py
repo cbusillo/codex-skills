@@ -33,10 +33,14 @@ from pathlib import Path
 from typing import Any
 from xml.parsers.expat import ExpatError
 
-if sys.platform != "win32":
-    import fcntl
-else:
+if sys.platform == "win32":
+    import msvcrt
+
     fcntl = None
+else:
+    import fcntl
+
+    msvcrt = None
 
 
 DEFAULT_PORT_RANGE = range(63340, 63350)
@@ -45,6 +49,8 @@ DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 DEFAULT_PREPARE_TIMEOUT_MS = 300_000
 DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
+DEFAULT_OUTCOME_ROUTING_LOCK_TIMEOUT_MS = 300_000
+DEFAULT_OUTCOME_APPEND_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS = 10_000
 LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
@@ -4501,30 +4507,60 @@ def log_unknown_verdict(payload: dict[str, Any]) -> None:
         return
     if not should_log_unknown_verdict(payload):
         return
-    log_path = unknown_log_path()
-    if log_path is None:
-        return
-    record = unknown_log_record(payload)
     try:
-        append_jsonl_record(log_path, record)
+        with outcome_routing_lock():
+            write_unknown_verdict_record(payload)
     except OSError as error:
         payload["unknown_log_error"] = str(error)
-        return
-    payload["unknown_log_path"] = str(log_path)
 
 
 def log_outcome(payload: dict[str, Any], exit_code: int) -> None:
     if not should_log_outcome(payload):
         return
+    try:
+        with outcome_routing_lock():
+            write_outcome_record(payload, exit_code)
+    except OSError as error:
+        payload["outcome_log_error"] = str(error)
+
+
+def log_assessment_records(payload: dict[str, Any], exit_code: int) -> None:
+    log_unknown = payload.get("verdict") == "UNKNOWN" and should_log_unknown_verdict(payload)
+    log_assessment = should_log_outcome(payload)
+    if not log_unknown and not log_assessment:
+        return
+    try:
+        with outcome_routing_lock():
+            if log_unknown:
+                try:
+                    write_unknown_verdict_record(payload)
+                except OSError as error:
+                    payload["unknown_log_error"] = str(error)
+            if log_assessment:
+                try:
+                    write_outcome_record(payload, exit_code)
+                except OSError as error:
+                    payload["outcome_log_error"] = str(error)
+    except OSError as error:
+        if log_unknown:
+            payload["unknown_log_error"] = str(error)
+        if log_assessment:
+            payload["outcome_log_error"] = str(error)
+
+
+def write_unknown_verdict_record(payload: dict[str, Any]) -> None:
+    log_path = unknown_log_path()
+    if log_path is None:
+        return
+    append_jsonl_record(log_path, unknown_log_record(payload))
+    payload["unknown_log_path"] = str(log_path)
+
+
+def write_outcome_record(payload: dict[str, Any], exit_code: int) -> None:
     log_path = outcome_log_path()
     if log_path is None:
         return
-    record = outcome_log_record(payload, exit_code)
-    try:
-        append_jsonl_record(log_path, record)
-    except OSError as error:
-        payload["outcome_log_error"] = str(error)
-        return
+    append_jsonl_record(log_path, outcome_log_record(payload, exit_code))
     payload["outcome_log_path"] = str(log_path)
 
 
@@ -4586,14 +4622,48 @@ def code_home() -> Path:
     return Path(os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or str(Path.home() / ".code")).expanduser()
 
 
-def append_jsonl_record(log_path: Path, record: dict[str, Any]) -> None:
+def append_jsonl_record(
+    log_path: Path,
+    record: dict[str, Any],
+    lock_timeout_ms: int = DEFAULT_OUTCOME_APPEND_LOCK_TIMEOUT_MS,
+) -> None:
     payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     original_size: int | None = None
+    locked = False
     try:
         if fcntl is not None:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            timeout_ms = max(0, int(lock_timeout_ms))
+            deadline = time.monotonic() + (timeout_ms / 1000.0)
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError as error:
+                    if timeout_ms == 0 or time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for the JetBrains inspection outcome log lock: {log_path}"
+                        ) from error
+                    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        elif msvcrt is not None:
+            timeout_ms = max(0, int(lock_timeout_ms))
+            deadline = time.monotonic() + (timeout_ms / 1000.0)
+            while True:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError as error:
+                    if timeout_ms == 0 or time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for the JetBrains inspection outcome log lock: {log_path}"
+                        ) from error
+                    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        else:
+            raise OSError("Unsupported platform for JetBrains inspection outcome log locking")
         original_size = os.lseek(descriptor, 0, os.SEEK_END)
         remaining = memoryview(payload)
         while remaining:
@@ -4611,8 +4681,12 @@ def append_jsonl_record(log_path: Path, record: dict[str, Any]) -> None:
                 pass
         raise
     finally:
-        if fcntl is not None:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if locked:
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
         os.close(descriptor)
 
 
@@ -5876,8 +5950,7 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
             print_human(payload, assess=False)
         return exit_code
     apply_verdict(payload)
-    log_unknown_verdict(payload)
-    log_outcome(payload, exit_code)
+    log_assessment_records(payload, exit_code)
     payload = public_payload(payload)
     if json_only:
         # codeql[py/clear-text-logging-sensitive-data]
@@ -5921,6 +5994,10 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
         print(safe_text("UNKNOWN_LOG: {path}", {"path": payload.get("unknown_log_path")}))
     if payload.get("unknown_log_error"):
         print(safe_text("UNKNOWN_LOG_ERROR: {error}", {"error": payload.get("unknown_log_error")}))
+    if payload.get("outcome_log_path"):
+        print(safe_text("OUTCOME_LOG: {path}", {"path": payload.get("outcome_log_path")}))
+    if payload.get("outcome_log_error"):
+        print(safe_text("OUTCOME_LOG_ERROR: {error}", {"error": payload.get("outcome_log_error")}))
     if payload.get("zero_project_hint"):
         print(safe_text("PROJECT_OPEN_HINT: {hint}", {"hint": payload.get("zero_project_hint")}))
     print_ide_selection(payload.get("ide_selection") or (payload.get("context") or {}).get("ide_selection"))
@@ -6813,6 +6890,65 @@ def lease_dir() -> Path:
 
 def lifecycle_lock_path() -> Path:
     return cache_dir() / "lifecycle.lock"
+
+
+def outcome_routing_lock_path() -> Path:
+    return cache_dir() / "outcome-routing.lock"
+
+
+class outcome_routing_lock:
+    def __init__(self, timeout_ms: int = DEFAULT_OUTCOME_ROUTING_LOCK_TIMEOUT_MS):
+        self.timeout_ms = max(0, int(timeout_ms))
+        self.handle = None
+
+    def __enter__(self):
+        path = outcome_routing_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = path.open("a+", encoding="utf-8")
+        if fcntl is not None:
+            deadline = time.monotonic() + (self.timeout_ms / 1000.0)
+            while True:
+                try:
+                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as error:
+                    if self.timeout_ms == 0 or time.monotonic() >= deadline:
+                        self.handle.close()
+                        raise TimeoutError(
+                            f"Timed out waiting for the JetBrains inspection outcome routing lock: {path}"
+                        ) from error
+                    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        elif msvcrt is not None:
+            self.handle.seek(0, os.SEEK_END)
+            if self.handle.tell() == 0:
+                self.handle.write("\0")
+                self.handle.flush()
+            deadline = time.monotonic() + (self.timeout_ms / 1000.0)
+            while True:
+                try:
+                    self.handle.seek(0)
+                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as error:
+                    if self.timeout_ms == 0 or time.monotonic() >= deadline:
+                        self.handle.close()
+                        raise TimeoutError(
+                            f"Timed out waiting for the JetBrains inspection outcome routing lock: {path}"
+                        ) from error
+                    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        else:
+            self.handle.close()
+            raise OSError("Unsupported platform for JetBrains inspection outcome routing locking")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if fcntl is not None and self.handle is not None:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None and self.handle is not None:
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+        if self.handle is not None:
+            self.handle.close()
 
 
 class lifecycle_lock:

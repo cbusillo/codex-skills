@@ -195,6 +195,11 @@ Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it
 or increase `--lifecycle-lock-timeout-ms`; do not start parallel auto-open
 inspections and expect independent IDE windows to race safely.
+Outcome logging uses a cross-platform, bounded routing lock acquired before
+resolving configured log paths through `current`, followed by a bounded concrete
+JSONL lock. Deployment reconciliation must take that routing lock before the
+lifecycle and concrete outcome-log locks so completed inspections cannot retain
+a pre-switch log path and append to an immutable parent deployment.
 
 Auto-open is allowed only for worktrees under globally trusted roots. Before a
 lifecycle auto-open, the helper adds the matching trusted root to the selected

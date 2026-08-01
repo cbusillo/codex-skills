@@ -11,6 +11,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.parse
 from argparse import Namespace
@@ -6983,6 +6984,216 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertNotIn("secret-token", log_path.read_text(encoding="utf-8"))
             self.assertNotIn("/repo-wt", log_path.read_text(encoding="utf-8"))
 
+    def test_outcome_path_is_resolved_inside_routing_lock(self):
+        order = []
+
+        class RoutingLock:
+            def __enter__(self):
+                order.append("lock_enter")
+
+            def __exit__(self, exc_type, exc, tb):
+                order.append("lock_exit")
+
+        payload = qualification_event("routing-lock")
+
+        def resolve_path():
+            order.append("resolve_path")
+            return Path("/tmp/outcomes.jsonl")
+
+        def append_record(path, record):
+            order.append("append")
+            self.assertEqual(path, Path("/tmp/outcomes.jsonl"))
+            self.assertEqual(record["event_kind"], "inspection_assessment")
+
+        with (
+            patch.object(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
+            patch.object(jb_inspect, "outcome_log_path", side_effect=resolve_path),
+            patch.object(jb_inspect, "append_jsonl_record", side_effect=append_record),
+        ):
+            jb_inspect.log_outcome(payload, 0)
+
+        self.assertEqual(order, ["lock_enter", "resolve_path", "append", "lock_exit"])
+        self.assertEqual(payload["outcome_log_path"], "/tmp/outcomes.jsonl")
+
+    def test_unknown_and_outcome_records_share_one_routing_lock(self):
+        order = []
+
+        class RoutingLock:
+            def __enter__(self):
+                order.append("lock_enter")
+
+            def __exit__(self, exc_type, exc, tb):
+                order.append("lock_exit")
+
+        payload = qualification_event("routing-lock-unknown", verdict="UNKNOWN")
+
+        with (
+            patch.object(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
+            patch.object(
+                jb_inspect,
+                "write_unknown_verdict_record",
+                side_effect=lambda candidate: order.append("unknown_record"),
+            ),
+            patch.object(
+                jb_inspect,
+                "write_outcome_record",
+                side_effect=lambda candidate, exit_code: order.append("outcome_record"),
+            ),
+        ):
+            jb_inspect.log_assessment_records(payload, 1)
+
+        self.assertEqual(order, ["lock_enter", "unknown_record", "outcome_record", "lock_exit"])
+
+    @unittest.skipIf(jb_inspect.fcntl is None, "requires advisory file locking")
+    def test_blocked_emitter_resolves_current_after_routing_lock_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            old_deployment = root / "old"
+            new_deployment = root / "new"
+            old_deployment.mkdir()
+            new_deployment.mkdir()
+            current = root / "current"
+            current.symlink_to(old_deployment, target_is_directory=True)
+            marker = root / "child-started"
+            child_code = f"""
+import importlib.util
+import os
+import sys
+from pathlib import Path
+script = Path({str(SCRIPT_PATH)!r})
+spec = importlib.util.spec_from_file_location('jb_inspect_child', script)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+Path({str(marker)!r}).write_text('started', encoding='utf-8')
+module.log_outcome({{
+    'command': 'inspect-closeout',
+    'verdict': 'GREEN',
+    'verdict_reason': 'no_matching_findings',
+    'status': 'clean',
+    'context': {{'client_run_id': 'routing-test', 'scope': 'changed_files'}},
+}}, 0)
+"""
+            environment = os.environ.copy()
+            environment.update({
+                "JETBRAINS_INSPECTION_CACHE_DIR": str(cache),
+                jb_inspect.OUTCOME_LOG_ENV: str(current / "outcomes.jsonl"),
+                jb_inspect.UNKNOWN_LOG_ENV: "0",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            })
+            environment.pop(jb_inspect.DEPLOYMENT_MANIFEST_ENV, None)
+
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": str(cache)}, clear=False):
+                with jb_inspect.outcome_routing_lock(timeout_ms=5_000):
+                    child = subprocess.Popen(
+                        [sys.executable, "-c", child_code],
+                        env=environment,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    deadline = time.monotonic() + 5
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists(), "child did not reach the routing lock")
+                    time.sleep(0.1)
+                    replacement = root / ".current-new"
+                    replacement.symlink_to(new_deployment, target_is_directory=True)
+                    os.replace(replacement, current)
+
+            stdout, stderr = child.communicate(timeout=10)
+            self.assertEqual(child.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+            self.assertFalse((old_deployment / "outcomes.jsonl").exists())
+            records = [
+                json.loads(line)
+                for line in (new_deployment / "outcomes.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["client_run_id"], "routing-test")
+
+    def test_routing_lock_uses_windows_file_lock_fallback(self):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def __init__(self):
+                self.calls = []
+
+            def locking(self, descriptor, mode, size):
+                self.calls.append((mode, size))
+
+        fake_msvcrt = FakeMsvcrt()
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": tmp}, clear=False),
+                patch.object(jb_inspect, "fcntl", None),
+                patch.object(jb_inspect, "msvcrt", fake_msvcrt),
+            ):
+                with jb_inspect.outcome_routing_lock(timeout_ms=0):
+                    pass
+
+        self.assertEqual(fake_msvcrt.calls, [(fake_msvcrt.LK_NBLCK, 1), (fake_msvcrt.LK_UNLCK, 1)])
+
+    @unittest.skipIf(jb_inspect.fcntl is None, "requires POSIX file locking")
+    def test_outcome_append_lock_timeout_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "outcomes.jsonl"
+            with patch.object(jb_inspect.fcntl, "flock", side_effect=BlockingIOError()):
+                with self.assertRaisesRegex(TimeoutError, "outcome log lock"):
+                    jb_inspect.append_jsonl_record(log_path, {"event_id": "blocked"}, lock_timeout_ms=0)
+
+    def test_outcome_append_uses_windows_file_lock_fallback(self):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def __init__(self):
+                self.calls = []
+
+            def locking(self, descriptor, mode, size):
+                self.calls.append((mode, size))
+
+        fake_msvcrt = FakeMsvcrt()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "outcomes.jsonl"
+            with (
+                patch.object(jb_inspect, "fcntl", None),
+                patch.object(jb_inspect, "msvcrt", fake_msvcrt),
+            ):
+                jb_inspect.append_jsonl_record(log_path, {"event_id": "windows"}, lock_timeout_ms=0)
+
+            self.assertEqual(json.loads(log_path.read_text(encoding="utf-8")), {"event_id": "windows"})
+
+        self.assertEqual(fake_msvcrt.calls, [(fake_msvcrt.LK_NBLCK, 1), (fake_msvcrt.LK_UNLCK, 1)])
+
+    def test_outcome_append_windows_lock_timeout_is_bounded(self):
+        class BlockingMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def locking(self, descriptor, mode, size):
+                raise OSError("busy")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "outcomes.jsonl"
+            with (
+                patch.object(jb_inspect, "fcntl", None),
+                patch.object(jb_inspect, "msvcrt", BlockingMsvcrt()),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "outcome log lock"):
+                    jb_inspect.append_jsonl_record(log_path, {"event_id": "blocked"}, lock_timeout_ms=0)
+
+            self.assertEqual(log_path.read_bytes(), b"")
+
+    def test_human_output_surfaces_outcome_log_error(self):
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            jb_inspect.print_human({"status": "clean", "outcome_log_error": "routing lock timeout"})
+
+        self.assertIn("OUTCOME_LOG_ERROR: routing lock timeout", output.getvalue())
+
     def test_rollout_attribution_requires_explicit_session_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             rollout = Path(tmp) / "sessions" / "2026" / "rollout-other-session.jsonl"
@@ -7323,7 +7534,10 @@ class UnknownVerdictLogTest(unittest.TestCase):
 
         self.assertEqual(write_call.call_count, 1)
         if jb_inspect.fcntl is not None:
-            self.assertEqual(lock_calls, [jb_inspect.fcntl.LOCK_EX, jb_inspect.fcntl.LOCK_UN])
+            self.assertEqual(
+                lock_calls,
+                [jb_inspect.fcntl.LOCK_EX | jb_inspect.fcntl.LOCK_NB, jb_inspect.fcntl.LOCK_UN],
+            )
         self.assertEqual(written_record, {"event_id": "one"})
 
     def test_jsonl_append_rolls_back_partial_write_failures(self):
