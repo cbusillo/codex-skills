@@ -14,7 +14,7 @@ import tempfile
 import unittest
 import urllib.parse
 from argparse import Namespace
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -323,15 +323,18 @@ class ParserCommandAliasTest(unittest.TestCase):
         for command in ("list", "route", "prepare", "run", "closeout", "status", "problems", "trigger", "wait", "claim", "cleanup-leases"):
             self.assertNotIn(command, choices)
 
-    def test_inspect_alias_has_lifecycle_and_scope_options(self):
+    def test_lifecycle_commands_always_open(self):
         parser = jb_inspect.build_parser()
 
-        args = parser.parse_args(["inspect", "--repo", "/tmp/repo", "--scope", "changed_files", "--no-open"])
+        args = parser.parse_args(["inspect", "--repo", "/tmp/repo", "--scope", "changed_files"])
 
         self.assertEqual(jb_inspect.canonical_command(args.command), "run")
         self.assertEqual(args.repo, "/tmp/repo")
         self.assertEqual(args.scope, "changed_files")
-        self.assertFalse(args.open)
+        self.assertTrue(args.open)
+        for command in ("prepare-worktree", "inspect", "inspect-closeout"):
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args([command, "--no-open"])
 
     def test_assessment_commands_accept_text_only_coverage_override(self):
         parser = jb_inspect.build_parser()
@@ -1414,6 +1417,25 @@ class LifecycleTest(unittest.TestCase):
 
             self.assertEqual(result["status"], "not_needed")
             self.assertEqual(result["reason"], "project_preexisted")
+
+    def test_prepare_without_open_reports_open_not_attempted(self):
+        lease = {"lease_id": "lease-1", "state": "preparing", "opened_by_helper": False}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(jb_inspect, "remove_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(
+                    helper_args(open=False),
+                    {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
+                )
+
+        self.assertTrue(lease["open_not_attempted"])
+        self.assertEqual(raised.exception.payload["preparation_cleanup"]["status"], "not_needed")
+        self.assertEqual(raised.exception.payload["preparation_cleanup"]["reason"], "open_not_attempted")
 
     def test_closeout_defers_cleanup_when_helper_opened_project_is_still_indexing(self):
         cleanups = []
@@ -7562,6 +7584,42 @@ class StrictOutcomeQualificationTest(unittest.TestCase):
 
                 self.assertEqual(result["gate_status"], "fail")
                 self.assertEqual(result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
+
+    def test_explicit_text_only_helper_attribution_qualifies_narrowly(self):
+        event = qualification_event("text-only-helper")
+        event["verdict_reason"] = "text_only_coverage_allowed"
+        event["response_code"] = "text_only_coverage_allowed"
+        event["scope_descriptor"]["allow_text_only_coverage"] = True
+        event["scope_descriptor_sha256"] = jb_inspect.canonical_json_sha256(event["scope_descriptor"])
+        event["inspection_attribution"].update({
+            "source": "helper",
+            "code": "text_only_coverage_allowed",
+        })
+        event["internal_attempts"][0].update({
+            "verdict_reason": "text_only_coverage_allowed",
+            "proof_failures": ["scope_semantic_coverage_missing"],
+        })
+        event["total_problems"] = 0
+
+        result = self.summarize([event])
+
+        self.assertEqual(result["gate_status"], "pass")
+        self.assertEqual(result["hard_failure_count"], 0)
+
+        for label, mutate in (
+            ("override-disabled", lambda candidate: candidate["scope_descriptor"].update({"allow_text_only_coverage": False})),
+            ("missing-proof", lambda candidate: candidate["internal_attempts"][0].pop("proof_failures")),
+            ("malformed-proof", lambda candidate: candidate["internal_attempts"][0].update({"proof_failures": [{}]})),
+            ("wrong-verdict-reason", lambda candidate: candidate.update({"verdict_reason": "no_matching_findings"})),
+        ):
+            with self.subTest(label=label):
+                invalid = json.loads(json.dumps(event))
+                mutate(invalid)
+                invalid["scope_descriptor_sha256"] = jb_inspect.canonical_json_sha256(invalid["scope_descriptor"])
+                invalid_result = self.summarize([invalid])
+
+                self.assertEqual(invalid_result["gate_status"], "fail")
+                self.assertEqual(invalid_result["hard_failure_counts"]["inspection_attribution_mismatch"], 1)
 
     def test_configuration_blocked_is_excluded_only_before_start_with_exact_selector_code(self):
         valid = qualification_event("valid-config", verdict="UNKNOWN")

@@ -521,7 +521,6 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     for name in ("prepare-worktree", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
-        subparsers.choices[name].add_argument("--no-open", dest="open", action="store_false", help="Do not open the IDE if the exact worktree is not already open.")
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
@@ -1890,6 +1889,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         exact_route = find_exact_route(args, context)
         if exact_route is None:
             if not getattr(args, "open", False):
+                lease["open_not_attempted"] = True
                 raise InspectError(
                     "Exact worktree is not open in a JetBrains IDE.",
                     3,
@@ -2943,7 +2943,7 @@ def lifecycle_claim_ownership(claim: dict[str, Any], lease: dict[str, Any]) -> t
 
 def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof: str | None = None) -> dict[str, Any]:
     if not lease.get("opened_by_helper"):
-        reason = "open_not_attempted" if lease_proves_open_not_attempted(lease) else "project_preexisted"
+        reason = "open_not_attempted" if lease_proves_open_not_attempted(lease) or lease.get("open_not_attempted") is True else "project_preexisted"
         mark_lease_state(lease, "released")
         remove_lease(lease)
         return {"status": "not_needed", "reason": reason}
@@ -5230,6 +5230,27 @@ def normalize_qualification_attempts(event: dict[str, Any]) -> tuple[list[dict[s
     return attempts, None
 
 
+def helper_text_only_attribution_allowed(event: dict[str, Any]) -> bool:
+    scope_descriptor = event.get("scope_descriptor")
+    internal_attempts = event.get("internal_attempts")
+    terminal_attempt = internal_attempts[-1] if isinstance(internal_attempts, list) and internal_attempts else {}
+    proof_failures = terminal_attempt.get("proof_failures") if isinstance(terminal_attempt, dict) else None
+    return (
+        event.get("verdict") == "GREEN"
+        and event.get("verdict_reason") == "text_only_coverage_allowed"
+        and event.get("response_code") == "text_only_coverage_allowed"
+        and event.get("attribution_class") == "decisive"
+        and event.get("inspection_started") is True
+        and event.get("total_problems") == 0
+        and isinstance(scope_descriptor, dict)
+        and scope_descriptor.get("allow_text_only_coverage") is True
+        and isinstance(terminal_attempt, dict)
+        and terminal_attempt.get("verdict") == "GREEN"
+        and terminal_attempt.get("verdict_reason") == "text_only_coverage_allowed"
+        and proof_failures == [SEMANTIC_COVERAGE_MISSING_REASON]
+    )
+
+
 def plugin_attribution_mismatches(event: dict[str, Any]) -> list[str]:
     attribution = event.get("inspection_attribution")
     if not isinstance(attribution, dict):
@@ -5237,7 +5258,8 @@ def plugin_attribution_mismatches(event: dict[str, Any]) -> list[str]:
     mismatches: list[str] = []
     if attribution.get("schema_version") != INSPECTION_ATTRIBUTION_SCHEMA_VERSION:
         mismatches.append("schema_version")
-    if attribution.get("source") != "plugin":
+    expected_source = "helper" if helper_text_only_attribution_allowed(event) else "plugin"
+    if attribution.get("source") != expected_source:
         mismatches.append("source")
     if event.get("ide_channel_source") != "plugin_attribution":
         mismatches.append("ide_channel_source")

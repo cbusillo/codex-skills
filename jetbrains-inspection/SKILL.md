@@ -438,6 +438,11 @@ side of the boundary they occupy.
   compatible IDE, or update the repo's preferred IDE metadata before rerunning.
   Use `--allow-text-only-coverage` only when generic text coverage is intentionally
   sufficient; it does not allow invalid files or files outside project content.
+  Check the selected files before starting a readiness assessment. When every
+  target is intentionally generic data, schema, or text and semantic PSI is not
+  expected or required, include the override on the first assessment rather
+  than generating a post-start configuration failure and rerunning. Never use
+  the override for source code or a mixed scope containing source code.
   For older plugin builds that left this settled state waiting until timeout,
   the helper accepts the explicit override only when the same-run snapshot is
   clean, complete, current, and blocked solely by `non_semantic_fallback`.
@@ -460,6 +465,10 @@ side of the boundary they occupy.
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
 - readiness inspections should use `inspect-closeout`, not plain `get-status`.
+  `prepare-worktree`, `inspect`, and `inspect-closeout` always lifecycle-open the
+  exact worktree when needed. Use `resolve-route`, `get-status`, `get-problems`,
+  or `claim-worktree` for observation-only workflows that must not open an IDE;
+  do not turn an assessment command into a route-only probe.
   If lifecycle cleanup is skipped or fails for a helper-opened project, the
   inspection is not clean; report both the inspection result and cleanup reason.
   If cleanup is deferred because the IDE is still indexing/scanning, report the
