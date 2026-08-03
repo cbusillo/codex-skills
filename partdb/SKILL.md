@@ -7,6 +7,15 @@ resources:
   - path: references/private-context.md
     kind: reference
     description: Public-safe contract for resolving a private Part-DB instance and local inventory conventions.
+  - path: scripts/partdb-read.py
+    kind: script
+    description: Read-only Part-DB schema, search, and location helper driven by private context.
+commands:
+  - name: partdb-context-check
+    source: skill
+    resource_path: scripts/partdb-read.py
+    example_argv: ["uv", "run", "scripts/partdb-read.py", "context-check"]
+    purpose: Validates the private read-only context without printing values.
 ---
 
 # Part-DB Inventory
@@ -38,11 +47,11 @@ files, or inventing inventory conventions.
 
 ## Target Safety Tiers
 
-The tiers below define the contract for future integrations. This version does
-not access an API or execute a tool call.
+The tiers below define the contract. The bundled helper implements only the
+read-only tier and never exposes a write command.
 
 1. **Read-only:** Search, inspect schema, find locations, and verify stock. A
-   future helper must use a scoped read credential after local contract checks.
+   helper uses a scoped read credential after local contract checks.
 2. **Propose:** Turn supplied evidence into a structured draft. Show unknown or
    ambiguous fields explicitly; never fabricate part numbers, quantities,
    locations, or categories.
@@ -50,9 +59,8 @@ not access an API or execute a tool call.
    user explicitly approves the rendered change set. Re-verify the target and
    result, and do not reuse approval for later changes.
 
-Do not improvise request payloads from general memory. A later workflow must
-discover the instance's OpenAPI contract before issuing even read-only API
-calls.
+Do not improvise request payloads from general memory. Probe the installed
+instance's OpenAPI contract before relying on version-sensitive endpoints.
 
 ## Workflow
 
@@ -63,9 +71,8 @@ calls.
 3. For proposals, gather the operator's evidence and produce a reviewable
    draft. Keep item type, category, physical location, quantity, unit, and
    source evidence separate.
-4. For a future read-only integration, validate the instance's schema and
-   identity before querying it. For a future mutation, render the complete diff
-   and wait for explicit approval.
+4. Run `partdb-context-check`, then a schema probe before querying inventory.
+   For a future mutation, render the complete diff and wait for explicit approval.
 5. Keep durable local taxonomy and location decisions in the private source of
    truth; update public skill guidance only when the generic contract changes.
 
@@ -81,6 +88,6 @@ tokens, authorization headers, or private network details.
 
 ## Future Work
 
-The follow-on read-only workflow owns API-schema discovery and deterministic
-lookup. The separate mutation workflow owns preview, explicit approval,
-idempotency, and post-write verification.
+The separate mutation workflow owns preview, explicit approval, idempotency,
+and post-write verification. The read-only helper provides `context-check`,
+`schema-probe`, `search`, and `locations` commands.

@@ -23,16 +23,17 @@ common local-network conventions.
 
 ## Required Shape
 
-Private context must identify the contract version and provide environment
-variable names rather than credential values. A representative local-only shape
-is:
+The private provider invoked through the configured operations-repository
+pointer must emit the contract version and environment-variable names rather
+than credential values. A representative provider payload is:
 
 ```toml
-version = "partdb.context.v1"
+schema_version = "partdb.context.v1"
 
-[connection]
+[api]
 base_url_env = "PARTDB_BASE_URL"
 read_token_env = "PARTDB_READ_TOKEN"
+env_file = ".env"
 write_token_env = "PARTDB_WRITE_TOKEN"
 
 [policy]
