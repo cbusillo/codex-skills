@@ -667,6 +667,16 @@ skills:
       - private_context
       - public_safety
     checks:
+      - check_id: partdb-read-helper-tests
+        kind: script_test
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: issue-476-partdb-readonly-workflow
+          notes: Read-only context and HTTP-redaction cases covered by focused tests.
       - check_id: skill-repo-validation
         kind: static_validator
         mode: ci

@@ -60,6 +60,7 @@ helper_tests=(
 	github/scripts/test_github_workflow_babysit.py
 	github/scripts/test_runtime_checkout_reconciliation.py
 	infra-ops/scripts/test_npmplus_ops.py
+	partdb/scripts/test_partdb_read.py
 	launchplane/scripts/test_launchplane_helpers.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
