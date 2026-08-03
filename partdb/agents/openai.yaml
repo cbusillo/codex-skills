@@ -1,0 +1,4 @@
+interface:
+  display_name: "Part-DB"
+  short_description: "Manage Part-DB inventory safely"
+  default_prompt: "Use $partdb to plan, find, or safely update inventory in a Part-DB instance."
