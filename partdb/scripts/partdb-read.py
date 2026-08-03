@@ -99,11 +99,17 @@ def environment(private_repo: Path, config: dict[str, Any]) -> tuple[str, str]:
     return base_url, token
 
 
-def request(base_url: str, token: str, path: str, query: dict[str, str] | None = None) -> Any:
+def request(
+    base_url: str,
+    token: str,
+    path: str,
+    query: dict[str, str] | None = None,
+    accept: str = "application/ld+json",
+) -> Any:
     url = f"{base_url}{path}"
     if query:
         url += "?" + urllib.parse.urlencode(query)
-    headers = {"Accept": "application/ld+json", "Authorization": f"Bearer {token}"}
+    headers = {"Accept": accept, "Authorization": f"Bearer {token}"}
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as response:
             return json.load(response)
@@ -132,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         base_url, token = environment(private_repo, config)
         if args.command == "schema-probe":
-            schema = request(base_url, token, "/api/docs.json")
+            schema = request(base_url, token, "/api/docs.json", accept="application/vnd.openapi+json")
             paths = schema.get("paths") if isinstance(schema, dict) else None
             if not isinstance(paths, dict):
                 raise PartdbError("Part-DB schema response has an unsupported shape")
