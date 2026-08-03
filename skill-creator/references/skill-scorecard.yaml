@@ -660,6 +660,25 @@ skills:
       - >-
         No live advisory scenario yet for remote official-docs retrieval and
         remote-to-bundled fallback behavior.
+  partdb:
+    status: active
+    risk_classes:
+      - external_api
+      - private_context
+      - public_safety
+    checks:
+      - check_id: skill-repo-validation
+        kind: static_validator
+        mode: ci
+        dimension: metadata
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: issue-475-partdb-skill-contract
+          notes: Metadata and public-safe references covered by repo validation.
+    known_gaps:
+      - No exec-harness scenario yet for Part-DB read/write routing boundaries.
   people:
     status: active
     risk_classes:
