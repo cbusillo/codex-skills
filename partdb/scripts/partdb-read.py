@@ -69,8 +69,8 @@ def context() -> tuple[Path, dict[str, Any]]:
 def environment(private_repo: Path, config: dict[str, Any]) -> tuple[str, str]:
     api = config.get("api")
     policy = config.get("policy")
-    if not isinstance(api, dict) or not isinstance(policy, dict) or policy.get("allow_mutations") is not False:
-        raise PartdbError("private Part-DB context is not read-only")
+    if not isinstance(api, dict) or not isinstance(policy, dict) or not isinstance(policy.get("allow_mutations"), bool):
+        raise PartdbError("private Part-DB context has an invalid mutation policy")
     base_key = api.get("base_url_env")
     token_key = api.get("read_token_env")
     env_file = api.get("env_file")

@@ -55,8 +55,9 @@ environment; never in the public skill repository.
 - Supply any source-of-truth route for private operating facts, such as service
   health, backups, ingress, migrations, and recovery. The inventory skill does
   not own those concerns.
-- Mark the configured mutation posture explicitly. A write-capable token alone
-  never authorizes a change.
+- Mark the configured mutation posture explicitly. `allow_mutations = true`
+  permits only a helper's explicit plan, typed approval, and `--apply` gates;
+  a write-capable token alone never authorizes a change.
 
 ## Schema And Identity Handshake
 
@@ -66,8 +67,9 @@ Before a future helper queries an instance, it must:
    printing their values.
 2. Discover the instance's supported API schema through its documented local
    interface.
-3. Verify the authenticated identity when the installed instance exposes a
-   safe identity check. If identity cannot be verified, fail closed.
+3. Configure a safe authenticated-identity check when the installed instance
+   exposes one. Helpers that use a configured check must fail closed when it
+   cannot be verified; the bundled helpers do not infer an identity endpoint.
 4. Treat the declared read or write role as private-context policy, not proof
    that the installed API can introspect token scope. Confirm the role during
    private setup before a future helper permits a write.

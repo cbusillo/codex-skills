@@ -55,3 +55,17 @@ def test_http_errors_redact_response_body(monkeypatch: pytest.MonkeyPatch) -> No
     assert "private.invalid" not in str(raised.value)
     assert "secret-token" not in str(raised.value)
     assert "HTTP 401" in str(raised.value)
+
+
+def test_read_environment_accepts_explicit_mutation_policy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("PARTDB_BASE_URL=https://private.invalid\nPARTDB_READ_TOKEN=read-token\n")
+    monkeypatch.delenv("PARTDB_BASE_URL", raising=False)
+    monkeypatch.delenv("PARTDB_READ_TOKEN", raising=False)
+
+    assert partdb_read.environment(
+        tmp_path,
+        {
+            "api": {"base_url_env": "PARTDB_BASE_URL", "env_file": ".env", "read_token_env": "PARTDB_READ_TOKEN"},
+            "policy": {"allow_mutations": True},
+        },
+    ) == ("https://private.invalid", "read-token")

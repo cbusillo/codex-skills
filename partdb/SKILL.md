@@ -10,12 +10,20 @@ resources:
   - path: scripts/partdb-read.py
     kind: script
     description: Read-only Part-DB schema, search, and location helper driven by private context.
+  - path: scripts/partdb-write.py
+    kind: script
+    description: Preview-gated, read-back-verified part-lot quantity update helper driven by private context.
 commands:
   - name: partdb-context-check
     source: skill
     resource_path: scripts/partdb-read.py
     example_argv: ["uv", "run", "scripts/partdb-read.py", "context-check"]
     purpose: Validates the private read-only context without printing values.
+  - name: partdb-write-plan
+    source: skill
+    resource_path: scripts/partdb-write.py
+    example_argv: ["uv", "run", "scripts/partdb-write.py", "plan", "--intent", "private/intent.json", "--output", "private/plan.json"]
+    purpose: Produces a reviewable, signed plan for one part-lot quantity update without mutation.
 ---
 
 # Part-DB Inventory
@@ -47,8 +55,9 @@ files, or inventing inventory conventions.
 
 ## Target Safety Tiers
 
-The tiers below define the contract. The bundled helper implements only the
-read-only tier and never exposes a write command.
+The tiers below define the contract. The bundled helpers implement the
+read-only tier and a deliberately narrow mutation path for part-lot quantity
+updates.
 
 1. **Read-only:** Search, inspect schema, find locations, and verify stock. A
    helper uses a scoped read credential after local contract checks.
@@ -72,9 +81,33 @@ instance's OpenAPI contract before relying on version-sensitive endpoints.
    draft. Keep item type, category, physical location, quantity, unit, and
    source evidence separate.
 4. Run `partdb-context-check`, then a schema probe before querying inventory.
-   For a future mutation, render the complete diff and wait for explicit approval.
+   For a mutation, generate a plan from a private intent file, render its exact
+   diff, and wait for explicit approval of that plan digest.
 5. Keep durable local taxonomy and location decisions in the private source of
    truth; update public skill guidance only when the generic contract changes.
+
+## Quantity Updates
+
+The bundled mutation helper supports only setting a single existing part lot's
+quantity. It does not create, delete, move, or attach records. Keep its intent,
+plan, approval, and receipt files in a private ignored directory.
+
+1. Create an intent with only `op`, `lot_id`, and `amount`; `op` must be
+   `part-lot-amount-set`.
+2. Run `partdb-write-plan`. It validates the installed OpenAPI schema, reads
+   the current amount, and emits a plan with an exact digest.
+3. Show the plan's `prior_amount` and `target_amount` to the user. Do not run
+   the next step until the user explicitly approves that exact digest.
+4. Run `partdb-write.py approve --plan ... --approve <digest> --output ...`.
+5. Run `partdb-write.py apply --plan ... --approval ... --apply`.
+   It reads again, refuses drift, patches only after those checks, reads back to
+   verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
+   a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
+   possibly completed write.
+
+The private context must declare a separate write-token environment variable
+and `allow_mutations = true`; that only enables this helper's exact-plan gates,
+not unreviewed mutations.
 
 ## Public Safety
 
@@ -88,6 +121,6 @@ tokens, authorization headers, or private network details.
 
 ## Future Work
 
-The separate mutation workflow owns preview, explicit approval, idempotency,
-and post-write verification. The read-only helper provides `context-check`,
-`schema-probe`, `search`, and `locations` commands.
+Part and attachment creation, location moves, and deletion require their own
+schema-driven, idempotent proposal workflows. The read-only helper also
+provides `context-check`, `schema-probe`, `search`, and `locations` commands.
