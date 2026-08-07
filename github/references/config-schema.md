@@ -11,6 +11,11 @@ Repo-local values override workspace defaults.
     "executionEnvironment": "github/references/execution-environment.md"
   },
   "qualityGate": {
+    "inspection": {
+      "ide": "PyCharm",
+      "prepare": "uv venv --python 3.12 --allow-existing .venv",
+      "scopePreference": "changed_files"
+    },
     "test": {
       "default": "npm test"
     }
@@ -225,6 +230,13 @@ Common top-level keys:
   path when linked worktrees exist, `openProjectPath` for the repo-relative path
   to open, `worktreeStrategy` for current-worktree safety, and
   `scopePreference` for the default inspection scope.
+- `qualityGate.inspection`: repository readiness policy for JetBrains checks.
+  Use `ide`, `profile`, and `scopePreference` for the required target, named
+  inspection profile, and scope. Optional `prepare` is an exact idempotent
+  command that readiness agents run in the
+  target worktree before the first inspection; preparation failure or tracked
+  mutations block the assessment rather than permitting an incomplete project
+  model.
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.

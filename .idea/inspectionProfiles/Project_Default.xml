@@ -1,8 +1,10 @@
 <component name="InspectionProjectProfileManager">
   <profile version="1.0">
-    <option name="myName" value="Project Default" />
+    <option name="myName" value="Codex Skills Readiness" />
     <option name="scopesOrder">
       <list>
+        <option value="JetBrains Inspection Dynamic Tests" />
+        <option value="JetBrains Inspection Helper" />
         <option value="Tests" />
         <option value="All Changed Files" />
         <option value="Open Files" />
@@ -75,27 +77,32 @@
         </list>
       </option>
     </inspection_tool>
-    <inspection_tool class="PyArgumentEqualDefaultInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyArgumentEqualDefaultInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Dynamic Tests" level="WEAK WARNING" enabled="false" />
+      <scope name="JetBrains Inspection Helper" level="WEAK WARNING" enabled="false" />
+      <scope name="Tests" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
     <inspection_tool class="PyAugmentAssignmentInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
     <inspection_tool class="PyClassicStyleClassInspection" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="PyCompatibilityInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <option name="ourVersions">
         <value>
-          <list size="2">
-            <item index="0" class="java.lang.String" itemvalue="3.14" />
-            <item index="1" class="java.lang.String" itemvalue="3.15" />
+          <list size="1">
+            <item index="0" class="java.lang.String" itemvalue="3.12" />
           </list>
         </value>
       </option>
     </inspection_tool>
     <inspection_tool class="PyMethodMayBeStaticInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
+      <scope name="JetBrains Inspection Dynamic Tests" level="WEAK WARNING" enabled="false" />
+      <scope name="Tests" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="PyMissingTypeHintsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false">
-        <option name="m_onlyWhenTypesAreKnown" value="false" />
+        <option name="m_onlyWhenTypesAreKnown" value="true" />
       </scope>
-      <option name="m_onlyWhenTypesAreKnown" value="false" />
+      <option name="m_onlyWhenTypesAreKnown" value="true" />
     </inspection_tool>
     <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <option name="ignoredPackages">
@@ -114,8 +121,32 @@
     <inspection_tool class="PyShadowingBuiltinsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
+    <inspection_tool class="PyShadowingNamesInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Dynamic Tests" level="WEAK WARNING" enabled="false" />
+      <scope name="JetBrains Inspection Helper" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PySimplifyBooleanCheckInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Helper" level="WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyStringConversionWithoutDunderMethodInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Helper" level="WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyTypeCheckerInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Dynamic Tests" level="WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="ERROR" enabled_by_default="true">
+      <scope name="JetBrains Inspection Dynamic Tests" level="ERROR" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyClassHasNoInitInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Tests" level="WARNING" enabled="false" />
+    </inspection_tool>
     <inspection_tool class="PyUnreachableCodeInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <scope name="Generated" level="WARNING" enabled="false" editorAttributes="NOT_USED_ELEMENT_ATTRIBUTES" />
+    </inspection_tool>
+    <inspection_tool class="PyUnusedParameterInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="JetBrains Inspection Dynamic Tests" level="WEAK WARNING" enabled="false" />
+      <scope name="JetBrains Inspection Helper" level="WEAK WARNING" enabled="false" />
+      <scope name="Tests" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="PyUnusedLocalInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />

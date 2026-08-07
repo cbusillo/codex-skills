@@ -303,6 +303,8 @@ policy. The helper reads `.github/github.json` when present:
 
 - `qualityGate.inspection.scopePreference`
 - `qualityGate.inspection.ide`
+- `qualityGate.inspection.profile`
+- `qualityGate.inspection.prepare`
 - `jetbrains.ide`
 - `jetbrains.ideChannel` / `jetbrains.ide_channel`
 - `jetbrains.ideVersion` / `jetbrains.ide_version`
@@ -320,6 +322,15 @@ scope, project path, or worktree strategy is blank, contradictory, or feels
 wrong for the active worktree, ask the user before changing policy or treating
 the value as authoritative; otherwise report the mismatch as a not-clean
 readiness blocker.
+
+When `qualityGate.inspection.prepare` is configured, run that exact repository
+command in the target worktree before the first inspection assessment. It may
+create ignored worktree-local IDE files needed to bind a language SDK or test
+roots. Treat a
+nonzero preparation exit as a not-run blocker; do not continue with an
+unprepared project model or substitute a different command. Preparation must be
+idempotent and may create ignored local environment state, but it must not leave
+tracked-file mutations before inspection begins.
 
 ## Worktree Safety
 

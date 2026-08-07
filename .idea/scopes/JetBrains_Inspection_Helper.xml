@@ -1,0 +1,3 @@
+<component name="DependencyValidationManager">
+  <scope name="JetBrains Inspection Helper" pattern="file:jetbrains-inspection/scripts/jb-inspect.py||file:jetbrains-inspection/scripts/prepare-python-project.py" />
+</component>

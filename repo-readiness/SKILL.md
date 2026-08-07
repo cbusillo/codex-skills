@@ -54,6 +54,11 @@ git status --short --branch
    default only when the helper can infer the route, and ask the user before
    changing repo policy.
 
+   If `qualityGate.inspection.prepare` is configured, run that exact command in
+   the target worktree before the first JetBrains assessment. A nonzero exit or
+   tracked-file mutation is a preparation blocker, not permission to inspect an
+   incomplete project model. Do not invent a replacement setup command.
+
 If the shared Launchplane context helper is present and configured, call it once
 as optional readiness context for the active repo/branch/PR:
 
