@@ -4202,11 +4202,12 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("safe-mode", diagnostic["next_action"])
         self.assertIn("open-project", diagnostic["next_action"])
 
-    def test_resolve_route_reports_matching_project_route_unavailable(self):
+    def test_resolve_route_ignores_invalid_route_payloads(self):
         original_discover = jb_inspect.discover_identities
         original_http_get = jb_inspect.http_get
         original_diagnostic = jb_inspect.discover_diagnostic_identities
         target = "/Users/me/Developer/project"
+        response_body = {}
         jb_inspect.discover_identities = lambda port: [
             {
                 "port": 63342,
@@ -4220,22 +4221,24 @@ class LifecycleTest(unittest.TestCase):
 
         def fake_http_get(port, endpoint, params, timeout=3.0):
             self.assertEqual(endpoint, "route")
-            return jb_inspect.HttpResult(200, {"route": None}, "url")
+            return jb_inspect.HttpResult(200, response_body, "url")
 
         jb_inspect.http_get = fake_http_get
         try:
-            with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.resolve_route(
-                    helper_args(port=None, open=False, no_worktree_check=False),
-                    {"ide": "IntelliJ IDEA", "worktree_root": target, "project_path": target},
-                )
+            for invalid_route in (None, "not-an-object", {}):
+                with self.subTest(route=invalid_route):
+                    response_body["route"] = invalid_route
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.resolve_route(
+                            helper_args(port=None, open=False, no_worktree_check=False),
+                            {"ide": "IntelliJ IDEA", "worktree_root": target, "project_path": target},
+                        )
+                    self.assertEqual(raised.exception.payload["error_reason"], "matching_project_route_unavailable")
+                    self.assertEqual(raised.exception.payload["route_diagnostic"]["matching_project_count"], 1)
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.http_get = original_http_get
             jb_inspect.discover_diagnostic_identities = original_diagnostic
-
-        self.assertEqual(raised.exception.payload["error_reason"], "matching_project_route_unavailable")
-        self.assertEqual(raised.exception.payload["route_diagnostic"]["matching_project_count"], 1)
 
     def test_resolve_route_port_scan_finds_target_when_registry_has_other_ide(self):
         original_registry = jb_inspect.registry_identities
@@ -5772,8 +5775,12 @@ class EndpointUtilityTest(unittest.TestCase):
             jb_inspect.urllib.request.urlopen = original_urlopen
 
         expected_prefix = "http://127.0.0.1:63345" + "/api" + "/inspection/identity?"
+        parsed_url = urllib.parse.urlparse(captured[0][0])
         self.assertEqual(result.body, {"status": "ok"})
         self.assertTrue(captured[0][0].startswith(expected_prefix))
+        self.assertEqual(parsed_url.scheme, "http")
+        self.assertEqual(parsed_url.hostname, "127.0.0.1")
+        self.assertEqual(parsed_url.port, 63345)
 
     def test_status_command_passes_route_project_key_and_session_id(self):
         calls = []

@@ -27,12 +27,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import xml.etree.ElementTree as ET
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 from xml.parsers.expat import ExpatError
 
 if sys.platform == "win32":
@@ -884,7 +884,7 @@ def version_from_jetbrains_text(value: str | None) -> tuple[int, ...]:
     if not match:
         return ()
     build_major = int(match.group(1))
-    return (2000 + build_major // 10, build_major % 10)
+    return 2000 + build_major // 10, build_major % 10
 
 
 def format_version(version: tuple[int, ...]) -> str | None:
@@ -1000,7 +1000,7 @@ def versions_match(candidate: tuple[int, ...], requested: tuple[int, ...]) -> bo
 
 def ide_candidate_sort_key(candidate: IdeCandidate) -> tuple[int, tuple[int, ...], str]:
     channel_score = 1 if candidate.channel == "stable" else 0
-    return (channel_score, candidate.version, candidate.name.lower())
+    return channel_score, candidate.version, candidate.name.lower()
 
 
 def exact_app_path(value: str | None) -> Path | None:
@@ -1148,7 +1148,6 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 
 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    cleanup: dict[str, Any] = {"status": "not_needed"}
     result: dict[str, Any] = {}
     inspection_error: BaseException | None = None
     mutation_before = git_worktree_status_snapshot(context.get("worktree_root"))
@@ -1980,10 +1979,8 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
 
 def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     lease = create_local_lease(context, state="preparing")
-    exact_route: dict[str, Any] | None = None
     validated_route: dict[str, Any] | None = None
     opened_by_helper = False
-    open_method: str | None = None
     open_attempts: list[dict[str, Any]] = []
     close_proof: str | None = None
     preparation_stage = "route_discovery"
@@ -3084,8 +3081,8 @@ def cleanup_lifecycle(lease: dict[str, Any], route: dict[str, Any], close_proof:
             "session_id": lease.get("session_id") or route.get("session_id"),
             "project_instance_id": project_instance_id,
             "lease_id": lease.get("lease_id"),
+            "close_" + "token": close_proof,
         }
-        close_params["close_" + "token"] = close_proof
         close_result = call_lifecycle_close(route, close_params)
     except InspectError as error:
         mark_lease_state(lease, "cleanup_failed")
@@ -3216,7 +3213,7 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
         if not identities:
             raise InspectError("No JetBrains inspection plugin instances discovered.", 3, {"hint": "Open the repo in the preferred JetBrains IDE with the inspection plugin installed."})
 
-        candidates = []
+        candidates: list[dict[str, Any]] = []
         for identity in identities:
             if not identity_matches_context(identity, context):
                 continue
@@ -3226,8 +3223,9 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
             params = selector_params(args, context)
             try:
                 result = http_get(int(port), "route", params)
-                if result.status == 200 and result.body.get("route"):
-                    candidates.append(result.body["route"])
+                candidate_route = result.body.get("route")
+                if result.status == 200 and isinstance(candidate_route, dict) and candidate_route:
+                    candidates.append(candidate_route)
             except InspectError:
                 continue
         if not candidates and args.open and not attempted_open:
@@ -3255,9 +3253,10 @@ def resolve_route(args: argparse.Namespace, context: dict[str, Any]) -> dict[str
                 {"selector": selector_params(args, context), "error_reason": error_reason}
                 | diagnostic_payload,
             )
-        route = sorted(candidates, key=lambda item: route_sort_key(item, context), reverse=True)[0]
-        ensure_worktree_safe(route, context, args)
-        return route
+        selected_route = max(candidates, key=lambda item: route_sort_key(item, context))
+        ensure_worktree_safe(selected_route, context, args)
+        return selected_route
+    raise InspectError("Route resolution exhausted without a terminal result.", 3)
 
 
 def copy_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
@@ -3321,6 +3320,8 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
         clean_params["client_run_id"] = _ACTIVE_CLIENT_RUN_ID
     query = urllib.parse.urlencode(clean_params, doseq=True)
     display_query = urllib.parse.urlencode(redact_payload(clean_params), doseq=True)
+    # The plugin's built-in server is loopback-only and does not expose TLS.
+    # noinspection HttpUrlsUsage
     base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
     request_url = f"{base_url}?{query}" if query else base_url
     display_url = f"{base_url}?{display_query}" if display_query else base_url
@@ -3717,7 +3718,7 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         and reason_count_total is not None
         and (
             (summary_missing_count == 0 and reason_count_total == 0)
-            or (summary_missing_count > 0 and reason_count_total >= summary_missing_count)
+            or (0 < summary_missing_count <= reason_count_total)
         )
     )
     aggregate_proof_complete = (
@@ -7006,7 +7007,6 @@ def read_global_config() -> dict[str, Any]:
 
 def trusted_auto_open_roots() -> list[str]:
     env = os.environ.get("JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS")
-    raw_roots: Any = None
     if env:
         raw_roots = [part for part in env.split(os.pathsep) if part.strip()]
     else:
@@ -7194,11 +7194,11 @@ def ensure_trusted_location_file(config_dir: Path, trust_root: Path) -> dict[str
     token = trust_path_token(trust_root)
     created = not path.exists()
     if path.exists():
-        tree = ET.parse(path)
+        tree = ElementTree.parse(path)
         root = tree.getroot()
     else:
-        root = ET.Element("application")
-        tree = ET.ElementTree(root)
+        root = ElementTree.Element("application")
+        tree = ElementTree.ElementTree(root)
     trusted_settings = ensure_component(root, "Trusted.Paths.Settings")
     trusted_option = ensure_option(trusted_settings, "TRUSTED_PATHS")
     trusted_list = ensure_child(trusted_option, "list")
@@ -7221,11 +7221,11 @@ def ensure_project_opening_policy(config_dir: Path) -> dict[str, Any]:
     path = options_dir / "ide.general.xml"
     created = not path.exists()
     if path.exists():
-        tree = ET.parse(path)
+        tree = ElementTree.parse(path)
         root = tree.getroot()
     else:
-        root = ET.Element("application")
-        tree = ET.ElementTree(root)
+        root = ElementTree.Element("application")
+        tree = ElementTree.ElementTree(root)
     settings = ensure_component(root, "GeneralSettings")
     option = ensure_option(settings, "confirmOpenNewProject2")
     changed = option.get("value") != "-1"
@@ -7249,43 +7249,43 @@ def trust_path_token(path: Path) -> str:
     return str(resolved)
 
 
-def ensure_component(root: ET.Element, name: str) -> ET.Element:
+def ensure_component(root: ElementTree.Element, name: str) -> ElementTree.Element:
     for child in root.findall("component"):
         if child.get("name") == name:
             return child
-    return ET.SubElement(root, "component", {"name": name})
+    return ElementTree.SubElement(root, "component", {"name": name})
 
 
-def ensure_option(parent: ET.Element, name: str) -> ET.Element:
+def ensure_option(parent: ElementTree.Element, name: str) -> ElementTree.Element:
     for child in parent.findall("option"):
         if child.get("name") == name:
             return child
-    return ET.SubElement(parent, "option", {"name": name})
+    return ElementTree.SubElement(parent, "option", {"name": name})
 
 
-def ensure_child(parent: ET.Element, tag: str) -> ET.Element:
+def ensure_child(parent: ElementTree.Element, tag: str) -> ElementTree.Element:
     child = parent.find(tag)
     if child is not None:
         return child
-    return ET.SubElement(parent, tag)
+    return ElementTree.SubElement(parent, tag)
 
 
-def ensure_list_option(parent: ET.Element, value: str) -> bool:
+def ensure_list_option(parent: ElementTree.Element, value: str) -> bool:
     for child in parent.findall("option"):
         if child.get("value") == value:
             return False
-    ET.SubElement(parent, "option", {"value": value})
+    ElementTree.SubElement(parent, "option", {"value": value})
     return True
 
 
-def ensure_map_entry(parent: ET.Element, key: str, value: str) -> bool:
+def ensure_map_entry(parent: ElementTree.Element, key: str, value: str) -> bool:
     for child in parent.findall("entry"):
         if child.get("key") == key:
             if child.get("value") == value:
                 return False
             child.set("value", value)
             return True
-    ET.SubElement(parent, "entry", {"key": key, "value": value})
+    ElementTree.SubElement(parent, "entry", {"key": key, "value": value})
     return True
 
 
@@ -7295,7 +7295,7 @@ def backup_file(path: Path) -> Path:
     return backup
 
 
-def indent_xml(element: ET.Element, level: int = 0) -> None:
+def indent_xml(element: ElementTree.Element, level: int = 0) -> None:
     indent = "\n" + level * "  "
     child_indent = "\n" + (level + 1) * "  "
     children = list(element)
@@ -7948,7 +7948,7 @@ def route_sort_key(route: dict[str, Any], context: dict[str, Any]) -> tuple[int,
 
     exact = int(route_path is not None and worktree_path is not None and route_path == worktree_path)
     depth = len(route_path.parts) if route_path is not None else 0
-    return (int(route.get("score") or 0), exact, depth)
+    return int(route.get("score") or 0), exact, depth
 
 
 def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: argparse.Namespace) -> None:
