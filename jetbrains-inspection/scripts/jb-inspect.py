@@ -1227,7 +1227,8 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
     retry_summaries: list[dict[str, Any]] = []
     readiness_history: list[dict[str, Any]] = []
     current_result = result
-    for attempt in range(max_attempts):
+    attempt = 0
+    while attempt < max_attempts:
         retry_summaries.append(compact_retry_result(current_result, attempt=attempt))
         readiness = wait_for_internal_retry_readiness(args, context, route, current_result)
         readiness_history.append(readiness)
@@ -1251,6 +1252,13 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
             current_result["recovered_from_unknown"] = current_result.get("verdict") in {"GREEN", "RED"}
             current_result["retry_exhausted"] = False
             return current_result
+        current_retry_policy = (
+            current_result.get("retry_policy")
+            if isinstance(current_result.get("retry_policy"), dict)
+            else {}
+        )
+        max_attempts = max(max_attempts, max(0, int(current_retry_policy.get("max_attempts") or 0)))
+        attempt += 1
     current_result["recovered_from_unknown"] = False
     current_result["retry_exhausted"] = True
     return current_result

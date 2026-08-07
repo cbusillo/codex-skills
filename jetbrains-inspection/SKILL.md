@@ -372,6 +372,9 @@ identify arbitrary writers or prove that ignored files are quiet.
   separates proven snapshot invalidation from unproven source-edit or process
   attribution. Do not blame an agent or source edit without changed-file or
   process evidence.
+  A bounded internal retry may extend to the stricter policy of a later UNKNOWN
+  result, such as `stale_results` followed by `project_analysis_not_ready`; all
+  attempts remain part of one terminal assessment and stop at the latest policy.
   Every `GREEN`, `RED`, or `UNKNOWN` result and cleanup anomaly carries
   `inspection_attribution` schema version 1 with a stable classification, code,
   phase, endpoint, HTTP status, helper/plugin provenance, cleanup state, and
