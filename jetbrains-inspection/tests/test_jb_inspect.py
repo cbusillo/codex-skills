@@ -6560,6 +6560,47 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict_reason"], "plugin_specific_reason")
         self.assertEqual(verdict["verdict_next_action"], "Plugin supplied action.")
 
+    def test_broad_green_requires_native_proof_capability(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+            "route": {
+                "ide": {
+                    "plugin_version": "1.13.23",
+                    "plugin_build_fingerprint": "a" * 40 + "-dirty",
+                }
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "plugin_deployment_mismatch")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["deployment_mismatch"]["required_version"], 2)
+        self.assertIn("Install a plugin", payload["agent_result"]["next_action"])
+
+    def test_broad_green_accepts_native_proof_capability(self):
+        payload = {
+            "scope": "directory",
+            "status": "clean",
+            "clean": True,
+            "total_problems": 0,
+            "inspection_verdict": "GREEN",
+            "inspection_verdict_reason": "clean_confirmed",
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "GREEN")
+        self.assertEqual(verdict["verdict_reason"], "clean_confirmed")
+
     def test_verdict_for_findings_payload_is_red(self):
         payload = {"status": "findings", "clean": False, "total_problems": 1, "problems": [{"description": "Broken"}]}
 
@@ -6677,6 +6718,207 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["bucket"], "tool_bug")
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertIn("inconclusive", payload["agent_report"])
+
+    def test_legacy_broad_execution_proof_gap_is_terminal_environment_blocker(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "whole_project_execution_not_proven",
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("Update the inspection plugin", payload["agent_result"]["next_action"])
+
+    def test_aborted_native_proof_is_retryable_once_with_consistent_guidance(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "native_inspection_not_completed",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertIn("retry once", payload["agent_result"]["next_action"])
+
+    def test_native_inspection_failure_is_terminal_tool_bug(self):
+        payload = {
+            "scope": "directory",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "native_inspection_failures",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("Stop retrying", payload["agent_result"]["next_action"])
+
+    def test_native_attestation_context_failure_is_environment_blocked(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "native_attestation_context_creation_failed",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("reinstall", payload["agent_result"]["next_action"])
+
+    def test_native_unmapped_problem_count_is_terminal_tool_bug(self):
+        payload = {
+            "scope": "directory",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "native_inspection_reported_unmapped_problems",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("Stop retrying", payload["agent_result"]["next_action"])
+
+    def test_native_missing_file_scoped_completion_is_environment_blocked(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped_reason": "native_inspection_no_file_scoped_tools_completed",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("active inspection profile", payload["agent_result"]["next_action"])
+
+    def test_native_incomplete_scope_block_reason_is_environment_blocked(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_skipped": False,
+                "execution_proof_block_reason": "native_inspection_scope_incomplete",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("requested scope", payload["agent_result"]["next_action"])
+
+    def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_block_reason": "native_scope_enumeration_failed",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("could not enumerate", payload["agent_result"]["next_action"])
+
+    def test_native_inspection_failure_is_terminal_tool_bug(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_block_reason": "native_inspection_failures",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["bucket"], "tool_bug")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("native inspection run", payload["agent_result"]["next_action"])
+
+    def test_worktree_mutation_evidence_reports_only_new_status_changes(self):
+        before = {
+            "status": "ok",
+            "entries": {"existing.txt": " M"},
+        }
+        after = {
+            "status": "ok",
+            "entries": {
+                "existing.txt": " M",
+                ".idea/misc.xml": " M",
+                ".idea/editor.xml": "??",
+            },
+        }
+
+        evidence = jb_inspect.summarize_worktree_mutations(before, after)
+
+        self.assertTrue(evidence["dirty_before"])
+        self.assertTrue(evidence["dirty_after"])
+        self.assertEqual(evidence["new_or_changed_path_count"], 2)
+        self.assertEqual(evidence["tracked_change_count"], 1)
+        self.assertEqual(evidence["untracked_change_count"], 1)
+        self.assertEqual(evidence["new_or_changed_paths"], [".idea/editor.xml", ".idea/misc.xml"])
+
+    def test_git_porcelain_z_preserves_special_paths_and_rename_destination(self):
+        entries = jb_inspect.parse_git_porcelain_z(
+            b" M path with spaces.txt\0"
+            b"?? line\nbreak.txt\0"
+            b"R  new \xe2\x86\x92 name.txt\0old name.txt\0"
+        )
+
+        self.assertEqual(
+            entries,
+            {
+                "path with spaces.txt": " M",
+                "line\nbreak.txt": "??",
+                "new → name.txt": "R ",
+            },
+        )
 
     def test_agent_result_for_empty_model_capture_unknown_is_retryable(self):
         payload = {
