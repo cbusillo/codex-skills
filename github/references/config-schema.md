@@ -143,22 +143,22 @@ Planning labels are the only labels created by `gh-plan.py ensure-labels` by
 default. They describe durable issue-backed plans, not transient PR execution
 state.
 
-| Label | Purpose |
-| --- | --- |
-| `plan` | Durable planning issue. |
-| `plan:active` | Plan is actionable now. |
-| `plan:blocked` | Plan is blocked by a real open native dependency issue. |
+| Label          | Purpose                                                                                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan`         | Durable planning issue.                                                                                                                                        |
+| `plan:active`  | Plan is actionable now.                                                                                                                                        |
+| `plan:blocked` | Plan is blocked by a real open native dependency issue.                                                                                                        |
 | `plan:waiting` | Durable plan is parked on a decision, external event, or other non-issue condition. Do not use for ordinary PR QA, preview review, deploy, or merge readiness. |
-| `plan:stale` | Plan needs review before it should guide work. |
-| `plan:done` | Plan is completed or superseded. |
+| `plan:stale`   | Plan needs review before it should guide work.                                                                                                                 |
+| `plan:done`    | Plan is completed or superseded.                                                                                                                               |
 
 Workflow labels are repo-local opt-ins. Agents may recognize these names, but
 helpers should not create them unless repo metadata documents them.
 
-| Label | Declare In | Meaning |
-| --- | --- | --- |
-| `awaiting-qa` | `qaLabels` | Optional repo-local manual QA handoff for concrete implementation or bug work. |
-| `preview-ready` | `deployLabels` or repo workflow docs | A preview environment is available for review; this is not QA approval. |
+| Label            | Declare In                                                | Meaning                                                                                          |
+| ---------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `awaiting-qa`    | `qaLabels`                                                | Optional repo-local manual QA handoff for concrete implementation or bug work.                   |
+| `preview-ready`  | `deployLabels` or repo workflow docs                      | A preview environment is available for review; this is not QA approval.                          |
 | `ready-to-merge` | `launchplane.mergeTrain.readyLabel` or repo workflow docs | Repo-configured merge readiness signal; still requires fresh checks and explicit merge approval. |
 
 Avoid generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless the

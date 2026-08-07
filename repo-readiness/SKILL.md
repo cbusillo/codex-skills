@@ -42,9 +42,9 @@ inspection, browser, CI, deployment, or security gates.
    metadata addition rather than auto-writing it.
 3. Inspect local state:
 
-```bash
-git status --short --branch
-```
+   ```bash
+   git status --short --branch
+   ```
 
 4. For code changes, delegate inspection execution and triage to
    `jetbrains-inspection` and follow the authoritative section below. When
@@ -59,34 +59,34 @@ git status --short --branch
    tracked-file mutation is a preparation blocker, not permission to inspect an
    incomplete project model. Do not invent a replacement setup command.
 
-If the shared Launchplane context helper is present and configured, call it once
-as optional readiness context for the active repo/branch/PR:
+   If the shared Launchplane context helper is present and configured, call it once
+   as optional readiness context for the active repo/branch/PR:
 
-```bash
-skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
-uv run "$skills_home/launchplane/scripts/launchplane-context.py" --repo OWNER/REPO
-```
+   ```bash
+   skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
+   uv run "$skills_home/launchplane/scripts/launchplane-context.py" --repo OWNER/REPO
+   ```
 
-Use `available` context only as a hint for product mapping, preview readiness,
-Every Code state, deploy evidence, or source-of-truth links. Treat `no_context`,
-`unavailable`, `unauthorized`, `invalid`, or helper failure as normal absence and
-continue with local/GitHub readiness checks. Do not print raw helper stderr or
-copy helper payloads into readiness output.
+   Use `available` context only as a hint for product mapping, preview readiness,
+   Every Code state, deploy evidence, or source-of-truth links. Treat `no_context`,
+   `unavailable`, `unauthorized`, `invalid`, or helper failure as normal absence and
+   continue with local/GitHub readiness checks. Do not print raw helper stderr or
+   copy helper payloads into readiness output.
 
-If you inspect worktrees, ignore Codex Desktop or Every Code auto-review
-worktrees under `~/.code/working/<repo>/branches/auto-review*` unless the user's
-task is specifically about that review. They are detached external review
-context and should not affect readiness for the active repo/branch.
+   If you inspect worktrees, ignore Codex Desktop or Every Code auto-review
+   worktrees under `~/.code/working/<repo>/branches/auto-review*` unless the user's
+   task is specifically about that review. They are detached external review
+   context and should not affect readiness for the active repo/branch.
 
-When background auto-review results or ledgers are available in session context
-or repo tooling, treat them as review evidence only after matching the review
-target to the active branch, PR, and head SHA. Do not declare a branch, PR,
-release, or handoff green while blocking findings against the current target are
-unresolved or while a review for the current target is still in-flight. If a
-finding points at a detached `auto-review*` worktree or older snapshot, verify it
-against current `HEAD` before treating it as blocking. This does not mean
-detached auto-review worktrees are dirty local state; only relevant review
-findings/status matter.
+   When background auto-review results or ledgers are available in session context
+   or repo tooling, treat them as review evidence only after matching the review
+   target to the active branch, PR, and head SHA. Do not declare a branch, PR,
+   release, or handoff green while blocking findings against the current target are
+   unresolved or while a review for the current target is still in-flight. If a
+   finding points at a detached `auto-review*` worktree or older snapshot, verify it
+   against current `HEAD` before treating it as blocking. This does not mean
+   detached auto-review worktrees are dirty local state; only relevant review
+   findings/status matter.
 
 5. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest
