@@ -2460,6 +2460,53 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["retry_policy"]["max_attempts"], 0)
         self.assertIn("Do not attribute it to source edits", result["agent_result"]["next_action"])
 
+    def test_internal_retry_extends_budget_when_later_result_requires_more_attempts(self):
+        attempts = iter(
+            [
+                {
+                    "status": "stale_results",
+                    "verdict": "UNKNOWN",
+                    "verdict_reason": "stale_results",
+                    "bucket": "stale_results",
+                    "retry_policy": {"retry": True, "max_attempts": 1, "wait_ms": 0},
+                },
+                {
+                    "status": "capture_incomplete",
+                    "verdict": "UNKNOWN",
+                    "verdict_reason": "project_analysis_not_ready",
+                    "bucket": "capture_not_ready",
+                    "retry_policy": {"retry": True, "max_attempts": 3, "wait_ms": 0},
+                },
+                {
+                    "status": "findings",
+                    "verdict": "RED",
+                    "verdict_reason": "actionable_findings",
+                    "bucket": "actionable_findings",
+                    "total_problems": 1,
+                    "problems": [{"description": "real problem"}],
+                },
+            ]
+        )
+
+        with (
+            patch.object(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
+            patch.object(
+                jb_inspect,
+                "wait_for_internal_retry_readiness",
+                return_value={"status": "ready", "ready": True, "exit_reason": "ready"},
+            ),
+        ):
+            result = jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, {"port": 63342})
+
+        self.assertEqual(result["verdict"], "RED")
+        self.assertEqual(result["internal_retry_count"], 2)
+        self.assertEqual(
+            [retry["verdict_reason"] for retry in result["internal_retries"]],
+            ["stale_results", "project_analysis_not_ready"],
+        )
+        self.assertTrue(result["recovered_from_unknown"])
+        self.assertFalse(result["retry_exhausted"])
+
     def test_internal_retry_treats_prior_stale_result_as_idle_but_resets_on_indexing(self):
         statuses = iter(
             [
