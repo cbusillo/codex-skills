@@ -273,6 +273,7 @@ class ParserCommandAliasTest(unittest.TestCase):
             "list-projects": "list",
             "resolve-route": "route",
             "prepare-worktree": "prepare",
+            "agent-inspect": "agent",
             "inspect": "run",
             "inspect-closeout": "closeout",
             "get-status": "status",
@@ -317,7 +318,7 @@ class ParserCommandAliasTest(unittest.TestCase):
 
         help_text = parser.format_help()
 
-        for command in ("list-projects", "resolve-route", "prepare-worktree", "inspect", "inspect-closeout", "get-status", "get-problems"):
+        for command in ("list-projects", "resolve-route", "prepare-worktree", "agent-inspect", "inspect", "inspect-closeout", "get-status", "get-problems"):
             self.assertIn(command, help_text)
         self.assertNotIn("Legacy alias", help_text)
         choices = parser._subparsers._group_actions[0].choices
@@ -333,14 +334,14 @@ class ParserCommandAliasTest(unittest.TestCase):
         self.assertEqual(args.repo, "/tmp/repo")
         self.assertEqual(args.scope, "changed_files")
         self.assertTrue(args.open)
-        for command in ("prepare-worktree", "inspect", "inspect-closeout"):
+        for command in ("prepare-worktree", "agent-inspect", "inspect", "inspect-closeout"):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args([command, "--no-open"])
 
     def test_assessment_commands_accept_text_only_coverage_override(self):
         parser = jb_inspect.build_parser()
 
-        for command in ("wait-for-inspection", "get-status", "get-problems", "inspect", "inspect-closeout"):
+        for command in ("wait-for-inspection", "get-status", "get-problems", "agent-inspect", "inspect", "inspect-closeout"):
             with self.subTest(command=command):
                 args = parser.parse_args([command, "--allow-text-only-coverage"])
                 self.assertTrue(args.allow_text_only_coverage)
@@ -4835,6 +4836,261 @@ class LifecycleTest(unittest.TestCase):
                 result = jb_inspect.jetbrains_config_dirs({"ide": "WebStorm"})
 
         self.assertEqual(result, [override.resolve()])
+
+
+class AgentInspectContractTest(unittest.TestCase):
+    def emit_agent_payload(self, payload, helper_exit_code=None):
+        output = io.StringIO()
+        with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):
+            exit_code = jb_inspect.emit_agent_result(
+                payload,
+                command="agent-inspect",
+                helper_exit_code=helper_exit_code,
+            )
+        return exit_code, json.loads(output.getvalue())
+
+    def test_red_exits_zero_with_compact_finding(self):
+        exit_code, payload = self.emit_agent_payload(
+            {
+                "status": "findings",
+                "total_problems": 1,
+                "problems_shown": 1,
+                "problems": [
+                    {
+                        "file": "/tmp/project/example.py",
+                        "line": 4,
+                        "severity": "warning",
+                        "inspectionType": "ExampleInspection",
+                        "category": "Python",
+                        "description": "Example finding",
+                    }
+                ],
+                "cleanup": {"status": "closed"},
+            }
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "RED")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(payload["finding_count"], 1)
+        self.assertEqual(payload["findings"][0]["description"], "Example finding")
+        self.assertEqual(payload["findings"][0]["inspection"], "ExampleInspection")
+        self.assertEqual(payload["findings"][0]["category"], "Python")
+        self.assertEqual(payload["cleanup"]["status"], "closed")
+        self.assertEqual(payload["helper_exit_code"], 1)
+
+    def test_terminal_unknown_exits_zero(self):
+        exit_code, payload = self.emit_agent_payload(
+            {
+                "status": "error",
+                "error_reason": "target_project_not_open",
+                "retry_exhausted": True,
+                "cleanup": {"status": "not_needed"},
+            },
+            helper_exit_code=3,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(payload["helper_exit_code"], 3)
+
+    def test_green_exits_zero_with_terminal_envelope(self):
+        exit_code, payload = self.emit_agent_payload(
+            {
+                "status": "clean",
+                "total_problems": 0,
+                "problems_shown": 0,
+                "problems": [],
+                "cleanup": {"status": "closed"},
+            }
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "GREEN")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(payload["finding_count"], 0)
+        self.assertEqual(payload["findings"], [])
+        self.assertFalse(payload["findings_truncated"])
+
+    def test_retryable_unknown_remains_explicit(self):
+        exit_code, payload = self.emit_agent_payload(
+            {
+                "status": "error",
+                "error_reason": "timeout",
+                "cleanup": {"status": "not_needed"},
+            },
+            helper_exit_code=1,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertFalse(payload["agent_result"]["terminal"])
+        self.assertTrue(payload["agent_result"]["retry_policy"]["retry"])
+
+    def test_agent_guidance_uses_agent_inspect_command(self):
+        _, payload = self.emit_agent_payload(
+            {
+                "status": "error",
+                "error_reason": "cleanup_failed",
+                "error_message": "Install the updated plugin before inspect-closeout.",
+                "hint": jb_inspect.hint_for_error_reason("worktree_route_mismatch"),
+                "cleanup": {"status": "failed"},
+            }
+        )
+
+        serialized = json.dumps(payload)
+        self.assertNotIn("inspect-closeout", serialized)
+        self.assertIn("agent-inspect", payload["agent_result"]["next_action"])
+        self.assertIn("agent-inspect", payload["agent_result"]["agent_report"])
+        self.assertIn("agent-inspect", payload["diagnostic"]["error_message"])
+        self.assertIn("agent-inspect", payload["diagnostic"]["hint"])
+
+    def test_legacy_agent_result_shape_and_guidance_remain_unchanged(self):
+        payload = {
+            "command": "inspect-closeout",
+            "status": "error",
+            "error_reason": "cleanup_failed",
+            "cleanup": {"status": "failed"},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertNotIn("terminal", payload["agent_result"])
+        self.assertIn("inspect-closeout", payload["agent_result"]["next_action"])
+
+    def test_usage_error_emits_terminal_envelope(self):
+        output = io.StringIO()
+        with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):
+            exit_code = jb_inspect.emit_agent_usage_error(
+                "usage: jb-inspect.py agent-inspect\njb-inspect.py: error: unrecognized arguments: --no-wait-stale\n"
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+        self.assertIn("do not run another inspection command", payload["agent_result"]["next_action"])
+        self.assertEqual(payload["diagnostic"]["error_reason"], jb_inspect.AGENT_USAGE_ERROR_REASON)
+        self.assertIn("unrecognized arguments", payload["diagnostic"]["error_message"])
+
+    def test_usage_error_is_logged_only_as_unknown_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome_log_path = Path(tmp) / "outcomes.jsonl"
+            unknown_log_path = Path(tmp) / "unknown-verdicts.jsonl"
+            output = io.StringIO()
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "JB_INSPECT_OUTCOME_LOG": str(outcome_log_path),
+                        "JB_INSPECT_UNKNOWN_LOG": str(unknown_log_path),
+                    },
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = jb_inspect.emit_agent_usage_error(
+                    "usage: jb-inspect.py agent-inspect\njb-inspect.py: error: unrecognized arguments: --no-wait-stale\n"
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(outcome_log_path.exists())
+            records = [json.loads(line) for line in unknown_log_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertTrue(records[0].get("client_run_id"))
+            self.assertEqual(records[0].get("command"), "agent-inspect")
+            self.assertEqual(records[0].get("verdict"), "UNKNOWN")
+
+    def test_invented_flag_subprocess_returns_json_and_zero(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "agent-inspect", "--no-wait-stale"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, "")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+
+    def test_agent_alias_invented_flag_returns_json_and_zero(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "agent", "--no-wait-stale"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, "")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+
+    def test_legacy_invented_flag_keeps_argparse_exit_and_stderr(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "inspect-closeout", "--no-wait-stale"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unrecognized arguments: --no-wait-stale", result.stderr)
+
+    def test_compact_findings_report_truncation(self):
+        findings = [
+            {
+                "file": f"/tmp/project/example-{index}.py",
+                "line": index + 1,
+                "severity": "warning",
+                "description": f"Finding {index}",
+            }
+            for index in range(25)
+        ]
+        _, payload = self.emit_agent_payload(
+            {
+                "status": "findings",
+                "total_problems": 25,
+                "problems_shown": 25,
+                "problems": findings,
+                "cleanup": {"status": "closed"},
+            }
+        )
+
+        self.assertEqual(len(payload["findings"]), 20)
+        self.assertEqual(payload["findings_limit"], 20)
+        self.assertTrue(payload["findings_truncated"])
+
+    def test_unexpected_agent_exception_emits_terminal_envelope(self):
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
+            patch.object(jb_inspect, "build_context", side_effect=ValueError("unexpected failure")),
+            patch.object(jb_inspect, "log_assessment_records"),
+            redirect_stdout(output),
+        ):
+            exit_code = jb_inspect.main()
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertTrue(payload["agent_result"]["terminal"])
+        self.assertEqual(payload["helper_exit_code"], 3)
+        self.assertEqual(payload["diagnostic"]["error_message"], "unexpected failure")
+
+    def test_legacy_exit_contract_is_unchanged(self):
+        self.assertEqual(jb_inspect.classify_run_exit({"status": "clean"}), 0)
+        self.assertEqual(jb_inspect.classify_run_exit({"status": "findings"}), 1)
+        self.assertEqual(jb_inspect.classify_run_exit({"status": "error"}), 1)
 
 
 class ClassificationTest(unittest.TestCase):
