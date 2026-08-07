@@ -118,7 +118,8 @@ second planning backend.
   cross-repo relationships.
 - Use Projects and other configured surfaces as view layers, not sources of
   truth.
-- Use milestones for release, phase, or date buckets only.
+- Use milestones as strict release, phase, or date gates under the contract
+  below.
 - Avoid ad hoc label taxonomies; ask before creating new labels. Generic labels
   such as `waiting`, `blocked`, or `ready` are discouraged unless the repo
   explicitly documents a narrow local convention.
@@ -127,6 +128,31 @@ second planning backend.
   deliberately non-closing; after merge, sweep referenced issues and close only
   the ones whose finish line was actually satisfied.
 - Optimize for the user finishing work, not for cataloging every possible idea.
+
+## Milestone Contract
+
+Milestones describe what must be true to close a release or phase. They are not
+theme labels or alternate backlogs.
+
+- Before adding an issue, ask: "Can this milestone honestly close while this
+  issue remains open?" If yes, keep the issue outside the milestone even when
+  it is useful or thematically related.
+- Put the exact ship or phase-exit criteria in the GitHub milestone
+  description. When assessing readiness or changing milestone membership, read
+  that description and the milestone's open issues first. Do not duplicate
+  transient milestone state in repository instructions or docs.
+- Prefer one active milestone per release train. Multiple active milestones are
+  appropriate only for genuinely independent trains with separate exit gates.
+- Give each active milestone a due date or a named gate, dependency, or decision
+  that determines when it can close.
+- Treat removal as normal scope control. Record why an incomplete issue no
+  longer blocks, then return it to the backlog or deliberately admit it to a
+  later milestone.
+- Close the milestone when the release or phase ships. Triage and remove
+  survivors instead of keeping the milestone open until every themed issue is
+  empty.
+- If milestone size keeps growing, cut scope before silently extending the
+  gate.
 
 ## Local Conventions
 
