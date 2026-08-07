@@ -19,6 +19,8 @@
   "qualityGate": {
     "inspection": {
       "ide": "PyCharm",
+      "prepare": "uv run jetbrains-inspection/scripts/prepare-python-project.py --python 3.12 --module-name codex-skills --test-root jetbrains-inspection/tests",
+      "profile": "Codex Skills Readiness",
       "scopePreference": "changed_files"
     },
     "syntax": {

@@ -690,6 +690,8 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         or jetbrains.get("ideVersion")
         or jetbrains.get("ide_version")
     )
+    if hasattr(args, "profile") and not clean_optional(getattr(args, "profile", None)):
+        args.profile = str(inspection.get("profile") or "")
     scope = getattr(args, "scope", None) or first_scope(inspection.get("scopePreference")) or first_scope(jetbrains.get("scopePreference")) or "changed_files"
     worktree_strategy = jetbrains.get("worktreeStrategy") or jetbrains.get("worktree_strategy") or "prefer-current"
 
@@ -1221,22 +1223,38 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
     result = run_inspection_on_route(args, context, route)
     if not should_retry_unknown_result(result):
         return result
-    retry_summaries = [compact_retry_result(result, attempt=0)]
-    readiness = wait_for_internal_retry_readiness(args, context, route, result)
-    if readiness.get("ready") is not True:
-        result["internal_retry_count"] = 0
-        result["internal_retry_skipped"] = True
-        result["internal_retry_skip_reason"] = "retry_readiness_not_proven"
-        result["internal_retry_readiness"] = readiness
-        result["retry_exhausted"] = True
-        return result
-    retry_result = run_inspection_on_route(args, context, route)
-    retry_result["internal_retries"] = retry_summaries
-    retry_result["internal_retry_count"] = 1
-    retry_result["internal_retry_readiness"] = readiness
-    retry_result["recovered_from_unknown"] = retry_result.get("verdict") in {"GREEN", "RED"}
-    retry_result["retry_exhausted"] = retry_result.get("verdict") == "UNKNOWN"
-    return retry_result
+    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
+    max_attempts = max(0, int(retry_policy.get("max_attempts") or 0))
+    retry_summaries: list[dict[str, Any]] = []
+    readiness_history: list[dict[str, Any]] = []
+    current_result = result
+    for attempt in range(max_attempts):
+        retry_summaries.append(compact_retry_result(current_result, attempt=attempt))
+        readiness = wait_for_internal_retry_readiness(args, context, route, current_result)
+        readiness_history.append(readiness)
+        if readiness.get("ready") is not True:
+            prior_retry_summaries = retry_summaries[:-1]
+            if prior_retry_summaries:
+                current_result["internal_retries"] = prior_retry_summaries
+            current_result["internal_retry_count"] = attempt
+            current_result["internal_retry_skipped"] = True
+            current_result["internal_retry_skip_reason"] = "retry_readiness_not_proven"
+            current_result["internal_retry_readiness"] = readiness
+            current_result["internal_retry_readiness_history"] = readiness_history
+            current_result["retry_exhausted"] = True
+            return current_result
+        current_result = run_inspection_on_route(args, context, route)
+        current_result["internal_retries"] = retry_summaries
+        current_result["internal_retry_count"] = attempt + 1
+        current_result["internal_retry_readiness"] = readiness
+        current_result["internal_retry_readiness_history"] = readiness_history
+        if not should_retry_unknown_result(current_result):
+            current_result["recovered_from_unknown"] = current_result.get("verdict") in {"GREEN", "RED"}
+            current_result["retry_exhausted"] = False
+            return current_result
+    current_result["recovered_from_unknown"] = False
+    current_result["retry_exhausted"] = True
+    return current_result
 
 
 def wait_for_internal_retry_readiness(
@@ -2620,16 +2638,36 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
     lifecycle_readiness = lifecycle_readiness_from_payload(last_status or {})
     readiness_reason = str(lifecycle_readiness.get("reason") or "") if lifecycle_readiness else ""
     content_root_failure = readiness_reason in {"no_content_roots", "content_roots_outside_target"}
+    language_sdk_missing = readiness_reason == "python_sdk_missing"
+    project_analysis_not_ready = readiness_reason in {
+        "python_sdk_updating",
+        "python_sdk_update_state_unavailable",
+        "project_analysis_running",
+        "analysis_readiness_unavailable",
+    }
+    error_reason: str
+    if content_root_failure:
+        error_reason = PROJECT_CONTENT_ROOTS_MISSING_REASON
+    elif language_sdk_missing:
+        error_reason = "language_sdk_missing"
+    elif project_analysis_not_ready:
+        error_reason = "project_analysis_not_ready"
+    else:
+        error_reason = "ide_not_ready_timeout"
     raise InspectError(
         (
             "JetBrains opened the worktree but did not establish a content root covering it."
             if content_root_failure
+            else "JetBrains opened the worktree but no Python SDK is configured for the selected project files."
+            if language_sdk_missing
+            else "Timed out waiting for the configured language SDK and project analysis to settle."
+            if project_analysis_not_ready
             else "Timed out waiting for JetBrains indexing/scanning to settle."
         ),
         3,
         {
             "status": "timeout",
-            "error_reason": "project_content_roots_missing" if content_root_failure else "ide_not_ready_timeout",
+            "error_reason": error_reason,
             "lifecycle_readiness": lifecycle_readiness,
             "last_status": last_status or {},
             "readiness_barrier": {
@@ -4116,6 +4154,7 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
         "inspection_trigger_empty_model",
         "current_run_psi_churn",
         "inspection_inputs_changed",
+        "project_analysis_not_ready",
         "stale_results",
         "timeout",
         "inspection_still_running",
@@ -4212,6 +4251,10 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Save documents and rerun inspection after the IDE finishes updating PSI state."
     if reason == "inspection_inputs_changed":
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun after project files, VCS state, and inspection settings stop changing."
+    if reason == "language_sdk_missing":
+        return "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+    if reason == "project_analysis_not_ready":
+        return "Wait for the configured language SDK and background analysis to settle, then rerun inspection."
     if reason == "stale_results":
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun; stale cached findings must not be treated as current."
     if reason == "timeout":
@@ -4334,6 +4377,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "project_open_blocked",
         PROJECT_OPEN_BLOCKED_REASON,
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
+        "language_sdk_missing",
         "profile_resolution_error",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
@@ -4349,6 +4393,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "close_failed",
         "current_run_psi_churn",
         "inspection_inputs_changed",
+        "project_analysis_not_ready",
         "inspection_in_progress",
         "inspection_still_running",
         "interrupted",
@@ -4445,7 +4490,13 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
         classification = "decisive"
         attribution["source"] = "helper"
     else:
-        classification = str(attribution.get("classification") or attribution_classification(code, payload))
+        helper_classification = attribution_classification(code, payload)
+        plugin_classification = str(attribution.get("classification") or "")
+        classification = (
+            helper_classification
+            if plugin_classification in {"", "unattributed"} and helper_classification != "unattributed"
+            else plugin_classification or helper_classification
+        )
     phase = attribution_failure_phase(payload, attribution, code)
     normalized_code = "unattributed_unknown" if classification == "unattributed" else normalize_reason(code)
     cleanup_attribution = dict(attribution)
@@ -4538,7 +4589,7 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     verdict = str(payload.get("verdict") or verdict_for_payload(payload).get("verdict") or "UNKNOWN")
     reason = str(payload.get("verdict_reason") or "unknown")
     bucket = outcome_bucket(payload, reason)
-    retry_policy = retry_policy_for(verdict, bucket)
+    retry_policy = retry_policy_for(verdict, bucket, reason)
     if verdict == "UNKNOWN" and payload.get("retry_exhausted") is True:
         retry_policy = {"retry": False, "max_attempts": 0, "wait_ms": 0}
         payload["verdict_next_action"] = exhausted_retry_next_action(reason, payload)
@@ -4562,8 +4613,9 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
-    if reason not in {"stale_results", "inspection_inputs_changed"}:
-        return "The helper already used its one internal retry. Stop retrying this result and report the diagnostic payload."
+    retry_count = max(0, int(payload.get("internal_retry_count") or 0))
+    if reason not in {"stale_results", "inspection_inputs_changed", "project_analysis_not_ready"}:
+        return f"The helper already used {retry_count} internal retry attempt(s). Stop retrying this result and report the diagnostic payload."
     readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
     if payload.get("internal_retry_skipped") is True:
         return (
@@ -4573,7 +4625,7 @@ def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
         )
     barrier_status = str(readiness.get("status") or "unknown")
     return (
-        f"The helper waited for sustained IDE readiness ({barrier_status}) and used its one internal retry, but the result remained {reason}. "
+        f"The helper waited for sustained IDE readiness ({barrier_status}) and used {retry_count} internal retry attempt(s), but the result remained {reason}. "
         "Stop retrying this result and report both attempts plus internal_retry_readiness. Do not attribute it to source edits unless "
         "changed-file evidence identifies them."
     )
@@ -4642,7 +4694,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
         return "stale_results"
-    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered", "inspection_inputs_changed"}:
+    if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered", "inspection_inputs_changed", "project_analysis_not_ready"}:
         return "capture_not_ready"
     if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable", "route_mismatch", "project_not_open", "ownership_not_proven"}:
         return "route_not_ready"
@@ -4667,6 +4719,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "project_open_blocked",
         "ide_not_ready_timeout",
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
+        "language_sdk_missing",
         SEMANTIC_COVERAGE_MISSING_REASON,
     }:
         return "environment_blocked"
@@ -4677,11 +4730,12 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     return "unknown"
 
 
-def retry_policy_for(verdict: str, bucket: str) -> dict[str, Any]:
+def retry_policy_for(verdict: str, bucket: str, reason: str = "") -> dict[str, Any]:
     retry = verdict == "UNKNOWN" and bucket in UNKNOWN_RETRY_BUCKETS
+    max_attempts = 3 if retry and reason == "project_analysis_not_ready" else 1 if retry else 0
     return {
         "retry": retry,
-        "max_attempts": 1 if retry else 0,
+        "max_attempts": max_attempts,
         "wait_ms": UNKNOWN_RETRY_WAIT_MS if retry else 0,
     }
 

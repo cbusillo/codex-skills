@@ -1,0 +1,3 @@
+<component name="DependencyValidationManager">
+  <scope name="JetBrains Inspection Dynamic Tests" pattern="file:jetbrains-inspection/tests/test_jb_inspect.py||file:jetbrains-inspection/tests/test_prepare_python_project.py" />
+</component>

@@ -1336,6 +1336,18 @@ def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
         "jetbrains-inspection must teach safe inference without inventing durable policy",
     )
     require(
+        "qualitygate.inspection.prepare" in normalized_readiness
+        and "run that exact command" in normalized_readiness
+        and "preparation blocker" in normalized_readiness,
+        "repo-readiness must fail closed when configured inspection preparation fails",
+    )
+    require(
+        "qualitygate.inspection.prepare" in normalized_inspection
+        and "run that exact repository command" in normalized_inspection
+        and "tracked-file mutations" in normalized_inspection,
+        "jetbrains-inspection must preserve configured project-model preparation",
+    )
+    require(
         "docs-only" in normalized_readiness
         and "do not run full code gates" in normalized_readiness
         and "docs-only or non-code edits" in normalized_inspection,

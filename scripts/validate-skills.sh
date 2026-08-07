@@ -74,6 +74,7 @@ helper_tests=(
 	scripts/validate_execution_environment.py
 	scripts/validate_github_actions_security.py
 	jetbrains-inspection/tests/test_jb_inspect.py
+	jetbrains-inspection/tests/test_prepare_python_project.py
 	skill-creator/scripts/test_collect_exec_harness_performance.py
 	skill-creator/scripts/test_validate_skill_repo.py
 	skill-creator/scripts/test_validate_skill_scorecard.py

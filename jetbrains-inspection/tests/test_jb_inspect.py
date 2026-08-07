@@ -17,6 +17,7 @@ import urllib.parse
 from argparse import Namespace
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 
@@ -27,7 +28,7 @@ os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
 ATTRIBUTION_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "attribution" / "cases.json"
 SPEC = importlib.util.spec_from_file_location("jb_inspect", SCRIPT_PATH)
-jb_inspect = importlib.util.module_from_spec(SPEC)
+jb_inspect: Any = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
@@ -379,6 +380,7 @@ class BuildContextTest(unittest.TestCase):
                     "qualityGate": {
                         "inspection": {
                             "ide": "IntelliJ IDEA",
+                            "profile": "Codex Skills Readiness",
                             "scopePreference": ["directory", "whole_project"],
                         }
                     },
@@ -391,11 +393,12 @@ class BuildContextTest(unittest.TestCase):
             )
             (root / "packages" / "app").mkdir(parents=True)
 
-            args = Namespace(repo=str(root), ide=None, ide_app=None, scope=None)
+            args = Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
             context = jb_inspect.build_context(args)
 
             self.assertEqual(context["ide"], "IntelliJ IDEA")
             self.assertEqual(context["scope"], "directory")
+            self.assertEqual(args.profile, "Codex Skills Readiness")
             self.assertEqual(context["worktree_strategy"], "prefer-current")
             self.assertEqual(context["project_path"], str((root / "packages" / "app").resolve()))
             self.assertTrue(context["main_worktree"].endswith("Developer/example-main"))
@@ -7010,7 +7013,7 @@ class HumanOutputTest(unittest.TestCase):
         self.assertTrue(payload["retry_policy"]["retry"])
         self.assertIn("retry once", payload["agent_result"]["next_action"])
 
-    def test_native_inspection_failure_is_terminal_tool_bug(self):
+    def test_native_inspection_block_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "directory",
             "status": "capture_incomplete",
@@ -9476,6 +9479,45 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertTrue(payload["retry_policy"]["retry"])
         self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
         self.assertTrue(jb_inspect.should_retry_unknown_result(payload))
+
+    def test_project_analysis_not_ready_is_retryable_and_attributed(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "project_analysis_not_ready",
+            "inspection_attribution": {
+                "classification": "unattributed",
+                "code": "project_analysis_not_ready",
+            },
+            "total_problems": 0,
+            "problems": [],
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["retry_policy"]["max_attempts"], 3)
+        self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
+        self.assertNotIn("unattributed_unknown", payload)
+
+    def test_language_sdk_missing_is_terminal_environment_blocker(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "language_sdk_missing",
+            "total_problems": 0,
+            "problems": [],
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["attribution_class"], "configuration_blocked")
+        self.assertIn("language SDK", payload["verdict_next_action"])
 
     def test_truncation_handles_missing_malformed_and_text_only_diagnostics(self):
         cases = [
