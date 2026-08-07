@@ -66,6 +66,8 @@ UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "t
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
 INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
+NATIVE_BROAD_SCOPE_PROOF_VERSION = 2
+MAX_WORKTREE_MUTATION_PATHS = 25
 INTERNAL_RETRY_READY_TIMEOUT_MS = 90_000
 INTERNAL_RETRY_READY_STABLE_OBSERVATIONS = 3
 ROUTE_READY_STABLE_OBSERVATIONS = 3
@@ -1078,6 +1080,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
     cleanup: dict[str, Any] = {"status": "not_needed"}
     result: dict[str, Any] = {}
     inspection_error: BaseException | None = None
+    mutation_before = git_worktree_status_snapshot(context.get("worktree_root"))
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
@@ -1087,6 +1090,12 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
             inspection_error = error
             result = inspection_exception_result(error)
         finally:
+            if lease_may_own_open_project(lease):
+                mutation_after = git_worktree_status_snapshot(context.get("worktree_root"))
+                result["worktree_mutation_evidence"] = summarize_worktree_mutations(
+                    mutation_before,
+                    mutation_after,
+                )
             if getattr(args, "keep_warm", False):
                 if lease_may_own_open_project(lease):
                     cleanup = {
@@ -2473,6 +2482,8 @@ def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
         "ide_version": identity.get("ide_version") or identity.get("version"),
         "plugin_version": identity.get("plugin_version"),
         "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
+        "plugin_build_dirty": identity.get("plugin_build_dirty"),
+        "inspection_execution_proof_version": identity.get("inspection_execution_proof_version"),
         "lifecycle_ownership_protocol": identity.get("lifecycle_ownership_protocol"),
         "session_id": identity.get("session_id"),
         "port": identity.get("port"),
@@ -3763,6 +3774,80 @@ def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str]
     }
 
 
+def payload_scope(payload: dict[str, Any]) -> str:
+    descriptor = payload.get("scope_descriptor") if isinstance(payload.get("scope_descriptor"), dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context_descriptor = context.get("scope_descriptor") if isinstance(context.get("scope_descriptor"), dict) else {}
+    return str(
+        payload.get("scope")
+        or descriptor.get("scope")
+        or context.get("scope")
+        or context_descriptor.get("scope")
+        or ""
+    ).strip().lower()
+
+
+def inspection_execution_proof_version(payload: dict[str, Any]) -> int | None:
+    candidates: list[dict[str, Any]] = [payload]
+    for container_name in ("ide", "route", "prepared", "inspection_attribution", "raw", "context"):
+        container = payload.get(container_name)
+        if isinstance(container, dict):
+            candidates.append(container)
+            nested_ide = container.get("ide")
+            if isinstance(nested_ide, dict):
+                candidates.append(nested_ide)
+            nested_route = container.get("route")
+            if isinstance(nested_route, dict):
+                candidates.append(nested_route)
+                route_ide = nested_route.get("ide")
+                if isinstance(route_ide, dict):
+                    candidates.append(route_ide)
+    for candidate in candidates:
+        value = candidate.get("inspection_execution_proof_version")
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def broad_scope_deployment_verdict(payload: dict[str, Any]) -> dict[str, str] | None:
+    if payload_scope(payload) not in {"whole_project", "directory", "all"}:
+        return None
+    problems = payload.get("problems") or []
+    total = payload.get("total_problems")
+    if problems or (isinstance(total, int) and total > 0) or payload.get("inspection_verdict") == "RED":
+        return None
+    proof_version = inspection_execution_proof_version(payload)
+    if proof_version is not None and proof_version >= NATIVE_BROAD_SCOPE_PROOF_VERSION:
+        return None
+    payload["deployment_mismatch"] = {
+        "kind": "inspection_execution_proof_capability",
+        "required_version": NATIVE_BROAD_SCOPE_PROOF_VERSION,
+        "observed_version": proof_version,
+        "plugin_build_fingerprint": next(
+            (
+                source.get("plugin_build_fingerprint")
+                for source in (
+                    payload,
+                    payload.get("ide") if isinstance(payload.get("ide"), dict) else {},
+                    payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {},
+                )
+                if source.get("plugin_build_fingerprint")
+            ),
+            None,
+        ),
+    }
+    return {
+        "verdict": "UNKNOWN",
+        "verdict_reason": "plugin_deployment_mismatch",
+        "verdict_message": "The installed inspection plugin cannot prove clean broad-scope execution for this helper contract.",
+        "verdict_next_action": "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection.",
+    }
+
+
 def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
     wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
     cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
@@ -3793,6 +3878,10 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
             "verdict_message": "Inspection tooling failed before it could prove GREEN or RED.",
             "verdict_next_action": next_action_for_unknown(reason, payload),
         }
+
+    deployment_verdict = broad_scope_deployment_verdict(payload)
+    if deployment_verdict is not None:
+        return deployment_verdict
 
     semantic_coverage_verdict = semantic_coverage_allowed_verdict(payload)
     if semantic_coverage_verdict is not None and plugin_verdict in {"GREEN", "UNKNOWN"}:
@@ -3983,6 +4072,32 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    execution_proof_reason = normalize_reason(
+        diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
+    )
+    if reason == "plugin_deployment_mismatch":
+        return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
+    if reason == "execution_not_proven":
+        if execution_proof_reason in {"native_inspection_not_completed", "native_inspection_aborted"}:
+            return "Wait for the IDE inspection run to settle, then retry once with a fresh run and include execution_proof diagnostics if it remains UNKNOWN."
+        if execution_proof_reason in {"whole_project_execution_not_proven", "directory_execution_not_proven"}:
+            return "Update the inspection plugin to a native broad-scope proof build, restart the IDE, and rerun; the installed plugin cannot prove this clean scope."
+        if execution_proof_reason == "native_attestation_context_creation_failed":
+            return "Update or reinstall the inspection plugin, restart the IDE, resolve the route again, and rerun; native attestation could not be initialized."
+        if execution_proof_reason == "native_scope_enumeration_failed":
+            return "Stop retrying and report the execution_proof diagnostics; the plugin could not enumerate the requested native inspection scope."
+        if execution_proof_reason in {"native_inspection_failures", "native_inspection_reported_problems"}:
+            return "Stop retrying and report the execution_proof diagnostics; the native inspection run or result mapping failed."
+        if execution_proof_reason in {
+            "native_inspection_no_tools_completed",
+            "native_inspection_no_files_analyzed",
+            "native_inspection_no_file_scoped_tools_completed",
+            "native_inspection_scope_empty",
+            "native_inspection_scope_incomplete",
+            "native_inspection_scope_mismatch",
+        }:
+            return "Check the requested scope and active inspection profile; no affirmative native execution was observed. Do not report GREEN."
+        return "Stop retrying and report the execution_proof diagnostic payload; this run did not establish clean execution."
     if reason == SEMANTIC_COVERAGE_TRUNCATED_REASON:
         return (
             "Treat this as a plugin/helper proof gap: update the inspection plugin or helper so it emits one semantic "
@@ -4301,7 +4416,12 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
             "project_key_hash": attribution.get("project_key_hash") or stable_value_hash(route.get("project_key")),
             "inspection_run_id": run_id,
             "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+            "plugin_build_dirty": attribution.get("plugin_build_dirty") if attribution.get("plugin_build_dirty") is not None else ide.get("plugin_build_dirty"),
             "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+            "inspection_execution_proof_version": (
+                attribution.get("inspection_execution_proof_version")
+                or ide.get("inspection_execution_proof_version")
+            ),
             "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
             "ide_version": attribution.get("ide_version") or ide.get("version"),
             "ide_channel": (
@@ -4413,12 +4533,40 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "clean"
     if verdict == "RED":
         return "actionable_findings"
+    normalized = normalize_reason(reason)
+    if normalized == "plugin_deployment_mismatch":
+        return "environment_blocked"
+    if normalized == "execution_not_proven":
+        diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+        execution_proof_reason = normalize_reason(
+            diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
+        )
+        if execution_proof_reason in {"native_inspection_not_completed", "native_inspection_aborted"}:
+            return "capture_not_ready"
+        if execution_proof_reason in {
+            "native_scope_enumeration_failed",
+            "native_inspection_failures",
+            "native_inspection_reported_problems",
+        }:
+            return "tool_bug"
+        if execution_proof_reason in {
+            "whole_project_execution_not_proven",
+            "directory_execution_not_proven",
+            "native_attestation_context_creation_failed",
+            "native_inspection_no_tools_completed",
+            "native_inspection_no_files_analyzed",
+            "native_inspection_no_file_scoped_tools_completed",
+            "native_inspection_scope_empty",
+            "native_inspection_scope_incomplete",
+            "native_inspection_scope_mismatch",
+        }:
+            return "environment_blocked"
+        return "tool_bug"
     attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
     if payload.get("unattributed_unknown") is True or attribution.get("classification") == "unattributed":
         return "tool_bug"
     if attribution.get("classification") == "tool_caused":
         return "tool_bug"
-    normalized = normalize_reason(reason)
     if normalized in {"timeout", "inspection_still_running", "inspection_api_timeout", "run_changed", "indexing", "running", "current_run_psi_churn", "already_opening", "open_state_unknown"}:
         return "ide_not_ready"
     if normalized in {"stale_results"}:
@@ -4863,7 +5011,12 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "base_path_hash": stable_value_hash(route.get("base_path")),
         "project_instance_id": evidence_ids.get("project_instance_id") or attribution.get("project_instance_id") or route.get("project_instance_id"),
         "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+        "plugin_build_dirty": attribution.get("plugin_build_dirty") if attribution.get("plugin_build_dirty") is not None else ide.get("plugin_build_dirty"),
         "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+        "inspection_execution_proof_version": (
+            attribution.get("inspection_execution_proof_version")
+            or ide.get("inspection_execution_proof_version")
+        ),
         "helper_revision": helper_revision(),
         "deployment_manifest_sha256": manifest_sha256,
         "rollout_file_hash": manifest_sha256,
@@ -4890,6 +5043,8 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "internal_retry_skip_reason": public.get("internal_retry_skip_reason"),
         "internal_retry_readiness": public.get("internal_retry_readiness"),
         "unknown_diagnosis": public.get("unknown_diagnosis"),
+        "deployment_mismatch": public.get("deployment_mismatch"),
+        "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
     }
     return public, record
 
@@ -6499,6 +6654,76 @@ def git_head_sha(path: Path) -> str | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     return output if re.fullmatch(r"[0-9a-fA-F]{40,64}", output) else None
+
+
+def git_worktree_status_snapshot(path_value: Any) -> dict[str, Any]:
+    if path_value in (None, ""):
+        return {"status": "unavailable", "reason": "worktree_path_missing", "entries": {}}
+    try:
+        path = Path(str(path_value)).expanduser().resolve()
+        completed = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "status": "unavailable",
+            "reason": error.__class__.__name__,
+            "entries": {},
+        }
+    if completed.returncode != 0:
+        return {
+            "status": "unavailable",
+            "reason": "git_status_failed",
+            "entries": {},
+        }
+    entries = parse_git_porcelain_z(completed.stdout)
+    return {"status": "ok", "entries": entries}
+
+
+def parse_git_porcelain_z(output: bytes) -> dict[str, str]:
+    records = output.split(b"\0")
+    entries: dict[str, str] = {}
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            continue
+        status = record[:2].decode("ascii", errors="replace")
+        path = record[3:].decode("utf-8", errors="surrogateescape")
+        entries[path] = status
+        if "R" in status or "C" in status:
+            index += 1
+    return entries
+
+
+def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_entries = before.get("entries") if isinstance(before.get("entries"), dict) else {}
+    after_entries = after.get("entries") if isinstance(after.get("entries"), dict) else {}
+    changed_paths = sorted(
+        path
+        for path, status in after_entries.items()
+        if before_entries.get(path) != status
+    )
+    removed_paths = sorted(path for path in before_entries if path not in after_entries)
+    emitted_paths = changed_paths[:MAX_WORKTREE_MUTATION_PATHS]
+    return {
+        "schema_version": 1,
+        "before_status": before.get("status"),
+        "after_status": after.get("status"),
+        "dirty_before": bool(before_entries),
+        "dirty_after": bool(after_entries),
+        "new_or_changed_path_count": len(changed_paths),
+        "removed_path_count": len(removed_paths),
+        "paths_limit": MAX_WORKTREE_MUTATION_PATHS,
+        "paths_omitted_count": max(0, len(changed_paths) - len(emitted_paths)),
+        "new_or_changed_paths": emitted_paths,
+        "tracked_change_count": sum(1 for path in changed_paths if not after_entries[path].startswith("??")),
+        "untracked_change_count": sum(1 for path in changed_paths if after_entries[path].startswith("??")),
+    }
 
 
 def git_common_worktree(path: Path) -> Path | None:

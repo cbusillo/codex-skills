@@ -158,6 +158,10 @@ lifecycle signals control the gate. If activity does not remain quiet, the
 helper preserves the first `UNKNOWN`, skips the second inspection, and reports
 `internal_retry_readiness`. The retry result must still independently prove
 `GREEN` or `RED`; another stale/capture result remains `UNKNOWN`.
+`retry_policy.retry`, `agent_result.next_action`, and `agent_report` are one
+contract: terminal execution-proof failures must not tell agents to rerun, and
+retryable native-run interruption may request only the single maintained fresh
+run. Never infer permission to retry from prose when `retry_policy.retry=false`.
 Preparation is failure-atomic for handled failures and interrupts. With plugin
 protocol `lease_bound_v1`, the helper persists `state=open_requesting` before
 sending its local `lease_id` to `lifecycle/open`. An open response registers the
@@ -328,6 +332,12 @@ identify arbitrary writers or prove that ignored files are quiet.
 
 - `GREEN`: inspection worked and found no actionable findings for the selected
   scope/filter.
+  `whole_project` and `directory` GREEN additionally require plugin capability
+  `inspection_execution_proof_version >= 2`, which attests the exact native IDE
+  inspection run with affirmative physical-file traversal and file-scoped tool
+  completion; global-only activity is insufficient. A missing/older capability is
+  `UNKNOWN/plugin_deployment_mismatch`; update the plugin, restart the IDE, and
+  resolve the route again instead of trusting an older broad-scope GREEN.
 - `RED`: inspection worked and returned actionable current findings. Fix real
   findings in touched code before calling work ready.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
@@ -348,6 +358,9 @@ identify arbitrary writers or prove that ignored files are quiet.
   over selector fallback. The helper supplies one `client_run_id` per invocation
   and preserves plugin `request_id` values. `unattributed_unknown: true` is a
   helper/tool failure, not a neutral unknown bucket.
+  Dirty plugin fingerprints remain provenance rather than presumed causation.
+  Qualification must use the exact intended fingerprint, but normal diagnostics
+  should report `plugin_build_dirty` without claiming it caused the verdict.
   A concurrent `inspection_in_progress` response is adoptable only when it
   includes an unambiguous positive run ID plus explicit scope/profile proof that
   exactly matches the trigger request. For `changed_files`, it must also prove
@@ -482,6 +495,10 @@ side of the boundary they occupy.
   do not turn an assessment command into a route-only probe.
   If lifecycle cleanup is skipped or fails for a helper-opened project, the
   inspection is not clean; report both the inspection result and cleanup reason.
+  Before cleanup, the helper compares bounded porcelain status snapshots and
+  emits `worktree_mutation_evidence` with counts and at most 25 relative paths.
+  New tracked or untracked IDE metadata is lifecycle evidence; preserve it in
+  the report rather than silently treating forced worktree removal as clean.
   If cleanup is deferred because the IDE is still indexing/scanning, report the
   `UNKNOWN` verdict and rerun after indexing settles before calling the work
   inspection-clean.
