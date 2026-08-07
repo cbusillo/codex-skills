@@ -14,6 +14,7 @@ unavailable.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import io
 import json
@@ -26,8 +27,6 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,6 +34,61 @@ ROOT = Path(__file__).resolve().parents[2]
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def load_yaml(text: str) -> Any:
+    yaml_module = importlib.import_module("yaml")
+    try:
+        safe_load = getattr(yaml_module, "safe_load")
+    except AttributeError as missing_safe_load:
+        raise AssertionError("PyYAML must expose safe_load") from missing_safe_load
+    if not callable(safe_load):
+        raise AssertionError("PyYAML must expose safe_load")
+    return safe_load(text)
+
+
+def run_probe(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def launchplane_environment(**overrides: str) -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("LAUNCHPLANE_")
+    }
+    environment.update(overrides)
+    return environment
+
+
+def run_launchplane_payload_probe(
+    helper: Path,
+    payload_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    return run_probe(
+        [
+            sys.executable,
+            str(helper),
+            "--config",
+            str(ROOT / ".missing-launchplane-operator-config.json"),
+            "product-config-dry-run",
+            "--payload-file",
+            str(payload_path),
+        ],
+        cwd=ROOT,
+        env=launchplane_environment(),
+    )
 
 
 def command_argv(skill_name: str, command_name: str) -> list[str]:
@@ -60,7 +114,7 @@ def skill_frontmatter(skill_name: str) -> dict[str, Any]:
     text = (ROOT / skill_name / "SKILL.md").read_text()
     end = text.find("\n---", 4)
     require(text.startswith("---\n") and end >= 0, f"{skill_name} must have frontmatter")
-    data = yaml.safe_load(text[4:end])
+    data = load_yaml(text[4:end])
     require(isinstance(data, dict), f"{skill_name} frontmatter must be a mapping")
     return data
 
@@ -400,7 +454,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action contract must document operation-specific public-safe projections",
     )
 
-    no_context = subprocess.run(
+    no_context = run_probe(
         [
             sys.executable,
             str(helper),
@@ -412,14 +466,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             "--base-branch",
             "main",
         ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("LAUNCHPLANE_")
-        },
+        env=launchplane_environment(),
     )
     require(no_context.returncode == 2, "Write-action helper must fail closed without config")
     payload = json.loads(no_context.stdout)
@@ -429,7 +476,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper must explain missing operator config compactly",
     )
 
-    missing_url = subprocess.run(
+    missing_url = run_probe(
         [
             sys.executable,
             str(helper),
@@ -441,17 +488,9 @@ def test_launchplane_write_action_helper_contract() -> None:
             "--base-branch",
             "main",
         ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **{
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("LAUNCHPLANE_")
-            },
-            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
-        },
+        env=launchplane_environment(
+            LAUNCHPLANE_LOCAL_OPERATOR_TOKEN="secret-token-never-render",
+        ),
     )
     require(missing_url.returncode == 2, "Write-action helper must fail closed without service URL")
     missing_url_payload = json.loads(missing_url.stdout)
@@ -465,7 +504,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper must explain missing_service_url as local operator routing setup",
     )
 
-    missing_token = subprocess.run(
+    missing_token = run_probe(
         [
             sys.executable,
             str(helper),
@@ -479,14 +518,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             "--base-branch",
             "main",
         ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("LAUNCHPLANE_")
-        },
+        env=launchplane_environment(),
     )
     require(missing_token.returncode == 2, "Write-action helper must fail closed without token")
     missing_token_payload = json.loads(missing_token.stdout)
@@ -495,7 +527,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action helper must distinguish a missing token from missing operator config",
     )
 
-    public_url_hint = subprocess.run(
+    public_url_hint = run_probe(
         [
             sys.executable,
             str(helper),
@@ -503,18 +535,10 @@ def test_launchplane_write_action_helper_contract() -> None:
             str(ROOT / ".missing-launchplane-operator.env"),
             "operator-config-diagnostic",
         ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={
-            **{
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("LAUNCHPLANE_")
-            },
-            "LAUNCHPLANE_PUBLIC_URL": "https://public-launchplane.example.invalid",
-            "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
-        },
+        env=launchplane_environment(
+            LAUNCHPLANE_PUBLIC_URL="https://public-launchplane.example.invalid",
+            LAUNCHPLANE_LOCAL_OPERATOR_TOKEN="secret-token-never-render",
+        ),
     )
     require(public_url_hint.returncode == 0, "Write-action diagnostic must tolerate public URL near-miss")
     public_url_payload = json.loads(public_url_hint.stdout)
@@ -537,26 +561,7 @@ def test_launchplane_write_action_helper_contract() -> None:
     repo_payload = ROOT / ".tmp-launchplane-repo-payload.json"
     try:
         repo_payload.write_text('{"reason":"example"}\n', encoding="utf-8")
-        repo_local = subprocess.run(
-            [
-                sys.executable,
-                str(helper),
-                "--config",
-                str(ROOT / ".missing-launchplane-operator-config.json"),
-                "product-config-dry-run",
-                "--payload-file",
-                str(repo_payload),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-            env={
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("LAUNCHPLANE_")
-            },
-        )
+        repo_local = run_launchplane_payload_probe(helper, repo_payload)
     finally:
         repo_payload.unlink(missing_ok=True)
     require(repo_local.returncode == 2, "Write-action helper must reject repo-local payload files")
@@ -569,26 +574,7 @@ def test_launchplane_write_action_helper_contract() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         external_payload = Path(tmp) / "operator-payload.json"
         external_payload.write_text('{"reason":"external"}\n', encoding="utf-8")
-        external_private = subprocess.run(
-            [
-                sys.executable,
-                str(helper),
-                "--config",
-                str(ROOT / ".missing-launchplane-operator-config.json"),
-                "product-config-dry-run",
-                "--payload-file",
-                str(external_payload),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-            env={
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("LAUNCHPLANE_")
-            },
-        )
+        external_private = run_launchplane_payload_probe(helper, external_payload)
         require(
             external_private.returncode == 2,
             "Write-action helper should reach missing-config handling for external payload files",
@@ -602,26 +588,7 @@ def test_launchplane_write_action_helper_contract() -> None:
         repo_symlink = ROOT / ".tmp-launchplane-repo-payload-link.json"
         try:
             repo_symlink.symlink_to(external_payload)
-            symlink_local = subprocess.run(
-                [
-                    sys.executable,
-                    str(helper),
-                    "--config",
-                    str(ROOT / ".missing-launchplane-operator-config.json"),
-                    "product-config-dry-run",
-                    "--payload-file",
-                    str(repo_symlink),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                cwd=ROOT,
-                env={
-                    key: value
-                    for key, value in os.environ.items()
-                    if not key.startswith("LAUNCHPLANE_")
-                },
-            )
+            symlink_local = run_launchplane_payload_probe(helper, repo_symlink)
         finally:
             repo_symlink.unlink(missing_ok=True)
         require(
@@ -644,7 +611,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             "IGNORED_KEY=ignored\n",
             encoding="utf-8",
         )
-        diagnostic = subprocess.run(
+        diagnostic = run_probe(
             [
                 sys.executable,
                 str(helper),
@@ -652,14 +619,7 @@ def test_launchplane_write_action_helper_contract() -> None:
                 str(env_path),
                 "operator-config-diagnostic",
             ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env={
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("LAUNCHPLANE_")
-            },
+            env=launchplane_environment(),
         )
     require(diagnostic.returncode == 0, "Write-action helper diagnostic must succeed with private .env")
     diagnostic_payload = json.loads(diagnostic.stdout)
@@ -709,7 +669,7 @@ def test_launchplane_write_action_helper_contract() -> None:
             "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN=env-file-token-never-render\n",
             encoding="utf-8",
         )
-        precedence = subprocess.run(
+        precedence = run_probe(
             [
                 sys.executable,
                 str(helper),
@@ -719,17 +679,9 @@ def test_launchplane_write_action_helper_contract() -> None:
                 str(env_path),
                 "operator-config-diagnostic",
             ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env={
-                **{
-                    key: value
-                    for key, value in os.environ.items()
-                    if not key.startswith("LAUNCHPLANE_")
-                },
-                "LAUNCHPLANE_OPERATOR_URL": "https://process-env.example.invalid",
-            },
+            env=launchplane_environment(
+                LAUNCHPLANE_OPERATOR_URL="https://process-env.example.invalid",
+            ),
         )
     require(precedence.returncode == 0, "Write-action helper diagnostic must accept --config with --env-config")
     precedence_payload = json.loads(precedence.stdout)
@@ -799,8 +751,11 @@ def test_launchplane_write_action_helper_contract() -> None:
                 },
             },
         )
-    except ValueError as exc:
-        require(str(exc) == "unsafe_response_shape", "Unsafe provider success shapes must fail closed")
+    except ValueError as unsafe_shape_error:
+        require(
+            str(unsafe_shape_error) == "unsafe_response_shape",
+            "Unsafe provider success shapes must fail closed",
+        )
     else:
         raise AssertionError("Unsafe provider success shapes must fail closed")
 
@@ -864,11 +819,8 @@ def test_launchplane_write_action_helper_contract() -> None:
 def test_stale_injected_override_paths_are_nonfatal() -> None:
     validator_path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
     injected = str(ROOT / ".system" / "plan" / "SKILL.md")
-    proc = subprocess.run(
+    proc = run_probe(
         ["uv", "run", str(validator_path)],
-        check=False,
-        capture_output=True,
-        text=True,
         env={**os.environ, "CODEX_SKILLS_INJECTED_PATHS": injected},
     )
     require(
@@ -881,7 +833,7 @@ def test_stale_injected_override_paths_are_nonfatal() -> None:
         tmp_root = Path(tmp)
         for name in ("plan", "plugin-creator", "skill-creator"):
             (tmp_root / name).mkdir()
-        collect_missing = subprocess.run(
+        collect_missing = run_probe(
             [
                 "uv",
                 "run",
@@ -899,9 +851,6 @@ def test_stale_injected_override_paths_are_nonfatal() -> None:
                     "print(json.dumps(module.validate_system_override_paths([root / 'plan', root / 'plugin-creator', root / 'skill-creator'])))"
                 ),
             ],
-            check=False,
-            capture_output=True,
-            text=True,
         )
     require(collect_missing.returncode == 0, "Skill repo validator missing-override probe must run")
     missing = json.loads(collect_missing.stdout)
@@ -1475,12 +1424,9 @@ def test_infra_ops_private_context_command_detects_docs_pointer() -> None:
         context_path = Path(tmp) / "local-context.toml"
         context_path.write_text('[docs]\nlocal_infra = "private/ops"\n', encoding="utf-8")
         command = [*argv, "--local-context", str(context_path)]
-        result = subprocess.run(
+        result = run_probe(
             command,
             cwd=ROOT / "infra-ops",
-            capture_output=True,
-            text=True,
-            check=False,
         )
 
     require(
@@ -1499,12 +1445,9 @@ def test_infra_ops_private_context_command_reports_missing() -> None:
         context_path = Path(tmp) / "local-context.toml"
         context_path.write_text('[docs]\nother = "private/ops"\n', encoding="utf-8")
         command = [*argv, "--local-context", str(context_path)]
-        result = subprocess.run(
+        result = run_probe(
             command,
             cwd=ROOT / "infra-ops",
-            capture_output=True,
-            text=True,
-            check=False,
         )
 
     require(
