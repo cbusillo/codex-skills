@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import plistlib
@@ -27,6 +28,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,8 +61,8 @@ REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
 DEPLOYMENT_MANIFEST_ENV = "JB_INSPECT_DEPLOYMENT_MANIFEST"
-UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"run", "closeout", "wait", "status", "problems"})
-OUTCOME_ASSESSMENT_COMMANDS = frozenset({"run", "closeout"})
+UNKNOWN_LOG_ASSESSMENT_COMMANDS = frozenset({"agent", "run", "closeout", "wait", "status", "problems"})
+OUTCOME_ASSESSMENT_COMMANDS = frozenset({"agent", "run", "closeout"})
 OUTCOME_OBSERVATION_COMMANDS = frozenset({"wait", "status", "problems"})
 UNKNOWN_LOG_INFORMATIONAL_STATUSES = frozenset({"ok", "prepared", "resolved", "triggered", "claimed"})
 UNKNOWN_RETRY_BUCKETS = frozenset({"ide_not_ready", "stale_results", "capture_not_ready"})
@@ -76,6 +78,12 @@ LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 OUTCOME_LOG_SCHEMA_VERSION = 2
 QUALIFICATION_SCHEMA_VERSION = 1
+AGENT_RESULT_SCHEMA_VERSION = 1
+AGENT_USAGE_ERROR_REASON = "helper_usage_error"
+AGENT_USAGE_NEXT_ACTION = (
+    "Use only documented agent-inspect arguments, report this compatibility failure, "
+    "and do not run another inspection command."
+)
 QUALIFICATION_MIN_DECISIVE_RATE = 0.95
 QUALIFICATION_CLEANUP_STATUSES = frozenset({"closed", "not_needed"})
 QUALIFICATION_CONFIGURATION_CODES = frozenset({"ide_selection_required", "ide_config_ambiguous", "ide_config_missing"})
@@ -104,6 +112,7 @@ PREFERRED_COMMANDS = {
     "open-worktree": "prepare-worktree",
     "closeout": "inspect-closeout",
     "run": "inspect",
+    "agent": "agent-inspect",
     "cleanup-leases": "cleanup-helper-leases",
     "summarize-outcomes": "summarize-outcomes",
 }
@@ -114,6 +123,7 @@ COMMAND_ALIASES = {
     "open-worktree": "prepare",
     "inspect": "run",
     "inspect-closeout": "closeout",
+    "agent-inspect": "agent",
     "get-status": "status",
     "get-problems": "problems",
     "start-inspection": "trigger",
@@ -338,8 +348,19 @@ IDE_PRODUCT_BY_ALIAS = {
 def main() -> int:
     global _ACTIVE_CLIENT_RUN_ID
     previous_client_run_id = _ACTIVE_CLIENT_RUN_ID
+    raw_argv = list(sys.argv[1:])
     parser = build_parser()
-    args = parse_cli_args(parser)
+    if requests_agent_command(raw_argv):
+        parser_error = io.StringIO()
+        try:
+            with redirect_stderr(parser_error):
+                args = parse_cli_args(parser, raw_argv)
+        except SystemExit as error:
+            if error.code == 0:
+                raise
+            return emit_agent_usage_error(parser_error.getvalue())
+    else:
+        args = parse_cli_args(parser, raw_argv)
     args.command = canonical_command(args.command)
     args.client_run_id = str(uuid.uuid4())
     _ACTIVE_CLIENT_RUN_ID = args.client_run_id
@@ -380,6 +401,10 @@ def main() -> int:
             context = build_context(args)
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
+        if args.command == "agent":
+            context = build_context(args)
+            result = command_run(args, context)
+            return emit_agent_result(result, command=args.command_input)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
             exit_code = classify_cleanup_leases_exit(result)
@@ -393,7 +418,21 @@ def main() -> int:
             return emit(result, args.json, classify_run_exit(result), command=args.command_input)
     except InspectError as error:
         payload = error_payload(error, args)
+        if getattr(args, "command", None) == "agent":
+            return emit_agent_result(
+                payload,
+                command=getattr(args, "command_input", "agent-inspect"),
+                helper_exit_code=error.exit_code,
+            )
         return emit(payload, getattr(args, "json", False), error.exit_code, command=getattr(args, "command_input", getattr(args, "command", None)))
+    except Exception as error:
+        if getattr(args, "command", None) == "agent":
+            return emit_agent_result(
+                inspection_exception_result(error),
+                command=getattr(args, "command_input", "agent-inspect"),
+                helper_exit_code=3,
+            )
+        raise
     finally:
         _ACTIVE_CLIENT_RUN_ID = previous_client_run_id
     return 2
@@ -454,6 +493,34 @@ def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str] | None = Non
     return args
 
 
+def requests_agent_command(argv: list[str]) -> bool:
+    normalized = normalize_command_argv(argv)
+    for token in normalized:
+        if token == "--":
+            break
+        if token.startswith("-"):
+            continue
+        return token == "agent-inspect"
+    return False
+
+
+def emit_agent_usage_error(parser_error: str) -> int:
+    lines = [line.strip() for line in parser_error.splitlines() if line.strip()]
+    message = lines[-1] if lines else "The helper rejected the agent-inspect arguments."
+    if ": error: " in message:
+        message = message.split(": error: ", 1)[1]
+    payload = {
+        "status": "error",
+        "client_run_id": str(uuid.uuid4()),
+        "usage_error": True,
+        "error": message,
+        "error_message": message,
+        "error_reason": AGENT_USAGE_ERROR_REASON,
+        "verdict_next_action": AGENT_USAGE_NEXT_ACTION,
+    }
+    return emit_agent_result(payload, command="agent-inspect", helper_exit_code=2)
+
+
 def infer_error_reason(error: InspectError, payload: dict[str, Any]) -> str:
     for key in ("error_reason", "reason", "status"):
         value = payload.get(key)
@@ -499,6 +566,7 @@ def hint_for_error_reason(reason: str) -> str | None:
         "ide_selection_required": "Add preferred JetBrains IDE metadata to .github/github.json, or pass --ide for this one run.",
         "ide_config_ambiguous": "Add preferred JetBrains IDE metadata to .github/github.json so the helper updates the intended JetBrains config.",
         "ide_config_missing": "Launch the selected JetBrains IDE once, or choose an installed IDE/version in .github/github.json.",
+        AGENT_USAGE_ERROR_REASON: "Use only documented agent-inspect arguments and report the mismatch instead of trying another inspection command.",
     }.get(reason)
 
 
@@ -516,6 +584,7 @@ def build_parser() -> argparse.ArgumentParser:
         "get-problems": ("Fetch current inspection problem details.", False),
         "claim-worktree": ("Claim an already-open exact worktree without opening an IDE.", False),
         "prepare-worktree": ("Open and claim the exact worktree; does not inspect.", False),
+        "agent-inspect": ("Agent assessment: inspect once and emit a compact terminal result envelope.", True),
         "inspect-closeout": ("Readiness inspection: open if needed, inspect, and clean up helper-opened projects.", True),
         "inspect": ("Inspect now: open if needed, trigger, wait, fetch problems, and clean up helper-opened projects.", True),
     }
@@ -524,10 +593,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("cleanup-helper-leases", help="Remove stale local helper lifecycle leases.")
     subparsers.add_parser("summarize-outcomes", help="Summarize helper outcome JSONL logs without inspecting.")
 
-    for name in ("wait-for-inspection", "inspect", "inspect-closeout"):
+    for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
-    for name in ("prepare-worktree", "inspect", "inspect-closeout"):
+    for name in ("prepare-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
@@ -542,7 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.choices["summarize-outcomes"].add_argument("--qualification-file", help="Qualification schema v1 JSON file for strict artifact-pinned gating.")
     subparsers.choices["summarize-outcomes"].add_argument("--sample-size", type=int, default=50, help="Required strict qualification sample size. Defaults to 50.")
     subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
-    for name in ("get-problems", "inspect", "inspect-closeout"):
+    for name in ("get-problems", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
         subparsers.choices[name].add_argument("--problem-type", default="all")
         subparsers.choices[name].add_argument("--file-pattern", default="all")
@@ -555,7 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Return cached stale findings for diagnostics. Stale results still exit non-zero.",
         )
-    for name in ("wait-for-inspection", "get-status", "get-problems", "inspect", "inspect-closeout"):
+    for name in ("wait-for-inspection", "get-status", "get-problems", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument(
             "--allow-text-only-coverage",
             action="store_true",
@@ -4476,7 +4545,9 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     diagnosis = unknown_diagnosis_for(reason, payload) if verdict == "UNKNOWN" else None
     if diagnosis is not None:
         payload["unknown_diagnosis"] = diagnosis
-    report = agent_report_for(verdict, bucket, reason, payload)
+    next_action = str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
+    next_action = guidance_for_command(next_action, payload.get("command"))
+    report = agent_report_for(verdict, bucket, reason, payload, next_action)
     payload["bucket"] = bucket
     payload["retry_policy"] = retry_policy
     payload["agent_report"] = report
@@ -4484,7 +4555,7 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         "verdict": verdict,
         "bucket": bucket,
         "retry_policy": retry_policy,
-        "next_action": str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload)),
+        "next_action": next_action,
         "agent_report": report,
     }
     return payload
@@ -4585,6 +4656,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "inspection_trigger_empty_model",
         "non_empty_unmapped_tree",
         "inspection_proof_failed",
+        AGENT_USAGE_ERROR_REASON,
         SEMANTIC_COVERAGE_TRUNCATED_REASON,
     }:
         return "tool_bug"
@@ -4634,7 +4706,21 @@ def next_action_for_bucket(verdict: str, bucket: str, reason: str, payload: dict
     return next_action_for_unknown(reason, payload)
 
 
-def agent_report_for(verdict: str, bucket: str, reason: str, payload: dict[str, Any]) -> str:
+def guidance_for_command(value: Any, command: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    if canonical_command(str(command or "")) == "agent":
+        return value.replace("inspect-closeout", preferred_command("agent"))
+    return value
+
+
+def agent_report_for(
+    verdict: str,
+    bucket: str,
+    reason: str,
+    payload: dict[str, Any],
+    next_action: str | None = None,
+) -> str:
     if verdict == "GREEN":
         coverage = semantic_coverage_for_payload(payload)
         if coverage is not None and coverage.get("status") == "text_only_allowed":
@@ -4646,7 +4732,7 @@ def agent_report_for(verdict: str, bucket: str, reason: str, payload: dict[str, 
         if isinstance(total, int):
             return f"JetBrains inspection found {total} actionable finding(s)."
         return "JetBrains inspection found actionable findings."
-    action = str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
+    action = next_action or str(payload.get("verdict_next_action") or next_action_for_bucket(verdict, bucket, reason, payload))
     return f"JetBrains inspection was inconclusive ({bucket}: {reason}). {action}"
 
 
@@ -4713,6 +4799,8 @@ def write_outcome_record(payload: dict[str, Any], exit_code: int) -> None:
 
 
 def should_log_outcome(payload: dict[str, Any]) -> bool:
+    if payload.get("usage_error") is True:
+        return False
     command = canonical_command(str(payload.get("command") or ""))
     if command:
         return command in UNKNOWN_LOG_ASSESSMENT_COMMANDS
@@ -6090,6 +6178,98 @@ def status_label(body: dict[str, Any]) -> str:
 
 def classify_status_exit(result: dict[str, Any]) -> int:
     return verdict_exit_code(result, {"GREEN", "RED"})
+
+
+def emit_agent_result(
+    payload: dict[str, Any],
+    command: str = "agent-inspect",
+    helper_exit_code: int | None = None,
+) -> int:
+    payload["command"] = preferred_command(command)
+    apply_verdict(payload)
+    if payload.get("usage_error") is True:
+        payload["verdict_next_action"] = AGENT_USAGE_NEXT_ACTION
+        apply_agent_result(payload)
+    legacy_exit_code = classify_run_exit(payload) if helper_exit_code is None else helper_exit_code
+    log_assessment_records(payload, legacy_exit_code)
+    print(public_json(compact_agent_result_payload(payload, legacy_exit_code)))
+    return 0
+
+
+def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int) -> dict[str, Any]:
+    agent_result = dict(payload.get("agent_result") or {})
+    retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
+    agent_result["terminal"] = retry_policy.get("retry") is not True
+    agent_result["next_action"] = guidance_for_command(agent_result.get("next_action"), "agent-inspect")
+    agent_result["agent_report"] = guidance_for_command(agent_result.get("agent_report"), "agent-inspect")
+    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    problems = payload.get("problems") if isinstance(payload.get("problems"), list) else []
+    available_findings = [problem for problem in problems if isinstance(problem, dict)]
+    compact_findings = [compact_agent_finding(problem) for problem in available_findings[:20]]
+    total_problems = payload.get("total_problems")
+    problems_shown = payload.get("problems_shown")
+    findings_truncated = len(available_findings) > len(compact_findings)
+    if isinstance(total_problems, int):
+        findings_truncated = findings_truncated or total_problems > len(compact_findings)
+    if isinstance(problems_shown, int):
+        findings_truncated = findings_truncated or problems_shown > len(compact_findings)
+    result = {
+        "schema_version": AGENT_RESULT_SCHEMA_VERSION,
+        "command": "agent-inspect",
+        "status": payload.get("status"),
+        "agent_result": agent_result,
+        "helper_exit_code": helper_exit_code,
+        "scope": context.get("scope"),
+        "finding_count": total_problems,
+        "problems_shown": problems_shown,
+        "findings": compact_findings,
+        "findings_limit": 20,
+        "findings_truncated": findings_truncated,
+        "cleanup": {
+            "status": cleanup.get("status"),
+            "reason": cleanup.get("reason"),
+        },
+        "identity": {
+            "helper_revision": attribution.get("helper_revision"),
+            "ide_name": ide.get("name"),
+            "ide_version": attribution.get("ide_version") or ide.get("version"),
+            "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
+            "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
+            "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
+            "inspection_run_id": attribution.get("inspection_run_id") or inspection_run_id(payload),
+        },
+        "diagnostic": {
+            "error_reason": payload.get("error_reason"),
+            "error_message": guidance_for_command(payload.get("error_message") or payload.get("error"), "agent-inspect"),
+            "hint": guidance_for_command(payload.get("hint"), "agent-inspect"),
+            "attribution_class": payload.get("attribution_class"),
+            "failure_phase": payload.get("failure_phase"),
+            "unknown_diagnosis": payload.get("unknown_diagnosis"),
+            "internal_retry_count": payload.get("internal_retry_count"),
+            "internal_retry_skipped": payload.get("internal_retry_skipped"),
+            "unknown_log_path": payload.get("unknown_log_path"),
+            "unknown_log_error": payload.get("unknown_log_error"),
+            "outcome_log_path": payload.get("outcome_log_path"),
+            "outcome_log_error": payload.get("outcome_log_error"),
+        },
+    }
+    return public_payload(result)
+
+
+def compact_agent_finding(problem: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "file": problem.get("file"),
+        "line": problem.get("line"),
+        "column": problem.get("column"),
+        "severity": problem.get("severity"),
+        "inspection": problem.get("inspectionType") or problem.get("inspection") or problem.get("inspection_tool"),
+        "category": problem.get("category"),
+        "description": problem.get("description") or problem.get("message"),
+    }
 
 
 def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str | None = None, assess: bool = True) -> int:

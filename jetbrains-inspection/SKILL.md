@@ -11,6 +11,11 @@ resources:
     kind: reference
     description: Regression tests for JetBrains inspection helper routing and lifecycle behavior.
 commands:
+  - name: jetbrains-inspection-agent-inspect
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "agent-inspect", "--repo", "$PWD", "--scope", "changed_files"]
+    purpose: Runs the one-shot agent inspection flow and emits a compact terminal result envelope.
   - name: jetbrains-inspection-list-projects
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -66,8 +71,8 @@ policy:
       preferred:
         - kind: script
           path: scripts/jb-inspect.py
-          example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect-closeout", "--repo", "$PWD", "--scope", "changed_files"]
-          purpose: Runs the readiness inspection flow with route safety, lifecycle cleanup, and stale-result checks.
+          example_argv: ["uv", "run", "scripts/jb-inspect.py", "agent-inspect", "--repo", "$PWD", "--scope", "changed_files"]
+          purpose: Runs the one-shot agent inspection flow with route safety, lifecycle cleanup, and terminal result handling.
         - kind: script
           path: scripts/jb-inspect.py
           example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-status", "--repo", "$PWD"]
@@ -86,8 +91,7 @@ Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
 In the common user-skill install, that path is:
 
 ```bash
-HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
-uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
+uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py agent-inspect --repo "$PWD" --scope changed_files
 ```
 
 If this skill was loaded from a repo-local or temporary path, use that loaded
@@ -97,6 +101,7 @@ Useful commands:
 
 ```bash
 HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
+uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
 uv run "$HELPER" list-projects
 uv run "$HELPER" resolve-route --repo "$PWD"
 uv run "$HELPER" prepare-worktree --repo "$PWD"
@@ -111,6 +116,10 @@ uv run "$HELPER" cleanup-helper-leases --no-dry-run
 
 Command model:
 
+- `agent-inspect`: primary LLM-facing command; runs the maintained inspection
+  and lifecycle flow once, emits a compact JSON envelope, and exits successfully
+  whenever it produced an `agent_result`. Read the verdict and retry permission
+  from `agent_result`, never from the shell exit code.
 - `list-projects`: discover plugin-visible projects only.
 - `resolve-route`: probe for an already-open exact route; it does not open or
   inspect.
@@ -128,7 +137,7 @@ Command model:
 - `cleanup-helper-leases`: reconcile stale helper-owned leases under the
   lifecycle lock; unresolved identity or close failures return nonzero.
 
-`inspect` and `inspect-closeout` create a local lease, serialize helper-owned IDE
+`agent-inspect`, `inspect`, and `inspect-closeout` create a local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
 indexing/scanning to settle, run the inspection loop, and call the plugin
 lifecycle close endpoint only for projects the helper opened. Projects that were
@@ -243,8 +252,9 @@ Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-i
 }
 ```
 
-If an exact worktree is not already open and is outside those roots, `inspect`,
-`inspect-closeout`, and `prepare-worktree` must fail before opening the IDE. Do
+If an exact worktree is not already open and is outside those roots,
+`agent-inspect`, `inspect`, `inspect-closeout`, and `prepare-worktree` must fail
+before opening the IDE. Do
 not use random temp directories for agent inspection worktrees.
 
 If multiple JetBrains products or stable/EAP installs are present, the repo must
@@ -368,7 +378,7 @@ identify arbitrary writers or prove that ignored files are quiet.
   partial, mismatched, or contradictory conflict payloads fail closed as
   `inspection_proof_failed` at the trigger phase and must not supply GREEN/RED
   evidence. Adopted conflict runs remain foreign-owned and are never cancelled.
-  During `inspect` and `inspect-closeout`, problems retrieval reuses the trigger's
+  During `agent-inspect`, `inspect`, and `inspect-closeout`, problems retrieval reuses the trigger's
   scope, unversioned-file policy, changed-files mode, profile, and targeted file
   selectors rather than reconstructing a broader request.
   If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
@@ -488,8 +498,8 @@ side of the boundary they occupy.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness inspections should use `inspect-closeout`, not plain `get-status`.
-  `prepare-worktree`, `inspect`, and `inspect-closeout` always lifecycle-open the
+- readiness inspections should use `agent-inspect` or `inspect-closeout`, not plain `get-status`.
+  `prepare-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` always lifecycle-open the
   exact worktree when needed. Use `resolve-route`, `get-status`, `get-problems`,
   or `claim-worktree` for observation-only workflows that must not open an IDE;
   do not turn an assessment command into a route-only probe.
