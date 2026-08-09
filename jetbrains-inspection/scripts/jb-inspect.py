@@ -148,6 +148,13 @@ VERDICT_SOURCE_KEYS = (
 )
 SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 SEMANTIC_COVERAGE_TRUNCATED_REASON = "scope_semantic_coverage_truncated"
+RED_COMPATIBLE_PROOF_FAILURES = frozenset(
+    {
+        "execution_not_proven",
+        SEMANTIC_COVERAGE_MISSING_REASON,
+        SEMANTIC_COVERAGE_TRUNCATED_REASON,
+    }
+)
 PROJECT_CONTENT_ROOTS_MISSING_REASON = "project_content_roots_missing"
 PROJECT_METADATA_COVERAGE_REASON = "project_metadata_coverage_not_required"
 NON_SEMANTIC_PSI_VALUES = frozenset({"text", "plaintext", "textmate"})
@@ -4150,6 +4157,15 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
     if not isinstance(failures, list) or not failures:
         return None
     normalized_failures = [normalize_reason(str(reason)) for reason in failures]
+    total_problems = payload.get("total_problems")
+    problems = payload.get("problems")
+    has_current_findings = bool(problems) or (isinstance(total_problems, int) and total_problems > 0)
+    if (
+        payload.get("inspection_verdict") == "RED"
+        and has_current_findings
+        and set(normalized_failures) <= RED_COMPATIBLE_PROOF_FAILURES
+    ):
+        return None
     if SEMANTIC_COVERAGE_MISSING_REASON in normalized_failures:
         return SEMANTIC_COVERAGE_MISSING_REASON
     if SEMANTIC_COVERAGE_TRUNCATED_REASON in normalized_failures:
@@ -4611,14 +4627,38 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     payload["bucket"] = bucket
     payload["retry_policy"] = retry_policy
     payload["agent_report"] = report
-    payload["agent_result"] = {
+    agent_result = {
         "verdict": verdict,
         "bucket": bucket,
         "retry_policy": retry_policy,
         "next_action": next_action,
         "agent_report": report,
     }
+    proof_failures = payload.get("proof_failures")
+    if isinstance(proof_failures, list) and proof_failures:
+        agent_result["proof_failures"] = [str(failure) for failure in proof_failures]
+    inspection_proof = compact_inspection_proof(payload)
+    if inspection_proof:
+        agent_result["inspection_proof"] = inspection_proof
+    payload["agent_result"] = agent_result
     return payload
+
+
+def compact_inspection_proof(payload: dict[str, Any]) -> dict[str, Any]:
+    proof = payload.get("inspection_proof")
+    if not isinstance(proof, dict):
+        return {}
+    return {
+        key: proof.get(key)
+        for key in (
+            "status",
+            "capture_complete",
+            "capture_incomplete_reason",
+            "scope",
+            "snapshot_outcome",
+        )
+        if proof.get(key) is not None
+    }
 
 
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
@@ -6280,6 +6320,9 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         findings_truncated = findings_truncated or total_problems > len(compact_findings)
     if isinstance(problems_shown, int):
         findings_truncated = findings_truncated or problems_shown > len(compact_findings)
+    proof_failures = payload.get("proof_failures")
+    compact_proof_failures = [str(failure) for failure in proof_failures] if isinstance(proof_failures, list) else []
+    inspection_proof = compact_inspection_proof(payload)
     result = {
         "schema_version": AGENT_RESULT_SCHEMA_VERSION,
         "command": "agent-inspect",
@@ -6292,6 +6335,8 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "findings": compact_findings,
         "findings_limit": 20,
         "findings_truncated": findings_truncated,
+        "proof_failures": compact_proof_failures or None,
+        "inspection_proof": inspection_proof or None,
         "cleanup": {
             "status": cleanup.get("status"),
             "reason": cleanup.get("reason"),
