@@ -18,10 +18,36 @@
   },
   "qualityGate": {
     "inspection": {
-      "ide": "PyCharm",
       "prepare": "uv run jetbrains-inspection/scripts/prepare-python-project.py --python 3.12 --module-name codex-skills --test-root jetbrains-inspection/tests",
       "profile": "Codex Skills Readiness",
-      "scopePreference": "changed_files"
+      "scopePreference": "changed_files",
+      "lanes": [
+        {
+          "id": "jvm",
+          "ide": "IntelliJ IDEA",
+          "required": true,
+          "include": [
+            "**/*.kt",
+            "**/*.java",
+            "**/*.gradle",
+            "**/*.gradle.kts"
+          ],
+          "exclude": [
+            "test-fixtures/inspection-red-lane-*/**"
+          ]
+        },
+        {
+          "id": "python",
+          "ide": "PyCharm",
+          "required": true,
+          "include": [
+            "**/*.py"
+          ],
+          "exclude": [
+            "test-fixtures/inspection-red-lane-*/**"
+          ]
+        }
+      ]
     },
     "syntax": {
       "python": "uv run --python 3.12 python -m py_compile github/scripts/github_api.py github/scripts/github_comment.py github/scripts/github_issue.py github/scripts/github_read.py github/scripts/github_workflow_babysit.py github/scripts/test_github_api.py github/scripts/test_github_ci_diagnose.py github/scripts/test_github_comment.py github/scripts/test_github_issue.py github/scripts/test_github_read.py github/scripts/test_github_workflow_babysit.py github/scripts/validate-operation-matrix.py github/scripts/gh-plan.py github/scripts/gh-pr.py github/scripts/github-ci-diagnose.py github/scripts/reconcile-runtime-checkout.py launchplane/scripts/launchplane-context.py launchplane/scripts/launchplane-write-action.py launchplane/scripts/launchplane_safety.py launchplane/scripts/test_launchplane_helpers.py scripts/test_update_pep723_dependencies.py scripts/test_validate_execution_environment.py scripts/test_validate_github_actions_security.py scripts/update_pep723_dependencies.py scripts/validate_execution_environment.py scripts/validate_github_actions_security.py skill-creator/scripts/generate_openai_yaml.py skill-creator/scripts/init_skill.py skill-creator/scripts/quick_validate.py",

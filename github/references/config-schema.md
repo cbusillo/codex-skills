@@ -12,9 +12,24 @@ Repo-local values override workspace defaults.
   },
   "qualityGate": {
     "inspection": {
-      "ide": "PyCharm",
       "prepare": "uv venv --python 3.12 --allow-existing .venv",
-      "scopePreference": "changed_files"
+      "scopePreference": "changed_files",
+      "lanes": [
+        {
+          "id": "jvm",
+          "ide": "IntelliJ IDEA",
+          "required": true,
+          "include": ["**/*.kt", "**/*.java", "**/*.gradle", "**/*.gradle.kts"],
+          "exclude": ["test-fixtures/inspection-red-lane-*/**"]
+        },
+        {
+          "id": "python",
+          "ide": "PyCharm",
+          "required": true,
+          "include": ["**/*.py"],
+          "exclude": ["test-fixtures/inspection-red-lane-*/**"]
+        }
+      ]
     },
     "test": {
       "default": "npm test"
@@ -236,7 +251,21 @@ Common top-level keys:
   command that readiness agents run in the
   target worktree before the first inspection; preparation failure or tracked
   mutations block the assessment rather than permitting an incomplete project
-  model.
+  model. For mixed-language repositories, use ordered `lanes` instead of `ide`.
+  Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;
+  `required` defaults to `true`, and `exclude` defaults to an empty array.
+  Patterns are repository-relative POSIX globs. The first lane whose `include`
+  matches owns the file; a matching `exclude` removes that file from ordinary
+  changed-file, directory, or whole-project readiness instead of allowing it to
+  fall through to a later lane. An explicit `files` scope still assigns the
+  file to its lane and records the exclusion override so deliberate red-lane
+  smoke fixtures remain runnable. The helper records excluded and unmatched
+  selected files, skips empty lanes without
+  opening an IDE, executes non-empty lanes sequentially with exact `files`
+  scopes, and aggregates required lanes as `RED`, then `UNKNOWN`, then `GREEN`.
+  Optional-lane failures remain visible but do not override required-lane
+  semantics. When `lanes` is absent, the existing single-IDE `ide` behavior is
+  unchanged.
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.

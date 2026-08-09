@@ -13,6 +13,7 @@ completion, fetch results, and classify the outcome for readiness.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import io
 import json
@@ -70,6 +71,8 @@ INTERNAL_RETRY_BUCKETS = frozenset({"stale_results", "capture_not_ready"})
 UNKNOWN_RETRY_WAIT_MS = 30_000
 NATIVE_BROAD_SCOPE_PROOF_VERSION = 2
 MAX_WORKTREE_MUTATION_PATHS = 25
+MAX_LANE_FILE_PATHS = 100
+LANE_MUTATION_SETTLE_DELAY_MS = 5_000
 INTERNAL_RETRY_READY_TIMEOUT_MS = 90_000
 INTERNAL_RETRY_READY_STABLE_OBSERVATIONS = 3
 ROUTE_READY_STABLE_OBSERVATIONS = 3
@@ -79,6 +82,8 @@ INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 OUTCOME_LOG_SCHEMA_VERSION = 2
 QUALIFICATION_SCHEMA_VERSION = 1
 AGENT_RESULT_SCHEMA_VERSION = 1
+INSPECTION_LANE_SCHEMA_VERSION = 1
+INSPECTION_LANE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 AGENT_USAGE_ERROR_REASON = "helper_usage_error"
 AGENT_USAGE_NEXT_ACTION = (
     "Use only documented agent-inspect arguments, report this compatibility failure, "
@@ -316,6 +321,24 @@ class IdeSelection:
             "config_dir": str(self.config_dir) if self.config_dir else None,
             "source": self.source,
             "exact": self.exact,
+        }
+
+
+@dataclass(frozen=True)
+class InspectionLane:
+    lane_id: str
+    ide: str
+    required: bool
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "id": self.lane_id,
+            "ide": self.ide,
+            "required": self.required,
+            "include": list(self.include),
+            "exclude": list(self.exclude),
         }
 
 
@@ -677,6 +700,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     jetbrains = config.get("jetbrains", {}) if isinstance(config.get("jetbrains"), dict) else {}
     quality = config.get("qualityGate", {}) if isinstance(config.get("qualityGate"), dict) else {}
     inspection = quality.get("inspection", {}) if isinstance(quality.get("inspection"), dict) else {}
+    inspection_lanes = parse_inspection_lanes(inspection)
 
     main_config = jetbrains.get("mainWorktreePath") or jetbrains.get("main_worktree_path")
     if main_config:
@@ -721,6 +745,10 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "client_run_id": getattr(args, "client_run_id", None),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
     }
+    if inspection_lanes:
+        context["inspection_lane_schema_version"] = INSPECTION_LANE_SCHEMA_VERSION
+        context["inspection_lanes"] = [lane.public() for lane in inspection_lanes]
+        context["_inspection_lanes"] = inspection_lanes
     scope_descriptor = canonical_scope_descriptor(args, context, worktree_root)
     context["scope_descriptor"] = scope_descriptor
     context["scope_descriptor_sha256"] = canonical_json_sha256(scope_descriptor)
@@ -736,6 +764,105 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         if selection.app_path:
             context["ide_app_path"] = str(selection.app_path)
     return context
+
+
+def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, ...]:
+    raw_lanes = inspection.get("lanes")
+    if raw_lanes is None:
+        return ()
+    if not isinstance(raw_lanes, list) or not raw_lanes:
+        raise inspection_lane_config_error("qualityGate.inspection.lanes must be a non-empty array when configured.")
+
+    lanes: list[InspectionLane] = []
+    lane_ids: set[str] = set()
+    for index, raw_lane in enumerate(raw_lanes):
+        if not isinstance(raw_lane, dict):
+            raise inspection_lane_config_error(f"Inspection lane at index {index} must be an object.")
+        raw_lane_id = raw_lane.get("id")
+        lane_id = clean_optional(raw_lane_id) if isinstance(raw_lane_id, str) else None
+        if lane_id is None or INSPECTION_LANE_ID_PATTERN.fullmatch(lane_id) is None:
+            raise inspection_lane_config_error(
+                f"Inspection lane at index {index} must have an id containing only letters, numbers, '.', '_', or '-'."
+            )
+        if lane_id in lane_ids:
+            raise inspection_lane_config_error(f"Inspection lane id is duplicated: {lane_id}")
+        lane_ids.add(lane_id)
+
+        raw_ide = raw_lane.get("ide")
+        ide = clean_optional(raw_ide) if isinstance(raw_ide, str) else None
+        if ide is None:
+            raise inspection_lane_config_error(f"Inspection lane {lane_id} must name an ide.")
+        required = raw_lane.get("required", True)
+        if not isinstance(required, bool):
+            raise inspection_lane_config_error(f"Inspection lane {lane_id} required must be true or false.")
+        include = parse_inspection_lane_patterns(raw_lane.get("include"), lane_id, "include", required=True)
+        exclude = parse_inspection_lane_patterns(raw_lane.get("exclude", []), lane_id, "exclude", required=False)
+        unsupported = sorted(set(raw_lane) - {"id", "ide", "required", "include", "exclude"})
+        if unsupported:
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane_id} has unsupported fields: {', '.join(unsupported)}"
+            )
+        lanes.append(
+            InspectionLane(
+                lane_id=lane_id,
+                ide=ide,
+                required=required,
+                include=include,
+                exclude=exclude,
+            )
+        )
+    return tuple(lanes)
+
+
+def parse_inspection_lane_patterns(
+    value: Any,
+    lane_id: str,
+    field: str,
+    required: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, list) or (required and not value):
+        qualifier = "a non-empty array" if required else "an array"
+        raise inspection_lane_config_error(f"Inspection lane {lane_id} {field} must be {qualifier} of patterns.")
+    patterns: list[str] = []
+    for raw_pattern in value:
+        pattern = clean_optional(raw_pattern) if isinstance(raw_pattern, str) else None
+        if pattern is None:
+            raise inspection_lane_config_error(f"Inspection lane {lane_id} {field} contains an empty pattern.")
+        validate_inspection_lane_pattern(pattern, lane_id, field)
+        patterns.append(pattern)
+    return tuple(patterns)
+
+
+def validate_inspection_lane_pattern(pattern: str, lane_id: str, field: str) -> None:
+    normalized = pattern.replace("\\", "/")
+    drive_path = re.match(r"^[A-Za-z]:/", normalized) is not None
+    segments = normalized.split("/")
+    if (
+        pattern != normalized
+        or normalized.startswith(("/", "~/"))
+        or drive_path
+        or ".." in segments
+        or "." in segments
+        or "" in segments
+        or "\x00" in pattern
+    ):
+        raise inspection_lane_config_error(
+            f"Inspection lane {lane_id} {field} pattern must be a safe repository-relative POSIX glob: {pattern}"
+        )
+    if pattern.count("[") != pattern.count("]"):
+        raise inspection_lane_config_error(f"Inspection lane {lane_id} {field} pattern has unbalanced brackets: {pattern}")
+
+
+def inspection_lane_config_error(message: str) -> InspectError:
+    return InspectError(
+        message,
+        2,
+        {
+            "error_reason": "inspection_lane_config_invalid",
+            "failure_phase": "configuration",
+            "next_action": "Fix qualityGate.inspection.lanes in .github/github.json, then rerun the inspection command.",
+        },
+    )
 
 
 def canonical_scope_descriptor(args: argparse.Namespace, context: dict[str, Any], worktree_root: Path) -> dict[str, Any]:
@@ -778,6 +905,252 @@ def canonical_scope_path(value: Any, worktree_root: Path) -> str:
     if not path.is_absolute():
         path = worktree_root / path
     return str(path.resolve())
+
+
+def configured_inspection_lanes(context: dict[str, Any]) -> tuple[InspectionLane, ...]:
+    lanes = context.get("_inspection_lanes")
+    if isinstance(lanes, tuple) and all(isinstance(lane, InspectionLane) for lane in lanes):
+        return lanes
+    return ()
+
+
+def resolve_inspection_lane_selection(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    lanes = configured_inspection_lanes(context)
+    if not lanes:
+        return {}
+    worktree_root = Path(str(context.get("worktree_root"))).expanduser().resolve()
+    scope = str(context.get("scope") or "changed_files").strip().lower()
+    raw_paths = inspection_scope_paths(args, worktree_root, scope)
+    selected_files: list[dict[str, str]] = []
+    skipped_files: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        normalized = normalize_inspection_lane_path(raw_path, worktree_root)
+        relative_path = normalized.relative_to(worktree_root).as_posix()
+        if relative_path in seen:
+            continue
+        seen.add(relative_path)
+        if not normalized.exists():
+            skipped_files.append({"file": relative_path, "reason": "missing_or_deleted"})
+            continue
+        if not normalized.is_file():
+            skipped_files.append({"file": relative_path, "reason": "not_a_file"})
+            continue
+        selected_files.append({"file": relative_path, "absolute_path": str(normalized)})
+
+    max_files = getattr(args, "max_files", None)
+    if max_files is not None and len(selected_files) > int(max_files):
+        raise InspectError(
+            f"Resolved lane scope contains {len(selected_files)} files, exceeding --max-files={max_files}.",
+            2,
+            {
+                "error_reason": "inspection_lane_scope_too_large",
+                "failure_phase": "scope_resolution",
+                "selected_file_count": len(selected_files),
+                "max_files": int(max_files),
+            },
+        )
+
+    lane_files: dict[str, list[dict[str, str]]] = {lane.lane_id: [] for lane in lanes}
+    excluded_files: list[dict[str, str]] = []
+    explicit_exclusion_overrides: list[dict[str, str]] = []
+    unmatched_files: list[str] = []
+    for selected in selected_files:
+        relative_path = selected["file"]
+        matched_lane: InspectionLane | None = None
+        for lane in lanes:
+            if any(inspection_lane_pattern_matches(relative_path, pattern) for pattern in lane.include):
+                matched_lane = lane
+                break
+        if matched_lane is None:
+            unmatched_files.append(relative_path)
+            continue
+        excluding_pattern = next(
+            (
+                pattern
+                for pattern in matched_lane.exclude
+                if inspection_lane_pattern_matches(relative_path, pattern)
+            ),
+            None,
+        )
+        if excluding_pattern is not None and scope != "files":
+            excluded_files.append(
+                {
+                    "file": relative_path,
+                    "lane_id": matched_lane.lane_id,
+                    "pattern": excluding_pattern,
+                }
+            )
+            continue
+        if excluding_pattern is not None:
+            explicit_exclusion_overrides.append(
+                {
+                    "file": relative_path,
+                    "lane_id": matched_lane.lane_id,
+                    "pattern": excluding_pattern,
+                }
+            )
+        lane_files[matched_lane.lane_id].append(selected)
+
+    return {
+        "schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+        "scope": scope,
+        "selected_file_count": len(selected_files),
+        "selected_files": [selected["file"] for selected in selected_files],
+        "skipped_files": skipped_files,
+        "excluded_files": excluded_files,
+        "explicit_exclusion_overrides": explicit_exclusion_overrides,
+        "unmatched_files": unmatched_files,
+        "lane_files": lane_files,
+    }
+
+
+def inspection_scope_paths(args: argparse.Namespace, worktree_root: Path, scope: str) -> list[str]:
+    if scope == "files":
+        files = [str(path) for path in (getattr(args, "files", []) or []) if clean_optional(path)]
+        if not files:
+            raise InspectError(
+                "files scope requires at least one --file argument when inspection lanes are configured.",
+                2,
+                {"error_reason": "inspection_lane_scope_empty", "failure_phase": "scope_resolution"},
+            )
+        return files
+    if scope == "changed_files":
+        return changed_inspection_scope_paths(args, worktree_root)
+    if scope in {"directory", "whole_project"}:
+        pathspec: list[str] = []
+        if scope == "directory":
+            directory = clean_optional(getattr(args, "directory", None))
+            if directory is None:
+                raise InspectError(
+                    "directory scope requires --dir when inspection lanes are configured.",
+                    2,
+                    {"error_reason": "inspection_lane_scope_empty", "failure_phase": "scope_resolution"},
+                )
+            normalized_directory = normalize_inspection_lane_path(directory, worktree_root)
+            pathspec = [normalized_directory.relative_to(worktree_root).as_posix()]
+        command = ["git", "-C", str(worktree_root), "ls-files", "-z", "--cached"]
+        if getattr(args, "include_unversioned", True):
+            command.extend(["--others", "--exclude-standard"])
+        if pathspec:
+            command.extend(["--", *pathspec])
+        return git_null_paths(command, worktree_root)
+    raise InspectError(
+        f"Inspection lanes do not support scope: {scope}",
+        2,
+        {
+            "error_reason": "inspection_lane_scope_unsupported",
+            "failure_phase": "scope_resolution",
+            "scope": scope,
+        },
+    )
+
+
+def changed_inspection_scope_paths(args: argparse.Namespace, worktree_root: Path) -> list[str]:
+    mode = str(getattr(args, "changed_files_mode", "all") or "all").strip().lower()
+    commands: list[list[str]] = []
+    if mode in {"all", "staged"}:
+        commands.append(
+            [
+                "git",
+                "-C",
+                str(worktree_root),
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACMRTUXB",
+            ]
+        )
+    if mode in {"all", "unstaged"}:
+        commands.append(
+            [
+                "git",
+                "-C",
+                str(worktree_root),
+                "diff",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACMRTUXB",
+            ]
+        )
+    paths: list[str] = []
+    for command in commands:
+        paths.extend(git_null_paths(command, worktree_root))
+    if getattr(args, "include_unversioned", True) and mode in {"all", "unstaged"}:
+        paths.extend(
+            git_null_paths(
+                ["git", "-C", str(worktree_root), "ls-files", "--others", "--exclude-standard", "-z"],
+                worktree_root,
+            )
+        )
+    return paths
+
+
+def git_null_paths(command: list[str], worktree_root: Path) -> list[str]:
+    try:
+        completed = subprocess.run(command, check=True, capture_output=True)
+    except subprocess.CalledProcessError as error:
+        raise InspectError(
+            "Could not resolve the repository file scope for inspection lanes.",
+            3,
+            {
+                "error_reason": "inspection_lane_scope_resolution_failed",
+                "failure_phase": "scope_resolution",
+                "git_exit_code": error.returncode,
+                "worktree_root": str(worktree_root),
+            },
+        ) from error
+    return [os.fsdecode(path) for path in completed.stdout.split(b"\0") if path]
+
+
+def normalize_inspection_lane_path(value: Any, worktree_root: Path) -> Path:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = worktree_root / path
+    normalized = path.resolve()
+    if normalized != worktree_root and not normalized.is_relative_to(worktree_root):
+        raise InspectError(
+            "Inspection lane scope contains a path outside the exact worktree.",
+            2,
+            {
+                "error_reason": "inspection_lane_path_outside_worktree",
+                "failure_phase": "scope_resolution",
+                "path": str(path),
+                "worktree_root": str(worktree_root),
+            },
+        )
+    return normalized
+
+
+def inspection_lane_pattern_matches(relative_path: str, pattern: str) -> bool:
+    path_segments = tuple(relative_path.split("/"))
+    pattern_segments = tuple(pattern.split("/"))
+    memo: dict[tuple[int, int], bool] = {}
+
+    def matches(pattern_index: int, path_index: int) -> bool:
+        key = (pattern_index, path_index)
+        if key in memo:
+            return memo[key]
+        if pattern_index == len(pattern_segments):
+            result = path_index == len(path_segments)
+        elif pattern_segments[pattern_index] == "**":
+            result = matches(pattern_index + 1, path_index) or (
+                path_index < len(path_segments) and matches(pattern_index, path_index + 1)
+            )
+        else:
+            result = (
+                path_index < len(path_segments)
+                and fnmatch.fnmatchcase(path_segments[path_index], pattern_segments[pattern_index])
+                and matches(pattern_index + 1, path_index + 1)
+            )
+        memo[key] = result
+        return result
+
+    return matches(0, 0)
 
 
 def durable_scope_value(value: Any) -> str:
@@ -1147,11 +1520,285 @@ def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
 
 
 def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    if configured_inspection_lanes(context):
+        return run_configured_inspection_lanes(args, context)
     return run_prepared_inspection(args, context)
 
 
 def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    if configured_inspection_lanes(context):
+        return run_configured_inspection_lanes(args, context)
     return run_prepared_inspection(args, context)
+
+
+def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    lanes = configured_inspection_lanes(context)
+    selection = resolve_inspection_lane_selection(args, context)
+    lane_files = selection.get("lane_files") if isinstance(selection.get("lane_files"), dict) else {}
+    lane_results: list[dict[str, Any]] = []
+    for execution_order, lane in enumerate(lanes):
+        selected = lane_files.get(lane.lane_id) if isinstance(lane_files.get(lane.lane_id), list) else []
+        if not selected:
+            lane_results.append(noop_inspection_lane_result(lane, execution_order, context))
+            continue
+        lane_args = inspection_lane_args(args, lane, selected)
+        lane_context = inspection_lane_context(context, lane_args, lane, selected)
+        try:
+            lane_payload = run_prepared_inspection(lane_args, lane_context)
+        except InspectError as error:
+            lane_payload = error_payload(error, lane_args)
+        except Exception as error:
+            lane_payload = inspection_exception_result(error)
+        apply_verdict(lane_payload)
+        lane_results.append(
+            compact_inspection_lane_result(
+                lane,
+                execution_order,
+                lane_context,
+                selected,
+                lane_payload,
+            )
+        )
+
+    result = {
+        "status": "inspection_lanes_complete",
+        "context": public_context(context),
+        "lane_schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+        "lane_selection": {
+            key: value
+            for key, value in selection.items()
+            if key != "lane_files"
+        },
+        "lane_results": lane_results,
+    }
+    apply_multi_lane_verdict(result)
+    return result
+
+
+def inspection_lane_args(
+    args: argparse.Namespace,
+    lane: InspectionLane,
+    selected: list[dict[str, str]],
+) -> argparse.Namespace:
+    values = dict(vars(args))
+    values.update(
+        {
+            "ide": lane.ide,
+            "ide_app": None,
+            "ide_channel": None,
+            "ide_version": None,
+            "project_key": None,
+            "project": None,
+            "session_id": None,
+            "scope": "files",
+            "directory": None,
+            "files": [item["absolute_path"] for item in selected],
+            "max_files": None,
+            "client_run_id": str(uuid.uuid4()),
+        }
+    )
+    return argparse.Namespace(**values)
+
+
+def inspection_lane_context(
+    context: dict[str, Any],
+    lane_args: argparse.Namespace,
+    lane: InspectionLane,
+    selected: list[dict[str, str]],
+) -> dict[str, Any]:
+    lane_context = {
+        key: value
+        for key, value in context.items()
+        if key not in {"ide_selection", "ide_config_dir", "ide_app_path", "inspection_lanes", "_inspection_lanes"}
+    }
+    lane_context.update(
+        {
+            "ide": lane.ide,
+            "ide_app": None,
+            "ide_channel": None,
+            "ide_version": None,
+            "scope": "files",
+            "client_run_id": lane_args.client_run_id,
+            "inspection_lane": lane.public(),
+            "selected_files": [item["absolute_path"] for item in selected],
+        }
+    )
+    worktree_root = Path(str(lane_context["worktree_root"])).expanduser().resolve()
+    scope_descriptor = canonical_scope_descriptor(lane_args, lane_context, worktree_root)
+    lane_context["scope_descriptor"] = scope_descriptor
+    lane_context["scope_descriptor_sha256"] = canonical_json_sha256(scope_descriptor)
+    ide_selection = resolve_ide_selection(lane_context)
+    if ide_selection:
+        lane_context["ide_selection"] = ide_selection.public()
+        if ide_selection.config_dir:
+            lane_context["ide_config_dir"] = str(ide_selection.config_dir)
+        if ide_selection.app_path:
+            lane_context["ide_app_path"] = str(ide_selection.app_path)
+        if ide_selection.app_name:
+            lane_context["ide_app"] = ide_selection.app_name
+    return lane_context
+
+
+def noop_inspection_lane_result(
+    lane: InspectionLane,
+    execution_order: int,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+        "id": lane.lane_id,
+        "required": lane.required,
+        "execution_order": execution_order,
+        "status": "no_matching_files",
+        "verdict": "NOT_RUN",
+        "bucket": "no_matching_files",
+        "blocker_stage": None,
+        "next_action": "No IDE action required because this lane has no selected files.",
+        "worktree": context.get("worktree_root"),
+        "scope": "files",
+        "files": [],
+        "ide": {"requested": lane.ide},
+        "route": None,
+        "proof": None,
+        "cleanup": {"status": "not_needed", "reason": "lane_empty"},
+        "diagnostic": None,
+    }
+
+
+def compact_inspection_lane_result(
+    lane: InspectionLane,
+    execution_order: int,
+    context: dict[str, Any],
+    selected: list[dict[str, str]],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    compact = compact_agent_result_payload(payload, classify_run_exit(payload))
+    agent_result = compact.get("agent_result") if isinstance(compact.get("agent_result"), dict) else {}
+    route = payload_route(payload)
+    ide_selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    evidence_ids = payload.get("evidence_ids") if isinstance(payload.get("evidence_ids"), dict) else {}
+    compact_identity = compact.get("identity") if isinstance(compact.get("identity"), dict) else {}
+    return public_payload(
+        {
+            "schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+            "id": lane.lane_id,
+            "required": lane.required,
+            "execution_order": execution_order,
+            "status": payload.get("status"),
+            "verdict": agent_result.get("verdict"),
+            "bucket": agent_result.get("bucket"),
+            "retry_policy": agent_result.get("retry_policy"),
+            "blocker_stage": payload.get("failure_phase"),
+            "next_action": agent_result.get("next_action"),
+            "worktree": context.get("worktree_root"),
+            "scope": "files",
+            "file_count": len(selected),
+            "files": [item["absolute_path"] for item in selected],
+            "relative_files": [item["file"] for item in selected],
+            "ide": {
+                "requested": lane.ide,
+                "product": ide_selection.get("product"),
+                "channel": ide_selection.get("channel"),
+                "version": compact_identity.get("ide_version") or ide_selection.get("version"),
+                "app_name": ide_selection.get("app_name"),
+                "config_dir": ide_selection.get("config_dir"),
+                "product_code": compact_identity.get("ide_product_code"),
+                "plugin_version": compact_identity.get("plugin_version"),
+                "plugin_build_fingerprint": compact_identity.get("plugin_build_fingerprint"),
+                "helper_revision": compact_identity.get("helper_revision"),
+            },
+            "route": {
+                "project_name": route.get("project_name"),
+                "project_key": route.get("project_key"),
+                "project_instance_id": route.get("project_instance_id"),
+                "session_id": route.get("session_id"),
+                "base_path": route.get("base_path"),
+            } if route else None,
+            "evidence_ids": {
+                "client_run_id": evidence_ids.get("client_run_id"),
+                "request_id": evidence_ids.get("request_id"),
+                "session_id": evidence_ids.get("session_id") or route.get("session_id"),
+                "project_instance_id": evidence_ids.get("project_instance_id") or route.get("project_instance_id"),
+                "inspection_run_id": evidence_ids.get("inspection_run_id") or compact_identity.get("inspection_run_id"),
+            },
+            "proof": compact.get("inspection_proof"),
+            "finding_count": compact.get("finding_count"),
+            "findings": compact.get("findings"),
+            "findings_truncated": compact.get("findings_truncated"),
+            "cleanup": {
+                "status": cleanup.get("status"),
+                "reason": cleanup.get("reason"),
+                "mutation_evidence": payload.get("worktree_mutation_evidence"),
+            },
+            "diagnostic": compact.get("diagnostic"),
+        }
+    )
+
+
+def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
+    lane_results = payload.get("lane_results") if isinstance(payload.get("lane_results"), list) else []
+    required = [
+        lane
+        for lane in lane_results
+        if isinstance(lane, dict) and lane.get("required") is True and lane.get("verdict") != "NOT_RUN"
+    ]
+    red = [lane for lane in required if lane.get("verdict") == "RED"]
+    unknown = [lane for lane in required if lane.get("verdict") not in {"GREEN", "RED"}]
+    if red:
+        verdict = "RED"
+        reason = "required_lane_red"
+        bucket = "multi_lane_findings"
+        status = "findings"
+        affected = [str(lane.get("id")) for lane in red]
+        next_action = f"Fix actionable findings in required lane(s): {', '.join(affected)}."
+    elif unknown:
+        verdict = "UNKNOWN"
+        reason = "required_lane_unknown"
+        bucket = "multi_lane_unknown"
+        status = "inspection_lanes_unknown"
+        affected = [str(lane.get("id")) for lane in unknown]
+        next_action = f"Resolve the fail-closed outcome in required lane(s): {', '.join(affected)}."
+    else:
+        verdict = "GREEN"
+        reason = "all_required_lanes_green" if required else "no_required_lane_files"
+        bucket = "multi_lane_clean"
+        status = "clean"
+        next_action = "No inspection action required for the configured required lanes."
+
+    retry_policies = [
+        lane.get("retry_policy")
+        for lane in required
+        if isinstance(lane.get("retry_policy"), dict)
+    ]
+    retry = verdict == "UNKNOWN" and any(policy.get("retry") is True for policy in retry_policies)
+    retry_policy = {
+        "retry": retry,
+        "max_attempts": max((int(policy.get("max_attempts") or 0) for policy in retry_policies), default=0) if retry else 0,
+        "wait_ms": max((int(policy.get("wait_ms") or 0) for policy in retry_policies), default=0) if retry else 0,
+    }
+    payload.update(
+        {
+            "status": status,
+            "verdict": verdict,
+            "verdict_reason": reason,
+            "verdict_message": "Configured JetBrains inspection lanes were aggregated deterministically.",
+            "verdict_next_action": next_action,
+            "bucket": bucket,
+            "retry_policy": retry_policy,
+            "agent_report": f"{verdict}: {reason}. {next_action}",
+            "agent_result": {
+                "verdict": verdict,
+                "bucket": bucket,
+                "retry_policy": retry_policy,
+                "next_action": next_action,
+                "agent_report": f"{verdict}: {reason}. {next_action}",
+            },
+            "required_lane_count": len(required),
+            "lane_count": len(lane_results),
+        }
+    )
+    return payload
 
 
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
@@ -1167,12 +1814,6 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
             inspection_error = error
             result = inspection_exception_result(error)
         finally:
-            if lease_may_own_open_project(lease):
-                mutation_after = git_worktree_status_snapshot(context.get("worktree_root"))
-                result["worktree_mutation_evidence"] = summarize_worktree_mutations(
-                    mutation_before,
-                    mutation_after,
-                )
             if getattr(args, "keep_warm", False):
                 if lease_may_own_open_project(lease):
                     cleanup = {
@@ -1191,6 +1832,13 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                     cleanup = defer_lifecycle_cleanup(lease, result)
                 else:
                     cleanup = cleanup_lifecycle(lease, prepared.get("route") or {}, close_proof)
+            if lease_may_own_open_project(lease):
+                mutation_after = post_cleanup_worktree_status_snapshot(context)
+                result["worktree_mutation_evidence"] = summarize_worktree_mutations(
+                    mutation_before,
+                    mutation_after,
+                )
+                apply_worktree_mutation_blocker(result)
         result["prepared"] = public_payload(prepared)
         result["cleanup"] = cleanup
         if cleanup.get("status") == "deferred":
@@ -2959,6 +3607,13 @@ def wait_for_matching_ide_identity(args: argparse.Namespace, context: dict[str, 
     payload = auto_open_timeout_payload(args, context, timeout_ms)
     if last_error:
         payload["last_error"] = str(last_error)
+    payload.update(
+        {
+            "error_reason": "inspection_api_unavailable",
+            "failure_phase": "bootstrap_identity",
+            "hint": "Install or enable the compatible Inspection API plugin in the selected IDE, restart that IDE, and rerun the lane.",
+        }
+    )
     raise InspectError("Timed out waiting for the target JetBrains IDE plugin after hidden bootstrap.", 3, payload)
 
 
@@ -4296,6 +4951,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Pass project_key, project_path, or worktree_path so the helper can inspect the exact project."
     if reason == "session_drift":
         return "Resolve the route again and rerun; the IDE/plugin session changed."
+    if reason == "worktree_mutation_detected":
+        return "Inspect and remove the IDE-created worktree changes, then rerun after lifecycle cleanup leaves the exact worktree unchanged."
     if reason.startswith("cleanup_"):
         return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
@@ -4435,6 +5092,8 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "project_mismatch",
         "route_missing",
         "route_mismatch",
+        "route_path_invalid",
+        "route_path_missing",
         "run_changed",
         "scope_mismatch",
         "scope_not_covered",
@@ -4447,6 +5106,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "view_not_ready",
         "view_updating_unreadable",
         "worktree_route_mismatch",
+        "worktree_mutation_detected",
     }:
         return "legitimate_fail_closed"
     if payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
@@ -4599,6 +5259,8 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload.get("lane_results"), list):
+        return apply_multi_lane_verdict(payload)
     apply_semantic_coverage(payload)
     payload.update(verdict_for_payload(payload))
     wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
@@ -4745,9 +5407,9 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "stale_results"
     if normalized in {"view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results", "capture_incomplete", "scope_not_covered", "inspection_inputs_changed", "project_analysis_not_ready"}:
         return "capture_not_ready"
-    if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable", "route_mismatch", "project_not_open", "ownership_not_proven"}:
+    if normalized in {"session_drift", "ambiguous_route", "target_project_not_open", "worktree_route_mismatch", "matching_project_route_unavailable", "route_mismatch", "route_path_invalid", "route_path_missing", "project_not_open", "ownership_not_proven"}:
         return "route_not_ready"
-    if normalized.startswith("cleanup_") or payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
+    if normalized == "worktree_mutation_detected" or normalized.startswith("cleanup_") or payload.get("cleanup_failed") or payload.get("cleanup_skipped") or payload.get("cleanup_deferred"):
         return "cleanup_not_clean"
     if normalized in {
         "invalid_api_response",
@@ -4772,7 +5434,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         SEMANTIC_COVERAGE_MISSING_REASON,
     }:
         return "environment_blocked"
-    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection", "profile_resolution_error"}:
+    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection", "profile_resolution_error", "inspection_lane_config_invalid"}:
         return "policy_required"
     if attribution.get("classification") == "configuration_blocked":
         return "environment_blocked"
@@ -5174,6 +5836,29 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     worktree_root = clean_optional(context.get("worktree_root") or public.get("worktree_root"))
     worktree_path = Path(worktree_root) if worktree_root else None
     repo_head_sha = git_head_sha(worktree_path) if worktree_path is not None and worktree_path.exists() else context.get("repo_head_sha") or public.get("repo_head_sha")
+    lane_results = public.get("lane_results") if isinstance(public.get("lane_results"), list) else []
+    lane_summaries = [
+        {
+            "id": lane.get("id"),
+            "required": lane.get("required"),
+            "execution_order": lane.get("execution_order"),
+            "verdict": lane.get("verdict"),
+            "bucket": lane.get("bucket"),
+            "selected_file_count": len(lane.get("files") or []),
+            "ide": (lane.get("ide") or {}).get("product") or (lane.get("ide") or {}).get("requested"),
+            "ide_version": (lane.get("ide") or {}).get("version"),
+            "plugin_version": (lane.get("ide") or {}).get("plugin_version"),
+            "plugin_build_fingerprint": (lane.get("ide") or {}).get("plugin_build_fingerprint"),
+            "cleanup_status": (lane.get("cleanup") or {}).get("status"),
+            "client_run_id": (lane.get("evidence_ids") or {}).get("client_run_id"),
+            "request_id": (lane.get("evidence_ids") or {}).get("request_id"),
+            "session_id": (lane.get("evidence_ids") or {}).get("session_id"),
+            "project_instance_id": (lane.get("evidence_ids") or {}).get("project_instance_id"),
+            "inspection_run_id": (lane.get("evidence_ids") or {}).get("inspection_run_id"),
+        }
+        for lane in lane_results
+        if isinstance(lane, dict)
+    ]
     record: dict[str, Any] = {
         "schema_version": OUTCOME_LOG_SCHEMA_VERSION,
         "event_id": event_id,
@@ -5236,6 +5921,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "unknown_diagnosis": public.get("unknown_diagnosis"),
         "deployment_mismatch": public.get("deployment_mismatch"),
         "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
+        "inspection_lanes": lane_summaries or None,
     }
     return public, record
 
@@ -6300,6 +6986,8 @@ def emit_agent_result(
 
 
 def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int) -> dict[str, Any]:
+    if isinstance(payload.get("lane_results"), list):
+        return compact_multi_lane_agent_result_payload(payload, helper_exit_code)
     agent_result = dict(payload.get("agent_result") or {})
     retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
     agent_result["terminal"] = retry_policy.get("retry") is not True
@@ -6368,6 +7056,84 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     return public_payload(result)
 
 
+def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit_code: int) -> dict[str, Any]:
+    apply_multi_lane_verdict(payload)
+    agent_result = dict(payload.get("agent_result") or {})
+    agent_result["terminal"] = agent_result.get("retry_policy", {}).get("retry") is not True
+    lanes = [lane for lane in payload.get("lane_results", []) if isinstance(lane, dict)]
+    compact_lanes = [bounded_inspection_lane_result(lane) for lane in lanes]
+    findings: list[dict[str, Any]] = []
+    total_findings = 0
+    findings_truncated = False
+    for lane in lanes:
+        lane_count = lane.get("finding_count")
+        if isinstance(lane_count, int):
+            total_findings += lane_count
+        lane_findings = lane.get("findings") if isinstance(lane.get("findings"), list) else []
+        for finding in lane_findings:
+            if not isinstance(finding, dict):
+                continue
+            if len(findings) >= 20:
+                findings_truncated = True
+                break
+            findings.append({"lane_id": lane.get("id"), **finding})
+        findings_truncated = findings_truncated or lane.get("findings_truncated") is True
+    result = {
+        "schema_version": AGENT_RESULT_SCHEMA_VERSION,
+        "lane_schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+        "command": "agent-inspect",
+        "status": payload.get("status"),
+        "agent_result": agent_result,
+        "helper_exit_code": helper_exit_code,
+        "scope": payload.get("lane_selection", {}).get("scope"),
+        "finding_count": total_findings,
+        "findings": findings,
+        "findings_limit": 20,
+        "findings_truncated": findings_truncated or total_findings > len(findings),
+        "selection": bounded_lane_selection(payload.get("lane_selection")),
+        "lanes": compact_lanes,
+        "aggregate": {
+            "verdict": payload.get("verdict"),
+            "bucket": payload.get("bucket"),
+            "reason": payload.get("verdict_reason"),
+            "required_lane_count": payload.get("required_lane_count"),
+            "lane_count": payload.get("lane_count"),
+        },
+        "identity": {"helper_revision": helper_revision()},
+    }
+    return public_payload(result)
+
+
+def bounded_inspection_lane_result(lane: dict[str, Any]) -> dict[str, Any]:
+    bounded = dict(lane)
+    for field in ("files", "relative_files"):
+        values = lane.get(field) if isinstance(lane.get(field), list) else []
+        bounded[field] = values[:MAX_LANE_FILE_PATHS]
+        bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
+        bounded[f"{field}_omitted_count"] = max(0, len(values) - MAX_LANE_FILE_PATHS)
+    bounded["file_count"] = int(lane.get("file_count") or len(lane.get("files") or []))
+    return bounded
+
+
+def bounded_lane_selection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    bounded = dict(value)
+    for field in (
+        "selected_files",
+        "skipped_files",
+        "excluded_files",
+        "explicit_exclusion_overrides",
+        "unmatched_files",
+    ):
+        values = value.get(field) if isinstance(value.get(field), list) else []
+        bounded[field] = values[:MAX_LANE_FILE_PATHS]
+        bounded[f"{field}_count"] = len(values)
+        bounded[f"{field}_limit"] = MAX_LANE_FILE_PATHS
+        bounded[f"{field}_omitted_count"] = max(0, len(values) - MAX_LANE_FILE_PATHS)
+    return bounded
+
+
 def compact_agent_finding(problem: dict[str, Any]) -> dict[str, Any]:
     return {
         "file": problem.get("file"),
@@ -6406,6 +7172,27 @@ def emit(payload: dict[str, Any], json_only: bool, exit_code: int, command: str 
 def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     if assess:
         apply_verdict(payload)
+    lane_results = payload.get("lane_results") if isinstance(payload.get("lane_results"), list) else []
+    if lane_results:
+        print(f"VERDICT: {payload.get('verdict')} ({payload.get('verdict_reason')})")
+        for lane in lane_results:
+            if not isinstance(lane, dict):
+                continue
+            ide = lane.get("ide") if isinstance(lane.get("ide"), dict) else {}
+            cleanup = lane.get("cleanup") if isinstance(lane.get("cleanup"), dict) else {}
+            print(
+                "LANE: "
+                f"{lane.get('id')} required={str(lane.get('required')).lower()} "
+                f"ide={ide.get('product') or ide.get('requested')} files={len(lane.get('files') or [])} "
+                f"verdict={lane.get('verdict')} bucket={lane.get('bucket')} cleanup={cleanup.get('status')}"
+            )
+        selection = payload.get("lane_selection") if isinstance(payload.get("lane_selection"), dict) else {}
+        if selection.get("excluded_files"):
+            print(f"EXCLUDED_FILES: {len(selection['excluded_files'])}")
+        if selection.get("unmatched_files"):
+            print(f"UNMATCHED_FILES: {len(selection['unmatched_files'])}")
+        print(f"NEXT: {payload.get('verdict_next_action')}")
+        return
     route = payload.get("route") or payload.get("trigger", {}).get("route") or {}
     if route:
         print(safe_text("ROUTE: {ide_name} project={project_name} project_key={project_key} base_path={base_path}", {
@@ -6998,10 +7785,12 @@ def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) 
     )
     removed_paths = sorted(path for path in before_entries if path not in after_entries)
     emitted_paths = changed_paths[:MAX_WORKTREE_MUTATION_PATHS]
+    emitted_removed_paths = removed_paths[:MAX_WORKTREE_MUTATION_PATHS]
     return {
         "schema_version": 1,
         "before_status": before.get("status"),
         "after_status": after.get("status"),
+        "settle_delay_ms": after.get("settle_delay_ms", 0),
         "dirty_before": bool(before_entries),
         "dirty_after": bool(after_entries),
         "new_or_changed_path_count": len(changed_paths),
@@ -7009,9 +7798,39 @@ def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) 
         "paths_limit": MAX_WORKTREE_MUTATION_PATHS,
         "paths_omitted_count": max(0, len(changed_paths) - len(emitted_paths)),
         "new_or_changed_paths": emitted_paths,
+        "removed_paths_omitted_count": max(0, len(removed_paths) - len(emitted_removed_paths)),
+        "removed_paths": emitted_removed_paths,
         "tracked_change_count": sum(1 for path in changed_paths if not after_entries[path].startswith("??")),
         "untracked_change_count": sum(1 for path in changed_paths if after_entries[path].startswith("??")),
     }
+
+
+def post_cleanup_worktree_status_snapshot(context: dict[str, Any]) -> dict[str, Any]:
+    settle_delay_ms = LANE_MUTATION_SETTLE_DELAY_MS if context.get("inspection_lane") else 0
+    if settle_delay_ms:
+        time.sleep(settle_delay_ms / 1000.0)
+    snapshot = git_worktree_status_snapshot(context.get("worktree_root"))
+    snapshot["settle_delay_ms"] = settle_delay_ms
+    return snapshot
+
+
+def apply_worktree_mutation_blocker(result: dict[str, Any]) -> None:
+    evidence = result.get("worktree_mutation_evidence")
+    if not isinstance(evidence, dict):
+        return
+    changed_count = int(evidence.get("new_or_changed_path_count") or 0)
+    removed_count = int(evidence.get("removed_path_count") or 0)
+    if changed_count == 0 and removed_count == 0:
+        return
+    result.update(
+        {
+            "status": "error",
+            "error_reason": "worktree_mutation_detected",
+            "error_message": "The helper-owned IDE lifecycle changed the worktree during inspection.",
+            "worktree_mutation_detected": True,
+            "failure_phase": "cleanup",
+        }
+    )
 
 
 def git_common_worktree(path: Path) -> Path | None:
@@ -7969,15 +8788,31 @@ def ensure_worktree_safe(route: dict[str, Any], context: dict[str, Any], args: a
     strategy = str(context.get("worktree_strategy") or "prefer-current")
     if strategy in {"allow-main", "allow-any"}:
         return
-    route_base = route.get("base_path")
+    route_base = route.get("base_path") or route.get("project_file_path")
     worktree_root = context.get("worktree_root")
     if not route_base or not worktree_root:
-        return
+        raise InspectError(
+            "Cannot verify the resolved JetBrains route against the current worktree.",
+            3,
+            {
+                "error_reason": "route_path_missing",
+                "route": route,
+                "context": public_context(context),
+            },
+        )
     try:
         route_path = Path(route_base).resolve()
         worktree_path = Path(worktree_root).resolve()
-    except OSError:
-        return
+    except OSError as error:
+        raise InspectError(
+            f"Cannot verify the resolved JetBrains route against the current worktree: {error}",
+            3,
+            {
+                "error_reason": "route_path_invalid",
+                "route": route,
+                "context": public_context(context),
+            },
+        ) from error
     if route_path == worktree_path:
         return
     if worktree_path.is_relative_to(route_path) or route_path.is_relative_to(worktree_path):
