@@ -557,6 +557,525 @@ class BuildContextTest(unittest.TestCase):
         self.assertIsNone(selection.app_path)
 
 
+class InspectionLaneConfigTest(unittest.TestCase):
+    def test_parses_ordered_lanes_and_preserves_legacy_without_lanes(self):
+        legacy = jb_inspect.parse_inspection_lanes({"ide": "PyCharm"})
+        lanes = jb_inspect.parse_inspection_lanes(
+            {
+                "lanes": [
+                    {
+                        "id": "jvm",
+                        "ide": "IntelliJ IDEA",
+                        "required": True,
+                        "include": ["**/*.kt", "**/*.gradle.kts"],
+                        "exclude": ["test-fixtures/red-lane/**"],
+                    },
+                    {
+                        "id": "python",
+                        "ide": "PyCharm",
+                        "required": False,
+                        "include": ["**/*.py"],
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(legacy, ())
+        self.assertEqual([lane.lane_id for lane in lanes], ["jvm", "python"])
+        self.assertTrue(lanes[0].required)
+        self.assertFalse(lanes[1].required)
+        self.assertEqual(lanes[0].exclude, ("test-fixtures/red-lane/**",))
+
+    def test_rejects_duplicate_ids_invalid_patterns_and_unknown_fields(self):
+        cases = [
+            {
+                "lanes": [
+                    {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                    {"id": "jvm", "ide": "PyCharm", "include": ["**/*.py"]},
+                ]
+            },
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["../**/*.py"]}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/[abc.py"]}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "profile": "strict"}]},
+            {"lanes": [{"id": 1, "ide": "PyCharm", "include": ["**/*.py"]}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": [42]}]},
+        ]
+
+        for inspection in cases:
+            with self.subTest(inspection=inspection), self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.parse_inspection_lanes(inspection)
+            self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_config_invalid")
+
+    def test_build_context_exposes_lanes_without_selecting_one_ide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".github").mkdir()
+            write_json(
+                root / ".github" / "github.json",
+                {
+                    "qualityGate": {
+                        "inspection": {
+                            "scopePreference": "changed_files",
+                            "lanes": [
+                                {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                                {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                            ],
+                        }
+                    }
+                },
+            )
+
+            context = jb_inspect.build_context(Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile=""))
+
+        self.assertIsNone(context["ide"])
+        self.assertEqual([lane["id"] for lane in context["inspection_lanes"]], ["jvm", "python"])
+        self.assertEqual([lane.lane_id for lane in context["_inspection_lanes"]], ["jvm", "python"])
+
+
+class InspectionLaneSelectionTest(unittest.TestCase):
+    def make_context(self, root: Path, lanes: tuple[Any, ...], scope: str = "files") -> dict[str, Any]:
+        return {
+            "repo_path": str(root),
+            "worktree_root": str(root),
+            "project_path": str(root),
+            "exact_route_path": str(root),
+            "lifecycle_target_path": str(root),
+            "scope": scope,
+            "_inspection_lanes": lanes,
+        }
+
+    def test_first_match_assignment_exclusions_and_unmatched_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            files = [
+                root / "build.gradle.kts",
+                root / "src" / "Example.kt",
+                root / "tools" / "check.py",
+                root / "test-fixtures" / "red-lane" / "Broken.py",
+                root / "README.md",
+            ]
+            for path in files:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {
+                            "id": "jvm",
+                            "ide": "IntelliJ IDEA",
+                            "include": ["**/*.kt", "**/*.gradle.kts"],
+                        },
+                        {
+                            "id": "python",
+                            "ide": "PyCharm",
+                            "include": ["**/*.py", "tools/**"],
+                            "exclude": ["test-fixtures/red-lane/**"],
+                        },
+                    ]
+                }
+            )
+            args = helper_args(
+                scope="files",
+                files=[str(path) for path in files],
+                include_unversioned=True,
+                changed_files_mode="all",
+                max_files=None,
+            )
+
+            selection = jb_inspect.resolve_inspection_lane_selection(args, self.make_context(root, lanes))
+
+        self.assertEqual(
+            [item["file"] for item in selection["lane_files"]["jvm"]],
+            ["build.gradle.kts", "src/Example.kt"],
+        )
+        self.assertEqual(
+            [item["file"] for item in selection["lane_files"]["python"]],
+            ["tools/check.py", "test-fixtures/red-lane/Broken.py"],
+        )
+        self.assertEqual(selection["excluded_files"], [])
+        self.assertEqual(selection["explicit_exclusion_overrides"][0]["file"], "test-fixtures/red-lane/Broken.py")
+        self.assertEqual(selection["unmatched_files"], ["README.md"])
+
+    def test_overlap_is_deterministic_first_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            target = root / "tools" / "check.py"
+            target.parent.mkdir()
+            target.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "first", "ide": "PyCharm", "include": ["tools/**"]},
+                        {"id": "second", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            args = helper_args(scope="files", files=[str(target)], max_files=None)
+
+            selection = jb_inspect.resolve_inspection_lane_selection(args, self.make_context(root, lanes))
+
+        self.assertEqual(len(selection["lane_files"]["first"]), 1)
+        self.assertEqual(selection["lane_files"]["second"], [])
+
+    def test_single_star_does_not_cross_path_segments(self):
+        self.assertTrue(jb_inspect.inspection_lane_pattern_matches("src/check.py", "src/*.py"))
+        self.assertFalse(jb_inspect.inspection_lane_pattern_matches("src/nested/check.py", "src/*.py"))
+        self.assertTrue(jb_inspect.inspection_lane_pattern_matches("src/nested/check.py", "src/**/*.py"))
+        self.assertTrue(jb_inspect.inspection_lane_pattern_matches("check.py", "**/*.py"))
+
+    def test_rejects_file_outside_exact_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.NamedTemporaryFile() as outside:
+            root = Path(tmp).resolve()
+            lanes = jb_inspect.parse_inspection_lanes(
+                {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]}
+            )
+            args = helper_args(scope="files", files=[outside.name], max_files=None)
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.resolve_inspection_lane_selection(args, self.make_context(root, lanes))
+
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_path_outside_worktree")
+
+    def test_changed_files_are_resolved_once_and_partitioned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            kotlin = root / "src" / "Example.kt"
+            python = root / "tools" / "check.py"
+            kotlin.parent.mkdir()
+            python.parent.mkdir()
+            kotlin.write_text("class Example\n", encoding="utf-8")
+            python.write_text("print('ok')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"],
+                cwd=root,
+                check=True,
+            )
+            kotlin.write_text("class Updated\n", encoding="utf-8")
+            python.write_text("print('updated')\n", encoding="utf-8")
+            red_fixture = root / "test-fixtures" / "red-lane" / "Broken.py"
+            red_fixture.parent.mkdir(parents=True)
+            red_fixture.write_text("broken =\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {
+                            "id": "python",
+                            "ide": "PyCharm",
+                            "include": ["**/*.py"],
+                            "exclude": ["test-fixtures/red-lane/**"],
+                        },
+                    ]
+                }
+            )
+            args = helper_args(
+                scope="changed_files",
+                files=[],
+                changed_files_mode="all",
+                include_unversioned=True,
+                max_files=None,
+            )
+
+            selection = jb_inspect.resolve_inspection_lane_selection(
+                args,
+                self.make_context(root, lanes, scope="changed_files"),
+            )
+
+        self.assertEqual(
+            selection["selected_files"],
+            ["src/Example.kt", "tools/check.py", "test-fixtures/red-lane/Broken.py"],
+        )
+        self.assertEqual([item["file"] for item in selection["lane_files"]["jvm"]], ["src/Example.kt"])
+        self.assertEqual([item["file"] for item in selection["lane_files"]["python"]], ["tools/check.py"])
+        self.assertEqual(selection["excluded_files"][0]["file"], "test-fixtures/red-lane/Broken.py")
+
+
+class InspectionLaneExecutionTest(unittest.TestCase):
+    def test_runs_non_empty_lanes_sequentially_with_exact_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            kotlin = root / "src" / "Example.kt"
+            python = root / "tools" / "check.py"
+            for path in (kotlin, python):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "repo_head_sha": None,
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+                "inspection_lanes": [lane.public() for lane in lanes],
+            }
+            args = helper_args(
+                scope="files",
+                files=[str(kotlin), str(python)],
+                max_files=None,
+                profile="strict",
+                include_unversioned=True,
+                changed_files_mode="all",
+            )
+            calls = []
+
+            def run_lane(lane_args, lane_context):
+                calls.append((lane_args.ide, list(lane_args.files), lane_context["scope"]))
+                return {
+                    "status": "clean",
+                    "total_problems": 0,
+                    "problems_shown": 0,
+                    "problems": [],
+                    "context": jb_inspect.public_context(lane_context),
+                    "route": {
+                        "project_name": lane_args.ide,
+                        "project_key": f"key-{len(calls)}",
+                        "project_instance_id": f"instance-{len(calls)}",
+                        "session_id": f"session-{len(calls)}",
+                        "base_path": str(root),
+                        "ide": {"name": lane_args.ide, "plugin_version": "1.2.3", "plugin_build_fingerprint": "sha256:" + "a" * 64},
+                    },
+                    "cleanup": {"status": "closed", "reason": "helper_owned"},
+                }
+
+            with patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual([call[0] for call in calls], ["IntelliJ IDEA", "PyCharm"])
+        self.assertEqual(calls[0][1], [str(kotlin)])
+        self.assertEqual(calls[1][1], [str(python)])
+        self.assertEqual([call[2] for call in calls], ["files", "files"])
+        self.assertEqual(result["verdict"], "GREEN")
+        self.assertEqual([lane["execution_order"] for lane in result["lane_results"]], [0, 1])
+        self.assertEqual(result["lane_results"][0]["route"]["session_id"], "session-1")
+        self.assertEqual(result["lane_results"][1]["ide"]["plugin_version"], "1.2.3")
+
+    def test_empty_lane_does_not_start_ide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            python = root / "check.py"
+            python.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+            }
+            args = helper_args(scope="files", files=[str(python)], max_files=None, profile="")
+            with patch.object(
+                jb_inspect,
+                "run_prepared_inspection",
+                return_value={"status": "clean", "total_problems": 0, "problems": [], "cleanup": {"status": "not_needed"}},
+            ) as run:
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result["lane_results"][0]["verdict"], "NOT_RUN")
+        self.assertEqual(result["lane_results"][0]["cleanup"]["reason"], "lane_empty")
+
+    def test_lane_failure_does_not_prevent_later_lane_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            kotlin = root / "Example.kt"
+            python = root / "check.py"
+            kotlin.write_text("fixture\n", encoding="utf-8")
+            python.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+            }
+            args = helper_args(scope="files", files=[str(kotlin), str(python)], max_files=None, profile="")
+            calls = []
+
+            def run_lane(lane_args, _lane_context):
+                calls.append(lane_args.ide)
+                if lane_args.ide == "IntelliJ IDEA":
+                    raise jb_inspect.InspectError(
+                        "plugin missing",
+                        3,
+                        {"error_reason": "inspection_api_unavailable", "cleanup": {"status": "not_needed"}},
+                    )
+                return {"status": "clean", "total_problems": 0, "problems": [], "cleanup": {"status": "closed"}}
+
+            with patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual(calls, ["IntelliJ IDEA", "PyCharm"])
+        self.assertEqual(result["lane_results"][0]["bucket"], "environment_blocked")
+        self.assertEqual(result["lane_results"][1]["verdict"], "GREEN")
+        self.assertEqual(result["verdict"], "UNKNOWN")
+
+    def test_aggregate_precedence_and_optional_failures(self):
+        def lane(lane_id, verdict, required=True):
+            return {
+                "id": lane_id,
+                "required": required,
+                "verdict": verdict,
+                "retry_policy": {"retry": verdict == "UNKNOWN", "max_attempts": 1, "wait_ms": 1000},
+            }
+
+        cases = [
+            ([lane("green", "GREEN"), lane("red", "RED"), lane("unknown", "UNKNOWN")], "RED"),
+            ([lane("green", "GREEN"), lane("unknown", "UNKNOWN")], "UNKNOWN"),
+            ([lane("green", "GREEN"), lane("optional-red", "RED", required=False)], "GREEN"),
+            ([lane("empty", "NOT_RUN")], "GREEN"),
+            ([lane("invalid", None)], "UNKNOWN"),
+        ]
+        for lanes, expected in cases:
+            with self.subTest(expected=expected):
+                payload = {"lane_results": lanes}
+                jb_inspect.apply_multi_lane_verdict(payload)
+                self.assertEqual(payload["verdict"], expected)
+
+    def test_lane_failure_buckets_remain_distinct(self):
+        reasons = {
+            "inspection_api_unavailable": "environment_blocked",
+            "scope_semantic_coverage_missing": "environment_blocked",
+            "language_sdk_missing": "environment_blocked",
+            "project_analysis_not_ready": "capture_not_ready",
+            "inspection_api_http_error": "tool_bug",
+            "ambiguous_route": "route_not_ready",
+            "session_drift": "route_not_ready",
+            "worktree_mutation_detected": "cleanup_not_clean",
+        }
+        for reason, expected_bucket in reasons.items():
+            with self.subTest(reason=reason):
+                payload = {"status": "error", "error_reason": reason}
+                jb_inspect.apply_verdict(payload)
+                self.assertEqual(payload["bucket"], expected_bucket)
+
+    def test_compact_agent_result_keeps_lane_provenance(self):
+        payload = {
+            "lane_selection": {"scope": "changed_files", "excluded_files": [], "unmatched_files": []},
+            "lane_results": [
+                {
+                    "id": "jvm",
+                    "required": True,
+                    "execution_order": 0,
+                    "verdict": "GREEN",
+                    "bucket": "clean",
+                    "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0},
+                    "files": ["/tmp/worktree/Example.kt"],
+                    "ide": {
+                        "product": "IntelliJ IDEA",
+                        "version": "2026.1",
+                        "plugin_version": "1.2.3",
+                        "plugin_build_fingerprint": "sha256:" + "a" * 64,
+                    },
+                    "route": {"session_id": "session-1"},
+                    "evidence_ids": {"inspection_run_id": 42, "request_id": "request-1"},
+                    "cleanup": {"status": "closed"},
+                    "finding_count": 0,
+                    "findings": [],
+                }
+            ],
+        }
+
+        compact = jb_inspect.compact_agent_result_payload(payload, 0)
+
+        self.assertEqual(compact["aggregate"]["verdict"], "GREEN")
+        self.assertEqual(compact["lanes"][0]["route"]["session_id"], "session-1")
+        self.assertEqual(compact["lanes"][0]["ide"]["plugin_version"], "1.2.3")
+        self.assertEqual(compact["lanes"][0]["evidence_ids"]["inspection_run_id"], 42)
+
+    def test_compact_agent_result_bounds_lane_file_lists(self):
+        files = [f"/tmp/worktree/file-{index}.py" for index in range(jb_inspect.MAX_LANE_FILE_PATHS + 5)]
+        payload = {
+            "lane_selection": {
+                "scope": "whole_project",
+                "selected_files": [f"file-{index}.py" for index in range(jb_inspect.MAX_LANE_FILE_PATHS + 5)],
+            },
+            "lane_results": [
+                {
+                    "id": "python",
+                    "required": True,
+                    "verdict": "GREEN",
+                    "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0},
+                    "files": files,
+                    "relative_files": [Path(path).name for path in files],
+                    "cleanup": {"status": "closed"},
+                }
+            ],
+        }
+
+        compact = jb_inspect.compact_agent_result_payload(payload, 0)
+
+        self.assertEqual(len(compact["lanes"][0]["files"]), jb_inspect.MAX_LANE_FILE_PATHS)
+        self.assertEqual(compact["lanes"][0]["files_omitted_count"], 5)
+        self.assertEqual(len(compact["selection"]["selected_files"]), jb_inspect.MAX_LANE_FILE_PATHS)
+        self.assertEqual(compact["selection"]["selected_files_omitted_count"], 5)
+
+    def test_worktree_mutation_is_fail_closed(self):
+        result = {
+            "status": "clean",
+            "total_problems": 0,
+            "worktree_mutation_evidence": {
+                "new_or_changed_path_count": 1,
+                "removed_path_count": 0,
+                "new_or_changed_paths": [".idea/workspace.xml"],
+            },
+        }
+
+        jb_inspect.apply_worktree_mutation_blocker(result)
+        jb_inspect.apply_verdict(result)
+
+        self.assertTrue(result["worktree_mutation_detected"])
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertEqual(result["bucket"], "cleanup_not_clean")
+
+    def test_lane_mutation_snapshot_waits_for_delayed_ide_writes(self):
+        with (
+            patch.object(jb_inspect.time, "sleep") as sleep,
+            patch.object(
+                jb_inspect,
+                "git_worktree_status_snapshot",
+                return_value={"status": "ok", "entries": {".idea/modules.xml": " D"}},
+            ),
+        ):
+            snapshot = jb_inspect.post_cleanup_worktree_status_snapshot(
+                {"worktree_root": "/tmp/repo", "inspection_lane": {"id": "jvm"}}
+            )
+
+        sleep.assert_called_once_with(jb_inspect.LANE_MUTATION_SETTLE_DELAY_MS / 1000.0)
+        self.assertEqual(snapshot["settle_delay_ms"], jb_inspect.LANE_MUTATION_SETTLE_DELAY_MS)
+
+
 class WorktreeSafetyTest(unittest.TestCase):
     def test_rejects_route_outside_current_worktree(self):
         route = {"base_path": "/tmp/main-checkout"}
@@ -568,6 +1087,15 @@ class WorktreeSafetyTest(unittest.TestCase):
 
         self.assertIn("wrong tree", str(raised.exception))
         self.assertEqual(raised.exception.exit_code, 3)
+
+    def test_rejects_route_without_canonical_path(self):
+        context = {"worktree_root": "/tmp/linked-worktree", "worktree_strategy": "prefer-current"}
+        args = Namespace(no_worktree_check=False)
+
+        with self.assertRaises(jb_inspect.InspectError) as raised:
+            jb_inspect.ensure_worktree_safe({"project_key": "opaque"}, context, args)
+
+        self.assertEqual(raised.exception.payload["error_reason"], "route_path_missing")
 
     def test_allows_current_worktree_inside_open_project(self):
         route = {"base_path": "/tmp/main-checkout"}
@@ -4033,6 +4561,20 @@ class LifecycleTest(unittest.TestCase):
             jb_inspect.time.sleep = original_sleep
 
         self.assertEqual(result["session_id"], "py-session")
+
+    def test_wait_for_matching_ide_identity_classifies_missing_plugin(self):
+        args = Namespace(port=None, background_open=True)
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=[]),
+            patch.object(jb_inspect, "now_ms", side_effect=[0, 200]),
+            patch.object(jb_inspect.time, "sleep"),
+            patch.object(jb_inspect, "auto_open_timeout_payload", return_value={}),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_for_matching_ide_identity(args, {"ide": "PyCharm"}, 100)
+
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_api_unavailable")
+        self.assertEqual(raised.exception.payload["failure_phase"], "bootstrap_identity")
 
     def test_list_reports_zero_project_prompt_hint_for_discovered_identity(self):
         original_discover = jb_inspect.discover_identities

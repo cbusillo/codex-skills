@@ -303,6 +303,7 @@ policy. The helper reads `.github/github.json` when present:
 
 - `qualityGate.inspection.scopePreference`
 - `qualityGate.inspection.ide`
+- `qualityGate.inspection.lanes`
 - `qualityGate.inspection.profile`
 - `qualityGate.inspection.prepare`
 - `jetbrains.ide`
@@ -313,6 +314,22 @@ policy. The helper reads `.github/github.json` when present:
 - `jetbrains.mainWorktreePath`
 - `jetbrains.worktreeStrategy`
 - `jetbrains.scopePreference`
+
+Mixed-language repositories may replace the single
+`qualityGate.inspection.ide` with ordered `qualityGate.inspection.lanes`. Each
+lane names a unique `id`, an `ide`, whether it is `required`, repository-relative
+`include` globs, and optional `exclude` globs. The helper resolves the selected
+scope once, validates every path against the exact worktree, assigns files by
+first matching lane, and records unmatched and explicitly excluded files. It
+does not open an IDE for an empty lane. Exclusions apply to ordinary changed-file,
+directory, and whole-project readiness; an explicit `files` scope records an
+override and still runs the selected fixture in its lane. Non-empty lanes run
+sequentially with an exact `files` scope and independent route, session, cleanup,
+mutation, IDE, and plugin provenance. Required lanes aggregate deterministically:
+any `RED` wins, otherwise any `UNKNOWN` wins, otherwise the result is `GREEN`.
+Optional-lane failures remain visible without changing the required-lane
+aggregate. When `lanes` is absent, the existing single-IDE path remains
+unchanged.
 
 If config is absent, the helper infers from git and the current working tree. For
 a one-off inspection, a missing inspection config can use the safe default
