@@ -360,12 +360,18 @@ identify arbitrary writers or prove that ignored files are quiet.
   `UNKNOWN/plugin_deployment_mismatch`; update the plugin, restart the IDE, and
   resolve the route again instead of trusting an older broad-scope GREEN.
 - `RED`: inspection worked and returned actionable current findings. Fix real
-  findings in touched code before calling work ready.
+  findings in touched code before calling work ready. Exact-scope responses may
+  retain `execution_not_proven` in `proof_failures` when the current findings
+  are decisive but clean completeness remains unproven; preserve the RED verdict
+  and the proof gap together. Unexpected route, run, profile, or freshness proof
+  failures still make the result `UNKNOWN`.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
   "no problems found"; report the verdict reason and next action, because the
   IDE, plugin, helper, route, or environment needs attention first.
   Prefer the helper's `agent_result` envelope for normal reporting. It contains
-  `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`; do not
+  `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`, plus
+  bounded `proof_failures` and `inspection_proof` when a decisive RED retains a
+  clean-completeness gap; do not
   inspect raw route, cleanup, wait, or capture diagnostics unless debugging the
   helper itself.
   For `stale_results` and `inspection_inputs_changed`, `unknown_diagnosis`

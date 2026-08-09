@@ -6985,6 +6985,68 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "UNKNOWN")
         self.assertEqual(verdict["verdict_reason"], "inspection_proof_failed")
 
+    def test_incomplete_clean_proof_does_not_override_plugin_red_verdict(self):
+        for proof_failure in (
+            "execution_not_proven",
+            jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
+            jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON,
+        ):
+            with self.subTest(proof_failure=proof_failure):
+                payload = {
+                    "status": "results_available",
+                    "clean": False,
+                    "total_problems": 1,
+                    "problems": [{"file": "/tmp/App.kt", "line": 3}],
+                    "inspection_verdict": "RED",
+                    "inspection_verdict_reason": "actionable_findings",
+                    "proof_failures": [proof_failure],
+                }
+
+                verdict = jb_inspect.verdict_for_payload(payload)
+
+                self.assertEqual(verdict["verdict"], "RED")
+                self.assertEqual(verdict["verdict_reason"], "actionable_findings")
+
+    def test_unexpected_proof_failure_still_overrides_plugin_red_verdict(self):
+        payload = {
+            "status": "results_available",
+            "clean": False,
+            "total_problems": 1,
+            "problems": [{"file": "/tmp/App.kt", "line": 3}],
+            "inspection_verdict": "RED",
+            "inspection_verdict_reason": "actionable_findings",
+            "proof_failures": ["run_mismatch"],
+        }
+
+        verdict = jb_inspect.verdict_for_payload(payload)
+
+        self.assertEqual(verdict["verdict"], "UNKNOWN")
+        self.assertEqual(verdict["verdict_reason"], "inspection_proof_failed")
+
+    def test_compact_red_result_preserves_incomplete_proof_metadata(self):
+        payload = {
+            "status": "results_available",
+            "clean": False,
+            "total_problems": 1,
+            "problems": [{"file": "/tmp/App.kt", "line": 3}],
+            "inspection_verdict": "RED",
+            "inspection_verdict_reason": "actionable_findings",
+            "proof_failures": ["execution_not_proven"],
+            "inspection_proof": {
+                "status": "failed",
+                "capture_complete": False,
+                "scope": "files",
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+        compact = jb_inspect.compact_agent_result_payload(payload, 0)
+
+        self.assertEqual(payload["agent_result"]["proof_failures"], ["execution_not_proven"])
+        self.assertEqual(payload["agent_result"]["inspection_proof"]["capture_complete"], False)
+        self.assertEqual(compact["proof_failures"], ["execution_not_proven"])
+        self.assertEqual(compact["inspection_proof"]["capture_complete"], False)
+
     def test_cleanup_skipped_overrides_clean_verdict(self):
         payload = {
             "status": "clean",
