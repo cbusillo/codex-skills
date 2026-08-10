@@ -171,6 +171,29 @@ PRODUCT_CONFIG_APPLY_RESULT_FIELDS = {
     "summary",
     "next_actions",
 }
+PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS = {
+    "schema_version",
+    "remediation_id",
+    "product",
+    "context",
+    "repository",
+    "pull_request_url",
+    "pull_request_number",
+    "mode",
+    "terminal_status",
+    "actor",
+    "reason",
+    "related_issue",
+    "trace_id",
+    "idempotency_key",
+    "requested_at",
+    "continuity_sha256",
+    "observation",
+    "planned_action",
+    "outcome",
+    "mutation_evidence",
+    "companion_feedback_id",
+}
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -978,6 +1001,64 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     return projected
 
 
+def _project_preview_feedback_remediation_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for key in (
+        "remediation_id",
+        "product",
+        "context",
+        "repository",
+        "terminal_status",
+        "actor",
+        "related_issue",
+        "mode",
+        "planned_action",
+        "outcome",
+        "requested_at",
+    ):
+        if key in source:
+            projected[key] = public_summary_string(source[key])
+    if source.get("companion_feedback_id"):
+        projected["companion_feedback_id"] = public_identifier(
+            source["companion_feedback_id"]
+        )
+    if "pull_request_number" in source:
+        projected["pull_request_number"] = _nonnegative_int(source["pull_request_number"])
+    if "pull_request_url" in source:
+        projected["pull_request_url"] = public_url(source["pull_request_url"])
+    observation = source.get("observation")
+    if isinstance(observation, dict):
+        projected_observation: dict[str, object] = {
+            "state": public_code(observation.get("state"), default="unknown"),
+            "comment_id": _nonnegative_int(observation.get("comment_id", 0)),
+            "comment_author_login": public_identifier(
+                observation.get("comment_author_login") or "unknown"
+            ),
+            "github_actor_login": public_identifier(
+                observation.get("token_actor_login") or "unknown"
+            ),
+        }
+        if observation.get("comment_url"):
+            projected_observation["comment_url"] = public_url(
+                observation["comment_url"]
+            )
+        projected["observation"] = projected_observation
+    mutation = source.get("mutation_evidence")
+    if isinstance(mutation, dict):
+        projected["mutation_evidence"] = {
+            "attempted": bool(mutation.get("attempted")),
+            "mutated": bool(mutation.get("mutated")),
+            "method": public_code(mutation.get("method"), default="none"),
+            "comment_id": _nonnegative_int(mutation.get("comment_id", 0)),
+            "verified_absent": bool(mutation.get("verified_absent")),
+        }
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_success_output(operation: str, provider_payload: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
     if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -1023,6 +1104,17 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         if isinstance(result, dict) and "intent" in result:
             return records, _project_product_config_preflight_result(result)
         return records, _project_product_config_apply_result(result)
+    if operation == "preview-feedback-remediation":
+        records = _project_records(
+            provider_payload.get("records"),
+            {
+                "preview_pr_feedback_remediation_id",
+                "preview_pr_feedback_id",
+            },
+        )
+        return records, _project_preview_feedback_remediation_result(
+            provider_payload.get("result")
+        )
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -1199,6 +1291,31 @@ def merge_train_controller_body(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def preview_feedback_remediation_body(args: argparse.Namespace) -> dict[str, object]:
+    _require_idempotency(args)
+    if args.mode == "apply" and not args.reviewed_dry_run:
+        raise ValueError("reviewed_dry_run_required")
+    pull_request_url = args.pull_request_url.strip()
+    confirmation = ""
+    if args.mode == "apply":
+        confirmation = (
+            f"remediate preview feedback {pull_request_url} "
+            f"to {args.terminal_status}"
+        )
+    return {
+        "schema_version": 1,
+        "mode": args.mode,
+        "product": args.product,
+        "context": args.context,
+        "repository": args.repository,
+        "pull_request_url": pull_request_url,
+        "terminal_status": args.terminal_status,
+        "reason": args.reason,
+        "related_issue": args.related_issue,
+        "confirmation": confirmation,
+    }
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -1363,6 +1480,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     controller.add_argument("--base-branch", default="main")
     controller.add_argument("--mutate", action="store_true")
     controller.add_argument("--idempotency-key", default="")
+    remediation = subparsers.add_parser(
+        "preview-feedback-remediation",
+        help="Dry-run or apply one audited managed preview-feedback remediation.",
+    )
+    remediation.add_argument("--mode", choices=("dry-run", "apply"), required=True)
+    remediation.add_argument("--product", required=True)
+    remediation.add_argument("--context", required=True)
+    remediation.add_argument("--repository", required=True)
+    remediation.add_argument("--pull-request-url", required=True)
+    remediation.add_argument(
+        "--terminal-status",
+        choices=("destroyed", "failed", "cleanup_failed", "unsupported", "cleared"),
+        required=True,
+    )
+    remediation.add_argument("--reason", required=True)
+    remediation.add_argument("--related-issue", required=True)
+    remediation.add_argument("--idempotency-key", required=True)
+    remediation.add_argument("--reviewed-dry-run", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1435,6 +1570,23 @@ def main(argv: list[str]) -> int:
                 args=args,
                 operation=args.command,
                 path="/v1/work-graph/merge-train/controller/run-once",
+                request=request,
+                body=body,
+            )
+        if args.command == "preview-feedback-remediation":
+            request = {
+                "mode": args.mode,
+                "product": args.product,
+                "context": args.context,
+                "repository": args.repository,
+                "pull_request_url": args.pull_request_url,
+                "terminal_status": args.terminal_status,
+            }
+            body = preview_feedback_remediation_body(args)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path="/v1/previews/pr-feedback/remediation",
                 request=request,
                 body=body,
             )

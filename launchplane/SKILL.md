@@ -114,6 +114,35 @@ commands:
         "operator-config-diagnostic",
       ]
     purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
+  - name: launchplane-preview-feedback-remediation
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "preview-feedback-remediation",
+        "--mode",
+        "dry-run",
+        "--product",
+        "<product>",
+        "--context",
+        "<context>",
+        "--repository",
+        "OWNER/REPO",
+        "--pull-request-url",
+        "<url>",
+        "--terminal-status",
+        "cleared",
+        "--reason",
+        "<reason>",
+        "--related-issue",
+        "OWNER/REPO#123",
+        "--idempotency-key",
+        "<key>",
+      ]
+    purpose: Dry-runs or applies one audited Launchplane-managed preview-feedback remediation.
 policy:
   command_policies:
     - id: prefer-launchplane-write-helper-for-product-config-api
