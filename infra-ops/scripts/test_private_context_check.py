@@ -131,6 +131,21 @@ def test_explicit_path_does_not_fall_back(tmp_path: Path) -> None:
     assert resolved is None
 
 
+def test_explicit_configured_path_overrides_discovery(tmp_path: Path) -> None:
+    explicit_context = tmp_path / "explicit" / "local-context.toml"
+    code_home = tmp_path / "code-home"
+    write_context(explicit_context, "private/explicit")
+    write_context(code_home / "local-context.toml", "private/discovered")
+
+    resolved = private_context_check.resolve_local_context(
+        explicit_context,
+        {"CODE_HOME": str(code_home)},
+        tmp_path / "user-home",
+    )
+
+    assert resolved == explicit_context
+
+
 def test_invalid_or_unreadable_candidates_fail_closed(tmp_path: Path) -> None:
     directory_candidate = tmp_path / "code-home" / "local-context.toml"
     directory_candidate.mkdir(parents=True)
@@ -148,6 +163,37 @@ def test_invalid_or_unreadable_candidates_fail_closed(tmp_path: Path) -> None:
     )
 
     assert resolved is None
+
+
+def test_invalid_utf8_explicit_context_reports_missing_without_disclosure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    context_path = tmp_path / "private-runtime" / "local-context.toml"
+    context_path.parent.mkdir(parents=True)
+    context_path.write_bytes(b"\xff\xfe\x00")
+
+    assert private_context_check.main(["--local-context", str(context_path)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "missing\n"
+    assert captured.err == ""
+    assert str(context_path) not in captured.out
+
+
+def test_whitespace_pointer_falls_back_to_next_candidate(tmp_path: Path) -> None:
+    code_home = tmp_path / "code-home"
+    codex_home = tmp_path / "codex-home"
+    write_context(code_home / "local-context.toml", "   ")
+    codex_context = codex_home / "local-context.toml"
+    write_context(codex_context)
+
+    resolved = private_context_check.resolve_local_context(
+        None,
+        {"CODE_HOME": str(code_home), "CODEX_HOME": str(codex_home)},
+        tmp_path / "user-home",
+    )
+
+    assert resolved == codex_context
 
 
 def test_candidate_list_skips_blank_values_and_duplicates(tmp_path: Path) -> None:

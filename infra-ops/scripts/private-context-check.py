@@ -49,7 +49,7 @@ def load_config(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as handle:
             value = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
 
