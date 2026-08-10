@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "packaging==26.2",
+#     "packaging==26.3",
 # ]
 # ///
 """Focused tests for update_pep723_dependencies.py."""
