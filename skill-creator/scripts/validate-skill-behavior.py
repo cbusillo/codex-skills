@@ -920,7 +920,11 @@ def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
         "github-plan must prefer gh-plan close for completed plan issues",
     )
     require(
-        "owns `plan:done` labels, stale `plan:active` cleanup, and project focus updates" in normalized_plan,
+        (
+            "owns `plan:done` labels, cleanup of stale `plan:active`, `plan:blocked`, "
+            "`plan:waiting`, and `plan:stale` labels, and project focus updates"
+        )
+        in normalized_plan,
         "github-plan must explain why generic issue close is insufficient for plans",
     )
     require(
