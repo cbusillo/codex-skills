@@ -43,23 +43,176 @@ def put_text(path: Path, value: str) -> None:
         handle.write(value)
 
 
-def test_runtime_home_prefers_code_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    code_home = tmp_path / "chris-code"
-    codex_home = tmp_path / "codex"
-    monkeypatch.setenv("CODE_HOME", str(code_home))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+def write_local_context(runtime_home: Path, private_repo: Path) -> Path:
+    context_path = runtime_home / "local-context.toml"
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    put_text(
+        context_path,
+        f'[docs]\nlocal_infra = {json.dumps(str(private_repo))}\n',
+    )
+    return context_path
 
-    assert npmplus_ops.runtime_home() == code_home
+
+def test_local_context_candidates_skip_blank_values_and_duplicates(tmp_path: Path) -> None:
+    runtime_home = tmp_path / "runtime-home"
+    default_home = tmp_path / "user-home"
+
+    candidates = npmplus_ops.local_context_candidates(
+        {"CODE_HOME": "  ", "CODEX_HOME": str(runtime_home)},
+        default_home,
+    )
+    duplicate_candidates = npmplus_ops.local_context_candidates(
+        {"CODE_HOME": str(runtime_home), "CODEX_HOME": str(runtime_home)},
+        default_home,
+    )
+
+    assert candidates == [
+        runtime_home / "local-context.toml",
+        default_home / ".code" / "local-context.toml",
+    ]
+    assert duplicate_candidates == candidates
 
 
-def test_runtime_home_uses_codex_home_before_default(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_local_infra_repo_prefers_code_home(tmp_path: Path) -> None:
+    code_repo = tmp_path / "code-private"
+    codex_repo = tmp_path / "codex-private"
+    code_repo.mkdir()
+    codex_repo.mkdir()
+    code_home = tmp_path / "code-home"
+    codex_home = tmp_path / "codex-home"
+    write_local_context(code_home, code_repo)
+    write_local_context(codex_home, codex_repo)
+
+    resolved = npmplus_ops.load_local_infra_repo(
+        environment={"CODE_HOME": str(code_home), "CODEX_HOME": str(codex_home)},
+        home=tmp_path / "user-home",
+    )
+
+    assert resolved == code_repo
+
+
+def test_local_infra_repo_falls_back_to_codex_home(tmp_path: Path) -> None:
+    private_repo = tmp_path / "private"
+    private_repo.mkdir()
+    codex_home = tmp_path / "codex-home"
+    write_local_context(codex_home, private_repo)
+
+    resolved = npmplus_ops.load_local_infra_repo(
+        environment={
+            "CODE_HOME": str(tmp_path / "missing-code-home"),
+            "CODEX_HOME": str(codex_home),
+        },
+        home=tmp_path / "user-home",
+    )
+
+    assert resolved == private_repo
+
+
+def test_unconfigured_and_malformed_candidates_fall_back_to_default(tmp_path: Path) -> None:
+    code_home = tmp_path / "code-home"
+    code_home.mkdir()
+    put_text(code_home / "local-context.toml", '[docs]\nother = "value"\n')
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    put_text(codex_home / "local-context.toml", "not valid toml =")
+    private_repo = tmp_path / "private"
+    private_repo.mkdir()
+    default_home = tmp_path / "user-home"
+    write_local_context(default_home / ".code", private_repo)
+
+    resolved = npmplus_ops.load_local_infra_repo(
+        environment={"CODE_HOME": str(code_home), "CODEX_HOME": str(codex_home)},
+        home=default_home,
+    )
+
+    assert resolved == private_repo
+
+
+def test_invalid_utf8_and_directory_candidates_fall_back(tmp_path: Path) -> None:
+    code_context = tmp_path / "code-home" / "local-context.toml"
+    code_context.parent.mkdir()
+    code_context.write_bytes(b"\xff\xfe\x00")
+    codex_context = tmp_path / "codex-home" / "local-context.toml"
+    codex_context.mkdir(parents=True)
+    private_repo = tmp_path / "private"
+    private_repo.mkdir()
+    default_home = tmp_path / "user-home"
+    write_local_context(default_home / ".code", private_repo)
+
+    resolved = npmplus_ops.load_local_infra_repo(
+        environment={
+            "CODE_HOME": str(code_context.parent),
+            "CODEX_HOME": str(codex_context.parent),
+        },
+        home=default_home,
+    )
+
+    assert resolved == private_repo
+
+
+def test_explicit_local_context_does_not_fall_back(tmp_path: Path) -> None:
+    private_repo = tmp_path / "private"
+    private_repo.mkdir()
+    code_home = tmp_path / "code-home"
+    write_local_context(code_home, private_repo)
+
+    with pytest.raises(npmplus_ops.OpsError, match="not configured"):
+        npmplus_ops.load_local_infra_repo(
+            tmp_path / "missing.toml",
+            environment={"CODE_HOME": str(code_home)},
+            home=tmp_path / "user-home",
+        )
+
+
+def test_explicit_context_cli_failure_is_redacted(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    codex_home = tmp_path / "codex"
-    monkeypatch.delenv("CODE_HOME", raising=False)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    context_path = tmp_path / "private-runtime" / "local-context.toml"
 
-    assert npmplus_ops.runtime_home() == codex_home
+    with pytest.raises(SystemExit) as raised:
+        npmplus_ops.main(
+            ["context-check", "--local-context", str(context_path)]
+        )
+
+    captured = capsys.readouterr()
+    assert raised.value.code == 1
+    assert captured.out == ""
+    assert captured.err == "error: private infra context is not configured\n"
+    assert str(context_path) not in captured.err
+
+
+def test_explicit_local_context_overrides_discovery(tmp_path: Path) -> None:
+    explicit_repo = tmp_path / "explicit-private"
+    discovered_repo = tmp_path / "discovered-private"
+    explicit_repo.mkdir()
+    discovered_repo.mkdir()
+    explicit_context = write_local_context(tmp_path / "explicit-home", explicit_repo)
+    code_home = tmp_path / "code-home"
+    write_local_context(code_home, discovered_repo)
+
+    resolved = npmplus_ops.load_local_infra_repo(
+        explicit_context,
+        environment={"CODE_HOME": str(code_home)},
+        home=tmp_path / "user-home",
+    )
+
+    assert resolved == explicit_repo
+
+
+def test_missing_context_reports_generic_error(tmp_path: Path) -> None:
+    private_path = tmp_path / "private-runtime"
+
+    with pytest.raises(
+        npmplus_ops.OpsError,
+        match="^private infra context is not configured$",
+    ) as raised:
+        npmplus_ops.load_local_infra_repo(
+            environment={"CODE_HOME": str(private_path)},
+            home=tmp_path / "user-home",
+        )
+
+    assert str(private_path) not in str(raised.value)
 
 
 def make_private_repo(tmp_path: Path) -> Path:
@@ -398,15 +551,18 @@ def test_public_engine_does_not_contain_private_literals() -> None:
         assert literal not in source
 
 
-def test_help_does_not_contain_private_literals() -> None:
+def test_help_does_not_contain_private_literals(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    private_home = tmp_path / "private-runtime-home"
+    monkeypatch.setenv("CODE_HOME", str(private_home))
     result = subprocess.run(
-        ["python3", str(MODULE_PATH), "--help"],
+        ["python3", str(MODULE_PATH), "context-check", "--help"],
         capture_output=True,
         text=True,
         check=True,
     )
     for literal in PRIVATE_LITERALS:
         assert literal not in result.stdout
+    assert str(private_home) not in result.stdout
 
 
 def test_api_config_rejects_wrong_instance(
@@ -587,3 +743,7 @@ def test_lifecycle_cli_has_no_raw_id_bypass() -> None:
     )
 
     assert all("--host-id" not in action.option_strings for action in enable_parser._actions)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

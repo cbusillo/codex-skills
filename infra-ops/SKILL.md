@@ -114,6 +114,8 @@ the private context provider contract in
 remote validation commands, rollback snapshot, and service-specific guardrails
 in the private repo. Treat the public engine as reusable API/redaction/dry-run
 machinery, not as a place for site-specific defaults.
+The engine uses the same first-configured-pointer discovery order as the
+private-context checker; an explicit `--local-context` selects only that file.
 
 NPMplus lifecycle writes require `npmplus.ops.v2` context that binds the
 canonical service origin, authenticated principal, per-ref target fingerprint,

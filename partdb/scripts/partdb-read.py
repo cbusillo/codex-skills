@@ -17,18 +17,62 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "partdb.context.v1"
+LOCAL_CONTEXT_FILENAME = "local-context.toml"
 
 
 class PartdbError(RuntimeError):
     pass
 
 
-def runtime_home() -> Path:
-    return Path(os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or Path.home() / ".code")
+def local_context_candidates(
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> list[Path]:
+    environment = os.environ if environment is None else environment
+    candidates: list[Path] = []
+    for variable in ("CODE_HOME", "CODEX_HOME"):
+        raw_home = environment.get(variable, "").strip()
+        if raw_home:
+            candidate = Path(raw_home).expanduser() / LOCAL_CONTEXT_FILENAME
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    default_home = Path.home() if home is None else home
+    default_candidate = default_home / ".code" / LOCAL_CONTEXT_FILENAME
+    if default_candidate not in candidates:
+        candidates.append(default_candidate)
+    return candidates
+
+
+def configured_private_repo(local_context_path: Path) -> Path | None:
+    try:
+        with local_context_path.open("rb") as handle:
+            configured = tomllib.load(handle)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    docs = configured.get("docs")
+    raw_path = docs.get("local_infra") if isinstance(docs, dict) else None
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    return Path(raw_path).expanduser()
+
+
+def resolve_local_infra_repo(
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    private_repo = None
+    for candidate in local_context_candidates(environment, home):
+        private_repo = configured_private_repo(candidate)
+        if private_repo is not None:
+            break
+    if private_repo is None:
+        raise PartdbError("private Part-DB context is not configured")
+    return private_repo
 
 
 def fail(message: str) -> None:
@@ -37,13 +81,7 @@ def fail(message: str) -> None:
 
 
 def context() -> tuple[Path, dict[str, Any]]:
-    local = runtime_home() / "local-context.toml"
-    try:
-        with local.open("rb") as handle:
-            configured = tomllib.load(handle)
-        private_repo = Path(configured["docs"]["local_infra"]).expanduser()
-    except (FileNotFoundError, KeyError, TypeError, tomllib.TOMLDecodeError, PermissionError, UnicodeDecodeError):
-        raise PartdbError("private Part-DB context is not configured") from None
+    private_repo = resolve_local_infra_repo()
     provider = private_repo / "scripts" / "infra-context.py"
     try:
         result = subprocess.run(

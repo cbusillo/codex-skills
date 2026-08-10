@@ -4,11 +4,16 @@ The public `infra-ops` NPMplus engine is generic. It must not contain private
 hostnames, domains, route ids, SSH aliases, container ids, env file paths,
 remote commands, or rollback instructions.
 
-Private repos provide environment-specific context through the configured
-private operations repo pointer:
+Private repos provide environment-specific context through the first candidate
+in this order that contains a non-empty `[docs].local_infra` pointer:
 
-- `$CODE_HOME/local-context.toml` `[docs].local_infra`, falling back to
-  `$CODEX_HOME/local-context.toml` and then `~/.code/local-context.toml`
+1. `$CODE_HOME/local-context.toml`
+2. `$CODEX_HOME/local-context.toml`
+3. `~/.code/local-context.toml`
+
+Missing, unreadable, malformed, invalid-UTF-8, or unconfigured candidates are
+skipped without disclosing their paths or contents. An explicit
+`--local-context` selects only that file and never falls back to discovery.
 
 The default private provider path is `scripts/infra-context.py` inside that
 private repo. The provider command shape is:

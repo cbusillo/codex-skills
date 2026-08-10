@@ -47,7 +47,7 @@ private-context and approval boundaries below.
 
 Before accessing an instance, resolve the configured private context. Read
 `references/private-context.md` for the context contract, resolution order,
-expected fields, and output rules.
+expected fields, first-configured-pointer fallback behavior, and output rules.
 
 If no valid private context is available, explain what is missing without
 guessing an endpoint, searching shell history, inspecting unrelated `.env`
