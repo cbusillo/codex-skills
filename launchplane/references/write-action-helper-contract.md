@@ -7,6 +7,14 @@ operator configuration or authorization is missing.
 
 The helper lives at `scripts/launchplane-write-action.py`.
 
+For stale Launchplane-managed preview comments that cannot be replayed under a
+current workflow identity, use `preview-feedback-remediation`. Run with
+`--mode dry-run` first, then repeat the exact target, terminal status, reason,
+related issue, and idempotency key with `--mode apply --reviewed-dry-run`.
+The helper derives the service-required confirmation phrase and projects only
+bounded observation and mutation evidence; it never accepts a raw comment id or
+arbitrary marker.
+
 ## Configuration
 
 The helper uses this private operator config source order:

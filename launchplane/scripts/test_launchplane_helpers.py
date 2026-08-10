@@ -174,6 +174,100 @@ def test_success_projection_preserves_contracts() -> None:
     assert product["result"]["secret_binding_keys"] == ["EXAMPLE_API_TOKEN"]
 
 
+def test_preview_feedback_remediation_body_and_projection() -> None:
+    args = argparse.Namespace(
+        mode="apply",
+        product="verireel",
+        context="verireel-preview",
+        repository="cbusillo/verireel",
+        pull_request_url="https://github.com/cbusillo/verireel/pull/311",
+        terminal_status="cleared",
+        reason="Clear stale preview feedback.",
+        related_issue="cbusillo/launchplane#2076",
+        idempotency_key="preview-remediation-311",
+        reviewed_dry_run=True,
+    )
+    body = write_action.preview_feedback_remediation_body(args)
+    assert body["confirmation"] == (
+        "remediate preview feedback https://github.com/cbusillo/verireel/pull/311 "
+        "to cleared"
+    )
+    projected = write_action.summarize_success(
+        operation="preview-feedback-remediation",
+        request={"mode": "apply", "product": "verireel"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_remediation",
+            "records": {
+                "preview_pr_feedback_remediation_id": "remediation-311",
+                "preview_pr_feedback_id": "feedback-311",
+            },
+            "result": {
+                "schema_version": 1,
+                "remediation_id": "remediation-311",
+                "product": "verireel",
+                "context": "verireel-preview",
+                "repository": "cbusillo/verireel",
+                "pull_request_url": "https://github.com/cbusillo/verireel/pull/311",
+                "pull_request_number": 311,
+                "mode": "apply",
+                "terminal_status": "cleared",
+                "actor": "local-operator:owner",
+                "reason": "Clear stale preview feedback.",
+                "related_issue": "cbusillo/launchplane#2076",
+                "trace_id": "launchplane_req_remediation",
+                "idempotency_key": "preview-remediation-311",
+                "requested_at": "2026-08-10T21:00:00Z",
+                "continuity_sha256": "a" * 64,
+                "observation": {
+                    "state": "absent",
+                    "digest_sha256": "b" * 64,
+                    "excerpt": "",
+                    "marker": "",
+                    "comment_id": 0,
+                    "comment_url": "",
+                    "comment_author_id": 0,
+                    "comment_author_login": "",
+                    "token_actor_id": 101,
+                    "token_actor_login": "launchplane-bot",
+                },
+                "planned_action": "none",
+                "outcome": "already_absent",
+                "mutation_evidence": {
+                    "attempted": False,
+                    "mutated": False,
+                    "method": "",
+                    "comment_id": 0,
+                    "before_digest_sha256": "",
+                    "after_digest_sha256": "",
+                    "verified_absent": True,
+                    "error_message": "",
+                },
+                "companion_feedback_id": "feedback-311",
+            },
+        },
+    )
+    assert projected["result"]["outcome"] == "already_absent"
+    assert projected["result"]["mutation_evidence"]["mutated"] is False
+    dry_run_provider = {
+        "status": "accepted",
+        "trace_id": "launchplane_req_remediation_dry_run",
+        "records": {"preview_pr_feedback_remediation_id": "remediation-dry-run-311"},
+        "result": {
+            "remediation_id": "remediation-dry-run-311",
+            "mode": "dry-run",
+            "outcome": "planned",
+            "companion_feedback_id": "",
+        },
+    }
+    dry_run = write_action.summarize_success(
+        operation="preview-feedback-remediation",
+        request={"mode": "dry-run", "product": "verireel"},
+        provider_payload=dry_run_provider,
+    )
+    assert "companion_feedback_id" not in dry_run["result"]
+
+
 def test_current_launchplane_service_response_shapes() -> None:
     merge = write_action.summarize_success(
         operation="merge-train-controller-run-once",
@@ -693,6 +787,7 @@ def main() -> int:
         test_write_helper_validates_cli_env_and_json_url_sources,
         test_context_helper_validates_env_and_json_url_sources,
         test_success_projection_preserves_contracts,
+        test_preview_feedback_remediation_body_and_projection,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
         test_optional_public_identifier_rejects_null_values,
         test_runtime_environment_projection_enforces_scope_identity,
