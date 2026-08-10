@@ -135,7 +135,7 @@ def configured_private_repo(local_context_path: Path) -> Path | None:
     raw_path = docs.get("local_infra")
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
-    return Path(raw_path).expanduser()
+    return Path(raw_path.strip()).expanduser()
 
 
 def load_local_infra_repo(

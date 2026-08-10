@@ -58,7 +58,7 @@ def configured_private_repo(local_context_path: Path) -> Path | None:
     raw_path = docs.get("local_infra") if isinstance(docs, dict) else None
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
-    return Path(raw_path).expanduser()
+    return Path(raw_path.strip()).expanduser()
 
 
 def resolve_local_infra_repo(
@@ -72,6 +72,8 @@ def resolve_local_infra_repo(
             break
     if private_repo is None:
         raise PartdbError("private Part-DB context is not configured")
+    if not private_repo.is_dir():
+        raise PartdbError("configured private Part-DB repo path is not available")
     return private_repo
 
 

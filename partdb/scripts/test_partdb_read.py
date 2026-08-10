@@ -82,6 +82,7 @@ def test_invalid_candidates_fall_back_to_default_home(tmp_path: Path) -> None:
     codex_context = tmp_path / "codex-home" / "local-context.toml"
     codex_context.mkdir(parents=True)
     private_repo = tmp_path / "private"
+    private_repo.mkdir()
     default_home = tmp_path / "user-home"
     write_local_context(default_home / ".code", private_repo)
 
@@ -101,6 +102,7 @@ def test_whitespace_pointer_falls_back_to_codex_home(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     private_repo = tmp_path / "private"
+    private_repo.mkdir()
     codex_home = tmp_path / "codex-home"
     write_local_context(codex_home, private_repo)
 
@@ -110,6 +112,23 @@ def test_whitespace_pointer_falls_back_to_codex_home(tmp_path: Path) -> None:
     )
 
     assert resolved == private_repo
+
+
+def test_configured_missing_repo_reports_generic_error(tmp_path: Path) -> None:
+    missing_repo = tmp_path / "missing-private-repo"
+    code_home = tmp_path / "code-home"
+    write_local_context(code_home, missing_repo)
+
+    with pytest.raises(
+        partdb_read.PartdbError,
+        match="^configured private Part-DB repo path is not available$",
+    ) as raised:
+        partdb_read.resolve_local_infra_repo(
+            {"CODE_HOME": str(code_home)},
+            tmp_path / "user-home",
+        )
+
+    assert str(missing_repo) not in str(raised.value)
 
 
 def test_missing_context_reports_generic_error(tmp_path: Path) -> None:

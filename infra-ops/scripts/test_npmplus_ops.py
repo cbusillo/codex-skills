@@ -554,15 +554,16 @@ def test_public_engine_does_not_contain_private_literals() -> None:
 def test_help_does_not_contain_private_literals(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     private_home = tmp_path / "private-runtime-home"
     monkeypatch.setenv("CODE_HOME", str(private_home))
-    result = subprocess.run(
-        ["python3", str(MODULE_PATH), "context-check", "--help"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    for literal in PRIVATE_LITERALS:
-        assert literal not in result.stdout
-    assert str(private_home) not in result.stdout
+    for arguments in (["--help"], ["context-check", "--help"]):
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), *arguments],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for literal in PRIVATE_LITERALS:
+            assert literal not in result.stdout
+        assert str(private_home) not in result.stdout
 
 
 def test_api_config_rejects_wrong_instance(
