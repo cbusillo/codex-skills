@@ -1080,6 +1080,9 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     launchplane_text = " ".join((ROOT / "launchplane" / "SKILL.md").read_text().lower().split())
     closeout_text = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
     inspection_text = " ".join((ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower().split())
+    repo_workflow_text = " ".join(
+        (ROOT / "github" / "references" / "repo-workflow.md").read_text().lower().split()
+    )
     watcher_text = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text().lower()
 
     require(
@@ -1095,6 +1098,16 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "babysit-pr must not mutate the runtime checkout",
     )
     require(
+        "delegate post-merge default-branch freshness to `github`" in babysit_text,
+        "babysit-pr must delegate local default-checkout freshness",
+    )
+    require(
+        "with an explicit worktree from the watched repository" in babysit_text
+        and "for cross-repository watching" in babysit_text
+        and "never guess another checkout" in babysit_text,
+        "babysit-pr must resolve the watched repository worktree unambiguously",
+    )
+    require(
         "merge_commit_sha" in watcher_text and '"mergecommit"' in watcher_text,
         "babysit-pr must surface the final merge commit instead of only the PR head",
     )
@@ -1107,8 +1120,62 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "Launchplane must delegate reconciliation only after final landing",
     )
     require(
+        "delegate post-merge default-branch freshness to `github`" in launchplane_text,
+        "Launchplane must delegate local default-checkout freshness after landing",
+    )
+    require(
+        "exact final landing sha from that terminal controller result" in launchplane_text
+        and "an explicit source worktree belonging to the landed repository" in launchplane_text
+        and "never substitute a pr head, candidate" in launchplane_text,
+        "Launchplane must reject intermediate SHAs for checkout reconciliation",
+    )
+    require(
         "idempotent closeout backstop" in closeout_text,
         "work-closeout must provide runtime reconciliation as a backstop",
+    )
+    require(
+        "after every confirmed merge, inspect the repository's unique local default-branch worktree"
+        in github_text,
+        "GitHub must inspect the local default checkout after confirmed merges",
+    )
+    require(
+        "shares the merged worktree's git common directory and expected github identity"
+        in github_text,
+        "GitHub must bind local default refresh to the merged repository",
+    )
+    require(
+        "require the exact final landing sha to exist and appear on the fetched upstream's first-parent history"
+        in github_text
+        and "re-check that `head` equals the upstream and contains the landing sha afterward"
+        in github_text
+        and "the final `head` contains the exact landing sha" in repo_workflow_text,
+        "Default-checkout refresh must prove the exact landing SHA before and after mutation",
+    )
+    require(
+        "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
+        in github_text
+        and "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
+        in repo_workflow_text,
+        "Default-checkout refresh must disable hooks and autostash while remaining ff-only",
+    )
+    require(
+        "local default checkout remains stale; fast-forward it before default-branch work or audits"
+        in github_text
+        and "local default checkout remains stale; fast-forward it before default-branch work or audits"
+        in closeout_text
+        and "local default checkout remains stale; fast-forward it before default-branch work or audits"
+        in repo_workflow_text,
+        "GitHub and closeout guidance must surface the stale-default-checkout hint",
+    )
+    require(
+        "the active task worktree remains the authoritative agent source" in github_text
+        and "the active task worktree remains the authoritative agent source" in closeout_text
+        and "the active task worktree remains the authoritative agent source" in repo_workflow_text,
+        "Default-checkout refresh must preserve the active worktree as agent source",
+    )
+    require(
+        "the preceding active branch check is sufficient; do not pull it twice" in closeout_text,
+        "work-closeout must avoid double-processing an active default checkout",
     )
     require(
         "a missing or mismatched revision makes the installed-runtime claim `unknown`" in inspection_text,

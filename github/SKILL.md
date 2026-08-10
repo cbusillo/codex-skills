@@ -718,6 +718,26 @@ invocation rules.
   must never cause the merge to be retried. Report both outcomes and treat stale
   runtime-dependent evidence as unavailable until reconciliation or explicit
   source-revision verification succeeds.
+- **Local Default-Branch Freshness**: After every confirmed merge, inspect the
+  repository's unique local default-branch worktree when one exists. If it is
+  already the active checkout, assess it once rather than running a second refresh
+  pass. If it is runtime-bound, use the landed runtime reconciler above.
+  Otherwise, fetch its configured upstream and fast-forward it only when it is
+  clean, still on the configured default branch, shares the merged worktree's Git
+  common directory and expected GitHub identity, and its current tip is an
+  ancestor of the fetched upstream. Before mutation, require the exact final
+  landing SHA to exist and appear on the fetched upstream's first-parent history.
+  Fast-forward with hooks and autostash disabled, for example
+  `git -C <path> -c core.hooksPath=/dev/null merge --ff-only --no-autostash
+  --no-overwrite-ignore @{upstream}`, rather than switching the active task
+  worktree or using a generic pull. Re-check that `HEAD` equals the upstream and
+  contains the landing SHA afterward. Never reset, stash, clean, or overwrite an
+  unsafe checkout. If it is dirty, ahead, diverged, detached, ambiguous, lacks a
+  usable upstream, or cannot prove the landing SHA, leave it untouched and report
+  the explicit hint: `Local default checkout remains stale; fast-forward it
+  before default-branch work or audits.` The active task worktree remains the
+  authoritative agent source; this post-merge refresh must never silently replace
+  it with the default branch or a remote ref.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
   releasable, or otherwise clean, check background auto-review evidence when it
   is available in the session context or repo tooling. First match each review
