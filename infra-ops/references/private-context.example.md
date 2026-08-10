@@ -7,10 +7,17 @@ topology.
 ## Repo Pointer
 
 Use the existing local context pointer for the private operations repo first,
-rooted at `$CODE_HOME` when set, then `$CODEX_HOME`, then `~/.code`:
+rooted at `$CODE_HOME` when set, then `$CODEX_HOME`, then `~/.code`. Use the
+first file in that order with a non-empty `[docs].local_infra` pointer:
 
 - `$CODE_HOME/local-context.toml` `[docs].local_infra`: current pointer for the
   private operations repo checkout.
+- `$CODEX_HOME/local-context.toml` `[docs].local_infra`: fallback for runtimes
+  with a separate home.
+- `~/.code/local-context.toml` `[docs].local_infra`: shared default fallback.
+
+An explicit `--local-context` helper argument selects only that file and does
+not continue through the discovery chain.
 
 The pointer value is private. Do not print it into public issues, PRs, logs, or
 skill docs unless the user explicitly asks for local-only debugging output.
