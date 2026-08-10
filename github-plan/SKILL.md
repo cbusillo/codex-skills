@@ -204,9 +204,9 @@ state belongs in GitHub.
 
 For completed durable plan issues, use `gh-plan.py close`. Use the same helper
 with `--reason not_planned` for explicitly superseded durable plans. The
-planning helper owns `plan:done` labels, stale `plan:active` cleanup, and Project
-focus updates. It also owns relationship preflight and close-comment
-reconciliation:
+planning helper owns `plan:done` labels, cleanup of stale `plan:active`,
+`plan:blocked`, `plan:waiting`, and `plan:stale` labels, and Project focus
+updates. It also owns relationship preflight and close-comment reconciliation:
 
 Before closing a planning issue, run `github-unanswered-comments --thread
 OWNER/REPO#NUMBER`. Any attention result or degraded coverage requires a response

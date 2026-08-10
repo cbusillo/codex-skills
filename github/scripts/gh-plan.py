@@ -2332,9 +2332,12 @@ def cmd_close(args: argparse.Namespace) -> None:
     label_source = close_result if isinstance(close_result.get("labels"), list) else issue
     current_labels = {name.casefold() for name in issue_labels(label_source)}
     done_label = plan_labels.get("done")
-    active_label = plan_labels.get("active")
     add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
-    remove_labels = [active_label] if active_label and active_label.casefold() in current_labels else None
+    remove_labels = [
+        label
+        for key in ("active", "blocked", "waiting", "stale")
+        if (label := plan_labels.get(key)) and label.casefold() in current_labels
+    ] or None
     if add_labels or remove_labels:
         try:
             label_result = github_issue_core.edit_issue(

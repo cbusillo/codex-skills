@@ -1711,6 +1711,49 @@ def test_close_already_complete_reuses_completion_comment() -> None:
     ], payload
 
 
+def test_close_already_complete_removes_stale_plan_state_labels() -> None:
+    plan = load_plan_module()
+    allow_close_relationships(plan)
+    issue = close_plan_issue(
+        state="closed",
+        state_reason="completed",
+        labels=["plan", "plan:blocked", "plan:waiting", "plan:stale", "plan:done"],
+    )
+    edits: list[dict[str, Any]] = []
+    plan.load_config = lambda _repo: {
+        "labels": {
+            "active": "plan:active",
+            "blocked": "plan:blocked",
+            "waiting": "plan:waiting",
+            "stale": "plan:stale",
+            "done": "plan:done",
+        },
+        "projects": {},
+    }
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+
+    def fake_edit(number: int, **kwargs: Any) -> dict[str, Any]:
+        edits.append({"number": number, **kwargs})
+        return {"actor": "shiny-code-bot", "expected_actor": "shiny-code-bot"}
+
+    output = StringIO()
+    with patched_issue_core(
+        plan,
+        edit_issue=fake_edit,
+        set_issue_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("issue is already complete")
+        ),
+    ):
+        with redirect_stdout(output):
+            plan.cmd_close(close_args())
+
+    payload = json.loads(output.getvalue())
+    assert payload["completed_steps"] == ["close_issue_already_complete", "update_labels"], payload
+    assert edits[0]["add_labels"] is None, edits
+    assert edits[0]["remove_labels"] == ["plan:blocked", "plan:waiting", "plan:stale"], edits
+
+
 def test_close_reports_stale_project_as_non_blocking_warning() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
@@ -5128,6 +5171,7 @@ def main() -> None:
         test_close_reconciles_unknown_success_before_metadata,
         test_close_post_close_label_failure_is_recoverable,
         test_close_already_complete_reuses_completion_comment,
+        test_close_already_complete_removes_stale_plan_state_labels,
         test_close_reports_stale_project_as_non_blocking_warning,
         test_close_delegates_comment_to_shared_rest_helper,
         test_comment_route_matches_explicit_auth_policy,
