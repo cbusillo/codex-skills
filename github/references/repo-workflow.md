@@ -479,6 +479,36 @@ merge attempt. It does block claims that installed runtime behavior or
 provenance-sensitive evidence is current. `not_applicable` is normal when the
 active runtime belongs to another repository.
 
+After every confirmed merge, also inspect `git worktree list --porcelain` for a
+unique local worktree already checked out on the repository's configured default
+branch. This is a post-merge convenience-checkout refresh, not a source-selection
+rule for agents. The active task worktree remains the authoritative agent source.
+
+- If that default checkout is runtime-bound, use the landed repo-local runtime
+  reconciler and do not run a generic pull there.
+- If the active checkout is already that unique default worktree, evaluate it
+  once rather than performing a duplicate refresh pass.
+- Otherwise, verify the checkout shares the source repository's Git common
+  directory and expected GitHub identity, remains clean and on the default
+  branch, has a configured upstream, and is behind without being ahead or
+  diverged. Fetch the configured upstream without switching worktrees. Require
+  the exact final landing SHA to exist and appear on the fetched upstream's
+  first-parent history before mutation. Then fast-forward with hooks and
+  autostash disabled, for example `git -C <path> -c core.hooksPath=/dev/null
+  merge --ff-only --no-autostash --no-overwrite-ignore @{upstream}`.
+- Re-check that the default checkout is clean, `HEAD` equals its upstream, and
+  the final `HEAD` contains the exact landing SHA. A fetch or fast-forward that
+  does not prove those postconditions is not a successful refresh.
+- If no unique default checkout exists, or it is dirty, ahead, diverged,
+  detached, ambiguous, missing its upstream, or cannot fast-forward, do not
+  switch, reset, stash, clean, or overwrite it. Report: `Local default checkout
+  remains stale; fast-forward it before default-branch work or audits.`
+
+Keep this local-default result separate from the confirmed GitHub merge receipt.
+A blocked local refresh does not undo or retry the merge, and it must never cause
+an agent launched from a task worktree to substitute the default branch or a
+remote ref for that active worktree.
+
 Report GitHub security/quality signal outcomes explicitly:
 
 - `clean`: checked and no relevant open findings

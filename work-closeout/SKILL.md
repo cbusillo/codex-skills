@@ -77,6 +77,22 @@ preserved, or intentionally left in place.
    branches. If the branch is dirty, ahead, diverged, lacks an upstream, or the
    fast-forward fails, do not pull further; report the state and next safe action.
 
+   After merged work performed from a task branch, also inspect the repository's
+   unique local default-branch worktree as a closeout backstop. If it is
+   runtime-bound, route it through the landed runtime reconciler. Otherwise,
+   fast-forward it only when it is clean, still on the default branch, shares the
+   merged worktree's Git common directory and expected GitHub identity, and is
+   strictly behind its configured upstream. Require the confirmed final landing
+   SHA on the fetched upstream's first-parent history, fast-forward with hooks and
+   autostash disabled, then verify `HEAD` equals the upstream and contains that
+   landing SHA. Leave unsafe, ambiguous, or unverified state untouched and
+   report: `Local default checkout remains stale; fast-forward it before
+   default-branch work or audits.` The active task worktree remains the
+   authoritative agent source; do not replace it with the refreshed default
+   checkout when handing off or resuming work. If the active checkout is already
+   that unique default worktree, the preceding active branch check is sufficient;
+   do not pull it twice.
+
    If the shared Launchplane context helper is present and configured, call it
    once as optional closeout context for the repo/workstream:
 

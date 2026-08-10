@@ -69,12 +69,18 @@ Before reporting an unconditional ready, merged, or closed all-clear, run
 `github-unanswered-comments --thread OWNER/REPO#NUMBER`; any attention or
 degraded result requires a response or explicit handoff.
 
-This skill also does not reconcile or mutate a local runtime checkout. When a
-watcher first confirms `merged`, delegate runtime-bound checkout reconciliation
-to `github` with the repository worktree and the watcher's final
-`merge_commit_sha`; never substitute `head_sha`. Keep the watcher observational
-for this local Git mutation, preserve the confirmed remote merge as successful
-if reconciliation is blocked, and do nothing for a merely closed, unmerged PR.
+This skill also does not reconcile or mutate a local runtime checkout, and it
+does not fast-forward an ordinary local default checkout itself. When a watcher
+first confirms `merged`, delegate post-merge default-branch freshness to
+`github` with an explicit worktree from the watched repository and the watcher's
+final `merge_commit_sha`; never substitute `head_sha`. Use the watcher's current
+working directory only when it resolves to that repository. For cross-repository
+watching, use a known worktree for the watched repository or report that local
+refresh could not be resolved; never guess another checkout. That handoff covers
+both the runtime-bound reconciler and the safe non-runtime default-checkout
+fast-forward or stale-checkout hint. Keep the watcher observational for these
+local Git mutations, preserve the confirmed remote merge as successful if
+reconciliation is blocked, and do nothing for a merely closed, unmerged PR.
 
 When `.github/github.json` exists, use it as repo workflow metadata for gates,
 important workflows, post-merge signals, cleanup policy, and any repo-specific
