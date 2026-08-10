@@ -1435,6 +1435,12 @@ def test_infra_ops_owns_live_infra_actions() -> None:
         "Infra ops must route through the local context docs pointer",
     )
     require(
+        "first file in that order with a configured pointer" in infra_normalized
+        and "explicit `--local-context` option overrides discovery without falling back"
+        in infra_normalized,
+        "Infra ops must define existence-aware context fallback and explicit override precedence",
+    )
+    require(
         "do not guess from provider dashboards, browser sessions, shell history, or `.env` files"
         in infra_normalized,
         "Infra ops must fail closed instead of guessing from dashboards or .env files",

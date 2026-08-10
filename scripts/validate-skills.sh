@@ -59,6 +59,7 @@ helper_tests=(
 	github/scripts/test_github_read.py
 	github/scripts/test_github_workflow_babysit.py
 	github/scripts/test_runtime_checkout_reconciliation.py
+	infra-ops/scripts/test_private_context_check.py
 	infra-ops/scripts/test_npmplus_ops.py
 	partdb/scripts/test_partdb_read.py
 	partdb/scripts/test_partdb_write.py

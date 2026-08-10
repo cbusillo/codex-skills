@@ -54,14 +54,16 @@ adapter details.
 Resolve that private repo from `$CODE_HOME/local-context.toml`, falling back to
 `$CODEX_HOME/local-context.toml` and then `~/.code/local-context.toml`, using
 the `[docs].local_infra` key. That is the local pointer for the private
-operations repo. Do not hard-code any private repo name, compatibility alias,
+operations repo. Use the first file in that order with a configured pointer;
+the helper's explicit `--local-context` option overrides discovery without
+falling back. Do not hard-code any private repo name, compatibility alias,
 branding, or absolute user path into committed public docs, issues, or PRs.
 
-If the local context file or key is missing, report that private infra context
-is not configured and keep the workflow read-only. Do not guess from provider
-dashboards, browser sessions, shell history, or `.env` files. Do not copy
-private path values, hostnames, tokens, customer/site names, or topology into
-this repo.
+If no candidate local context file provides that key, report that private infra
+context is not configured and keep the workflow read-only. Do not guess from
+provider dashboards, browser sessions, shell history, or `.env` files. Do not
+copy private path values, hostnames, tokens, customer/site names, or topology
+into this repo.
 
 ## Safety Tiers
 
