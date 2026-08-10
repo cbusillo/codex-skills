@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "packaging==26.2",
+#     "packaging==26.3",
 #     "PyYAML==6.0.3",
 # ]
 # ///
