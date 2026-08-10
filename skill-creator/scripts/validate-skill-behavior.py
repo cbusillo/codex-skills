@@ -1533,6 +1533,40 @@ def test_infra_ops_private_context_command_reports_missing() -> None:
     )
 
 
+def test_private_context_consumers_share_fallback_contract() -> None:
+    infra_text = (ROOT / "infra-ops" / "SKILL.md").read_text().lower()
+    npmplus_text = (
+        ROOT / "infra-ops" / "references" / "npmplus-context-schema.md"
+    ).read_text().lower()
+    partdb_text = (ROOT / "partdb" / "references" / "private-context.md").read_text().lower()
+    infra_normalized = " ".join(infra_text.split())
+    npmplus_normalized = " ".join(npmplus_text.split())
+    partdb_normalized = " ".join(partdb_text.split())
+
+    require(
+        "same first-configured-pointer discovery order" in infra_normalized
+        and "explicit `--local-context` selects only that file" in infra_normalized,
+        "Infra ops must keep NPMplus aligned with private-context discovery and override precedence",
+    )
+    require(
+        "first candidate in this order that contains a non-empty `[docs].local_infra` pointer"
+        in npmplus_normalized
+        and "missing, unreadable, malformed, invalid-utf-8, or unconfigured candidates are skipped"
+        in npmplus_normalized
+        and "explicit `--local-context` selects only that file and never falls back"
+        in npmplus_normalized,
+        "NPMplus context docs must define existence-aware fallback and explicit override precedence",
+    )
+    require(
+        "first candidate in this order that contains a non-empty `[docs].local_infra` pointer"
+        in partdb_normalized
+        and "missing, unreadable, malformed, invalid-utf-8, or unconfigured candidates are skipped"
+        in partdb_normalized
+        and "do not expose a local-context path override" in partdb_normalized,
+        "Part-DB context docs must define existence-aware fallback without inventing a CLI override",
+    )
+
+
 def test_dns_cloudflare_routes_to_local_infra_context() -> None:
     docs_text = (ROOT / "docs-lookup" / "SKILL.md").read_text().lower()
     routing_text = (ROOT / "docs-lookup" / "references" / "routing.md").read_text().lower()
@@ -1713,6 +1747,7 @@ def main() -> None:
         test_infra_ops_owns_live_infra_actions,
         test_infra_ops_private_context_command_detects_docs_pointer,
         test_infra_ops_private_context_command_reports_missing,
+        test_private_context_consumers_share_fallback_contract,
         test_dns_cloudflare_routes_to_local_infra_context,
         test_openai_docs_latest_target_and_fallback_contract,
         test_gpt56_rollout_comparisons_preserve_pinned_baselines,

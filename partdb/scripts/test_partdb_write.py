@@ -34,6 +34,51 @@ def artifact_plan(lot_id: int = 7, prior_amount: int = 1, target_amount: int = 2
     return value
 
 
+def test_plan_inherits_context_fallback_from_read_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    private_repo = tmp_path / "private"
+    provider = private_repo / "scripts" / "infra-context.py"
+    provider.parent.mkdir(parents=True)
+    provider.write_text(
+        "import json\n"
+        "print(json.dumps({'schema_version': 'partdb.context.v1', "
+        "'api': {'env_file': '.env', 'base_url_env': 'PARTDB_BASE_URL', "
+        "'read_token_env': 'PARTDB_READ_TOKEN'}, 'policy': {'allow_mutations': True}}))\n",
+        encoding="utf-8",
+    )
+    (private_repo / ".env").write_text(
+        "PARTDB_BASE_URL=https://private.invalid\nPARTDB_READ_TOKEN=read-token\n",
+        encoding="utf-8",
+    )
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "local-context.toml").write_text(
+        f"[docs]\nlocal_infra = {str(private_repo)!r}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODE_HOME", str(tmp_path / "missing-code-home"))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(partdb_write.partdb_read.Path, "home", lambda: tmp_path / "user-home")
+    monkeypatch.setattr(partdb_write, "verify_lot_patch_schema", lambda *_args: None)
+    monkeypatch.setattr(partdb_write, "read_lot", lambda *_args: {"amount": 1})
+    intent = tmp_path / "intent.json"
+    output = tmp_path / "plan.json"
+    intent.write_text(
+        json.dumps({"op": "part-lot-amount-set", "lot_id": 7, "amount": 2}),
+        encoding="utf-8",
+    )
+
+    partdb_write.plan(argparse.Namespace(intent=str(intent), output=str(output)))
+
+    assert json.loads(output.read_text(encoding="utf-8"))["operation"] == {
+        "lot_id": 7,
+        "prior_amount": 1,
+        "target_amount": 2,
+    }
+
+
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value))
 
@@ -185,3 +230,7 @@ def test_schema_probe_requires_amount_merge_patch_schema(monkeypatch: pytest.Mon
 
     with pytest.raises(partdb_write.WriteError, match="does not support"):
         partdb_write.verify_lot_patch_schema("https://private.invalid", "read-token")
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

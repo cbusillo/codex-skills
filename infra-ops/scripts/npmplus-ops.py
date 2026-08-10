@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 LEGACY_SCHEMA_VERSION = "npmplus.ops.v1"
@@ -44,17 +44,27 @@ REQUIRED_WRITE_EVIDENCE = (
     "external_validation_ready",
 )
 PUBLIC_ALIAS_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+LOCAL_CONTEXT_FILENAME = "local-context.toml"
 
 
-def runtime_home() -> Path:
-    if os.environ.get("CODE_HOME"):
-        return Path(os.environ["CODE_HOME"]).expanduser()
-    if os.environ.get("CODEX_HOME"):
-        return Path(os.environ["CODEX_HOME"]).expanduser()
-    return Path.home() / ".code"
+def local_context_candidates(
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> list[Path]:
+    environment = os.environ if environment is None else environment
+    candidates: list[Path] = []
+    for variable in ("CODE_HOME", "CODEX_HOME"):
+        raw_home = environment.get(variable, "").strip()
+        if raw_home:
+            candidate = Path(raw_home).expanduser() / LOCAL_CONTEXT_FILENAME
+            if candidate not in candidates:
+                candidates.append(candidate)
 
-
-LOCAL_CONTEXT_PATH = runtime_home() / "local-context.toml"
+    default_home = Path.home() if home is None else home
+    default_candidate = default_home / ".code" / LOCAL_CONTEXT_FILENAME
+    if default_candidate not in candidates:
+        candidates.append(default_candidate)
+    return candidates
 
 
 class OpsError(RuntimeError):
@@ -112,23 +122,38 @@ def public_alias(value: str) -> str:
     return value
 
 
-def load_local_infra_repo(local_context_path: Path = LOCAL_CONTEXT_PATH) -> Path:
+def configured_private_repo(local_context_path: Path) -> Path | None:
     try:
         with local_context_path.open("rb") as handle:
             config = tomllib.load(handle)
-    except FileNotFoundError:
-        raise OpsError("private infra context is not configured") from None
-    except tomllib.TOMLDecodeError:
-        raise OpsError("local context file is not valid TOML") from None
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
 
     docs = config.get("docs")
     if not isinstance(docs, dict):
-        raise OpsError("local context is missing [docs]")
+        return None
     raw_path = docs.get("local_infra")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        raise OpsError("local context is missing [docs].local_infra")
+        return None
+    return Path(raw_path.strip()).expanduser()
 
-    private_repo = Path(raw_path).expanduser()
+
+def load_local_infra_repo(
+    local_context_path: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    if local_context_path is not None:
+        private_repo = configured_private_repo(local_context_path)
+    else:
+        private_repo = None
+        for candidate in local_context_candidates(environment, home):
+            private_repo = configured_private_repo(candidate)
+            if private_repo is not None:
+                break
+    if private_repo is None:
+        raise OpsError("private infra context is not configured")
+
     if not private_repo.is_dir():
         raise OpsError("configured private infra repo path is not available")
     return private_repo
@@ -696,8 +721,10 @@ def add_context_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--local-context",
         type=Path,
-        default=LOCAL_CONTEXT_PATH,
-        help="local context TOML containing [docs].local_infra",
+        help=(
+            "explicit local context TOML containing [docs].local_infra; "
+            "otherwise discover CODE_HOME, CODEX_HOME, then ~/.code"
+        ),
     )
     parser.add_argument(
         "--context-provider",

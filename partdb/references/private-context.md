@@ -6,16 +6,21 @@ real instance, credential, inventory, or local organization scheme.
 
 ## Resolution Order
 
-Resolve private context in this order:
+Resolve the first candidate in this order that contains a non-empty
+`[docs].local_infra` pointer:
 
-1. `$CODE_HOME/local-context.toml` when `CODE_HOME` is set.
-2. `$CODEX_HOME/local-context.toml` when `CODEX_HOME` is set.
+1. `$CODE_HOME/local-context.toml`.
+2. `$CODEX_HOME/local-context.toml`.
 3. `~/.code/local-context.toml`.
-4. User-supplied local-only configuration or evidence.
 
 Use the `[docs].local_infra` value as the private operations-repository pointer
 when it is configured. Resolve Part-DB-specific docs or helpers from that
 private repository; do not print the pointer value into public artifacts.
+Missing, unreadable, malformed, invalid-UTF-8, or unconfigured candidates are
+skipped without disclosing their paths or contents. The bundled Part-DB helpers
+do not expose a local-context path override; they use this discovery order.
+User-supplied local-only configuration or evidence may help repair that context,
+but it is not an additional automatic file candidate.
 
 If none is available, stop before API access. Do not infer the endpoint from a
 repository name, shell history, unrelated environment files, browser state, or
