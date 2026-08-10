@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -30,6 +32,7 @@ EXPECTED_REQUIRES_PYTHON = ">=3.12"
 EXPECTED_UV_REQUIREMENT = ">=0.11.29,<1"
 EXPECTED_CACHE_DEPENDENCY_GLOB = "**/*.py"
 EXPECTED_POLICY_PATH = "github/references/execution-environment.md"
+EXPECTED_HELPER_TESTS_PATH = "scripts/validate-skills.sh"
 EXPECTED_PYTHON_MATRIX_WORKFLOWS = {
     "launchplane-train-validation.yml",
     "validate-skills.yml",
@@ -76,6 +79,16 @@ def load_yaml(path: Path) -> object:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"{path}: invalid YAML: {exc}") from exc
+
+
+def _format_observed_value(value: object) -> str:
+    if value is None:
+        return "missing"
+    return json.dumps(
+        value,
+        sort_keys=True,
+        default=lambda item: f"<{type(item).__name__}>",
+    )
 
 
 def load_pep723_module() -> ModuleType:
@@ -148,7 +161,7 @@ def validate_version_files(root: Path) -> list[str]:
         if required_version != EXPECTED_UV_REQUIREMENT:
             violations.append(
                 f"{uv_path}: required-version must be {EXPECTED_UV_REQUIREMENT!r}, "
-                f"not {required_version!r}"
+                f"not {_format_observed_value(required_version)}"
             )
     return violations
 
@@ -176,11 +189,14 @@ def validate_dependabot(root: Path) -> list[str]:
         "directory": "/",
         "open-pull-requests-limit": 5,
     }
-    violations = [
-        f"{path}: github-actions {key} must be {value!r}, not {entry.get(key)!r}"
-        for key, value in expected.items()
-        if entry.get(key) != value
-    ]
+    violations: list[str] = []
+    for key, expected_value in expected.items():
+        observed_value = entry.get(key)
+        if observed_value != expected_value:
+            violations.append(
+                f"{path}: github-actions {key} must be {expected_value!r}, "
+                f"not {_format_observed_value(observed_value)}"
+            )
     schedule = entry.get("schedule")
     if not isinstance(schedule, dict) or schedule.get("interval") != "weekly":
         violations.append(f"{path}: github-actions schedule interval must be 'weekly'")
@@ -214,7 +230,8 @@ def validate_workflows(root: Path) -> list[str]:
             runner = job.get("runs-on")
             if runner is not None and runner != EXPECTED_RUNNER:
                 violations.append(
-                    f"{path}: job {job_name!r} must run on {EXPECTED_RUNNER!r}, not {runner!r}"
+                    f"{path}: job {job_name!r} must run on {EXPECTED_RUNNER!r}, "
+                    f"not {_format_observed_value(runner)}"
                 )
             uses_python_matrix = path.name in EXPECTED_PYTHON_MATRIX_WORKFLOWS
             if uses_python_matrix:
@@ -286,10 +303,11 @@ def validate_metadata(root: Path) -> list[str]:
         violations.append(f"{path}: launchplane merge-train runner metadata is missing")
         runner = {}
     for key, expected_value in EXPECTED_LAUNCHPLANE_RUNNER.items():
-        if runner.get(key) != expected_value:
+        observed_value = runner.get(key)
+        if observed_value != expected_value:
             violations.append(
                 f"{path}: launchplane runner {key} must be {expected_value!r}, "
-                f"not {runner.get(key)!r}"
+                f"not {_format_observed_value(observed_value)}"
             )
     evidence_fields = runner.get("revisionEvidenceFields") if isinstance(runner, dict) else None
     if evidence_fields != EXPECTED_REVISION_EVIDENCE_FIELDS:
@@ -325,6 +343,123 @@ def validate_wrapper_runtime(root: Path) -> list[str]:
     return violations
 
 
+def _load_helper_tests_manifest(path: Path) -> list[str]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{path}: cannot read helper_tests manifest: {exc}") from exc
+    lines = content.splitlines()
+    try:
+        start = next(
+            index for index, line in enumerate(lines) if line.strip() == "helper_tests=("
+        )
+    except StopIteration:
+        raise ValueError(f"{path}: helper_tests array could not be located")
+    entries: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.strip() == ")":
+            break
+        try:
+            entries.extend(shlex.split(line, comments=True))
+        except ValueError as exc:
+            raise ValueError(f"{path}: invalid helper_tests entry: {exc}") from exc
+    else:
+        raise ValueError(f"{path}: helper_tests array is not terminated")
+    if not entries:
+        raise ValueError(f"{path}: helper_tests array is empty")
+    return entries
+
+
+def _imports_pytest(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "pytest" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+            return True
+    return False
+
+
+def _is_pytest_main_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "main"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pytest"
+    )
+
+
+def _contains_pytest_exit(node: ast.AST) -> bool:
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if (
+            isinstance(current, ast.Raise)
+            and isinstance(current.exc, ast.Call)
+            and isinstance(current.exc.func, ast.Name)
+            and current.exc.func.id == "SystemExit"
+            and any(_is_pytest_main_call(argument) for argument in current.exc.args)
+        ):
+            return True
+        stack.extend(ast.iter_child_nodes(current))
+    return False
+
+
+def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
+    for statement in tree.body:
+        if not isinstance(statement, ast.If):
+            continue
+        test = statement.test
+        if not isinstance(test, ast.Compare):
+            continue
+        if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
+            continue
+        if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+            continue
+        if len(test.comparators) != 1:
+            continue
+        comparator = test.comparators[0]
+        if not isinstance(comparator, ast.Constant) or comparator.value != "__main__":
+            continue
+        if any(_contains_pytest_exit(body_node) for body_node in statement.body):
+            return True
+    return False
+
+
+def validate_helper_tests(root: Path) -> list[str]:
+    violations: list[str] = []
+    manifest_path = root / EXPECTED_HELPER_TESTS_PATH
+    try:
+        helper_tests = _load_helper_tests_manifest(manifest_path)
+    except ValueError as exc:
+        return [str(exc)]
+
+    for relative_path in helper_tests:
+        path = root / relative_path
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            violations.append(f"{path}: cannot read declared helper: {exc}")
+            continue
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError as exc:
+            violations.append(f"{path}: cannot parse declared helper: {exc}")
+            continue
+        if _imports_pytest(tree) and not _has_module_level_pytest_entrypoint(tree):
+            violations.append(
+                f"{path}: helpers that import pytest must define a module-level "
+                "if __name__ == '__main__': guard that raises "
+                "SystemExit(pytest.main(...))"
+            )
+    return violations
+
+
 def validate_repository(
     root: Path = ROOT, *, python_paths: Sequence[Path] | None = None
 ) -> list[str]:
@@ -336,6 +471,7 @@ def validate_repository(
     violations.extend(validate_workflows(root))
     violations.extend(validate_metadata(root))
     violations.extend(validate_wrapper_runtime(root))
+    violations.extend(validate_helper_tests(root))
     violations.extend(validate_python_metadata(paths))
     return violations
 

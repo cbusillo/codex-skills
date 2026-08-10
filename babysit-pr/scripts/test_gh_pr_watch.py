@@ -7,17 +7,10 @@
 # ///
 
 import argparse
-import importlib.util
 from pathlib import Path
 
+import gh_pr_watch
 import pytest
-
-
-MODULE_PATH = Path(__file__).with_name("gh_pr_watch.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("gh_pr_watch", MODULE_PATH)
-gh_pr_watch = importlib.util.module_from_spec(MODULE_SPEC)
-assert MODULE_SPEC.loader is not None
-MODULE_SPEC.loader.exec_module(gh_pr_watch)
 
 
 def sample_pr():
@@ -99,6 +92,9 @@ def test_gh_text_uses_wrapper_by_default(monkeypatch):
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
 
     def fake_run(cmd, check, capture_output, text):
+        assert check is True
+        assert capture_output is True
+        assert text is True
         calls.append(cmd)
 
         class Result:
@@ -170,14 +166,14 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
 
-    args = argparse.Namespace(
+    watcher_args = argparse.Namespace(
         pr="123",
         repo=None,
         state_file=str(tmp_path / "watcher-state.json"),
         max_flaky_retries=3,
     )
 
-    gh_pr_watch.collect_snapshot(args)
+    gh_pr_watch.collect_snapshot(watcher_args)
 
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
@@ -212,6 +208,7 @@ def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
     }
 
     def fake_api(endpoint, repo=None):
+        assert repo == "openai/codex"
         if endpoint.endswith("/issues/123/comments"):
             return [external_comment]
         return []
@@ -242,6 +239,7 @@ def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     }
 
     def fake_api(endpoint, repo=None):
+        assert repo == "openai/codex"
         if endpoint.endswith("/issues/123/comments"):
             return [automation_comment]
         return []
@@ -406,3 +404,7 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
             "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
         }
     ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
