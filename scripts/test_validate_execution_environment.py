@@ -634,6 +634,76 @@ def test_docstring_and_import_before_pytest_entrypoint_passes() -> None:
         assert MODULE.validate_repository(root, python_paths=[script]) == []
 
 
+def test_import_without_docstring_before_pytest_entrypoint_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            "    import os\n"
+            "    raise SystemExit(pytest.main([__file__]))",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_string_after_import_before_pytest_entrypoint_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            "    import os\n"
+            '    "Not a leading documentation string."\n'
+            "    raise SystemExit(pytest.main([__file__]))",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
+def test_second_leading_string_before_pytest_entrypoint_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            '    "First documentation string."\n'
+            '    "Second documentation string."\n'
+            "    raise SystemExit(pytest.main([__file__]))",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
+def test_string_only_guard_body_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            '    "No pytest entrypoint."',
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
 def test_nested_main_guard_fails() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
@@ -829,6 +899,10 @@ TESTS = [
     test_module_level_os_exit_before_guard_fails,
     test_nested_exit_before_guard_does_not_fail,
     test_docstring_and_import_before_pytest_entrypoint_passes,
+    test_import_without_docstring_before_pytest_entrypoint_passes,
+    test_string_after_import_before_pytest_entrypoint_fails,
+    test_second_leading_string_before_pytest_entrypoint_fails,
+    test_string_only_guard_body_fails,
     test_nested_main_guard_fails,
     test_observed_value_format_handles_unknown_types,
     test_missing_helper_tests_array_fails,
