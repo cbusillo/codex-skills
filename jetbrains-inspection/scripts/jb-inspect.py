@@ -52,6 +52,7 @@ DEFAULT_TIMEOUT_SECONDS = 3.0
 DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 DEFAULT_PREPARE_TIMEOUT_MS = 300_000
+DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000
 DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_OUTCOME_ROUTING_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_OUTCOME_APPEND_LOCK_TIMEOUT_MS = 300_000
@@ -87,10 +88,37 @@ INSPECTION_LANE_SCHEMA_VERSION = 1
 REPOSITORY_PREPARATION_SOURCE = "qualityGate.inspection.prepare"
 REPOSITORY_PREPARATION_NOT_CONFIGURED = "not_configured"
 REPOSITORY_PREPARATION_NOT_RUN = "not_run"
+REPOSITORY_PREPARATION_SKIPPED = "skipped_opt_out"
+REPOSITORY_PREPARATION_REUSED = "reused"
+REPOSITORY_PREPARATION_SUCCEEDED = "succeeded"
 REPOSITORY_PREPARATION_EXECUTION_STATES = frozenset(
-    {REPOSITORY_PREPARATION_NOT_CONFIGURED, REPOSITORY_PREPARATION_NOT_RUN}
+    {
+        REPOSITORY_PREPARATION_NOT_CONFIGURED,
+        REPOSITORY_PREPARATION_NOT_RUN,
+        REPOSITORY_PREPARATION_SKIPPED,
+        REPOSITORY_PREPARATION_REUSED,
+        REPOSITORY_PREPARATION_SUCCEEDED,
+    }
 )
 MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH = 1024
+MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
+MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
+MAX_REPOSITORY_PREPARATION_TIMEOUT_MS = 900_000
+REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION = 1
+REPOSITORY_PREPARATION_RECEIPT_DIRNAME = "repository-preparation"
+REPOSITORY_PREPARATION_ACTIVE_ENV = "JB_INSPECT_REPOSITORY_PREPARATION_ACTIVE"
+REPOSITORY_PREPARATION_TERMINAL_REASONS = frozenset(
+    {
+        "repository_preparation_untrusted",
+        "repository_preparation_opted_out",
+        "repository_preparation_recursion",
+        "repository_preparation_command_failed",
+        "repository_preparation_timeout",
+        "repository_preparation_tracked_mutation",
+        "repository_preparation_index_mutation",
+        "repository_preparation_generated_state_missing",
+    }
+)
 INSPECTION_LANE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 AGENT_USAGE_ERROR_REASON = "helper_usage_error"
 AGENT_USAGE_NEXT_ACTION = (
@@ -641,8 +669,28 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
+        subparsers.choices[name].add_argument(
+            "--repository-preparation-timeout-ms",
+            type=int,
+            default=DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_MS,
+            help="Bound repository preparation separately from IDE lifecycle timeouts.",
+        )
         subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
+        subparsers.choices[name].add_argument(
+            "--skip-preparation",
+            "--no-repository-preparation",
+            dest="skip_preparation",
+            action="store_true",
+            help="Explicitly bypass automatic repository preparation for this run.",
+        )
+        subparsers.choices[name].add_argument(
+            "--force-preparation",
+            "--force-refresh-preparation",
+            dest="force_preparation",
+            action="store_true",
+            help="Ignore a reusable preparation receipt and execute preparation again.",
+        )
     subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
     subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     subparsers.choices["cleanup-helper-leases"].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
@@ -757,9 +805,11 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
         "repository_preparation": bounded_repository_preparation(
             repository_preparation,
-            target_worktree=str(lifecycle_target_path),
+            target_worktree=str(worktree_root),
         ),
     }
+    if repository_preparation.get("_argv") is not None:
+        context["_repository_preparation_argv"] = repository_preparation["_argv"]
     if inspection_lanes:
         context["inspection_lane_schema_version"] = INSPECTION_LANE_SCHEMA_VERSION
         context["inspection_lanes"] = [lane.public() for lane in inspection_lanes]
@@ -818,11 +868,32 @@ def parse_repository_preparation(inspection: dict[str, Any]) -> dict[str, Any]:
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare must contain at least one command argument."
         )
+    generated_state = inspection.get("requiredGeneratedState", inspection.get("required_generated_state", []))
+    if generated_state is None:
+        generated_state = []
+    if not isinstance(generated_state, list) or len(generated_state) > MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.requiredGeneratedState must be a bounded array of relative paths."
+        )
+    normalized_generated_state: list[str] = []
+    for value in generated_state:
+        if not isinstance(value, str) or not value.strip():
+            raise repository_preparation_config_error(
+                "qualityGate.inspection.requiredGeneratedState must contain non-empty relative paths."
+            )
+        path = Path(value.strip())
+        if path.is_absolute() or ".." in path.parts:
+            raise repository_preparation_config_error(
+                "qualityGate.inspection.requiredGeneratedState paths must stay inside the target worktree."
+            )
+        normalized_generated_state.append(path.as_posix())
     return {
         "configured": True,
         "command": command,
         "source": REPOSITORY_PREPARATION_SOURCE,
         "execution_state": REPOSITORY_PREPARATION_NOT_RUN,
+        "required_generated_state": normalized_generated_state,
+        "_argv": argv,
     }
 
 
@@ -846,6 +917,344 @@ def repository_preparation_config_error(message: str) -> InspectError:
             ),
         },
     )
+
+
+def repository_preparation_target(context: dict[str, Any]) -> Path:
+    value = context.get("worktree_root") or context.get("repo_path")
+    if not isinstance(value, str) or not value.strip():
+        raise InspectError(
+            "Repository preparation cannot determine the exact target worktree.",
+            3,
+            {"error_reason": "repository_preparation_untrusted", "failure_phase": "preparation_policy"},
+        )
+    return Path(value).expanduser().resolve()
+
+
+def repository_preparation_command_hash(argv: list[str]) -> str:
+    return stable_value_hash(json.dumps(argv, separators=(",", ":")))
+
+
+def repository_preparation_config_hash(context: dict[str, Any]) -> str:
+    configured_path = context.get("config_path")
+    if isinstance(configured_path, str) and configured_path:
+        path = Path(configured_path).expanduser().resolve()
+        try:
+            return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            pass
+    preparation = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    return stable_value_hash(
+        json.dumps(
+            {
+                "command": preparation.get("command"),
+                "required_generated_state": preparation.get("required_generated_state", []),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def repository_preparation_receipt_path(context: dict[str, Any]) -> Path:
+    target = repository_preparation_target(context)
+    return cache_dir() / REPOSITORY_PREPARATION_RECEIPT_DIRNAME / f"{stable_value_hash(str(target))}.json"
+
+
+def repository_preparation_generated_state(context: dict[str, Any]) -> list[str]:
+    preparation = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    values = preparation.get("required_generated_state")
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if isinstance(value, str) and value.strip()]
+
+
+def repository_preparation_generated_state_snapshot(context: dict[str, Any]) -> dict[str, Any]:
+    target = repository_preparation_target(context)
+    entries: list[dict[str, Any]] = []
+    for relative in repository_preparation_generated_state(context):
+        path = (target / relative).resolve()
+        if not path.is_relative_to(target):
+            entries.append({"path": relative, "exists": False, "reason": "outside_worktree"})
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            entries.append({"path": relative, "exists": False})
+            continue
+        entry: dict[str, Any] = {
+            "path": relative,
+            "exists": True,
+            "kind": "directory" if path.is_dir() else "file" if path.is_file() else "other",
+            "size": stat.st_size if path.is_file() else None,
+        }
+        entries.append({key: value for key, value in entry.items() if value is not None})
+    return {"paths": entries, "all_present": all(entry.get("exists") is True for entry in entries)}
+
+
+def repository_preparation_output(value: bytes | str | None) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value or "")
+    if len(text) <= MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH:
+        return text
+    return text[:MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH] + "\n<output truncated>"
+
+
+def repository_preparation_is_trusted(context: dict[str, Any]) -> tuple[bool, list[str]]:
+    target = repository_preparation_target(context)
+    roots = [Path(root).expanduser().resolve() for root in trusted_auto_open_roots()]
+    return any(target == root or target.is_relative_to(root) for root in roots), [str(root) for root in roots]
+
+
+def repository_preparation_receipt_public(receipt: dict[str, Any]) -> dict[str, Any]:
+    return redact_durable_log(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key not in {"stdout", "stderr"} or isinstance(value, str)
+        }
+    )
+
+
+def read_repository_preparation_receipt(context: dict[str, Any]) -> dict[str, Any] | None:
+    path = repository_preparation_receipt_path(context)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def write_repository_preparation_receipt(context: dict[str, Any], receipt: dict[str, Any]) -> Path:
+    path = repository_preparation_receipt_path(context)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(public_json(repository_preparation_receipt_public(receipt)), encoding="utf-8")
+    temp.replace(path)
+    return path
+
+
+def repository_preparation_receipt_matches(
+    receipt: dict[str, Any] | None,
+    context: dict[str, Any],
+    argv: list[str],
+    status_snapshot: dict[str, Any],
+    generated_state: dict[str, Any],
+) -> bool:
+    if not isinstance(receipt, dict) or receipt.get("status") != REPOSITORY_PREPARATION_SUCCEEDED:
+        return False
+    target = repository_preparation_target(context)
+    return (
+        receipt.get("schema_version") == REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION
+        and receipt.get("command_sha256") == repository_preparation_command_hash(argv)
+        and receipt.get("config_sha256") == repository_preparation_config_hash(context)
+        and receipt.get("worktree_identity_hash") == stable_value_hash(str(target))
+        and receipt.get("post_git_snapshot") == status_snapshot
+        and receipt.get("generated_state") == generated_state
+        and generated_state.get("all_present") is True
+    )
+
+
+def repository_preparation_error(
+    reason: str,
+    message: str,
+    preparation: dict[str, Any],
+    receipt: dict[str, Any] | None = None,
+) -> InspectError:
+    payload: dict[str, Any] = {
+        "error_reason": reason,
+        "failure_phase": "repository_preparation",
+        "repository_preparation": preparation,
+        "next_action": repository_preparation_next_action(reason, preparation),
+    }
+    if receipt is not None:
+        payload["repository_preparation_receipt"] = receipt
+    return InspectError(message, 3, payload)
+
+
+def repository_preparation_next_action(reason: str, preparation: dict[str, Any]) -> str:
+    command = preparation.get("command") or "the configured preparation command"
+    target = preparation.get("target_worktree") or "the exact target worktree"
+    if reason == "repository_preparation_untrusted":
+        return f"Run `{command}` manually in `{target}`, then rerun with --skip-preparation, or move the worktree under a trusted root."
+    if reason == "repository_preparation_opted_out":
+        return f"Run `{command}` manually in `{target}`, then rerun with --skip-preparation if the bypass is intentional."
+    if reason == "repository_preparation_recursion":
+        return "Remove the recursive jb-inspect invocation from qualityGate.inspection.prepare and rerun."
+    if reason == "repository_preparation_generated_state_missing":
+        return f"Run `{command}` in `{target}` and ensure all required generated state exists before rerunning."
+    return f"Fix repository preparation in `{target}`, then rerun the inspection command."
+
+
+def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    state = context.get("repository_preparation") if isinstance(context.get("repository_preparation"), dict) else {}
+    if state.get("configured") is not True:
+        return bounded_repository_preparation(state, target_worktree=str(repository_preparation_target(context)))
+    target = repository_preparation_target(context)
+    preparation = bounded_repository_preparation(state, target_worktree=str(target))
+    argv = context.get("_repository_preparation_argv")
+    if not isinstance(argv, list) or not argv:
+        raise repository_preparation_config_error("Repository preparation command validation did not produce argv.")
+    preparation["command_sha256"] = repository_preparation_command_hash(argv)
+    preparation["config_sha256"] = repository_preparation_config_hash(context)
+    preparation["worktree_identity_hash"] = stable_value_hash(str(target))
+    preparation["required_generated_state"] = repository_preparation_generated_state(context)
+    if getattr(args, "skip_preparation", False):
+        preparation["execution_state"] = REPOSITORY_PREPARATION_SKIPPED
+        preparation["skip_reason"] = "explicit_opt_out"
+        preparation["authorized_opt_out"] = True
+        receipt = {
+            "schema_version": REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION,
+            "status": REPOSITORY_PREPARATION_SKIPPED,
+            "reason": "explicit_opt_out",
+            "command": preparation.get("command"),
+            "command_sha256": preparation["command_sha256"],
+            "config_sha256": preparation["config_sha256"],
+            "worktree_identity_hash": preparation["worktree_identity_hash"],
+            "duration_ms": 0,
+            "exit_status": None,
+            "stdout": "",
+            "stderr": "",
+        }
+        receipt_path = write_repository_preparation_receipt(context, receipt)
+        preparation["receipt_path"] = str(receipt_path)
+        return preparation
+
+    trusted, trusted_roots = repository_preparation_is_trusted(context)
+    if not trusted:
+        preparation["execution_state"] = "blocked"
+        preparation["failure_reason"] = "repository_preparation_untrusted"
+        preparation["trusted_root_count"] = len(trusted_roots)
+        receipt = {
+            "schema_version": REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION,
+            "status": "blocked",
+            "reason": "repository_preparation_untrusted",
+            "command": preparation.get("command"),
+            "command_sha256": preparation["command_sha256"],
+            "config_sha256": preparation["config_sha256"],
+            "worktree_identity_hash": preparation["worktree_identity_hash"],
+            "duration_ms": 0,
+            "exit_status": None,
+            "stdout": "",
+            "stderr": "",
+        }
+        receipt_path = write_repository_preparation_receipt(context, receipt)
+        preparation["receipt_path"] = str(receipt_path)
+        raise repository_preparation_error(
+            "repository_preparation_untrusted",
+            "Repository preparation is configured but the exact worktree is outside trusted roots; no repository-controlled command was executed.",
+            preparation,
+            receipt,
+        )
+
+    if os.environ.get(REPOSITORY_PREPARATION_ACTIVE_ENV) == "1":
+        preparation["execution_state"] = "blocked"
+        preparation["failure_reason"] = "repository_preparation_recursion"
+        raise repository_preparation_error(
+            "repository_preparation_recursion",
+            "Repository preparation refused a recursive inspection-helper invocation.",
+            preparation,
+        )
+
+    before = git_worktree_status_snapshot(target)
+    generated_before = repository_preparation_generated_state_snapshot(context)
+    receipt = read_repository_preparation_receipt(context)
+    if not getattr(args, "force_preparation", False) and repository_preparation_receipt_matches(receipt, context, argv, before, generated_before):
+        preparation["execution_state"] = REPOSITORY_PREPARATION_REUSED
+        preparation["receipt_reused"] = True
+        preparation["receipt_path"] = str(repository_preparation_receipt_path(context))
+        preparation["generated_state_snapshot"] = generated_before
+        return preparation
+
+    timeout_ms = min(
+        MAX_REPOSITORY_PREPARATION_TIMEOUT_MS,
+        max(1, int(getattr(args, "repository_preparation_timeout_ms", DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_MS))),
+    )
+    environment = os.environ.copy()
+    environment[REPOSITORY_PREPARATION_ACTIVE_ENV] = "1"
+    started = monotonic_ms()
+    completed: subprocess.CompletedProcess[bytes] | None = None
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=target,
+            env=environment,
+            capture_output=True,
+            timeout=timeout_ms / 1000.0,
+            check=False,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        timed_out = True
+        stdout = repository_preparation_output(error.stdout)
+        stderr = repository_preparation_output(error.stderr)
+    except OSError as error:
+        stdout = ""
+        stderr = str(error)
+        completed = subprocess.CompletedProcess(argv, 127, b"", stderr.encode("utf-8", errors="replace"))
+    else:
+        stdout = repository_preparation_output(completed.stdout)
+        stderr = repository_preparation_output(completed.stderr)
+
+    after = git_worktree_status_snapshot(target)
+    generated_after = repository_preparation_generated_state_snapshot(context)
+    mutation = summarize_worktree_mutations(before, after)
+    index_changed = before.get("index_sha256") != after.get("index_sha256")
+    duration_ms = max(0, monotonic_ms() - started)
+    exit_status = None if timed_out or completed is None else completed.returncode
+    reason = None
+    if timed_out:
+        reason = "repository_preparation_timeout"
+    elif mutation.get("tracked_change_count", 0) > 0:
+        reason = "repository_preparation_tracked_mutation"
+    elif index_changed:
+        reason = "repository_preparation_index_mutation"
+    elif exit_status != 0:
+        reason = "repository_preparation_command_failed"
+    elif not generated_after.get("all_present", True):
+        reason = "repository_preparation_generated_state_missing"
+    execution_state = REPOSITORY_PREPARATION_SUCCEEDED if reason is None else "failed"
+    preparation.update(
+        {
+            "execution_state": execution_state,
+            "failure_reason": reason,
+            "duration_ms": duration_ms,
+            "exit_status": exit_status,
+            "stdout": stdout,
+            "stderr": stderr,
+            "generated_state_snapshot": generated_after,
+            "git_mutation": mutation,
+            "index_mutation_detected": index_changed,
+        }
+    )
+    receipt = {
+        "schema_version": REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION,
+        "status": execution_state,
+        "reason": reason,
+        "command": preparation.get("command"),
+        "command_sha256": preparation["command_sha256"],
+        "config_sha256": preparation["config_sha256"],
+        "worktree_identity_hash": preparation["worktree_identity_hash"],
+        "duration_ms": duration_ms,
+        "exit_status": exit_status,
+        "stdout": stdout,
+        "stderr": stderr,
+        "pre_git_snapshot": before,
+        "post_git_snapshot": after,
+        "generated_state": generated_after,
+    }
+    receipt_path = write_repository_preparation_receipt(context, receipt)
+    preparation["receipt_path"] = str(receipt_path)
+    if reason is not None:
+        raise repository_preparation_error(
+            reason,
+            f"Repository preparation blocked inspection: {reason}.",
+            preparation,
+            receipt,
+        )
+    return preparation
 
 
 def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, ...]:
@@ -2724,6 +3133,14 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
 
 
 def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    command = canonical_command(str(getattr(args, "command", "")))
+    if command in {"agent", "run", "closeout", ""}:
+        repository_preparation = run_repository_preparation(args, context)
+    else:
+        repository_preparation = bounded_repository_preparation(
+            context.get("repository_preparation"),
+            target_worktree=str(repository_preparation_target(context)),
+        )
     lease = create_local_lease(context, state="preparing")
     validated_route: dict[str, Any] | None = None
     opened_by_helper = False
@@ -2824,6 +3241,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         prepared = {
             "status": "prepared",
             "context": public_context(context),
+            "repository_preparation": repository_preparation,
             "route": validated_route,
             "lease": public_lease(lease),
             "opened_by_helper": opened_by_helper,
@@ -4818,6 +5236,12 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> str | None:
+    preparation = repository_preparation_for_payload(payload)
+    preparation_reason = preparation.get("failure_reason")
+    if isinstance(preparation_reason, str) and preparation_reason.strip():
+        return normalize_reason(preparation_reason)
+    if preparation.get("execution_state") in {"failed", "blocked"}:
+        return "repository_preparation_failure"
     if payload.get("session_drift") or wait.get("session_drift"):
         return "session_drift"
     if payload.get("ambiguous"):
@@ -4942,6 +5366,9 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
 
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
+    if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
+        preparation = repository_preparation_for_payload(payload)
+        return repository_preparation_next_action(reason, preparation)
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
     execution_proof_reason = normalize_reason(
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
@@ -5158,6 +5585,8 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "profile_resolution_error",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
+        *REPOSITORY_PREPARATION_TERMINAL_REASONS,
+        "repository_preparation_failure",
     }:
         return "configuration_blocked"
     if normalized in {
@@ -5223,6 +5652,8 @@ def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, An
         "project_open_blocked",
         PROJECT_OPEN_BLOCKED_REASON,
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
+        *REPOSITORY_PREPARATION_TERMINAL_REASONS,
+        "repository_preparation_failure",
     }:
         return "readiness_wait"
     if isinstance(payload.get("wait"), dict) or normalized in {"timeout", "run_changed", "inspection_api_timeout"}:
@@ -5492,6 +5923,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         }:
             return "environment_blocked"
         return "tool_bug"
+    if normalized in REPOSITORY_PREPARATION_TERMINAL_REASONS or normalized == "repository_preparation_failure":
+        return "environment_blocked"
     attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
     if payload.get("unattributed_unknown") is True or attribution.get("classification") == "unattributed":
         return "tool_bug"
@@ -5538,8 +5971,11 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "profile_resolution_error",
         "inspection_lane_config_invalid",
         "repository_preparation_config_invalid",
+        "repository_preparation_opted_out",
     }:
         return "policy_required"
+    if normalized in REPOSITORY_PREPARATION_TERMINAL_REASONS or normalized == "repository_preparation_failure":
+        return "environment_blocked"
     if attribution.get("classification") == "configuration_blocked":
         return "environment_blocked"
     return "unknown"
@@ -6600,6 +7036,19 @@ def qualification_event_candidate(
     assert attempts is not None
     verdict = event.get("verdict")
     if classification == "configuration_blocked" and inspection_started is False:
+        preparation = event.get("repository_preparation") if isinstance(event.get("repository_preparation"), dict) else {}
+        preparation_reason = preparation.get("failure_reason")
+        if not isinstance(preparation_reason, str) or not preparation_reason.strip():
+            if preparation.get("execution_state") in {"failed", "blocked"}:
+                preparation_reason = "repository_preparation_failure"
+        if isinstance(preparation_reason, str) and preparation_reason.strip():
+            return None, qualification_exclusion(
+                event,
+                line_number,
+                normalize_reason(preparation_reason),
+                True,
+                {"preparation": preparation},
+            )
         if cleanup_status not in QUALIFICATION_CLEANUP_STATUSES:
             return None, qualification_exclusion(event, line_number, "non_clean_cleanup", True)
         attribution_mismatches = configuration_attribution_mismatches(event)
@@ -6670,6 +7119,13 @@ def qualification_event_candidate(
         semantic_failures.append("unattributed_unknown")
     if cleanup_status not in QUALIFICATION_CLEANUP_STATUSES:
         semantic_failures.append("non_clean_cleanup")
+    preparation = event.get("repository_preparation") if isinstance(event.get("repository_preparation"), dict) else {}
+    preparation_reason = preparation.get("failure_reason")
+    if not isinstance(preparation_reason, str) or not preparation_reason.strip():
+        if preparation.get("execution_state") in {"failed", "blocked"}:
+            preparation_reason = "repository_preparation_failure"
+    if isinstance(preparation_reason, str) and preparation_reason.strip():
+        semantic_failures.append(normalize_reason(preparation_reason))
     if classification == "configuration_blocked":
         semantic_failures.append("configuration_blocked_after_start")
     candidate = {
@@ -7770,9 +8226,10 @@ def bounded_repository_preparation(
 ) -> dict[str, Any]:
     state = value if isinstance(value, dict) else {}
     execution_state = state.get("execution_state")
-    if execution_state not in REPOSITORY_PREPARATION_EXECUTION_STATES:
+    if not isinstance(execution_state, str) or not execution_state.strip():
         execution_state = REPOSITORY_PREPARATION_NOT_CONFIGURED
-    configured = state.get("configured") is True and execution_state == REPOSITORY_PREPARATION_NOT_RUN
+    execution_state = execution_state.strip()
+    configured = state.get("configured") is True
     command = state.get("command") if isinstance(state.get("command"), str) else None
     if configured and command:
         command = command.strip()[:MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH]
@@ -7782,7 +8239,7 @@ def bounded_repository_preparation(
         "configured": configured,
         "command": command,
         "source": REPOSITORY_PREPARATION_SOURCE,
-        "execution_state": REPOSITORY_PREPARATION_NOT_RUN if configured else REPOSITORY_PREPARATION_NOT_CONFIGURED,
+        "execution_state": execution_state if configured else REPOSITORY_PREPARATION_NOT_CONFIGURED,
     }
     resolved_target = target_worktree or state.get("target_worktree")
     if isinstance(resolved_target, str) and resolved_target.strip():
@@ -7790,6 +8247,26 @@ def bounded_repository_preparation(
     configuration_status = state.get("configuration_status")
     if isinstance(configuration_status, str) and configuration_status.strip():
         result["configuration_status"] = configuration_status.strip()
+    for key in (
+        "required_generated_state",
+        "generated_state_snapshot",
+        "receipt_reused",
+        "receipt_path",
+        "command_sha256",
+        "config_sha256",
+        "worktree_identity_hash",
+        "duration_ms",
+        "exit_status",
+        "stdout",
+        "stderr",
+        "skip_reason",
+        "authorized_opt_out",
+        "failure_reason",
+        "git_mutation",
+        "index_mutation_detected",
+    ):
+        if key in state:
+            result[key] = state[key]
     return result
 
 
@@ -7976,7 +8453,39 @@ def git_worktree_status_snapshot(path_value: Any) -> dict[str, Any]:
             "entries": {},
         }
     entries = parse_git_porcelain_z(completed.stdout)
-    return {"status": "ok", "entries": entries}
+    index_sha256 = git_index_sha256(path)
+    tracked_content_sha256: dict[str, str] = {}
+    for relative_path, status in entries.items():
+        if status.startswith("??"):
+            continue
+        tracked_path = path / relative_path
+        try:
+            digest = hashlib.sha256(tracked_path.read_bytes()).hexdigest() if tracked_path.is_file() else "missing"
+        except OSError:
+            digest = "unreadable"
+        tracked_content_sha256[relative_path] = f"sha256:{digest}"
+    return {
+        "status": "ok",
+        "entries": entries,
+        "index_sha256": index_sha256,
+        "head_sha": git_head_sha(path),
+        "tracked_content_sha256": tracked_content_sha256,
+    }
+
+
+def git_index_sha256(path: Path) -> str | None:
+    try:
+        index_path = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "--git-path", "index"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        resolved = Path(index_path)
+        if not resolved.is_absolute():
+            resolved = path / resolved
+        return "sha256:" + hashlib.sha256(resolved.resolve().read_bytes()).hexdigest()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def parse_git_porcelain_z(output: bytes) -> dict[str, str]:
@@ -7999,12 +8508,21 @@ def parse_git_porcelain_z(output: bytes) -> dict[str, str]:
 def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     before_entries = before.get("entries") if isinstance(before.get("entries"), dict) else {}
     after_entries = after.get("entries") if isinstance(after.get("entries"), dict) else {}
-    changed_paths = sorted(
+    status_changed_paths = {
         path
         for path, status in after_entries.items()
         if before_entries.get(path) != status
-    )
-    removed_paths = sorted(path for path in before_entries if path not in after_entries)
+    }
+    removed_paths = {path for path in before_entries if path not in after_entries}
+    before_content = before.get("tracked_content_sha256") if isinstance(before.get("tracked_content_sha256"), dict) else {}
+    after_content = after.get("tracked_content_sha256") if isinstance(after.get("tracked_content_sha256"), dict) else {}
+    tracked_content_changed_paths = {
+        path
+        for path in set(before_content) | set(after_content)
+        if before_content.get(path) != after_content.get(path)
+    }
+    changed_paths = sorted(status_changed_paths | tracked_content_changed_paths)
+    removed_paths = sorted(removed_paths)
     emitted_paths = changed_paths[:MAX_WORKTREE_MUTATION_PATHS]
     emitted_removed_paths = removed_paths[:MAX_WORKTREE_MUTATION_PATHS]
     return {
@@ -8021,8 +8539,16 @@ def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) 
         "new_or_changed_paths": emitted_paths,
         "removed_paths_omitted_count": max(0, len(removed_paths) - len(emitted_removed_paths)),
         "removed_paths": emitted_removed_paths,
-        "tracked_change_count": sum(1 for path in changed_paths if not after_entries[path].startswith("??")),
-        "untracked_change_count": sum(1 for path in changed_paths if after_entries[path].startswith("??")),
+        "tracked_change_count": sum(
+            1
+            for path in changed_paths
+            if not after_entries.get(path, before_entries.get(path, "")).startswith("??")
+        ),
+        "untracked_change_count": sum(
+            1 for path in changed_paths if after_entries.get(path, before_entries.get(path, "")).startswith("??")
+        ),
+        "tracked_content_changed_paths": sorted(tracked_content_changed_paths)[:MAX_WORKTREE_MUTATION_PATHS],
+        "tracked_content_changed_path_count": len(tracked_content_changed_paths),
     }
 
 

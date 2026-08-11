@@ -13,6 +13,7 @@ Repo-local values override workspace defaults.
   "qualityGate": {
     "inspection": {
       "prepare": "uv venv --python 3.12 --allow-existing .venv",
+      "requiredGeneratedState": [".venv", ".idea"],
       "scopePreference": "changed_files",
       "lanes": [
         {
@@ -248,13 +249,17 @@ Common top-level keys:
 - `qualityGate.inspection`: repository readiness policy for JetBrains checks.
   Use `ide`, `profile`, and `scopePreference` for the required target, named
   inspection profile, and scope. Optional `prepare` is an exact idempotent
-  command that readiness agents run in the target linked worktree before the
-  first inspection. The `jb-inspect` helper validates this value and reports it
-  as configured but `not_run`; it does not execute the command. Preparation may
-  create ignored local `.venv/` or `.idea/` state, but a nonzero exit or any
-  tracked-file mutation blocks the assessment rather than permitting an
-  incomplete project model. Do not substitute a different setup command. For
-  mixed-language repositories, use ordered `lanes` instead of `ide`.
+  command that `agent-inspect`, `inspect`, and `inspect-closeout` execute in the
+  exact target worktree before IDE lifecycle open/claim, but only when the
+  worktree is under a configured trusted root. `requiredGeneratedState` is an
+  optional bounded array of repository-relative paths that must exist before a
+  successful preparation can proceed or be reused from its durable receipt.
+  The helper executes the validated argv without a shell, applies a dedicated
+  timeout, records a bounded receipt, and fails closed on nonzero exit, timeout,
+  tracked worktree mutation, hidden index mutation, missing generated state,
+  recursion, or untrusted roots. Use `--skip-preparation` only after running
+  the command manually, and `--force-preparation` to refresh a valid receipt.
+  For mixed-language repositories, use ordered `lanes` instead of `ide`.
   Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;
   `required` defaults to `true`, and `exclude` defaults to an empty array.
   Patterns are repository-relative POSIX globs. The first lane whose `include`
