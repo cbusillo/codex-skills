@@ -226,6 +226,10 @@ DEPENDENCY_LOCKFILE_NAMES = frozenset(
     }
 )
 SENSITIVE_KEY_PARTS = ("token", "secret", "password", "credential", "authorization")
+SENSITIVE_OUTPUT_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b(token|secret|password|credential|authorization|api[_-]?key)\b(\s*[:=]\s*)([^\s,;]+)"
+)
+SENSITIVE_OUTPUT_BEARER_PATTERN = re.compile(r"(?i)(\bBearer\s+)([^\s,;]+)")
 DURABLE_POSIX_PATH_ROOTS = frozenset(
     {
         "Applications",
@@ -669,14 +673,15 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
+        subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
+        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
+    for name in ("agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument(
             "--repository-preparation-timeout-ms",
             type=int,
             default=DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_MS,
             help="Bound repository preparation separately from IDE lifecycle timeouts.",
         )
-        subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
-        subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
         subparsers.choices[name].add_argument(
             "--skip-preparation",
             "--no-repository-preparation",
@@ -991,11 +996,45 @@ def repository_preparation_generated_state_snapshot(context: dict[str, Any]) -> 
     return {"paths": entries, "all_present": all(entry.get("exists") is True for entry in entries)}
 
 
-def repository_preparation_output(value: bytes | str | None) -> str:
+def repository_preparation_sensitive_values(environment: dict[str, str], argv: list[str]) -> list[str]:
+    values = {
+        value
+        for key, value in environment.items()
+        if is_sensitive_key(key) and isinstance(value, str) and len(value) >= 4
+    }
+    redact_next = False
+    for argument in argv:
+        if redact_next:
+            if len(argument) >= 4:
+                values.add(argument)
+            redact_next = False
+            continue
+        if argument.startswith("--") and "=" in argument:
+            name, value = argument.split("=", 1)
+            if is_sensitive_key(name) and len(value) >= 4:
+                values.add(value)
+        elif argument.startswith("--") and is_sensitive_key(argument):
+            redact_next = True
+    return sorted(values, key=len, reverse=True)
+
+
+def repository_preparation_output(
+    value: bytes | str | None,
+    environment: dict[str, str],
+    argv: list[str],
+) -> str:
     if isinstance(value, bytes):
         text = value.decode("utf-8", errors="replace")
     else:
         text = str(value or "")
+    for sensitive_value in repository_preparation_sensitive_values(environment, argv):
+        text = text.replace(sensitive_value, REDACTED)
+    text = SENSITIVE_OUTPUT_BEARER_PATTERN.sub(lambda match: f"{match.group(1)}{REDACTED}", text)
+    text = SENSITIVE_OUTPUT_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        text,
+    )
+    text = redact_durable_text(text)
     if len(text) <= MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH:
         return text
     return text[:MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH] + "\n<output truncated>"
@@ -1100,6 +1139,14 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))
     preparation["required_generated_state"] = repository_preparation_generated_state(context)
+    if os.environ.get(REPOSITORY_PREPARATION_ACTIVE_ENV) == "1":
+        preparation["execution_state"] = "blocked"
+        preparation["failure_reason"] = "repository_preparation_recursion"
+        raise repository_preparation_error(
+            "repository_preparation_recursion",
+            "Repository preparation refused a recursive inspection-helper invocation.",
+            preparation,
+        )
     if getattr(args, "skip_preparation", False):
         preparation["execution_state"] = REPOSITORY_PREPARATION_SKIPPED
         preparation["skip_reason"] = "explicit_opt_out"
@@ -1148,15 +1195,6 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
             receipt,
         )
 
-    if os.environ.get(REPOSITORY_PREPARATION_ACTIVE_ENV) == "1":
-        preparation["execution_state"] = "blocked"
-        preparation["failure_reason"] = "repository_preparation_recursion"
-        raise repository_preparation_error(
-            "repository_preparation_recursion",
-            "Repository preparation refused a recursive inspection-helper invocation.",
-            preparation,
-        )
-
     before = git_worktree_status_snapshot(target)
     generated_before = repository_preparation_generated_state_snapshot(context)
     receipt = read_repository_preparation_receipt(context)
@@ -1188,15 +1226,15 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         )
     except subprocess.TimeoutExpired as error:
         timed_out = True
-        stdout = repository_preparation_output(error.stdout)
-        stderr = repository_preparation_output(error.stderr)
+        stdout = repository_preparation_output(error.stdout, environment, argv)
+        stderr = repository_preparation_output(error.stderr, environment, argv)
     except OSError as error:
         stdout = ""
         stderr = str(error)
         completed = subprocess.CompletedProcess(argv, 127, b"", stderr.encode("utf-8", errors="replace"))
     else:
-        stdout = repository_preparation_output(completed.stdout)
-        stderr = repository_preparation_output(completed.stderr)
+        stdout = repository_preparation_output(completed.stdout, environment, argv)
+        stderr = repository_preparation_output(completed.stderr, environment, argv)
 
     after = git_worktree_status_snapshot(target)
     generated_after = repository_preparation_generated_state_snapshot(context)

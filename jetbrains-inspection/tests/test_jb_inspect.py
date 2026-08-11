@@ -391,7 +391,10 @@ class BuildContextTest(unittest.TestCase):
         self.assertEqual(preparation["command"], command)
         self.assertEqual(preparation["source"], "qualityGate.inspection.prepare")
         self.assertEqual(preparation["execution_state"], "not_run")
-        self.assertNotIn("_repository_preparation_argv", context)
+        self.assertEqual(
+            context["_repository_preparation_argv"],
+            ["uv", "run", "prepare-project.py", "--python", "3.12"],
+        )
         self.assertNotIn("_repository_preparation_command", context)
 
     def test_repository_preparation_absent_is_not_configured(self):
@@ -507,6 +510,11 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         self.assertTrue(args.skip_preparation)
         self.assertTrue(args.force_preparation)
 
+        open_args = parser.parse_args(["open-worktree"])
+        self.assertFalse(hasattr(open_args, "repository_preparation_timeout_ms"))
+        self.assertFalse(hasattr(open_args, "skip_preparation"))
+        self.assertFalse(hasattr(open_args, "force_preparation"))
+
     def test_trusted_preparation_runs_in_exact_worktree_and_writes_receipt(self):
         temporary, root = self.make_git_worktree()
         self.addCleanup(temporary.cleanup)
@@ -518,7 +526,7 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
 
         self.assertEqual(result["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
         self.assertEqual(result["exit_status"], 0)
-        self.assertIn(str(root), result["stdout"])
+        self.assertIn("<path:sha256:", result["stdout"])
         self.assertTrue(Path(result["receipt_path"]).exists())
         receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
         self.assertEqual(receipt["command_sha256"], result["command_sha256"])
@@ -618,8 +626,36 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             },
         ):
             with self.assertRaises(jb_inspect.InspectError) as recursive:
-                jb_inspect.run_repository_preparation(self.prep_args(), context)
+                jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
         self.assertEqual(recursive.exception.payload["error_reason"], "repository_preparation_recursion")
+
+    def test_preparation_output_redacts_sensitive_values_before_receipt_and_payload(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        secret = "super-secret-value"
+        context = self.make_context(
+            root,
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['PREP_TOKEN']); print('password=' + 'hunter' + '2'); print('Authorization: Bearer ' + 'abc' + '123')",
+            ],
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent),
+                "PREP_TOKEN": secret,
+            },
+        ):
+            result = jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        serialized = json.dumps(result)
+        receipt = Path(result["receipt_path"]).read_text(encoding="utf-8")
+        for sensitive in (secret, "hunter2", "abc123"):
+            self.assertNotIn(sensitive, serialized)
+            self.assertNotIn(sensitive, receipt)
+        self.assertIn(jb_inspect.REDACTED, result["stdout"])
 
     def test_preparation_failure_is_qualified_as_explicit_hard_failure(self):
         payload = {
