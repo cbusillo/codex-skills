@@ -390,7 +390,8 @@ class BuildContextTest(unittest.TestCase):
         self.assertEqual(preparation["command"], command)
         self.assertEqual(preparation["source"], "qualityGate.inspection.prepare")
         self.assertEqual(preparation["execution_state"], "not_run")
-        self.assertEqual(context["_repository_preparation_argv"], ["uv", "run", "prepare-project.py", "--python", "3.12"])
+        self.assertNotIn("_repository_preparation_argv", context)
+        self.assertNotIn("_repository_preparation_command", context)
 
     def test_repository_preparation_absent_is_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
