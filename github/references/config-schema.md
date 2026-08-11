@@ -249,7 +249,9 @@ Common top-level keys:
   Use `ide`, `profile`, and `scopePreference` for the required target, named
   inspection profile, and scope. Optional `prepare` is an exact idempotent
   command that readiness agents run in the
-  target worktree before the first inspection; preparation failure or tracked
+  target worktree before the first inspection. The `jb-inspect` helper validates
+  this value and reports it as configured but `not_run`; it does not execute the
+  command. Preparation failure or tracked
   mutations block the assessment rather than permitting an incomplete project
   model. For mixed-language repositories, use ordered `lanes` instead of `ide`.
   Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;

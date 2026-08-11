@@ -370,6 +370,70 @@ class ParserCommandAliasTest(unittest.TestCase):
 
 
 class BuildContextTest(unittest.TestCase):
+    def test_repository_preparation_is_validated_and_not_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github").mkdir()
+            command = "uv run prepare-project.py --python 3.12"
+            write_json(
+                root / ".github" / "github.json",
+                {"qualityGate": {"inspection": {"prepare": command}}},
+            )
+
+            context = jb_inspect.build_context(
+                Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+            )
+
+        preparation = context["repository_preparation"]
+        self.assertEqual(preparation["configured"], True)
+        self.assertEqual(preparation["command"], command)
+        self.assertEqual(preparation["source"], "qualityGate.inspection.prepare")
+        self.assertEqual(preparation["execution_state"], "not_run")
+        self.assertEqual(context["_repository_preparation_argv"], ["uv", "run", "prepare-project.py", "--python", "3.12"])
+
+    def test_repository_preparation_absent_is_not_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github").mkdir()
+            write_json(root / ".github" / "github.json", {"qualityGate": {"inspection": {}}})
+
+            context = jb_inspect.build_context(
+                Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+            )
+
+        self.assertEqual(
+            context["repository_preparation"],
+            {
+                "configured": False,
+                "command": None,
+                "source": "qualityGate.inspection.prepare",
+                "execution_state": "not_configured",
+                "target_worktree": str(root.resolve()),
+            },
+        )
+
+    def test_repository_preparation_invalid_values_fail_closed(self):
+        invalid_values = [None, "", "   ", [], "'unterminated"]
+        for value in invalid_values:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".github").mkdir()
+                write_json(
+                    root / ".github" / "github.json",
+                    {"qualityGate": {"inspection": {"prepare": value}}},
+                )
+
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    jb_inspect.build_context(
+                        Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+                    )
+
+            self.assertEqual(raised.exception.payload["error_reason"], "repository_preparation_config_invalid")
+            self.assertEqual(
+                raised.exception.payload["repository_preparation"]["execution_state"],
+                "not_configured",
+            )
+
     def test_reads_github_config_for_jetbrains_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1191,6 +1255,36 @@ class LifecycleTest(unittest.TestCase):
         body = json.loads(output.getvalue())
         self.assertNotIn("_control", body)
         self.assertNotIn("private-value", output.getvalue())
+
+    def test_repository_preparation_agent_and_durable_state_is_bounded_and_redacted(self):
+        command = "uv run /Users/alice/Project With Space/prepare.py --token secret-value"
+        preparation = {
+            "configured": True,
+            "command": command,
+            "source": "qualityGate.inspection.prepare",
+            "execution_state": "not_run",
+            "target_worktree": "/Users/alice/Project With Space",
+        }
+        payload = {
+            "status": "results_available",
+            "context": {"repository_preparation": preparation},
+            "total_problems": 0,
+            "problems_shown": 0,
+            "problems": [],
+        }
+
+        compact = jb_inspect.compact_agent_result_payload(payload, 0)
+        durable = jb_inspect.outcome_log_record(payload, 0)
+
+        self.assertEqual(compact["repository_preparation"]["execution_state"], "not_run")
+        self.assertLessEqual(
+            len(compact["repository_preparation"]["command"]),
+            jb_inspect.MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH,
+        )
+        self.assertNotIn("/Users/alice/Project With Space", compact["repository_preparation"]["command"])
+        self.assertNotIn("secret-value", json.dumps(durable))
+        self.assertNotIn("target_worktree", durable["repository_preparation"])
+        self.assertIn("target_worktree_hash", durable["repository_preparation"])
 
     def test_prepare_lifecycle_does_not_return_private_close_control(self):
         original_create = jb_inspect.create_local_lease
@@ -10176,6 +10270,47 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertEqual(payload["attribution_class"], "configuration_blocked")
         self.assertIn("language SDK", payload["verdict_next_action"])
+
+    def test_configuration_blockers_name_repository_preparation_when_configured(self):
+        preparation = {
+            "configured": True,
+            "command": "uv run prepare-project.py --python 3.12",
+            "source": "qualityGate.inspection.prepare",
+            "execution_state": "not_run",
+            "target_worktree": "/tmp/linked-worktree",
+        }
+        for reason in ("language_sdk_missing", jb_inspect.PROJECT_CONTENT_ROOTS_MISSING_REASON):
+            with self.subTest(reason=reason):
+                action = jb_inspect.next_action_for_unknown(
+                    reason,
+                    {"context": {"repository_preparation": preparation}},
+                )
+
+                self.assertIn("uv run prepare-project.py --python 3.12", action)
+                self.assertIn("/tmp/linked-worktree", action)
+
+    def test_configuration_blockers_keep_fallback_without_repository_preparation(self):
+        language_action = jb_inspect.next_action_for_unknown("language_sdk_missing", {})
+        content_root_action = jb_inspect.next_action_for_unknown(
+            jb_inspect.PROJECT_CONTENT_ROOTS_MISSING_REASON,
+            {},
+        )
+
+        self.assertEqual(
+            language_action,
+            "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection.",
+        )
+        self.assertEqual(
+            content_root_action,
+            "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN.",
+        )
+        self.assertFalse(
+            jb_inspect.retry_policy_for(
+                "UNKNOWN",
+                "environment_blocked",
+                jb_inspect.PROJECT_CONTENT_ROOTS_MISSING_REASON,
+            )["retry"]
+        )
 
     def test_truncation_handles_missing_malformed_and_text_only_diagnostics(self):
         cases = [
