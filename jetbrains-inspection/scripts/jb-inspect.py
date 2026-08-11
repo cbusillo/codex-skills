@@ -6015,7 +6015,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "unattributed_unknown": public.get("unattributed_unknown"),
         "cleanup_status": cleanup_status,
         "cleanup_reason": cleanup_reason,
-        "repository_preparation": repository_preparation_for_payload(public),
+        "repository_preparation": durable_repository_preparation_for_payload(public),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
@@ -7766,7 +7766,7 @@ def bounded_repository_preparation(
     configured = state.get("configured") is True and execution_state == REPOSITORY_PREPARATION_NOT_RUN
     command = state.get("command") if isinstance(state.get("command"), str) else None
     if configured and command:
-        command = redact_repository_preparation_command(command.strip())
+        command = command.strip()[:MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH]
     else:
         command = None
     result: dict[str, Any] = {
@@ -7825,6 +7825,14 @@ def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any
             return bounded_repository_preparation(state, target_worktree=target if isinstance(target, str) else None)
     target = context.get("lifecycle_target_path") or context.get("project_path") or context.get("worktree_root")
     return bounded_repository_preparation({}, target_worktree=target if isinstance(target, str) else None)
+
+
+def durable_repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    preparation = repository_preparation_for_payload(payload)
+    command = preparation.get("command")
+    if isinstance(command, str) and command:
+        preparation["command"] = redact_repository_preparation_command(command)
+    return preparation
 
 
 def repository_preparation_action(payload: dict[str, Any]) -> str | None:

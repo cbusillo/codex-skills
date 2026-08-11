@@ -1283,8 +1283,10 @@ class LifecycleTest(unittest.TestCase):
             len(compact["repository_preparation"]["command"]),
             jb_inspect.MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH,
         )
-        self.assertNotIn("/Users/alice/Project With Space", compact["repository_preparation"]["command"])
-        self.assertNotIn("secret-value", json.dumps(durable))
+        self.assertEqual(compact["repository_preparation"]["command"], command)
+        durable_json = json.dumps(durable)
+        self.assertNotIn("/Users/alice/Project With Space", durable_json)
+        self.assertNotIn("secret-value", durable_json)
         self.assertNotIn("target_worktree", durable["repository_preparation"])
         self.assertIn("target_worktree_hash", durable["repository_preparation"])
 
