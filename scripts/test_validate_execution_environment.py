@@ -219,6 +219,140 @@ def test_bare_pytest_main_call_fails() -> None:
         )
 
 
+def test_wrapped_dynamic_pytest_import_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            "#!/usr/bin/env python3\n"
+            + FIXTURE_SCRIPT_MARKER
+            + '\n# requires-python = ">=3.12"\n'
+            + '# dependencies = ["pytest==9.1.1"]\n'
+            + "# ///\n"
+            + "import importlib\n"
+            + "load_module = importlib.import_module\n"
+            + "pytest = load_module('pytest')\n",
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_pytest_dependency_without_import_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            "#!/usr/bin/env python3\n"
+            + FIXTURE_SCRIPT_MARKER
+            + '\n# requires-python = ">=3.12"\n'
+            + '# dependencies = ["pytest==9.1.1"]\n'
+            + "# ///\n"
+            + "def test_example():\n"
+            + "    assert True\n",
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_pytest_import_without_dependency_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            "#!/usr/bin/env python3\n"
+            + FIXTURE_SCRIPT_MARKER
+            + '\n# requires-python = ">=3.12"\n'
+            + "# dependencies = []\n"
+            + "# ///\n"
+            + "import pytest\n",
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_early_exit_before_pytest_entrypoint_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "    raise SystemExit(pytest.main([__file__]))",
+                "    raise SystemExit(0)\n"
+                "    raise SystemExit(pytest.main([__file__]))",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
+def test_dead_code_pytest_entrypoint_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "    raise SystemExit(pytest.main([__file__]))",
+                "    if False:\n"
+                "        raise SystemExit(pytest.main([__file__]))",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
+def test_later_duplicate_pytest_guard_does_not_bypass_early_exit() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "if __name__ == '__main__':\n"
+                "    raise SystemExit(pytest.main([__file__]))",
+                "if __name__ == '__main__':\n"
+                "    raise SystemExit(0)\n"
+                "\n"
+                "if __name__ == '__main__':\n"
+                "    raise SystemExit(pytest.main([__file__]))",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "first executable statement raises SystemExit(pytest.main(...))",
+        )
+
+
+def test_docstring_and_import_before_pytest_entrypoint_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "    raise SystemExit(pytest.main([__file__]))",
+                '    """Run the helper tests."""\n'
+                "    import os\n"
+                "    raise SystemExit(pytest.main([__file__]))",
+            ),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
 def test_nested_main_guard_fails() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
@@ -390,6 +524,13 @@ TESTS = [
     test_missing_main_guard_fails,
     test_main_guard_without_pytest_main_fails,
     test_bare_pytest_main_call_fails,
+    test_wrapped_dynamic_pytest_import_requires_entrypoint,
+    test_pytest_dependency_without_import_requires_entrypoint,
+    test_pytest_import_without_dependency_requires_entrypoint,
+    test_early_exit_before_pytest_entrypoint_fails,
+    test_dead_code_pytest_entrypoint_fails,
+    test_later_duplicate_pytest_guard_does_not_bypass_early_exit,
+    test_docstring_and_import_before_pytest_entrypoint_passes,
     test_nested_main_guard_fails,
     test_observed_value_format_handles_unknown_types,
     test_missing_helper_tests_array_fails,

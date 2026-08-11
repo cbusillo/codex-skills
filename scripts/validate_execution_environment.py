@@ -380,6 +380,33 @@ def _imports_pytest(tree: ast.AST) -> bool:
     return False
 
 
+def _declares_pytest_dependency(
+    path: Path, source: str, pep723_module: ModuleType
+) -> bool:
+    try:
+        script = pep723_module.parse_script(path, source)
+    except (pep723_module.DependencyPolicyError, OSError, UnicodeError):
+        return False
+    if script is None:
+        return False
+    for value in script.dependencies:
+        try:
+            requirement = pep723_module.parse_requirement(value, require_pin=False)
+        except pep723_module.DependencyPolicyError:
+            continue
+        if requirement.normalized_name == "pytest":
+            return True
+    return False
+
+
+def _is_docstring_statement(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
 def _is_pytest_main_call(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Call)
@@ -390,47 +417,56 @@ def _is_pytest_main_call(node: ast.AST) -> bool:
     )
 
 
-def _contains_pytest_exit(node: ast.AST) -> bool:
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        if (
-            isinstance(current, ast.Raise)
-            and isinstance(current.exc, ast.Call)
-            and isinstance(current.exc.func, ast.Name)
-            and current.exc.func.id == "SystemExit"
-            and any(_is_pytest_main_call(argument) for argument in current.exc.args)
-        ):
-            return True
-        stack.extend(ast.iter_child_nodes(current))
-    return False
+def _is_direct_pytest_exit_statement(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "SystemExit"
+        and any(_is_pytest_main_call(argument) for argument in node.exc.args)
+    )
+
+
+def _is_module_main_guard(node: ast.stmt) -> bool:
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if not isinstance(test, ast.Compare):
+        return False
+    if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
+        return False
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    if len(test.comparators) != 1:
+        return False
+    comparator = test.comparators[0]
+    return isinstance(comparator, ast.Constant) and comparator.value == "__main__"
 
 
 def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
-    for statement in tree.body:
-        if not isinstance(statement, ast.If):
-            continue
-        test = statement.test
-        if not isinstance(test, ast.Compare):
-            continue
-        if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
-            continue
-        if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
-            continue
-        if len(test.comparators) != 1:
-            continue
-        comparator = test.comparators[0]
-        if not isinstance(comparator, ast.Constant) or comparator.value != "__main__":
-            continue
-        if any(_contains_pytest_exit(body_node) for body_node in statement.body):
-            return True
-    return False
+    statement = next(
+        (node for node in tree.body if _is_module_main_guard(node)),
+        None,
+    )
+    if statement is None:
+        return False
+    first_executable_statement = next(
+        (
+            body_node
+            for body_node in statement.body
+            if not _is_docstring_statement(body_node)
+            and not isinstance(body_node, (ast.Import, ast.ImportFrom))
+        ),
+        None,
+    )
+    return first_executable_statement is not None and _is_direct_pytest_exit_statement(
+        first_executable_statement
+    )
 
 
 def validate_helper_tests(root: Path) -> list[str]:
     violations: list[str] = []
+    pep723_module = load_pep723_module()
     manifest_path = root / EXPECTED_HELPER_TESTS_PATH
     try:
         helper_tests = _load_helper_tests_manifest(manifest_path)
@@ -451,11 +487,14 @@ def validate_helper_tests(root: Path) -> list[str]:
         except SyntaxError as exc:
             violations.append(f"{path}: cannot parse declared helper: {exc}")
             continue
-        if _imports_pytest(tree) and not _has_module_level_pytest_entrypoint(tree):
+        uses_pytest = _imports_pytest(tree) or _declares_pytest_dependency(
+            path, source, pep723_module
+        )
+        if uses_pytest and not _has_module_level_pytest_entrypoint(tree):
             violations.append(
-                f"{path}: helpers that import pytest must define a module-level "
-                "if __name__ == '__main__': guard that raises "
-                "SystemExit(pytest.main(...))"
+                f"{path}: helpers that import or declare pytest must define a "
+                "module-level if __name__ == '__main__': guard whose first "
+                "executable statement raises SystemExit(pytest.main(...))"
             )
     return violations
 
