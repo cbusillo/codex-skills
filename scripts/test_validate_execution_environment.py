@@ -146,6 +146,19 @@ def helper_pytest_script(
     return "\n".join(lines) + "\n"
 
 
+def helper_without_dependencies(*body_lines: str) -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env python3",
+            FIXTURE_SCRIPT_MARKER,
+            '# requires-python = ">=3.12"',
+            "# dependencies = []",
+            "# ///",
+            *body_lines,
+        ]
+    ) + "\n"
+
+
 def helper_tests_manifest(entries: list[str], skiplist: list[str] | None = None) -> str:
     helper_tests_lines = ["helper_tests=("]
     helper_tests_lines.extend(f"\t{entry}" for entry in entries)
@@ -219,7 +232,7 @@ def test_bare_pytest_main_call_fails() -> None:
         )
 
 
-def test_wrapped_dynamic_pytest_import_requires_entrypoint() -> None:
+def test_declared_pytest_dependency_catches_aliased_dynamic_import() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
         script = valid_root(root)
@@ -238,6 +251,183 @@ def test_wrapped_dynamic_pytest_import_requires_entrypoint() -> None:
             MODULE.validate_repository(root, python_paths=[script]),
             "helpers that import or declare pytest",
         )
+
+
+def test_dynamic_pytest_import_without_dependency_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib",
+                'pytest = importlib.import_module("pytest")',
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_bare_import_module_pytest_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "from importlib import import_module",
+                'pytest = import_module("pytest")',
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_dunder_import_pytest_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies('pytest = __import__("pytest")'),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_keyword_dynamic_pytest_import_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib",
+                'pytest = importlib.import_module(name="pytest")',
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_dynamic_pytest_submodule_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib",
+                'importlib.import_module("pytest.__main__")',
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_static_pytest_submodule_requires_entrypoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies("import pytest.__main__"),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "helpers that import or declare pytest",
+        )
+
+
+def test_dynamic_pytest_import_with_entrypoint_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib",
+                'pytest = importlib.import_module("pytest")',
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(pytest.main([__file__]))",
+            ),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_pytest_string_without_import_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                'module_name = "pytest"',
+                'message = f"module: {module_name}"',
+            ),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_find_spec_pytest_probe_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib.util",
+                'importlib.util.find_spec("pytest")',
+            ),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_non_pytest_dynamic_import_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies(
+                "import importlib",
+                'importlib.import_module("yaml")',
+            ),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_pytest_plugin_import_without_pytest_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies("import pytest_asyncio"),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_relative_pytest_import_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_without_dependencies("from .pytest import helper"),
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
 
 
 def test_pytest_dependency_without_import_requires_entrypoint() -> None:
@@ -615,7 +805,19 @@ TESTS = [
     test_missing_main_guard_fails,
     test_main_guard_without_pytest_main_fails,
     test_bare_pytest_main_call_fails,
-    test_wrapped_dynamic_pytest_import_requires_entrypoint,
+    test_declared_pytest_dependency_catches_aliased_dynamic_import,
+    test_dynamic_pytest_import_without_dependency_requires_entrypoint,
+    test_bare_import_module_pytest_requires_entrypoint,
+    test_dunder_import_pytest_requires_entrypoint,
+    test_keyword_dynamic_pytest_import_requires_entrypoint,
+    test_dynamic_pytest_submodule_requires_entrypoint,
+    test_static_pytest_submodule_requires_entrypoint,
+    test_dynamic_pytest_import_with_entrypoint_passes,
+    test_pytest_string_without_import_passes,
+    test_find_spec_pytest_probe_passes,
+    test_non_pytest_dynamic_import_passes,
+    test_pytest_plugin_import_without_pytest_passes,
+    test_relative_pytest_import_passes,
     test_pytest_dependency_without_import_requires_entrypoint,
     test_pytest_import_without_dependency_requires_entrypoint,
     test_early_exit_before_pytest_entrypoint_fails,

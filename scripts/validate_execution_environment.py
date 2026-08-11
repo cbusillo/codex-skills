@@ -370,12 +370,49 @@ def _load_helper_tests_manifest(path: Path) -> list[str]:
     return entries
 
 
+def _is_pytest_module_name(value: object) -> bool:
+    return isinstance(value, str) and (
+        value == "pytest" or value.startswith("pytest.")
+    )
+
+
+def _is_dynamic_pytest_import(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    function = node.func
+    if isinstance(function, ast.Name):
+        function_name = function.id
+    elif isinstance(function, ast.Attribute):
+        function_name = function.attr
+    else:
+        return False
+    if function_name not in {"import_module", "__import__"}:
+        return False
+    if node.args:
+        module_name = node.args[0]
+    else:
+        module_name = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+            None,
+        )
+    return (
+        isinstance(module_name, ast.Constant)
+        and _is_pytest_module_name(module_name.value)
+    )
+
+
 def _imports_pytest(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name == "pytest" for alias in node.names):
+            if any(_is_pytest_module_name(alias.name) for alias in node.names):
                 return True
-        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and _is_pytest_module_name(node.module)
+        ):
+            return True
+        elif _is_dynamic_pytest_import(node):
             return True
     return False
 
