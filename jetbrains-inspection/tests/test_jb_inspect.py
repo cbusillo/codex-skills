@@ -1270,6 +1270,10 @@ class LifecycleTest(unittest.TestCase):
         payload = {
             "status": "results_available",
             "context": {"repository_preparation": preparation},
+            "agent_result": {
+                "next_action": f"Run `{command}` in the target worktree, then rerun inspection.",
+                "agent_report": f"Preparation remains pending: `{command}`.",
+            },
             "total_problems": 0,
             "problems_shown": 0,
             "problems": [],
@@ -1287,6 +1291,8 @@ class LifecycleTest(unittest.TestCase):
         durable_json = json.dumps(durable)
         self.assertNotIn("/Users/alice/Project With Space", durable_json)
         self.assertNotIn("secret-value", durable_json)
+        self.assertIn("then rerun inspection", durable["next_action"])
+        self.assertIn(jb_inspect.REDACTED, durable_json)
         self.assertNotIn("target_worktree", durable["repository_preparation"])
         self.assertIn("target_worktree_hash", durable["repository_preparation"])
 

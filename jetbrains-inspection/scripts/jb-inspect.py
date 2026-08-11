@@ -6038,7 +6038,10 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     record.update({
         "retry": retry_policy.get("retry"),
         "verdict_message": public.get("verdict_message"),
-        "verdict_next_action": public.get("verdict_next_action"),
+        "verdict_next_action": durable_repository_preparation_text(
+            public.get("verdict_next_action"),
+            public,
+        ),
         "capture_incomplete_reason": public.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason"),
         "snapshot_change_kind": public.get("snapshot_change_kind"),
     })
@@ -6059,8 +6062,14 @@ def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any
         "retry": retry_policy.get("retry"),
         "retry_max_attempts": retry_policy.get("max_attempts"),
         "retry_wait_ms": agent_retry_policy.get("wait_ms") or retry_policy.get("wait_ms"),
-        "next_action": agent_result.get("next_action") or public.get("verdict_next_action"),
-        "agent_report": agent_result.get("agent_report") or public.get("agent_report"),
+        "next_action": durable_repository_preparation_text(
+            agent_result.get("next_action") or public.get("verdict_next_action"),
+            public,
+        ),
+        "agent_report": durable_repository_preparation_text(
+            agent_result.get("agent_report") or public.get("agent_report"),
+            public,
+        ),
     })
     bounded = {key: value for key, value in record.items() if value not in (None, {}, [])}
     return redact_durable_log(bounded)
@@ -7833,6 +7842,15 @@ def durable_repository_preparation_for_payload(payload: dict[str, Any]) -> dict[
     if isinstance(command, str) and command:
         preparation["command"] = redact_repository_preparation_command(command)
     return preparation
+
+
+def durable_repository_preparation_text(value: Any, payload: dict[str, Any]) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    command = repository_preparation_for_payload(payload).get("command")
+    if not isinstance(command, str) or not command:
+        return value
+    return value.replace(command, redact_repository_preparation_command(command))
 
 
 def repository_preparation_action(payload: dict[str, Any]) -> str | None:
