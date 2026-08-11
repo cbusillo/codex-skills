@@ -20,6 +20,7 @@ import json
 import os
 import plistlib
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -1089,8 +1090,8 @@ def repository_preparation_receipt_matches(
         and receipt.get("command_sha256") == repository_preparation_command_hash(argv)
         and receipt.get("config_sha256") == repository_preparation_config_hash(context)
         and receipt.get("worktree_identity_hash") == stable_value_hash(str(target))
-        and receipt.get("post_git_snapshot") == status_snapshot
-        and receipt.get("generated_state") == generated_state
+        and receipt.get("post_git_snapshot_sha256") == canonical_json_sha256(status_snapshot)
+        and receipt.get("generated_state_sha256") == canonical_json_sha256(generated_state)
         and generated_state.get("all_present") is True
     )
 
@@ -1151,21 +1152,9 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         preparation["execution_state"] = REPOSITORY_PREPARATION_SKIPPED
         preparation["skip_reason"] = "explicit_opt_out"
         preparation["authorized_opt_out"] = True
-        receipt = {
-            "schema_version": REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION,
-            "status": REPOSITORY_PREPARATION_SKIPPED,
-            "reason": "explicit_opt_out",
-            "command": preparation.get("command"),
-            "command_sha256": preparation["command_sha256"],
-            "config_sha256": preparation["config_sha256"],
-            "worktree_identity_hash": preparation["worktree_identity_hash"],
-            "duration_ms": 0,
-            "exit_status": None,
-            "stdout": "",
-            "stderr": "",
-        }
-        receipt_path = write_repository_preparation_receipt(context, receipt)
-        preparation["receipt_path"] = str(receipt_path)
+        receipt_path = repository_preparation_receipt_path(context)
+        if receipt_path.exists():
+            preparation["receipt_path"] = str(receipt_path)
         return preparation
 
     trusted, trusted_roots = repository_preparation_is_trusted(context)
@@ -1215,26 +1204,34 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     completed: subprocess.CompletedProcess[bytes] | None = None
     timed_out = False
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
             cwd=target,
             env=environment,
-            capture_output=True,
-            timeout=timeout_ms / 1000.0,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             shell=False,
+            start_new_session=os.name == "posix",
         )
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        stdout = repository_preparation_output(error.stdout, environment, argv)
-        stderr = repository_preparation_output(error.stderr, environment, argv)
     except OSError as error:
         stdout = ""
-        stderr = str(error)
-        completed = subprocess.CompletedProcess(argv, 127, b"", stderr.encode("utf-8", errors="replace"))
+        stderr = repository_preparation_output(str(error), environment, argv)
+        completed = subprocess.CompletedProcess(argv, 127, b"", str(error).encode("utf-8", errors="replace"))
     else:
-        stdout = repository_preparation_output(completed.stdout, environment, argv)
-        stderr = repository_preparation_output(completed.stderr, environment, argv)
+        try:
+            raw_stdout, raw_stderr = process.communicate(timeout=timeout_ms / 1000.0)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            terminate_repository_preparation_process(process)
+            try:
+                raw_stdout, raw_stderr = process.communicate(timeout=5.0)
+            except subprocess.TimeoutExpired as error:
+                terminate_repository_preparation_process(process)
+                raw_stdout = error.stdout or b""
+                raw_stderr = error.stderr or b""
+        completed = subprocess.CompletedProcess(argv, process.returncode, raw_stdout, raw_stderr)
+        stdout = repository_preparation_output(raw_stdout, environment, argv)
+        stderr = repository_preparation_output(raw_stderr, environment, argv)
 
     after = git_worktree_status_snapshot(target)
     generated_after = repository_preparation_generated_state_snapshot(context)
@@ -1281,7 +1278,9 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         "stderr": stderr,
         "pre_git_snapshot": before,
         "post_git_snapshot": after,
+        "post_git_snapshot_sha256": canonical_json_sha256(after),
         "generated_state": generated_after,
+        "generated_state_sha256": canonical_json_sha256(generated_after),
     }
     receipt_path = write_repository_preparation_receipt(context, receipt)
     preparation["receipt_path"] = str(receipt_path)
@@ -1293,6 +1292,21 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
             receipt,
         )
     return preparation
+
+
+def terminate_repository_preparation_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            process.kill()
+        except OSError:
+            return
 
 
 def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, ...]:
@@ -2375,8 +2389,18 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
 def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     inspection_error: BaseException | None = None
-    mutation_before = git_worktree_status_snapshot(context.get("worktree_root"))
     with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
+        command = canonical_command(str(getattr(args, "command", "")))
+        if (
+            context.get("_repository_preparation_completed") is not True
+            and isinstance(context.get("repository_preparation"), dict)
+            and command in {"agent", "run", "closeout", ""}
+        ):
+            repository_preparation = run_repository_preparation(args, context)
+            context = dict(context)
+            context["repository_preparation"] = repository_preparation
+            context["_repository_preparation_completed"] = True
+        mutation_before = git_worktree_status_snapshot(context.get("worktree_root"))
         prepared, lease, close_proof = prepare_lifecycle_details(args, context)
         try:
             result = run_inspection_with_internal_retry(args, context, prepared["route"])

@@ -590,12 +590,17 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         counter_directory = tempfile.TemporaryDirectory()
         self.addCleanup(counter_directory.cleanup)
         counter = Path(counter_directory.name) / "preparation-counter.txt"
-        script = f"from pathlib import Path; p=Path({str(counter)!r}); p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1')"
-        context = self.make_context(root, [sys.executable, "-c", script])
+        script = (
+            f"from pathlib import Path; p=Path({str(counter)!r}); "
+            "p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1'); Path('generated').mkdir(exist_ok=True)"
+        )
+        context = self.make_context(root, [sys.executable, "-c", script], generated=["generated"])
         with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
             first = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            skipped = jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
             second = jb_inspect.run_repository_preparation(self.prep_args(), context)
             self.assertEqual(first["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+            self.assertEqual(skipped["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SKIPPED)
             self.assertEqual(second["execution_state"], jb_inspect.REPOSITORY_PREPARATION_REUSED)
             self.assertEqual(counter.read_text(encoding="utf-8"), "1")
 
@@ -607,6 +612,33 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             refreshed = jb_inspect.run_repository_preparation(self.prep_args(force_preparation=True), context)
             self.assertEqual(refreshed["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
             self.assertEqual(counter.read_text(encoding="utf-8"), "3")
+
+    @unittest.skipUnless(os.name == "posix", "process-group timeout coverage requires POSIX")
+    def test_timeout_kills_descendants_that_inherit_output_pipes(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        context = self.make_context(
+            root,
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess, sys, time; "
+                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                    "time.sleep(30)"
+                ),
+            ],
+        )
+        started = time.monotonic()
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            with self.assertRaises(jb_inspect.InspectError) as timed_out:
+                jb_inspect.run_repository_preparation(
+                    self.prep_args(repository_preparation_timeout_ms=25),
+                    context,
+                )
+
+        self.assertEqual(timed_out.exception.payload["error_reason"], "repository_preparation_timeout")
+        self.assertLess(time.monotonic() - started, 3.0)
 
     def test_opt_out_and_recursion_are_explicit_and_non_executing(self):
         temporary, root = self.make_git_worktree()
@@ -656,6 +688,61 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             self.assertNotIn(sensitive, serialized)
             self.assertNotIn(sensitive, receipt)
         self.assertIn(jb_inspect.REDACTED, result["stdout"])
+
+    def test_single_lane_mutation_window_starts_after_repository_preparation(self):
+        events = []
+        context = {
+            "worktree_root": "/tmp/repo",
+            "repository_preparation": {
+                "configured": True,
+                "command": "uv run prepare.py",
+                "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        prepared_state = {
+            **context["repository_preparation"],
+            "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+        }
+
+        def prepare(_args, _context):
+            events.append("repository_preparation")
+            return prepared_state
+
+        def snapshot(_path):
+            events.append("mutation_snapshot")
+            return {"status": "ok", "entries": {}}
+
+        def lifecycle(_args, lifecycle_context):
+            events.append("ide_lifecycle")
+            self.assertTrue(lifecycle_context["_repository_preparation_completed"])
+            return (
+                {"route": {}, "repository_preparation": lifecycle_context["repository_preparation"]},
+                {"lease_id": "lease", "opened_by_helper": False},
+                None,
+            )
+
+        with (
+            patch.object(jb_inspect, "run_repository_preparation", side_effect=prepare),
+            patch.object(jb_inspect, "git_worktree_status_snapshot", side_effect=snapshot),
+            patch.object(jb_inspect, "prepare_lifecycle_details", side_effect=lifecycle),
+            patch.object(
+                jb_inspect,
+                "run_inspection_with_internal_retry",
+                return_value={"status": "clean", "total_problems": 0, "problems": []},
+            ),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                return_value={"status": "not_needed", "reason": "helper_did_not_open_project"},
+            ),
+        ):
+            jb_inspect.run_prepared_inspection(
+                Namespace(command="inspect", lifecycle_lock_timeout_ms=1_000, keep_warm=False),
+                context,
+            )
+
+        self.assertEqual(events[:3], ["repository_preparation", "mutation_snapshot", "ide_lifecycle"])
 
     def test_preparation_failure_is_qualified_as_explicit_hard_failure(self):
         payload = {
