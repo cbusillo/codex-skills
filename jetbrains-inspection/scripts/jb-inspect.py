@@ -20,6 +20,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,6 +84,13 @@ OUTCOME_LOG_SCHEMA_VERSION = 2
 QUALIFICATION_SCHEMA_VERSION = 1
 AGENT_RESULT_SCHEMA_VERSION = 1
 INSPECTION_LANE_SCHEMA_VERSION = 1
+REPOSITORY_PREPARATION_SOURCE = "qualityGate.inspection.prepare"
+REPOSITORY_PREPARATION_NOT_CONFIGURED = "not_configured"
+REPOSITORY_PREPARATION_NOT_RUN = "not_run"
+REPOSITORY_PREPARATION_EXECUTION_STATES = frozenset(
+    {REPOSITORY_PREPARATION_NOT_CONFIGURED, REPOSITORY_PREPARATION_NOT_RUN}
+)
+MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH = 1024
 INSPECTION_LANE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 AGENT_USAGE_ERROR_REASON = "helper_usage_error"
 AGENT_USAGE_NEXT_ACTION = (
@@ -703,6 +711,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     quality = config.get("qualityGate", {}) if isinstance(config.get("qualityGate"), dict) else {}
     inspection = quality.get("inspection", {}) if isinstance(quality.get("inspection"), dict) else {}
     inspection_lanes = parse_inspection_lanes(inspection)
+    repository_preparation = parse_repository_preparation(inspection)
 
     main_config = jetbrains.get("mainWorktreePath") or jetbrains.get("main_worktree_path")
     if main_config:
@@ -746,6 +755,10 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "worktree_strategy": worktree_strategy,
         "client_run_id": getattr(args, "client_run_id", None),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
+        "repository_preparation": bounded_repository_preparation(
+            repository_preparation,
+            target_worktree=str(lifecycle_target_path),
+        ),
     }
     if inspection_lanes:
         context["inspection_lane_schema_version"] = INSPECTION_LANE_SCHEMA_VERSION
@@ -766,6 +779,73 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         if selection.app_path:
             context["ide_app_path"] = str(selection.app_path)
     return context
+
+
+def parse_repository_preparation(inspection: dict[str, Any]) -> dict[str, Any]:
+    if "prepare" not in inspection:
+        return {
+            "configured": False,
+            "command": None,
+            "source": REPOSITORY_PREPARATION_SOURCE,
+            "execution_state": REPOSITORY_PREPARATION_NOT_CONFIGURED,
+        }
+
+    raw_command = inspection.get("prepare")
+    if not isinstance(raw_command, str):
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare must be a non-empty command string when configured."
+        )
+    command = raw_command.strip()
+    if not command:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare must be a non-empty command string when configured."
+        )
+    if len(command) > MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare exceeds the bounded command length."
+        )
+    if any(ord(character) < 32 and character not in {"\t"} for character in command):
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare must not contain control characters."
+        )
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise repository_preparation_config_error(
+            f"qualityGate.inspection.prepare is not a valid shell-style command: {error}"
+        ) from error
+    if not argv:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare must contain at least one command argument."
+        )
+    return {
+        "configured": True,
+        "command": command,
+        "source": REPOSITORY_PREPARATION_SOURCE,
+        "execution_state": REPOSITORY_PREPARATION_NOT_RUN,
+    }
+
+
+def repository_preparation_config_error(message: str) -> InspectError:
+    return InspectError(
+        message,
+        2,
+        {
+            "error_reason": "repository_preparation_config_invalid",
+            "failure_phase": "configuration",
+            "repository_preparation": {
+                "configured": False,
+                "command": None,
+                "source": REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": REPOSITORY_PREPARATION_NOT_CONFIGURED,
+                "configuration_status": "invalid",
+            },
+            "next_action": (
+                "Fix qualityGate.inspection.prepare in .github/github.json so it is a valid non-empty command, "
+                "then rerun the inspection command."
+            ),
+        },
+    )
 
 
 def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, ...]:
@@ -1795,6 +1875,7 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
                 "retry_policy": retry_policy,
                 "next_action": next_action,
                 "agent_report": f"{verdict}: {reason}. {next_action}",
+                "repository_preparation": repository_preparation_for_payload(payload),
             },
             "required_lane_count": len(required),
             "lane_count": len(lane_results),
@@ -4934,7 +5015,14 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "inspection_inputs_changed":
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun after project files, VCS state, and inspection settings stop changing."
     if reason == "language_sdk_missing":
+        preparation_action = repository_preparation_action(payload)
+        if preparation_action:
+            return preparation_action
         return "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+    if reason == PROJECT_CONTENT_ROOTS_MISSING_REASON:
+        preparation_action = repository_preparation_action(payload)
+        if preparation_action:
+            return preparation_action
     if reason == "project_analysis_not_ready":
         return "Wait for the configured language SDK and background analysis to settle, then rerun inspection."
     if reason == "stale_results":
@@ -4949,6 +5037,11 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Another inspection replaced the accepted run. Wait for that run to settle, then resolve the route and retry once."
     if reason == "inspection_api_unavailable":
         return "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
+    if reason == "repository_preparation_config_invalid":
+        return (
+            "Fix qualityGate.inspection.prepare in .github/github.json so it is a valid non-empty command, "
+            "then rerun the inspection command."
+        )
     if reason == "ambiguous_route":
         return "Pass project_key, project_path, or worktree_path so the helper can inspect the exact project."
     if reason == "session_drift":
@@ -5297,6 +5390,7 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         "retry_policy": retry_policy,
         "next_action": next_action,
         "agent_report": report,
+        "repository_preparation": repository_preparation_for_payload(payload),
     }
     proof_failures = payload.get("proof_failures")
     if isinstance(proof_failures, list) and proof_failures:
@@ -5436,7 +5530,15 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         SEMANTIC_COVERAGE_MISSING_REASON,
     }:
         return "environment_blocked"
-    if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection", "profile_resolution_error", "inspection_lane_config_invalid"}:
+    if normalized in {
+        "ide_selection_required",
+        "ide_config_ambiguous",
+        "ide_config_missing",
+        "implicit_eap_selection",
+        "profile_resolution_error",
+        "inspection_lane_config_invalid",
+        "repository_preparation_config_invalid",
+    }:
         return "policy_required"
     if attribution.get("classification") == "configuration_blocked":
         return "environment_blocked"
@@ -5913,6 +6015,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "unattributed_unknown": public.get("unattributed_unknown"),
         "cleanup_status": cleanup_status,
         "cleanup_reason": cleanup_reason,
+        "repository_preparation": durable_repository_preparation_for_payload(public),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
@@ -5935,7 +6038,10 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     record.update({
         "retry": retry_policy.get("retry"),
         "verdict_message": public.get("verdict_message"),
-        "verdict_next_action": public.get("verdict_next_action"),
+        "verdict_next_action": durable_repository_preparation_text(
+            public.get("verdict_next_action"),
+            public,
+        ),
         "capture_incomplete_reason": public.get("capture_incomplete_reason") or wait.get("capture_incomplete_reason"),
         "snapshot_change_kind": public.get("snapshot_change_kind"),
     })
@@ -5956,8 +6062,14 @@ def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any
         "retry": retry_policy.get("retry"),
         "retry_max_attempts": retry_policy.get("max_attempts"),
         "retry_wait_ms": agent_retry_policy.get("wait_ms") or retry_policy.get("wait_ms"),
-        "next_action": agent_result.get("next_action") or public.get("verdict_next_action"),
-        "agent_report": agent_result.get("agent_report") or public.get("agent_report"),
+        "next_action": durable_repository_preparation_text(
+            agent_result.get("next_action") or public.get("verdict_next_action"),
+            public,
+        ),
+        "agent_report": durable_repository_preparation_text(
+            agent_result.get("agent_report") or public.get("agent_report"),
+            public,
+        ),
     })
     bounded = {key: value for key, value in record.items() if value not in (None, {}, [])}
     return redact_durable_log(bounded)
@@ -7031,6 +7143,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
             "status": cleanup.get("status"),
             "reason": cleanup.get("reason"),
         },
+        "repository_preparation": repository_preparation_for_payload(payload),
         "identity": {
             "helper_revision": attribution.get("helper_revision"),
             "ide_name": ide.get("name"),
@@ -7094,6 +7207,7 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
         "findings_truncated": findings_truncated or total_findings > len(findings),
         "selection": bounded_lane_selection(payload.get("lane_selection")),
         "lanes": compact_lanes,
+        "repository_preparation": repository_preparation_for_payload(payload),
         "aggregate": {
             "verdict": payload.get("verdict"),
             "bucket": payload.get("bucket"),
@@ -7648,6 +7762,111 @@ def is_sensitive_key(key: str) -> bool:
 
 def public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return redact_payload(strip_private_fields(payload))
+
+
+def bounded_repository_preparation(
+    value: Any,
+    target_worktree: str | None = None,
+) -> dict[str, Any]:
+    state = value if isinstance(value, dict) else {}
+    execution_state = state.get("execution_state")
+    if execution_state not in REPOSITORY_PREPARATION_EXECUTION_STATES:
+        execution_state = REPOSITORY_PREPARATION_NOT_CONFIGURED
+    configured = state.get("configured") is True and execution_state == REPOSITORY_PREPARATION_NOT_RUN
+    command = state.get("command") if isinstance(state.get("command"), str) else None
+    if configured and command:
+        command = command.strip()[:MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH]
+    else:
+        command = None
+    result: dict[str, Any] = {
+        "configured": configured,
+        "command": command,
+        "source": REPOSITORY_PREPARATION_SOURCE,
+        "execution_state": REPOSITORY_PREPARATION_NOT_RUN if configured else REPOSITORY_PREPARATION_NOT_CONFIGURED,
+    }
+    resolved_target = target_worktree or state.get("target_worktree")
+    if isinstance(resolved_target, str) and resolved_target.strip():
+        result["target_worktree"] = resolved_target.strip()
+    configuration_status = state.get("configuration_status")
+    if isinstance(configuration_status, str) and configuration_status.strip():
+        result["configuration_status"] = configuration_status.strip()
+    return result
+
+
+def redact_repository_preparation_command(command: str) -> str:
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return redact_durable_text(command)[:MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH]
+
+    redacted_argv: list[str] = []
+    redact_next = False
+    for token in argv:
+        if redact_next:
+            redacted_argv.append(REDACTED)
+            redact_next = False
+            continue
+        if "=" in token:
+            name, value = token.split("=", 1)
+            if is_sensitive_key(name):
+                redacted_argv.append(f"{name}={REDACTED}")
+                continue
+        if token.startswith("-") and is_sensitive_key(token):
+            redacted_argv.append(token)
+            redact_next = True
+            continue
+        redacted_argv.append(redact_durable_text(token))
+    return shlex.join(redacted_argv)[:MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH]
+
+
+def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = [payload]
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    candidates.append(context)
+    failure = payload.get("inspection_failure") if isinstance(payload.get("inspection_failure"), dict) else {}
+    candidates.append(failure)
+    for candidate in candidates:
+        state = candidate.get("repository_preparation")
+        if isinstance(state, dict):
+            target = state.get("target_worktree")
+            if not isinstance(target, str) or not target.strip():
+                target = candidate.get("lifecycle_target_path") or candidate.get("project_path") or candidate.get("worktree_root")
+            return bounded_repository_preparation(state, target_worktree=target if isinstance(target, str) else None)
+    target = context.get("lifecycle_target_path") or context.get("project_path") or context.get("worktree_root")
+    return bounded_repository_preparation({}, target_worktree=target if isinstance(target, str) else None)
+
+
+def durable_repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    preparation = repository_preparation_for_payload(payload)
+    command = preparation.get("command")
+    if isinstance(command, str) and command:
+        preparation["command"] = redact_repository_preparation_command(command)
+    return preparation
+
+
+def durable_repository_preparation_text(value: Any, payload: dict[str, Any]) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    command = repository_preparation_for_payload(payload).get("command")
+    if not isinstance(command, str) or not command:
+        return value
+    return value.replace(command, redact_repository_preparation_command(command))
+
+
+def repository_preparation_action(payload: dict[str, Any]) -> str | None:
+    preparation = repository_preparation_for_payload(payload)
+    if preparation.get("configured") is not True or preparation.get("execution_state") != REPOSITORY_PREPARATION_NOT_RUN:
+        return None
+    command = preparation.get("command")
+    target = preparation.get("target_worktree")
+    if not isinstance(command, str) or not command:
+        return None
+    if isinstance(target, str) and target:
+        return (
+            f"Run the configured repository preparation command `{command}` in the exact target worktree `{target}`, "
+            "then rerun inspection."
+        )
+    return f"Run the configured repository preparation command `{command}`, then rerun inspection."
 
 
 def public_context(context: dict[str, Any]) -> dict[str, Any]:
