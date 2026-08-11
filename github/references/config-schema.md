@@ -248,10 +248,12 @@ Common top-level keys:
 - `qualityGate.inspection`: repository readiness policy for JetBrains checks.
   Use `ide`, `profile`, and `scopePreference` for the required target, named
   inspection profile, and scope. Optional `prepare` is an exact idempotent
-  command that readiness agents run in the
-  target worktree before the first inspection; preparation failure or tracked
-  mutations block the assessment rather than permitting an incomplete project
-  model. For mixed-language repositories, use ordered `lanes` instead of `ide`.
+  command that readiness agents run in the target linked worktree before the
+  first inspection. It may create ignored local `.venv/` or `.idea/` state, but
+  preparation failure or any tracked-file mutation blocks the assessment rather
+  than permitting an incomplete project model. Do not substitute a different
+  setup command. For mixed-language repositories, use ordered `lanes` instead
+  of `ide`.
   Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;
   `required` defaults to `true`, and `exclude` defaults to an empty array.
   Patterns are repository-relative POSIX globs. The first lane whose `include`

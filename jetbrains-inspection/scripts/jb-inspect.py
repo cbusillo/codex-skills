@@ -113,8 +113,9 @@ PREFERRED_COMMANDS = {
     "status": "get-status",
     "problems": "get-problems",
     "claim": "claim-worktree",
-    "prepare": "prepare-worktree",
-    "open-worktree": "prepare-worktree",
+    "prepare": "open-worktree",
+    "prepare-worktree": "open-worktree",
+    "open-worktree": "open-worktree",
     "closeout": "inspect-closeout",
     "run": "inspect",
     "agent": "agent-inspect",
@@ -124,8 +125,9 @@ PREFERRED_COMMANDS = {
 COMMAND_ALIASES = {
     "list-projects": "list",
     "resolve-route": "route",
-    "prepare-worktree": "prepare",
-    "open-worktree": "prepare",
+    "prepare": "open-worktree",
+    "prepare-worktree": "open-worktree",
+    "open-worktree": "open-worktree",
     "inspect": "run",
     "inspect-closeout": "closeout",
     "agent-inspect": "agent",
@@ -422,7 +424,7 @@ def main() -> int:
             context = build_context(args)
             result = command_claim(args, context)
             return emit(result, args.json, 0, command=args.command_input, assess=False)
-        if args.command == "prepare":
+        if args.command == "open-worktree":
             context = build_context(args)
             result = command_prepare(args, context)
             exit_code = classify_prepare_exit(result)
@@ -590,7 +592,7 @@ def hint_for_error_reason(reason: str) -> str | None:
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
         "worktree_route_mismatch": "Open the exact worktree in the IDE or use inspect-closeout so the helper can claim the correct project.",
-        "target_project_not_open": "Use inspect or prepare-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
+        "target_project_not_open": "Use inspect or open-worktree to lifecycle-open the exact worktree, or open that worktree manually in the configured IDE.",
         "untrusted_auto_open_root": "Move the worktree under a trusted auto-open root or update the repo/global trusted roots configuration.",
         "ide_open_failed": "Check the configured JetBrains app name and whether macOS can launch it with open -a.",
         "ide_selection_required": "Add preferred JetBrains IDE metadata to .github/github.json, or pass --ide for this one run.",
@@ -613,7 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
         "get-status": ("Read current route-pinned inspection status.", False),
         "get-problems": ("Fetch current inspection problem details.", False),
         "claim-worktree": ("Claim an already-open exact worktree without opening an IDE.", False),
-        "prepare-worktree": ("Open and claim the exact worktree; does not inspect.", False),
+        "open-worktree": ("Open and claim the exact worktree; does not inspect.", False),
         "agent-inspect": ("Agent assessment: inspect once and emit a compact terminal result envelope.", True),
         "inspect-closeout": ("Readiness inspection: open if needed, inspect, and clean up helper-opened projects.", True),
         "inspect": ("Inspect now: open if needed, trigger, wait, fetch problems, and clean up helper-opened projects.", True),
@@ -626,7 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
-    for name in ("prepare-worktree", "agent-inspect", "inspect", "inspect-closeout"):
+    for name in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
         subparsers.choices[name].add_argument("--foreground-open", dest="background_open", action="store_false", help="Allow the IDE to take focus while launching.")
