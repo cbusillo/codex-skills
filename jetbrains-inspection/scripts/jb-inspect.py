@@ -2064,6 +2064,12 @@ def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str,
     lanes = configured_inspection_lanes(context)
     selection = resolve_inspection_lane_selection(args, context)
     lane_files = selection.get("lane_files") if isinstance(selection.get("lane_files"), dict) else {}
+    if any(isinstance(files, list) and files for files in lane_files.values()):
+        with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
+            repository_preparation = run_repository_preparation(args, context)
+        context = dict(context)
+        context["repository_preparation"] = repository_preparation
+        context["_repository_preparation_completed"] = True
     lane_results: list[dict[str, Any]] = []
     for execution_order, lane in enumerate(lanes):
         selected = lane_files.get(lane.lane_id) if isinstance(lane_files.get(lane.lane_id), list) else []
@@ -2093,6 +2099,7 @@ def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str,
         "status": "inspection_lanes_complete",
         "context": public_context(context),
         "lane_schema_version": INSPECTION_LANE_SCHEMA_VERSION,
+        "repository_preparation": aggregate_repository_preparation_for_lanes(lane_results, context),
         "lane_selection": {
             key: value
             for key, value in selection.items()
@@ -2191,6 +2198,10 @@ def noop_inspection_lane_result(
         "proof": None,
         "cleanup": {"status": "not_needed", "reason": "lane_empty"},
         "diagnostic": None,
+        "repository_preparation": bounded_repository_preparation(
+            context.get("repository_preparation"),
+            target_worktree=str(repository_preparation_target(context)),
+        ),
     }
 
 
@@ -2261,7 +2272,37 @@ def compact_inspection_lane_result(
                 "mutation_evidence": payload.get("worktree_mutation_evidence"),
             },
             "diagnostic": compact.get("diagnostic"),
+            "repository_preparation": repository_preparation_for_payload(payload),
         }
+    )
+
+
+def aggregate_repository_preparation_for_lanes(
+    lane_results: list[dict[str, Any]],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    preparations = [
+        lane.get("repository_preparation")
+        for lane in lane_results
+        if isinstance(lane, dict) and isinstance(lane.get("repository_preparation"), dict)
+    ]
+    precedence = {
+        "failed": 6,
+        "blocked": 6,
+        REPOSITORY_PREPARATION_SUCCEEDED: 5,
+        REPOSITORY_PREPARATION_REUSED: 4,
+        REPOSITORY_PREPARATION_SKIPPED: 3,
+        REPOSITORY_PREPARATION_NOT_RUN: 2,
+        REPOSITORY_PREPARATION_NOT_CONFIGURED: 1,
+    }
+    selected = max(
+        preparations,
+        key=lambda preparation: precedence.get(str(preparation.get("execution_state")), 0),
+        default=context.get("repository_preparation"),
+    )
+    return bounded_repository_preparation(
+        selected,
+        target_worktree=str(repository_preparation_target(context)),
     )
 
 
@@ -3172,7 +3213,12 @@ def prepare_lifecycle(args: argparse.Namespace, context: dict[str, Any]) -> dict
 
 def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     command = canonical_command(str(getattr(args, "command", "")))
-    if command in {"agent", "run", "closeout", ""}:
+    if context.get("_repository_preparation_completed") is True:
+        repository_preparation = bounded_repository_preparation(
+            context.get("repository_preparation"),
+            target_worktree=str(repository_preparation_target(context)),
+        )
+    elif command in {"agent", "run", "closeout", ""}:
         repository_preparation = run_repository_preparation(args, context)
     else:
         repository_preparation = bounded_repository_preparation(
@@ -8338,6 +8384,8 @@ def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any
     candidates: list[dict[str, Any]] = [payload]
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     candidates.append(context)
+    prepared = payload.get("prepared") if isinstance(payload.get("prepared"), dict) else {}
+    candidates.append(prepared)
     failure = payload.get("inspection_failure") if isinstance(payload.get("inspection_failure"), dict) else {}
     candidates.append(failure)
     for candidate in candidates:

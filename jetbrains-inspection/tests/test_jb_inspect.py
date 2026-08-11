@@ -983,6 +983,38 @@ class InspectionLaneConfigTest(unittest.TestCase):
         self.assertEqual([lane["id"] for lane in context["inspection_lanes"]], ["jvm", "python"])
         self.assertEqual([lane.lane_id for lane in context["_inspection_lanes"]], ["jvm", "python"])
 
+    def test_lane_preparation_aggregation_preserves_execution_evidence(self):
+        context = {
+            "worktree_root": "/tmp/repo",
+            "repository_preparation": {
+                "configured": True,
+                "command": "uv run prepare.py",
+                "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        lane_results = [
+            {
+                "repository_preparation": {
+                    **context["repository_preparation"],
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                    "duration_ms": 25,
+                }
+            },
+            {
+                "repository_preparation": {
+                    **context["repository_preparation"],
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_REUSED,
+                    "receipt_reused": True,
+                }
+            },
+        ]
+
+        preparation = jb_inspect.aggregate_repository_preparation_for_lanes(lane_results, context)
+
+        self.assertEqual(preparation["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertEqual(preparation["duration_ms"], 25)
+
 
 class InspectionLaneSelectionTest(unittest.TestCase):
     def make_context(self, root: Path, lanes: tuple[Any, ...], scope: str = "files") -> dict[str, Any]:
@@ -1246,6 +1278,66 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(result["lane_results"][0]["verdict"], "NOT_RUN")
         self.assertEqual(result["lane_results"][0]["cleanup"]["reason"], "lane_empty")
+
+    def test_repository_preparation_runs_once_before_multiple_active_lanes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            kotlin = root / "Example.kt"
+            python = root / "check.py"
+            kotlin.write_text("fixture\n", encoding="utf-8")
+            python.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+                "repository_preparation": {
+                    "configured": True,
+                    "command": "uv run prepare.py",
+                    "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+                },
+            }
+            args = helper_args(scope="files", files=[str(kotlin), str(python)], max_files=None, profile="")
+            prepared_state = {
+                **context["repository_preparation"],
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "duration_ms": 25,
+            }
+            lane_contexts = []
+
+            def run_lane(_lane_args, lane_context):
+                lane_contexts.append(lane_context)
+                return {
+                    "status": "clean",
+                    "total_problems": 0,
+                    "problems": [],
+                    "prepared": {"repository_preparation": lane_context["repository_preparation"]},
+                    "cleanup": {"status": "closed"},
+                }
+
+            with (
+                patch.object(jb_inspect, "run_repository_preparation", return_value=prepared_state) as prepare,
+                patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane),
+            ):
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual(prepare.call_count, 1)
+        self.assertEqual(len(lane_contexts), 2)
+        self.assertTrue(all(item["_repository_preparation_completed"] is True for item in lane_contexts))
+        self.assertEqual(result["repository_preparation"]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertEqual(result["agent_result"]["repository_preparation"]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
 
     def test_lane_failure_does_not_prevent_later_lane_execution(self):
         with tempfile.TemporaryDirectory() as tmp:
