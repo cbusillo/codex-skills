@@ -181,6 +181,40 @@ def assert_contains(violations: list[str], text: str) -> None:
     assert any(text in violation for violation in violations), violations
 
 
+def assert_pytest_entrypoint_rejected(statement: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            f"    {statement}",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "raises SystemExit(pytest.main(...))",
+        )
+
+
+def assert_module_prefix_rejected(*lines: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "if __name__ == '__main__':",
+            "\n".join((*lines, "", "if __name__ == '__main__':")),
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "no direct module-level exit before it",
+        )
+
+
 def test_valid_policy_passes() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
@@ -230,6 +264,52 @@ def test_bare_pytest_main_call_fails() -> None:
             MODULE.validate_repository(root, python_paths=[script]),
             "raises SystemExit(pytest.main(...))",
         )
+
+
+def test_system_exit_with_leading_argument_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(0, pytest.main([__file__]))"
+    )
+
+
+def test_system_exit_with_trailing_argument_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(pytest.main([__file__]), 0)"
+    )
+
+
+def test_system_exit_with_keyword_argument_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(code=pytest.main([__file__]))"
+    )
+
+
+def test_system_exit_with_wrapped_pytest_call_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(int(pytest.main([__file__])))"
+    )
+
+
+def test_pytest_main_selecting_other_file_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(pytest.main(['other.py']))"
+    )
+
+
+def test_pytest_main_without_helper_file_fails() -> None:
+    assert_pytest_entrypoint_rejected("raise SystemExit(pytest.main([]))")
+
+
+def test_pytest_main_with_additional_selector_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(pytest.main([__file__, 'other.py']))"
+    )
+
+
+def test_pytest_main_with_keyword_arguments_fails() -> None:
+    assert_pytest_entrypoint_rejected(
+        "raise SystemExit(pytest.main([__file__], plugins=[]))"
+    )
 
 
 def test_declared_pytest_dependency_catches_aliased_dynamic_import() -> None:
@@ -595,6 +675,90 @@ def test_module_level_os_exit_before_guard_fails() -> None:
         )
 
 
+def test_assigned_sys_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected("import sys", "stop = sys.exit", "stop(0)")
+
+
+def test_assigned_os_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected("import os", "stop = os._exit", "stop(0)")
+
+
+def test_assigned_system_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected("Stop = SystemExit", "raise Stop(0)")
+
+
+def test_chained_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected(
+        "import sys",
+        "first = sys.exit",
+        "second = first",
+        "second(0)",
+    )
+
+
+def test_aliased_sys_module_exit_before_guard_fails() -> None:
+    assert_module_prefix_rejected(
+        "import sys as system",
+        "stop = system.exit",
+        "stop(0)",
+    )
+
+
+def test_imported_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected("from sys import exit as stop", "stop(0)")
+
+
+def test_imported_system_exit_alias_before_guard_fails() -> None:
+    assert_module_prefix_rejected(
+        "from builtins import SystemExit as Stop",
+        "raise Stop(0)",
+    )
+
+
+def test_dotted_os_import_preserves_direct_exit_detection() -> None:
+    assert_module_prefix_rejected("import os.path", "os._exit(0)")
+
+
+def test_bare_builtins_system_exit_before_guard_fails() -> None:
+    assert_module_prefix_rejected("import builtins", "raise builtins.SystemExit")
+
+
+def test_relative_import_does_not_create_exit_alias() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "if __name__ == '__main__':",
+            "from .sys import exit as stop\n"
+            "stop(0)\n"
+            "\n"
+            "if __name__ == '__main__':",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_rebound_exit_alias_before_guard_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "if __name__ == '__main__':",
+            "import sys\n"
+            "stop = sys.exit\n"
+            "stop = print\n"
+            "stop('continuing')\n"
+            "\n"
+            "if __name__ == '__main__':",
+        )
+        assert modified != original
+        write(root / "tool.py", modified)
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
 def test_nested_exit_before_guard_does_not_fail() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
@@ -875,6 +1039,14 @@ TESTS = [
     test_missing_main_guard_fails,
     test_main_guard_without_pytest_main_fails,
     test_bare_pytest_main_call_fails,
+    test_system_exit_with_leading_argument_fails,
+    test_system_exit_with_trailing_argument_fails,
+    test_system_exit_with_keyword_argument_fails,
+    test_system_exit_with_wrapped_pytest_call_fails,
+    test_pytest_main_selecting_other_file_fails,
+    test_pytest_main_without_helper_file_fails,
+    test_pytest_main_with_additional_selector_fails,
+    test_pytest_main_with_keyword_arguments_fails,
     test_declared_pytest_dependency_catches_aliased_dynamic_import,
     test_dynamic_pytest_import_without_dependency_requires_entrypoint,
     test_bare_import_module_pytest_requires_entrypoint,
@@ -897,6 +1069,17 @@ TESTS = [
     test_module_level_bare_system_exit_before_guard_fails,
     test_module_level_sys_exit_before_guard_fails,
     test_module_level_os_exit_before_guard_fails,
+    test_assigned_sys_exit_alias_before_guard_fails,
+    test_assigned_os_exit_alias_before_guard_fails,
+    test_assigned_system_exit_alias_before_guard_fails,
+    test_chained_exit_alias_before_guard_fails,
+    test_aliased_sys_module_exit_before_guard_fails,
+    test_imported_exit_alias_before_guard_fails,
+    test_imported_system_exit_alias_before_guard_fails,
+    test_dotted_os_import_preserves_direct_exit_detection,
+    test_bare_builtins_system_exit_before_guard_fails,
+    test_relative_import_does_not_create_exit_alias,
+    test_rebound_exit_alias_before_guard_passes,
     test_nested_exit_before_guard_does_not_fail,
     test_docstring_and_import_before_pytest_entrypoint_passes,
     test_import_without_docstring_before_pytest_entrypoint_passes,

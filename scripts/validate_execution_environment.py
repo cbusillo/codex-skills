@@ -445,13 +445,21 @@ def _is_docstring_statement(node: ast.stmt) -> bool:
 
 
 def _is_pytest_main_call(node: ast.AST) -> bool:
-    return (
+    if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "main"
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "pytest"
-    )
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return False
+    arguments = node.args[0]
+    if not isinstance(arguments, ast.List) or len(arguments.elts) != 1:
+        return False
+    helper_path = arguments.elts[0]
+    return isinstance(helper_path, ast.Name) and helper_path.id == "__file__"
 
 
 def _is_direct_pytest_exit_statement(node: ast.stmt) -> bool:
@@ -460,7 +468,9 @@ def _is_direct_pytest_exit_statement(node: ast.stmt) -> bool:
         and isinstance(node.exc, ast.Call)
         and isinstance(node.exc.func, ast.Name)
         and node.exc.func.id == "SystemExit"
-        and any(_is_pytest_main_call(argument) for argument in node.exc.args)
+        and len(node.exc.args) == 1
+        and not node.exc.keywords
+        and _is_pytest_main_call(node.exc.args[0])
     )
 
 
@@ -480,24 +490,123 @@ def _is_module_main_guard(node: ast.stmt) -> bool:
     return isinstance(comparator, ast.Constant) and comparator.value == "__main__"
 
 
-def _is_direct_module_exit_statement(node: ast.stmt) -> bool:
+class _ExitAliases:
+    def __init__(self) -> None:
+        self.system_exit = {"SystemExit"}
+        self.exit_functions: set[str] = set()
+        self.sys_modules = {"sys"}
+        self.os_modules = {"os"}
+        self.builtins_modules: set[str] = set()
+
+
+def _clear_exit_alias(name: str, aliases: _ExitAliases) -> None:
+    aliases.system_exit.discard(name)
+    aliases.exit_functions.discard(name)
+    aliases.sys_modules.discard(name)
+    aliases.os_modules.discard(name)
+    aliases.builtins_modules.discard(name)
+
+
+def _exit_alias_group(node: ast.AST, aliases: _ExitAliases) -> set[str] | None:
+    if isinstance(node, ast.Name):
+        for group in (
+            aliases.system_exit,
+            aliases.exit_functions,
+            aliases.sys_modules,
+            aliases.os_modules,
+            aliases.builtins_modules,
+        ):
+            if node.id in group:
+                return group
+        return None
+    if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+        return None
+    if node.value.id in aliases.sys_modules and node.attr == "exit":
+        return aliases.exit_functions
+    if node.value.id in aliases.os_modules and node.attr == "_exit":
+        return aliases.exit_functions
+    if node.value.id in aliases.builtins_modules and node.attr == "SystemExit":
+        return aliases.system_exit
+    return None
+
+
+def _update_exit_aliases(node: ast.stmt, aliases: _ExitAliases) -> None:
+    if isinstance(node, ast.Import):
+        for imported in node.names:
+            module_name = imported.name.split(".", 1)[0]
+            bound_name = imported.asname or module_name
+            _clear_exit_alias(bound_name, aliases)
+            if imported.name == "sys" or (
+                imported.asname is None and module_name == "sys"
+            ):
+                aliases.sys_modules.add(bound_name)
+            elif imported.name == "os" or (
+                imported.asname is None and module_name == "os"
+            ):
+                aliases.os_modules.add(bound_name)
+            elif imported.name == "builtins" or (
+                imported.asname is None and module_name == "builtins"
+            ):
+                aliases.builtins_modules.add(bound_name)
+        return
+    if isinstance(node, ast.ImportFrom):
+        for imported in node.names:
+            bound_name = imported.asname or imported.name
+            _clear_exit_alias(bound_name, aliases)
+            if node.level != 0:
+                continue
+            if node.module == "sys" and imported.name == "exit":
+                aliases.exit_functions.add(bound_name)
+            elif node.module == "os" and imported.name == "_exit":
+                aliases.exit_functions.add(bound_name)
+            elif node.module == "builtins" and imported.name == "SystemExit":
+                aliases.system_exit.add(bound_name)
+        return
+
+    if isinstance(node, ast.Assign):
+        value = node.value
+        targets = node.targets
+    elif isinstance(node, ast.AnnAssign):
+        value = node.value
+        targets = [node.target]
+    elif isinstance(node, ast.AugAssign):
+        value = None
+        targets = [node.target]
+    elif isinstance(node, ast.Delete):
+        value = None
+        targets = node.targets
+    else:
+        return
+
+    source_group = _exit_alias_group(value, aliases) if value is not None else None
+    for target in targets:
+        if not isinstance(target, ast.Name):
+            continue
+        _clear_exit_alias(target.id, aliases)
+        if source_group is not None:
+            source_group.add(target.id)
+
+
+def _is_direct_module_exit_statement(
+    node: ast.stmt, aliases: _ExitAliases
+) -> bool:
     if isinstance(node, ast.Raise):
         exception = node.exc
-        if isinstance(exception, ast.Name):
-            return exception.id == "SystemExit"
-        return (
-            isinstance(exception, ast.Call)
-            and isinstance(exception.func, ast.Name)
-            and exception.func.id == "SystemExit"
-        )
+        reference = exception.func if isinstance(exception, ast.Call) else exception
+        return _exit_alias_group(reference, aliases) is aliases.system_exit
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
         return False
     function = node.value.func
-    return (
-        isinstance(function, ast.Attribute)
-        and isinstance(function.value, ast.Name)
-        and (function.value.id, function.attr) in {("sys", "exit"), ("os", "_exit")}
-    )
+    return _exit_alias_group(function, aliases) is aliases.exit_functions
+
+
+def _has_direct_module_exit(statements: list[ast.stmt]) -> bool:
+    aliases = _ExitAliases()
+    for statement in statements:
+        if _is_direct_module_exit_statement(statement, aliases):
+            return True
+        _update_exit_aliases(statement, aliases)
+    return False
 
 
 def _guard_entrypoint_statement(body: list[ast.stmt]) -> ast.stmt | None:
@@ -519,9 +628,9 @@ def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
     if guard is None:
         return False
     guard_index, statement = guard
-    if any(
-        _is_direct_module_exit_statement(node) for node in tree.body[:guard_index]
-    ):
+    if not isinstance(statement, ast.If):
+        return False
+    if _has_direct_module_exit(tree.body[:guard_index]):
         return False
     first_executable_statement = _guard_entrypoint_statement(statement.body)
     return first_executable_statement is not None and _is_direct_pytest_exit_statement(
