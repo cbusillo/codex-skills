@@ -500,6 +500,13 @@ def _is_direct_module_exit_statement(node: ast.stmt) -> bool:
     )
 
 
+def _guard_entrypoint_statement(body: list[ast.stmt]) -> ast.stmt | None:
+    index = 1 if body and _is_docstring_statement(body[0]) else 0
+    while index < len(body) and isinstance(body[index], (ast.Import, ast.ImportFrom)):
+        index += 1
+    return body[index] if index < len(body) else None
+
+
 def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
     guard = next(
         (
@@ -516,15 +523,7 @@ def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
         _is_direct_module_exit_statement(node) for node in tree.body[:guard_index]
     ):
         return False
-    first_executable_statement = next(
-        (
-            body_node
-            for body_node in statement.body
-            if not _is_docstring_statement(body_node)
-            and not isinstance(body_node, (ast.Import, ast.ImportFrom))
-        ),
-        None,
-    )
+    first_executable_statement = _guard_entrypoint_statement(statement.body)
     return first_executable_statement is not None and _is_direct_pytest_exit_statement(
         first_executable_statement
     )
