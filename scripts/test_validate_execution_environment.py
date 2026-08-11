@@ -337,18 +337,109 @@ def test_later_duplicate_pytest_guard_does_not_bypass_early_exit() -> None:
         )
 
 
-def test_docstring_and_import_before_pytest_entrypoint_passes() -> None:
+def test_module_level_system_exit_call_before_guard_fails() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
         script = valid_root(root)
         write(
             root / "tool.py",
             helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                '    """Run the helper tests."""\n'
-                "    import os\n"
-                "    raise SystemExit(pytest.main([__file__]))",
+                "if __name__ == '__main__':",
+                "raise SystemExit(0)\n\nif __name__ == '__main__':",
             ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "no direct module-level exit before it",
+        )
+
+
+def test_module_level_bare_system_exit_before_guard_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "if __name__ == '__main__':",
+                "raise SystemExit\n\nif __name__ == '__main__':",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "no direct module-level exit before it",
+        )
+
+
+def test_module_level_sys_exit_before_guard_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "if __name__ == '__main__':",
+                "import sys\nsys.exit(0)\n\nif __name__ == '__main__':",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "no direct module-level exit before it",
+        )
+
+
+def test_module_level_os_exit_before_guard_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "tool.py",
+            helper_pytest_script().replace(
+                "if __name__ == '__main__':",
+                "import os\nos._exit(0)\n\nif __name__ == '__main__':",
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "no direct module-level exit before it",
+        )
+
+
+def test_nested_exit_before_guard_does_not_fail() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "if __name__ == '__main__':",
+            "def stop_later():\n"
+            "    raise SystemExit(0)\n"
+            "\n"
+            "if __name__ == '__main__':",
+        )
+        assert modified != original
+        write(
+            root / "tool.py",
+            modified,
+        )
+        assert MODULE.validate_repository(root, python_paths=[script]) == []
+
+
+def test_docstring_and_import_before_pytest_entrypoint_passes() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        original = helper_pytest_script()
+        modified = original.replace(
+            "    raise SystemExit(pytest.main([__file__]))",
+            '    """Run the helper tests."""\n'
+            "    import os\n"
+            "    raise SystemExit(pytest.main([__file__]))",
+        )
+        assert modified != original
+        write(
+            root / "tool.py",
+            modified,
         )
         assert MODULE.validate_repository(root, python_paths=[script]) == []
 
@@ -530,6 +621,11 @@ TESTS = [
     test_early_exit_before_pytest_entrypoint_fails,
     test_dead_code_pytest_entrypoint_fails,
     test_later_duplicate_pytest_guard_does_not_bypass_early_exit,
+    test_module_level_system_exit_call_before_guard_fails,
+    test_module_level_bare_system_exit_before_guard_fails,
+    test_module_level_sys_exit_before_guard_fails,
+    test_module_level_os_exit_before_guard_fails,
+    test_nested_exit_before_guard_does_not_fail,
     test_docstring_and_import_before_pytest_entrypoint_passes,
     test_nested_main_guard_fails,
     test_observed_value_format_handles_unknown_types,

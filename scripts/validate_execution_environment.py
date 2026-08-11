@@ -443,12 +443,41 @@ def _is_module_main_guard(node: ast.stmt) -> bool:
     return isinstance(comparator, ast.Constant) and comparator.value == "__main__"
 
 
+def _is_direct_module_exit_statement(node: ast.stmt) -> bool:
+    if isinstance(node, ast.Raise):
+        exception = node.exc
+        if isinstance(exception, ast.Name):
+            return exception.id == "SystemExit"
+        return (
+            isinstance(exception, ast.Call)
+            and isinstance(exception.func, ast.Name)
+            and exception.func.id == "SystemExit"
+        )
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    function = node.value.func
+    return (
+        isinstance(function, ast.Attribute)
+        and isinstance(function.value, ast.Name)
+        and (function.value.id, function.attr) in {("sys", "exit"), ("os", "_exit")}
+    )
+
+
 def _has_module_level_pytest_entrypoint(tree: ast.Module) -> bool:
-    statement = next(
-        (node for node in tree.body if _is_module_main_guard(node)),
+    guard = next(
+        (
+            (index, node)
+            for index, node in enumerate(tree.body)
+            if _is_module_main_guard(node)
+        ),
         None,
     )
-    if statement is None:
+    if guard is None:
+        return False
+    guard_index, statement = guard
+    if any(
+        _is_direct_module_exit_statement(node) for node in tree.body[:guard_index]
+    ):
         return False
     first_executable_statement = next(
         (
@@ -493,8 +522,9 @@ def validate_helper_tests(root: Path) -> list[str]:
         if uses_pytest and not _has_module_level_pytest_entrypoint(tree):
             violations.append(
                 f"{path}: helpers that import or declare pytest must define a "
-                "module-level if __name__ == '__main__': guard whose first "
-                "executable statement raises SystemExit(pytest.main(...))"
+                "module-level if __name__ == '__main__': guard with no direct "
+                "module-level exit before it and whose first executable statement "
+                "raises SystemExit(pytest.main(...))"
             )
     return violations
 
