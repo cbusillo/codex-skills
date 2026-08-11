@@ -755,11 +755,11 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
         "worktree_strategy": worktree_strategy,
         "client_run_id": getattr(args, "client_run_id", None),
         "config_path": str(worktree_root / ".github" / "github.json") if (worktree_root / ".github" / "github.json").exists() else None,
+        "repository_preparation": bounded_repository_preparation(
+            repository_preparation,
+            target_worktree=str(lifecycle_target_path),
+        ),
     }
-    context["repository_preparation"] = bounded_repository_preparation(
-        repository_preparation,
-        target_worktree=str(lifecycle_target_path),
-    )
     if inspection_lanes:
         context["inspection_lane_schema_version"] = INSPECTION_LANE_SCHEMA_VERSION
         context["inspection_lanes"] = [lane.public() for lane in inspection_lanes]
