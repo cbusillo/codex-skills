@@ -25,6 +25,10 @@ formatting rules in every `SKILL.md`.
 - Prefer point-in-time evidence for handoffs and closeout: merge commits,
   workflow run URLs, PR numbers, issue comments, landing-plan or deploy record
   ids, and exact dates when relative timing could become stale.
+- For Background Review lifecycle wording, use
+  `background-review-reporting.md`. Record the target and observation time;
+  never turn absence into a terminal claim. If later terminal evidence appears,
+  preserve the original statement and add a follow-up.
 - Do not paste large logs or long copied source text. Link to the run, file, or
   artifact and quote only the useful lines.
 

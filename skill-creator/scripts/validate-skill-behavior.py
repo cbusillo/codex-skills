@@ -1283,6 +1283,136 @@ def test_safe_exit_requires_love_gate_closeout() -> None:
     )
 
 
+def test_background_review_reporting_is_point_in_time() -> None:
+    reference_path = ROOT / "references" / "background-review-reporting.md"
+    reference = " ".join(reference_path.read_text().lower().split())
+    readiness = " ".join(
+        (ROOT / "repo-readiness" / "SKILL.md").read_text().lower().split()
+    )
+    closeout = " ".join(
+        (ROOT / "work-closeout" / "SKILL.md").read_text().lower().split()
+    )
+    github = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
+    workflow = " ".join(
+        (ROOT / "github" / "references" / "repo-workflow.md")
+        .read_text()
+        .lower()
+        .split()
+    )
+    formatting = " ".join(
+        (ROOT / "references" / "every-code-formatting.md")
+        .read_text()
+        .lower()
+        .split()
+    )
+    metadata = json.loads((ROOT / ".github" / "github.json").read_text())
+
+    for state in (
+        "`not yet observable`",
+        "`in flight`",
+        "`observation unavailable`",
+        "`completed`",
+        "`cancelled`",
+        "`superseded`",
+        "`failed`",
+        "`skipped`",
+    ):
+        require(state in reference, f"Background Review reference must define {state}")
+    require(
+        "when the lifecycle surface is readable, absence of matching evidence is always `not yet observable`"
+        in reference
+        and "report `observation unavailable` instead" in reference,
+        "Background Review absence must remain non-terminal",
+    )
+    require(
+        "do not poll, sleep, or delay a final response solely" in reference,
+        "Background Review reporting must forbid unbounded post-turn waiting",
+    )
+    require(
+        "`not yet observable` does not block `safe to exit: yes`" in reference,
+        "Background Review absence must not make safe exit impossible",
+    )
+    require(
+        "matching `in flight` review remains pending evidence" in reference,
+        "Observed current-target reviews must remain pending gates",
+    )
+    require(
+        "`observation unavailable` must stay visible as an evidence gap" in reference
+        and "keep readiness or safe-to-exit conditional" in reference,
+        "Unavailable Background Review evidence must have an explicit conditional policy",
+    )
+
+    reference_link = "../references/background-review-reporting.md"
+    require(reference_link in readiness, "repo-readiness must link the shared review contract")
+    require(reference_link in closeout, "work-closeout must link the shared review contract")
+    require(reference_link in github, "github must link the shared review contract")
+    require(
+        "not yet observable" in readiness and "do not delay the final response solely" in readiness,
+        "repo-readiness must use point-in-time absence wording without polling",
+    )
+    require(
+        "not yet observable" in closeout and "keeps the verdict conditional" in closeout,
+        "work-closeout must split absent and observed in-flight review states",
+    )
+    require(
+        "consume the target, observation time or head sha" in closeout
+        and "canonical point-in-time state" in closeout,
+        "work-closeout must consume the Background Review readiness handoff",
+    )
+    require(
+        "never wait indefinitely for a matching review" in closeout
+        and "cancellation and supersession are terminal but are not clean" in closeout
+        and "the never-started exception applies only" in closeout
+        and "the never-started exception cannot apply" in closeout
+        and "no corrective follow-up is required" in closeout,
+        "work-closeout must preserve bounded waiting and later-state semantics",
+    )
+    require(
+        "absence before a possible post-turn trigger is `not yet observable`" in workflow,
+        "GitHub workflow guidance must keep absence non-terminal",
+    )
+    require(
+        "never turn absence into a terminal claim" in formatting,
+        "Durable formatting guidance must preserve point-in-time review state",
+    )
+    require(
+        metadata.get("docs", {}).get("backgroundReviewReporting")
+        == "references/background-review-reporting.md",
+        "github.json must route the shared Background Review reporting reference",
+    )
+
+    scenarios = {
+        "local-llm-background-review-completed-after-turn.json": {
+            "initial_state=not-yet-observable",
+            "later_state=completed",
+            "follow_up_action=add",
+        },
+        "local-llm-background-review-cancelled-after-turn.json": {
+            "initial_state=not-yet-observable",
+            "later_state=cancelled",
+            "later_clean_claim=no",
+        },
+        "local-llm-background-review-never-starts.json": {
+            "initial_state=not-yet-observable",
+            "later_state=not-yet-observable",
+            "follow_up_action=none",
+        },
+        "local-llm-background-review-in-flight.json": {
+            "current_state=in-flight",
+            "safe_exit=conditional",
+            "wait_forever=no",
+        },
+    }
+    scenario_root = ROOT / "skill-creator" / "evaluations" / "exec-harness"
+    for filename, expected_lines in scenarios.items():
+        payload = json.loads((scenario_root / filename).read_text())
+        observed_lines = set(payload.get("expect", {}).get("assistant_contains", []))
+        require(
+            expected_lines <= observed_lines,
+            f"{filename} must cover its Background Review lifecycle outcome",
+        )
+
+
 def test_launchplane_delegates_github_surfaces() -> None:
     launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
     normalized = " ".join(launchplane.split())
@@ -1741,6 +1871,7 @@ def main() -> None:
         test_runtime_checkout_reconciliation_is_safe_and_delegated,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_safe_exit_requires_love_gate_closeout,
+        test_background_review_reporting_is_point_in_time,
         test_launchplane_delegates_github_surfaces,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_work_closeout_requires_issue_aware_safe_exit,

@@ -492,6 +492,82 @@ skills:
       - private_context
       - script_helper
     checks:
+      - check_id: background-review-cancelled-after-turn-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-background-review-cancelled-after-turn.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-08-11. The fixture preserves later cancellation as terminal
+            without relabeling it clean. Repeated aggregate local-provider runs
+            were nondeterministic; this baseline records a successful
+            final-version run. Raw artifacts remain local-only.
+      - check_id: background-review-completed-after-turn-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-background-review-completed-after-turn.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-08-11. The fixture distinguishes pre-trigger absence from a
+            later matching completed outcome. Repeated aggregate local-provider
+            runs were nondeterministic; this baseline records a successful
+            final-version run. Raw artifacts remain local-only.
+      - check_id: background-review-in-flight-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-background-review-in-flight.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-08-11. The fixture keeps an observed current-target review
+            conditional without unbounded waiting. Repeated aggregate
+            local-provider runs were nondeterministic; this baseline records a
+            successful final-version run. Raw artifacts remain local-only.
+      - check_id: background-review-never-starts-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-background-review-never-starts.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 60000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Passed on qwen3-coder-next against trusted local LM Studio on
+            2026-08-11. The fixture keeps repeated absence non-terminal when no
+            review ever starts. Repeated aggregate local-provider runs were
+            nondeterministic; this baseline records a successful final-version
+            run. Raw artifacts remain local-only.
       - check_id: closeout-owning-surface-local-scenario
         kind: exec_harness
         mode: trusted_local_provider
@@ -787,6 +863,18 @@ skills:
       - readiness_closeout
       - github_workflow
     checks:
+      - check_id: background-review-reporting-contract
+        kind: static_validator
+        mode: ci
+        dimension: advisory_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Behavior validation distinguishes pre-trigger absence from observed
+            in-flight and terminal Background Review states.
       - check_id: jetbrains-readiness-evidence-contract
         kind: static_validator
         mode: ci
@@ -1030,6 +1118,18 @@ skills:
       - readiness_closeout
       - planning
     checks:
+      - check_id: background-review-reporting-contract
+        kind: static_validator
+        mode: ci
+        dimension: advisory_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fix/issue-499-background-review-reporting
+          notes: >-
+            Behavior validation permits point-in-time safe exit for pre-trigger
+            absence while preserving observed in-flight reviews as pending.
       - check_id: jetbrains-readiness-evidence-contract
         kind: static_validator
         mode: ci

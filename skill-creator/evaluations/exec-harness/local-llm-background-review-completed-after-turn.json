@@ -1,0 +1,25 @@
+{
+  "name": "local-llm-background-review-completed-after-turn",
+  "model": "qwen3-coder-next",
+  "prompt": "Use $work-closeout for this advisory classification. Do not use tools, run commands, edit files, or start agents. Timeline: at closeout for current head abc123, no matching Background Review lifecycle evidence is visible, and the product can start the review only after the final response. The point-in-time closeout summary is then posted to the PR. Later, matching lifecycle evidence reports `completed` with no findings. Classify both observations from the skill guidance. A terminal_claim value says whether the evidence supports reporting a terminal lifecycle state. original_summary_action says whether later evidence should replace text in the original point-in-time summary. follow_up_action says whether the later observation needs a durable follow-up to that summary. Return final answer only as these key=value lines with no markdown and no spaces around equals: initial_state, initial_terminal_claim, safe_exit_at_closeout, later_state, later_terminal_claim, original_summary_action, follow_up_action. Allowed states: not-yet-observable, in-flight, observation-unavailable, completed, cancelled, superseded, failed, skipped. Allowed yes/no values: yes, no. Allowed summary actions: preserve, rewrite. Allowed follow-up actions: add, none.",
+  "files": {
+    "README.md": "# Background review completed-after-turn fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "initial_state=not-yet-observable",
+      "initial_terminal_claim=no",
+      "safe_exit_at_closeout=yes",
+      "later_state=completed",
+      "later_terminal_claim=yes",
+      "original_summary_action=preserve",
+      "follow_up_action=add"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}
