@@ -11,6 +11,11 @@ resources:
     kind: reference
     description: Regression tests for JetBrains inspection helper routing and lifecycle behavior.
 commands:
+  - name: jetbrains-inspection-open-worktree
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "open-worktree", "--repo", "$PWD"]
+    purpose: Preferred public command for opening and claiming the exact worktree without running inspections.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -30,7 +35,12 @@ commands:
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "prepare-worktree", "--repo", "$PWD"]
-    purpose: Opens and claims the exact worktree without running inspections.
+    purpose: Backward-compatible alias for open-worktree.
+  - name: jetbrains-inspection-prepare
+    source: skill
+    resource_path: scripts/jb-inspect.py
+    example_argv: ["uv", "run", "scripts/jb-inspect.py", "prepare", "--repo", "$PWD"]
+    purpose: Backward-compatible alias for open-worktree.
   - name: jetbrains-inspection-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -85,13 +95,37 @@ Use this skill to run and interpret JetBrains IDE inspections through the local
 inspection plugin HTTP API. The script-backed helper is the primary agent
 interface; prefer it over direct curl or MCP tool calls.
 
+## Before The First Inspection
+
+If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
+repository command in the exact linked worktree you plan to inspect. The
+preferred public command for opening that worktree is:
+
+```bash
+uv run "$HELPER" open-worktree --repo "$PWD"
+```
+
+`prepare-worktree` and `prepare` remain compatibility aliases, but they are
+not the preferred public command. Do not substitute a different setup command,
+even if it seems equivalent.
+
+Preparation may create ignored local worktree state such as `.venv/` and
+`.idea/` directories or files. That is allowed. What is not allowed is a
+nonzero exit or any tracked-file mutation. If either happens, stop and treat
+preparation as a blocker before the first inspection.
+
+Run preparation before the first inspection assessment, not after an
+inspection has already started. Preparation is a repo-specific readiness step,
+not an inspection surrogate.
+
 ## Primary Helper
 
 Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
 In the common user-skill install, that path is:
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py agent-inspect --repo "$PWD" --scope changed_files
+uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py \
+  agent-inspect --repo "$PWD" --scope changed_files
 ```
 
 If this skill was loaded from a repo-local or temporary path, use that loaded
@@ -104,7 +138,7 @@ HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
 uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
 uv run "$HELPER" list-projects
 uv run "$HELPER" resolve-route --repo "$PWD"
-uv run "$HELPER" prepare-worktree --repo "$PWD"
+uv run "$HELPER" open-worktree --repo "$PWD"
 uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
 uv run "$HELPER" inspect-closeout --repo "$PWD" --scope changed_files
 uv run "$HELPER" get-status --repo "$PWD"
@@ -123,7 +157,10 @@ Command model:
 - `list-projects`: discover plugin-visible projects only.
 - `resolve-route`: probe for an already-open exact route; it does not open or
   inspect.
-- `prepare-worktree`: open and claim the exact worktree; it does not inspect.
+- `open-worktree`: preferred public command; open and claim the exact
+  worktree; it does not inspect.
+- `prepare-worktree` and `prepare`: backward-compatible aliases for
+  `open-worktree`.
 - `inspect`: open if needed, inspect, fetch problems, and clean up
   helper-opened projects.
 - `inspect-closeout`: readiness/hand-off inspection; use before saying a change
@@ -137,7 +174,8 @@ Command model:
 - `cleanup-helper-leases`: reconcile stale helper-owned leases under the
   lifecycle lock; unresolved identity or close failures return nonzero.
 
-`agent-inspect`, `inspect`, and `inspect-closeout` create a local lease, serialize helper-owned IDE
+`open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` create a
+local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
 indexing/scanning to settle, run the inspection loop, and call the plugin
 lifecycle close endpoint only for projects the helper opened. Projects that were
@@ -253,9 +291,9 @@ Configure trusted roots in `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-i
 ```
 
 If an exact worktree is not already open and is outside those roots,
-`agent-inspect`, `inspect`, `inspect-closeout`, and `prepare-worktree` must fail
-before opening the IDE. Do
-not use random temp directories for agent inspection worktrees.
+`open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` must fail
+before opening the IDE. Do not use random temp directories for agent
+inspection worktrees.
 
 If multiple JetBrains products or stable/EAP installs are present, the repo must
 declare its preferred IDE in `.github/github.json` so lifecycle opens and
@@ -489,6 +527,7 @@ requires the requested sample size, at least 95% decisive, and zero hard
 failures; otherwise the gate is `incomplete` or `fail`. If a log contains
 malformed rows, provide `boundary.after_event_id` so the helper can prove which
 side of the boundary they occupy.
+
 - `scope_semantic_coverage_missing` is `UNKNOWN`: one or more requested scoped
   files resolved only as generic TextMate/PlainText PSI, were invalid, or were
   outside project content. This overrides an otherwise clean or plugin-provided
@@ -535,8 +574,10 @@ side of the boundary they occupy.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness inspections should use `agent-inspect` or `inspect-closeout`, not plain `get-status`.
-  `prepare-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` always lifecycle-open the
+- readiness inspections should use `agent-inspect` or `inspect-closeout`, not
+  plain `get-status`.
+  `open-worktree`, `prepare-worktree`, `prepare`, `agent-inspect`, `inspect`,
+  and `inspect-closeout` always lifecycle-open the
   exact worktree when needed. Use `resolve-route`, `get-status`, `get-problems`,
   or `claim-worktree` for observation-only workflows that must not open an IDE;
   do not turn an assessment command into a route-only probe.

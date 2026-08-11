@@ -55,9 +55,10 @@ inspection, browser, CI, deployment, or security gates.
    changing repo policy.
 
    If `qualityGate.inspection.prepare` is configured, run that exact command in
-   the target worktree before the first JetBrains assessment. A nonzero exit or
-   tracked-file mutation is a preparation blocker, not permission to inspect an
-   incomplete project model. Do not invent a replacement setup command.
+   the target linked worktree before the first JetBrains assessment. The command
+   may create ignored local `.venv/` or `.idea/` state, but a nonzero exit or any
+   tracked-file mutation is a preparation blocker. Do not invent or substitute a
+   replacement setup command.
 
    If the shared Launchplane context helper is present and configured, call it once
    as optional readiness context for the active repo/branch/PR:

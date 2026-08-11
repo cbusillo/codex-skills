@@ -1498,6 +1498,15 @@ def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
         "jetbrains-inspection must preserve configured project-model preparation",
     )
     require(
+        "before the first inspection" in normalized_inspection
+        and "open-worktree" in normalized_inspection
+        and "linked worktree" in normalized_inspection
+        and ".venv" in normalized_inspection
+        and ".idea" in normalized_inspection
+        and "do not substitute a different setup command" in normalized_inspection,
+        "jetbrains-inspection must teach the exact first-inspection preparation contract",
+    )
+    require(
         "docs-only" in normalized_readiness
         and "do not run full code gates" in normalized_readiness
         and "docs-only or non-code edits" in normalized_inspection,

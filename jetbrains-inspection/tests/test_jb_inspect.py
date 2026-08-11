@@ -273,7 +273,7 @@ class ParserCommandAliasTest(unittest.TestCase):
         commands = {
             "list-projects": "list",
             "resolve-route": "route",
-            "prepare-worktree": "prepare",
+            "open-worktree": "open-worktree",
             "agent-inspect": "agent",
             "inspect": "run",
             "inspect-closeout": "closeout",
@@ -295,8 +295,9 @@ class ParserCommandAliasTest(unittest.TestCase):
         commands = {
             "list": ("list-projects", "list"),
             "route": ("resolve-route", "route"),
-            "prepare": ("prepare-worktree", "prepare"),
-            "open-worktree": ("prepare-worktree", "prepare"),
+            "prepare": ("open-worktree", "open-worktree"),
+            "prepare-worktree": ("open-worktree", "open-worktree"),
+            "open-worktree": ("open-worktree", "open-worktree"),
             "run": ("inspect", "run"),
             "closeout": ("inspect-closeout", "closeout"),
             "status": ("get-status", "status"),
@@ -319,11 +320,11 @@ class ParserCommandAliasTest(unittest.TestCase):
 
         help_text = parser.format_help()
 
-        for command in ("list-projects", "resolve-route", "prepare-worktree", "agent-inspect", "inspect", "inspect-closeout", "get-status", "get-problems"):
+        for command in ("list-projects", "resolve-route", "open-worktree", "agent-inspect", "inspect", "inspect-closeout", "get-status", "get-problems"):
             self.assertIn(command, help_text)
         self.assertNotIn("Legacy alias", help_text)
         choices = parser._subparsers._group_actions[0].choices
-        for command in ("list", "route", "prepare", "run", "closeout", "status", "problems", "trigger", "wait", "claim", "cleanup-leases"):
+        for command in ("list", "route", "prepare", "prepare-worktree", "run", "closeout", "status", "problems", "trigger", "wait", "claim", "cleanup-leases"):
             self.assertNotIn(command, choices)
 
     def test_lifecycle_commands_always_open(self):
@@ -335,7 +336,7 @@ class ParserCommandAliasTest(unittest.TestCase):
         self.assertEqual(args.repo, "/tmp/repo")
         self.assertEqual(args.scope, "changed_files")
         self.assertTrue(args.open)
-        for command in ("prepare-worktree", "agent-inspect", "inspect", "inspect-closeout"):
+        for command in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args([command, "--no-open"])
 
@@ -8303,7 +8304,7 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error_reason"], "target_project_not_open")
         self.assertEqual(payload["command"], "resolve-route")
-        self.assertIn("inspect or prepare-worktree", payload["hint"])
+        self.assertIn("inspect or open-worktree", payload["hint"])
 
     def test_inspect_error_payload_reports_input_alias_command(self):
         error = jb_inspect.InspectError("No open JetBrains project matched this repo/worktree.", 3)
@@ -8320,7 +8321,7 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(payload["command"], "inspect")
         self.assertEqual(payload["error_reason"], "target_project_not_open")
-        self.assertIn("inspect or prepare-worktree", payload["hint"])
+        self.assertIn("inspect or open-worktree", payload["hint"])
 
     def test_structured_route_error_reason_overrides_open_wording(self):
         error = jb_inspect.InspectError(
@@ -8332,7 +8333,7 @@ class HumanOutputTest(unittest.TestCase):
         payload = jb_inspect.error_payload(error, Namespace(command="resolve-route"))
 
         self.assertEqual(payload["error_reason"], "target_project_not_open")
-        self.assertIn("inspect or prepare-worktree", payload["hint"])
+        self.assertIn("inspect or open-worktree", payload["hint"])
 
     def test_inspect_error_payload_moves_structured_status_to_last_status(self):
         error = jb_inspect.InspectError(
@@ -8880,7 +8881,7 @@ module.log_outcome({{
             ("resolve-route", {"status": "resolved", "route": {}}),
             ("start-inspection", {"status": "triggered"}),
             ("claim-worktree", {"status": "claimed"}),
-            ("prepare-worktree", {"status": "prepared"}),
+            ("open-worktree", {"status": "prepared"}),
             ("cleanup-helper-leases", {"status": "ok", "removed": []}),
         ]
         for command, payload in cases:
