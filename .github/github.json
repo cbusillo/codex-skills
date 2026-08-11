@@ -20,6 +20,7 @@
   "qualityGate": {
     "inspection": {
       "prepare": "uv run jetbrains-inspection/scripts/prepare-python-project.py --python 3.12 --module-name codex-skills --test-root jetbrains-inspection/tests",
+      "requiredGeneratedState": [".venv", ".idea"],
       "profile": "Codex Skills Readiness",
       "scopePreference": "changed_files",
       "lanes": [

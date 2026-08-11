@@ -8,6 +8,7 @@ import io
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -390,7 +391,10 @@ class BuildContextTest(unittest.TestCase):
         self.assertEqual(preparation["command"], command)
         self.assertEqual(preparation["source"], "qualityGate.inspection.prepare")
         self.assertEqual(preparation["execution_state"], "not_run")
-        self.assertNotIn("_repository_preparation_argv", context)
+        self.assertEqual(
+            context["_repository_preparation_argv"],
+            ["uv", "run", "prepare-project.py", "--python", "3.12"],
+        )
         self.assertNotIn("_repository_preparation_command", context)
 
     def test_repository_preparation_absent_is_not_configured(self):
@@ -435,6 +439,374 @@ class BuildContextTest(unittest.TestCase):
                 raised.exception.payload["repository_preparation"]["execution_state"],
                 "not_configured",
             )
+
+
+class RepositoryPreparationPreflightTest(unittest.TestCase):
+    def make_git_worktree(self) -> tuple[tempfile.TemporaryDirectory, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+        (root / "tracked.txt").write_text("original", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+        (root / ".github").mkdir()
+        config_path = root / ".github" / "github.json"
+        write_json(config_path, {"qualityGate": {"inspection": {"prepare": "placeholder"}}})
+        return temporary, root
+
+    def make_context(self, root: Path, argv: list[str], generated: list[str] | None = None) -> dict[str, Any]:
+        command = shlex.join(argv)
+        config_path = root / ".github" / "github.json"
+        write_json(
+            config_path,
+            {
+                "qualityGate": {
+                    "inspection": {
+                        "prepare": command,
+                        "requiredGeneratedState": generated or [],
+                    }
+                }
+            },
+        )
+        return {
+            "repo_path": str(root),
+            "worktree_root": str(root),
+            "config_path": str(config_path),
+            "repository_preparation": {
+                "configured": True,
+                "command": command,
+                "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+                "required_generated_state": generated or [],
+                "target_worktree": str(root),
+            },
+            "_repository_preparation_argv": argv,
+        }
+
+    def prep_args(self, **overrides: Any) -> Namespace:
+        values = {
+            "repository_preparation_timeout_ms": 1_000,
+            "skip_preparation": False,
+            "force_preparation": False,
+        }
+        values.update(overrides)
+        return Namespace(**values)
+
+    def test_parser_exposes_bounded_opt_out_and_refresh_controls(self):
+        parser = jb_inspect.build_parser()
+        args = parser.parse_args(
+            [
+                "agent-inspect",
+                "--repository-preparation-timeout-ms",
+                "1234",
+                "--no-repository-preparation",
+                "--force-refresh-preparation",
+            ]
+        )
+
+        self.assertEqual(args.repository_preparation_timeout_ms, 1234)
+        self.assertTrue(args.skip_preparation)
+        self.assertTrue(args.force_preparation)
+
+        open_args = parser.parse_args(["open-worktree"])
+        self.assertFalse(hasattr(open_args, "repository_preparation_timeout_ms"))
+        self.assertFalse(hasattr(open_args, "skip_preparation"))
+        self.assertFalse(hasattr(open_args, "force_preparation"))
+
+    def test_trusted_preparation_runs_in_exact_worktree_and_writes_receipt(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        argv = [sys.executable, "-c", "import os; print(os.getcwd())"]
+        context = self.make_context(root, argv)
+
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            result = jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        self.assertEqual(result["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertEqual(result["exit_status"], 0)
+        self.assertIn("<path:sha256:", result["stdout"])
+        self.assertTrue(Path(result["receipt_path"]).exists())
+        receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["command_sha256"], result["command_sha256"])
+        self.assertEqual(receipt["worktree_identity_hash"], result["worktree_identity_hash"])
+        self.assertLessEqual(len(receipt["stdout"]), jb_inspect.MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH + 32)
+
+    def test_untrusted_root_blocks_without_executing_command(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        context = self.make_context(root, [sys.executable, "-c", "raise SystemExit(9)"])
+
+        with (
+            patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent / "other")}),
+            patch.object(jb_inspect.subprocess, "run", side_effect=AssertionError("command executed")),
+            self.assertRaises(jb_inspect.InspectError) as raised,
+        ):
+            jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        self.assertEqual(raised.exception.payload["error_reason"], "repository_preparation_untrusted")
+        self.assertIn("--skip-preparation", raised.exception.payload["next_action"])
+
+    def test_nonzero_and_timeout_are_terminal_preparation_reasons(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        nonzero = self.make_context(root, [sys.executable, "-c", "raise SystemExit(7)"])
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            with self.assertRaises(jb_inspect.InspectError) as failed:
+                jb_inspect.run_repository_preparation(self.prep_args(), nonzero)
+        self.assertEqual(failed.exception.payload["error_reason"], "repository_preparation_command_failed")
+
+        timeout = self.make_context(root, [sys.executable, "-c", "import time; time.sleep(1)"])
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            with self.assertRaises(jb_inspect.InspectError) as timed_out:
+                jb_inspect.run_repository_preparation(self.prep_args(repository_preparation_timeout_ms=10), timeout)
+        self.assertEqual(timed_out.exception.payload["error_reason"], "repository_preparation_timeout")
+
+    def test_tracked_and_hidden_index_mutations_block(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            tracked = self.make_context(
+                root,
+                [sys.executable, "-c", "from pathlib import Path; Path('tracked.txt').write_text('changed')"],
+            )
+            with self.assertRaises(jb_inspect.InspectError) as tracked_error:
+                jb_inspect.run_repository_preparation(self.prep_args(), tracked)
+            self.assertEqual(tracked_error.exception.payload["error_reason"], "repository_preparation_tracked_mutation")
+
+            subprocess.run(["git", "checkout", "--", "tracked.txt"], cwd=root, check=True)
+            hidden_index = self.make_context(
+                root,
+                [sys.executable, "-c", "import subprocess; subprocess.run(['git', 'update-index', '--assume-unchanged', 'tracked.txt'], check=True)"],
+            )
+            with self.assertRaises(jb_inspect.InspectError) as index_error:
+                jb_inspect.run_repository_preparation(self.prep_args(), hidden_index)
+            self.assertEqual(index_error.exception.payload["error_reason"], "repository_preparation_index_mutation")
+
+    def test_receipt_reuse_invalidation_and_force_refresh(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        counter_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(counter_directory.cleanup)
+        counter = Path(counter_directory.name) / "preparation-counter.txt"
+        script = (
+            f"from pathlib import Path; p=Path({str(counter)!r}); "
+            "p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1'); Path('generated').mkdir(exist_ok=True)"
+        )
+        context = self.make_context(root, [sys.executable, "-c", script], generated=["generated"])
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            first = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            skipped = jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
+            second = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            self.assertEqual(first["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+            self.assertEqual(skipped["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SKIPPED)
+            self.assertEqual(second["execution_state"], jb_inspect.REPOSITORY_PREPARATION_REUSED)
+            self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+
+            write_json(root / ".github" / "github.json", {"qualityGate": {"inspection": {"prepare": context["repository_preparation"]["command"], "requiredGeneratedState": []}, "metadata": "changed"}})
+            invalidated = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            self.assertEqual(invalidated["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+            self.assertEqual(counter.read_text(encoding="utf-8"), "2")
+
+            refreshed = jb_inspect.run_repository_preparation(self.prep_args(force_preparation=True), context)
+            self.assertEqual(refreshed["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+            self.assertEqual(counter.read_text(encoding="utf-8"), "3")
+
+    @unittest.skipUnless(os.name == "posix", "process-group timeout coverage requires POSIX")
+    def test_timeout_kills_descendants_that_inherit_output_pipes(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        context = self.make_context(
+            root,
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess, sys, time; "
+                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                    "time.sleep(30)"
+                ),
+            ],
+        )
+        started = time.monotonic()
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            with self.assertRaises(jb_inspect.InspectError) as timed_out:
+                jb_inspect.run_repository_preparation(
+                    self.prep_args(repository_preparation_timeout_ms=25),
+                    context,
+                )
+
+        self.assertEqual(timed_out.exception.payload["error_reason"], "repository_preparation_timeout")
+        self.assertLess(time.monotonic() - started, 3.0)
+
+    def test_opt_out_and_recursion_are_explicit_and_non_executing(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        marker = root.parent / "should-not-exist.txt"
+        context = self.make_context(root, [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"])
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            skipped = jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
+        self.assertEqual(skipped["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SKIPPED)
+        self.assertFalse(marker.exists())
+
+        with patch.dict(
+            os.environ,
+            {
+                "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent),
+                jb_inspect.REPOSITORY_PREPARATION_ACTIVE_ENV: "1",
+            },
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as recursive:
+                jb_inspect.run_repository_preparation(self.prep_args(skip_preparation=True), context)
+        self.assertEqual(recursive.exception.payload["error_reason"], "repository_preparation_recursion")
+
+    def test_preparation_output_redacts_sensitive_values_before_receipt_and_payload(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        secret = "super-secret-value"
+        context = self.make_context(
+            root,
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['PREP_TOKEN']); print('password=' + 'hunter' + '2'); print('Authorization: Bearer ' + 'abc' + '123')",
+            ],
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent),
+                "PREP_TOKEN": secret,
+            },
+        ):
+            result = jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        serialized = json.dumps(result)
+        receipt = Path(result["receipt_path"]).read_text(encoding="utf-8")
+        for sensitive in (secret, "hunter2", "abc123"):
+            self.assertNotIn(sensitive, serialized)
+            self.assertNotIn(sensitive, receipt)
+        self.assertIn(jb_inspect.REDACTED, result["stdout"])
+
+    def test_single_lane_mutation_window_starts_after_repository_preparation(self):
+        events = []
+        context = {
+            "worktree_root": "/tmp/repo",
+            "repository_preparation": {
+                "configured": True,
+                "command": "uv run prepare.py",
+                "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        prepared_state = {
+            **context["repository_preparation"],
+            "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+        }
+
+        def prepare(_args, _context):
+            events.append("repository_preparation")
+            return prepared_state
+
+        def snapshot(_path):
+            events.append("mutation_snapshot")
+            return {"status": "ok", "entries": {}}
+
+        def lifecycle(_args, lifecycle_context):
+            events.append("ide_lifecycle")
+            self.assertTrue(lifecycle_context["_repository_preparation_completed"])
+            return (
+                {"route": {}, "repository_preparation": lifecycle_context["repository_preparation"]},
+                {"lease_id": "lease", "opened_by_helper": False},
+                None,
+            )
+
+        with (
+            patch.object(jb_inspect, "run_repository_preparation", side_effect=prepare),
+            patch.object(jb_inspect, "git_worktree_status_snapshot", side_effect=snapshot),
+            patch.object(jb_inspect, "prepare_lifecycle_details", side_effect=lifecycle),
+            patch.object(
+                jb_inspect,
+                "run_inspection_with_internal_retry",
+                return_value={"status": "clean", "total_problems": 0, "problems": []},
+            ),
+            patch.object(
+                jb_inspect,
+                "cleanup_lifecycle",
+                return_value={"status": "not_needed", "reason": "helper_did_not_open_project"},
+            ),
+        ):
+            jb_inspect.run_prepared_inspection(
+                Namespace(command="inspect", lifecycle_lock_timeout_ms=1_000, keep_warm=False),
+                context,
+            )
+
+        self.assertEqual(events[:3], ["repository_preparation", "mutation_snapshot", "ide_lifecycle"])
+
+    def test_preparation_failure_is_qualified_as_explicit_hard_failure(self):
+        payload = {
+            "status": "error",
+            "error_reason": "repository_preparation_command_failed",
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": "failed",
+                "failure_reason": "repository_preparation_command_failed",
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["verdict_reason"], "repository_preparation_command_failed")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertIn("repository preparation", payload["agent_result"]["next_action"].lower())
+
+    def test_qualification_names_preparation_failure_instead_of_generic_unknown(self):
+        event = qualification_event("preparation-failure", verdict="UNKNOWN")
+        event.update(
+            {
+                "inspection_started": False,
+                "attribution_class": "configuration_blocked",
+                "response_code": "repository_preparation_command_failed",
+                "failure_phase": "repository_preparation",
+                "endpoint": None,
+                "http_status": None,
+                "request_id": None,
+                "ide_channel_source": None,
+                "repository_preparation": {
+                    "configured": True,
+                    "execution_state": "failed",
+                    "failure_reason": "repository_preparation_command_failed",
+                },
+            }
+        )
+        event["inspection_attribution"].update(
+            {
+                "source": "helper",
+                "classification": "configuration_blocked",
+                "code": "repository_preparation_command_failed",
+                "phase": "repository_preparation",
+                "endpoint": None,
+                "http_status": None,
+                "request_id": None,
+                "ide_channel_source": None,
+            }
+        )
+        event["internal_attempts"][0].update(
+            {
+                "verdict": "UNKNOWN",
+                "verdict_reason": "repository_preparation_command_failed",
+                "bucket": "environment_blocked",
+            }
+        )
+
+        candidate, exclusion = jb_inspect.qualification_event_candidate(event, 1, qualification_payload())
+
+        self.assertIsNone(candidate)
+        self.assertIsNotNone(exclusion)
+        self.assertEqual(exclusion["reason"], "repository_preparation_command_failed")
+        self.assertTrue(exclusion["hard_failure"])
 
     def test_reads_github_config_for_jetbrains_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,6 +1069,38 @@ class InspectionLaneConfigTest(unittest.TestCase):
         self.assertIsNone(context["ide"])
         self.assertEqual([lane["id"] for lane in context["inspection_lanes"]], ["jvm", "python"])
         self.assertEqual([lane.lane_id for lane in context["_inspection_lanes"]], ["jvm", "python"])
+
+    def test_lane_preparation_aggregation_preserves_execution_evidence(self):
+        context = {
+            "worktree_root": "/tmp/repo",
+            "repository_preparation": {
+                "configured": True,
+                "command": "uv run prepare.py",
+                "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        lane_results = [
+            {
+                "repository_preparation": {
+                    **context["repository_preparation"],
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                    "duration_ms": 25,
+                }
+            },
+            {
+                "repository_preparation": {
+                    **context["repository_preparation"],
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_REUSED,
+                    "receipt_reused": True,
+                }
+            },
+        ]
+
+        preparation = jb_inspect.aggregate_repository_preparation_for_lanes(lane_results, context)
+
+        self.assertEqual(preparation["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertEqual(preparation["duration_ms"], 25)
 
 
 class InspectionLaneSelectionTest(unittest.TestCase):
@@ -961,6 +1365,66 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(result["lane_results"][0]["verdict"], "NOT_RUN")
         self.assertEqual(result["lane_results"][0]["cleanup"]["reason"], "lane_empty")
+
+    def test_repository_preparation_runs_once_before_multiple_active_lanes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            kotlin = root / "Example.kt"
+            python = root / "check.py"
+            kotlin.write_text("fixture\n", encoding="utf-8")
+            python.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+                "repository_preparation": {
+                    "configured": True,
+                    "command": "uv run prepare.py",
+                    "source": jb_inspect.REPOSITORY_PREPARATION_SOURCE,
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+                },
+            }
+            args = helper_args(scope="files", files=[str(kotlin), str(python)], max_files=None, profile="")
+            prepared_state = {
+                **context["repository_preparation"],
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "duration_ms": 25,
+            }
+            lane_contexts = []
+
+            def run_lane(_lane_args, lane_context):
+                lane_contexts.append(lane_context)
+                return {
+                    "status": "clean",
+                    "total_problems": 0,
+                    "problems": [],
+                    "prepared": {"repository_preparation": lane_context["repository_preparation"]},
+                    "cleanup": {"status": "closed"},
+                }
+
+            with (
+                patch.object(jb_inspect, "run_repository_preparation", return_value=prepared_state) as prepare,
+                patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane),
+            ):
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual(prepare.call_count, 1)
+        self.assertEqual(len(lane_contexts), 2)
+        self.assertTrue(all(item["_repository_preparation_completed"] is True for item in lane_contexts))
+        self.assertEqual(result["repository_preparation"]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertEqual(result["agent_result"]["repository_preparation"]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
 
     def test_lane_failure_does_not_prevent_later_lane_execution(self):
         with tempfile.TemporaryDirectory() as tmp:

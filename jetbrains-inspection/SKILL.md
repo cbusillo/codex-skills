@@ -344,6 +344,7 @@ policy. The helper reads `.github/github.json` when present:
 - `qualityGate.inspection.lanes`
 - `qualityGate.inspection.profile`
 - `qualityGate.inspection.prepare`
+- `qualityGate.inspection.requiredGeneratedState`
 - `jetbrains.ide`
 - `jetbrains.ideChannel` / `jetbrains.ide_channel`
 - `jetbrains.ideVersion` / `jetbrains.ide_version`
@@ -378,14 +379,26 @@ wrong for the active worktree, ask the user before changing policy or treating
 the value as authoritative; otherwise report the mismatch as a not-clean
 readiness blocker.
 
-When `qualityGate.inspection.prepare` is configured, run that exact repository
-command in the target worktree before the first inspection assessment. It may
-create ignored worktree-local IDE files needed to bind a language SDK or test
-roots. Treat a
-nonzero preparation exit as a not-run blocker; do not continue with an
-unprepared project model or substitute a different command. Preparation must be
+When `qualityGate.inspection.prepare` is configured, `agent-inspect`, `inspect`,
+and `inspect-closeout` run that exact repository command in the exact target
+worktree before IDE lifecycle open or claim. Automatic execution is allowed
+only below a configured trusted auto-open root; an untrusted root returns an
+actionable manual-preparation result and never runs repository-controlled argv.
+The helper uses `shlex`-validated argv with `shell=False`, a dedicated bounded
+`--repository-preparation-timeout-ms`, and a recursion guard. It snapshots Git
+status plus the worktree's index bytes before and after. Nonzero exit, timeout,
+tracked mutation, hidden index mutation, missing `requiredGeneratedState`, or
+recursive invocation is a terminal preparation result. Do not continue with an
+unprepared project model or substitute a different command.
+
+Successful preparation writes a bounded durable receipt under the helper cache.
+The receipt is reused only when the command/configuration hashes, exact worktree
+identity, post-preparation Git state, and required generated state still match.
+Use `--skip-preparation` or `--no-repository-preparation` only after manually
+running the configured command, and use `--force-preparation` or
+`--force-refresh-preparation` to refresh a valid receipt. Preparation is
 idempotent and may create ignored local environment state, but it must not leave
-tracked-file mutations before inspection begins.
+tracked-file mutations or hidden index mutations before inspection begins.
 
 ## Worktree Safety
 
