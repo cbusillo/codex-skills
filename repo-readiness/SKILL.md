@@ -78,15 +78,21 @@ inspection, browser, CI, deployment, or security gates.
    task is specifically about that review. They are detached external review
    context and should not affect readiness for the active repo/branch.
 
-   When background auto-review results or ledgers are available in session context
-   or repo tooling, treat them as review evidence only after matching the review
-   target to the active branch, PR, and head SHA. Do not declare a branch, PR,
-   release, or handoff green while blocking findings against the current target are
-   unresolved or while a review for the current target is still in-flight. If a
-   finding points at a detached `auto-review*` worktree or older snapshot, verify it
-   against current `HEAD` before treating it as blocking. This does not mean
-   detached auto-review worktrees are dirty local state; only relevant review
-   findings/status matter.
+   When background auto-review results or ledgers are available in session
+   context or repo tooling, follow
+   `../references/background-review-reporting.md`. Match the observation to the
+   active branch, PR, and head SHA before using it as evidence. Do not declare a
+   branch, PR, release, or handoff green while blocking findings against the
+   current target are unresolved or while a matching review is `in flight`.
+   When no lifecycle evidence is visible before a possible post-turn trigger,
+   report `not yet observable`; do not infer a skipped or not-emitted outcome,
+   and do not delay the final response solely waiting for that trigger. If a
+   matching review is already `in flight`, use only bounded waiting when useful;
+   otherwise preserve it as pending evidence in the readiness handoff. If a
+   finding points at a detached `auto-review*` worktree or older snapshot,
+   verify it against current `HEAD` before treating it as blocking. Detached
+   auto-review worktrees are not dirty active state; only matching review
+   findings and lifecycle evidence matter.
 
 5. During implementation, choose the narrowest useful gate that matches the
    change and risk. Before saying code is ready, broaden to the largest
@@ -132,6 +138,9 @@ fields in chat, a PR comment, or the owning issue when durable state is needed:
   substitute and keep the gap visible in the readiness status.
 - Metadata/docs impact: whether `.github/github.json` or docs changed, were
   checked, are stale, or were intentionally not updated.
+- Background review: the target-matched point-in-time state, observation time
+  or head SHA, and the canonical state: `not yet observable`, `in flight`,
+  `observation unavailable`, or an exact terminal outcome.
 - Next action: the smallest step that would change readiness.
 
 This handoff is evidence for `work-closeout`; it is not cleanup. Do not delete
@@ -148,7 +157,8 @@ metadata updates, and cleanup remain.
 
 Use `../references/every-code-formatting.md` for readiness reports and durable
 readiness comments: lead with status, cite concrete evidence, and keep skipped
-or pending checks explicit without copying large logs.
+or pending checks explicit without copying large logs. Use
+`../references/background-review-reporting.md` for Background Review state.
 
 ## Gate Selection
 

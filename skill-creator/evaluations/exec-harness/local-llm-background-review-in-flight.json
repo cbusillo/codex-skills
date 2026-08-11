@@ -1,0 +1,22 @@
+{
+  "name": "local-llm-background-review-in-flight",
+  "model": "qwen3-coder-next",
+  "prompt": "Use $work-closeout for this advisory classification. Do not use tools, run commands, edit files, or start agents. At closeout for current head abc123, matching Background Review lifecycle evidence says the review started and is still running. No terminal event or findings result exists. Classify the current observation from the skill guidance. terminal_claim says whether the evidence supports reporting a terminal lifecycle state. wait_forever says whether closeout should wait without a bound for this review. Return final answer only as these key=value lines with no markdown and no spaces around equals: current_state, terminal_claim, safe_exit, wait_forever. Allowed states: not-yet-observable, in-flight, observation-unavailable, completed, cancelled, superseded, failed, skipped. Allowed safe_exit values: yes, conditional, no. Allowed yes/no values: yes, no.",
+  "files": {
+    "README.md": "# Background review in-flight fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "current_state=in-flight",
+      "terminal_claim=no",
+      "safe_exit=conditional",
+      "wait_forever=no"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

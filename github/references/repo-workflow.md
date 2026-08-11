@@ -379,6 +379,10 @@ Before merging any PR, do a fresh PR read and account for feedback:
 - inspect failed or cancelled check logs before deciding CI is non-blocking
 - account for auto-review or system review findings that arrived after the last
   push
+- apply `../../references/background-review-reporting.md`: absence before a
+  possible post-turn trigger is `not yet observable`, not skipped or not
+  emitted, and is not a reason to poll indefinitely before reporting the
+  point-in-time merge or closeout state
 - proceed only after explicit user approval for the merge action
 
 When the user approves a merge and does not specify the method, use

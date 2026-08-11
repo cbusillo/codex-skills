@@ -752,6 +752,13 @@ invocation rules.
   the active target are external proposal history until verified against current
   `HEAD`. Detached auto-review worktrees remain external review context and
   should not be treated as dirty active worktree state.
+  Use `../references/background-review-reporting.md` for point-in-time state and
+  durable wording. If no matching lifecycle evidence is visible before a
+  possible post-turn trigger, report `not yet observable`; never infer
+  `skipped`, `not emitted`, or another terminal outcome from absence. Do not
+  delay a final response solely waiting for that trigger. When later terminal
+  evidence is observed, preserve the original point-in-time summary and add a
+  follow-up.
 - **Accidental Local Default-Branch Merge Recovery**: If implementation work is
   accidentally merged into a protected/default/shared branch locally, preserve
   the commit or branch if needed, restore the local protected branch to the

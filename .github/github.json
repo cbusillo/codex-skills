@@ -5,6 +5,7 @@
     "index": "README.md",
     "githubSkill": "github/SKILL.md",
     "githubWorkflow": "github/references/repo-workflow.md",
+    "backgroundReviewReporting": "references/background-review-reporting.md",
     "executionEnvironment": "github/references/execution-environment.md",
     "githubConfigSchema": "github/references/config-schema.md",
     "launchplaneSkill": "launchplane/SKILL.md",
