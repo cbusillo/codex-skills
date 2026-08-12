@@ -270,6 +270,14 @@ def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
     plan = load_plan_module()
     cases = [
         plan_issue(body="## Objective\n\nOld\n", association="OWNER"),
+        plan_issue(
+            body=f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n## Objective\n\nOld\n",
+            association="MEMBER",
+        ),
+        plan_issue(
+            body=f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n## Objective\n\nOld\n",
+            association="COLLABORATOR",
+        ),
         plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR),
     ]
 
@@ -277,6 +285,78 @@ def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
         updated = plan.replace_issue_plan_section(issue, "Objective", "New")
         assert plan.PLAN_ORIGINAL_START not in updated, updated
         assert plan.section_map(updated)["Objective"] == "New", updated
+
+
+def test_generic_operation_marker_does_not_grant_managed_ownership() -> None:
+    plan = load_plan_module()
+    for association in ("MEMBER", "COLLABORATOR"):
+        issue = plan_issue(
+            body="Contributor request\n\n<!-- github-skill-operation:deadbeef -->\n",
+            association=association,
+        )
+
+        updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+        assert not plan.issue_body_is_fully_managed(issue), association
+        original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+        assert original is not None and original[2] == issue["body"], original
+
+
+def test_contributor_envelope_stays_preserved_after_association_change() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request", association="CONTRIBUTOR")
+    issue["body"] = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+    issue["author_association"] = "COLLABORATOR"
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Blocked")
+
+    original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert original is not None and original[2] == "Original request", original
+    assert managed is not None
+    assert plan.section_map(managed[2])["Current Status"] == "State: Blocked", managed
+
+
+def test_managed_provenance_is_reserved_and_well_formed() -> None:
+    plan = load_plan_module()
+    assert plan.template_body("Title").startswith(plan.PLAN_MANAGED_PROVENANCE_MARKER)
+    assert plan.has_managed_provenance(f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n## Objective\n")
+    assert plan.has_managed_provenance(f"{plan.PLAN_MANAGED_PROVENANCE_MARKER} \r\n## Objective\r\n")
+
+    for body in (
+        f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n",
+        f"prefix {plan.PLAN_MANAGED_PROVENANCE_MARKER}\n",
+    ):
+        try:
+            plan.has_managed_provenance(body)
+        except plan.PlanError as exc:
+            assert "provenance" in str(exc), exc
+        else:
+            raise AssertionError("malformed managed provenance should fail closed")
+
+    issue = plan_issue(body="Original request")
+    try:
+        plan.replace_issue_plan_section(
+            issue,
+            "Objective",
+            f"Unsafe {plan.PLAN_MANAGED_PROVENANCE_MARKER}",
+        )
+    except plan.PlanError as exc:
+        assert "reserved" in str(exc), exc
+    else:
+        raise AssertionError("managed provenance marker should be reserved in section content")
+
+
+def test_empty_title_with_managed_provenance_fails_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="", title=f"Request {plan.PLAN_MANAGED_PROVENANCE_MARKER}")
+
+    try:
+        plan.replace_issue_plan_section(issue, "Objective", "Managed")
+    except plan.PlanError as exc:
+        assert "reserved" in str(exc), exc
+    else:
+        raise AssertionError("reserved managed provenance in fallback title should fail closed")
 
 
 def test_third_party_bot_issue_uses_preservation_mode() -> None:
@@ -1180,6 +1260,8 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
 
     payload = json.loads(output.getvalue())
     assert create_call["title"] == "Durable plan", create_call
+    assert create_call["body"].startswith(plan.PLAN_MANAGED_PROVENANCE_MARKER), create_call
+    assert create_call["body"].count(plan.PLAN_MANAGED_PROVENANCE_MARKER) == 1, create_call
     assert create_call["labels"] == ["plan", "plan:active"], create_call
     assert create_call["milestone"] == "M1", create_call
     assert create_call["gh_cmd"] == "fake-gh", create_call
@@ -5590,6 +5672,10 @@ def main() -> None:
         test_contributor_original_request_section_is_immutable,
         test_unknown_author_fails_closed_into_preservation_mode,
         test_maintainer_and_bot_issues_remain_fully_managed,
+        test_generic_operation_marker_does_not_grant_managed_ownership,
+        test_contributor_envelope_stays_preserved_after_association_change,
+        test_managed_provenance_is_reserved_and_well_formed,
+        test_empty_title_with_managed_provenance_fails_closed,
         test_third_party_bot_issue_uses_preservation_mode,
         test_contributor_associations_use_preservation_mode,
         test_malformed_contributor_markers_fail_closed,
