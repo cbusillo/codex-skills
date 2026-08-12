@@ -12,8 +12,16 @@ Repo-local values override workspace defaults.
   },
   "qualityGate": {
     "inspection": {
-      "prepare": "uv venv --python 3.12 --allow-existing .venv",
-      "requiredGeneratedState": [".venv", ".idea"],
+      "prepare": {
+        "python": {
+          "version": "3.12",
+          "moduleName": "example-project",
+          "testRoots": ["tests"],
+          "sync": true,
+          "extras": ["dev"],
+          "requiredGeneratedState": [".venv", ".idea"]
+        }
+      },
       "scopePreference": "changed_files",
       "lanes": [
         {
@@ -248,12 +256,17 @@ Common top-level keys:
   `scopePreference` for the default inspection scope.
 - `qualityGate.inspection`: repository readiness policy for JetBrains checks.
   Use `ide`, `profile`, and `scopePreference` for the required target, named
-  inspection profile, and scope. Optional `prepare` is an exact idempotent
-  command that `agent-inspect`, `inspect`, and `inspect-closeout` execute in the
+  inspection profile, and scope. Optional `prepare` may be an exact idempotent
+  command string or a structured `python` object. Structured Python preparation
+  resolves the skill-owned project helper, creates a worktree-local `.venv` and
+  `.idea` model, and can run `uv sync` with bounded extras. Put
+  `requiredGeneratedState` inside the structured `python` object; command-string
+  preparation retains the outer sibling field for backward compatibility.
+  `agent-inspect`, `inspect`, and `inspect-closeout` execute preparation in the
   exact target worktree before IDE lifecycle open/claim, but only when the
-  worktree is under a configured trusted root. `requiredGeneratedState` is an
-  optional bounded array of repository-relative paths that must exist before a
-  successful preparation can proceed or be reused from its durable receipt.
+  worktree is under a configured trusted root. Generated-state paths are a
+  bounded array of repository-relative paths that must exist before a successful
+  preparation can proceed or be reused from its durable receipt.
   The helper executes the validated argv without a shell, applies a dedicated
   timeout, records a bounded receipt, and fails closed on nonzero exit, timeout,
   tracked worktree mutation, hidden index mutation, missing generated state,
