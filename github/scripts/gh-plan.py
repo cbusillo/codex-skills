@@ -37,6 +37,31 @@ CURRENT_BUCKET = "unknown"
 CURRENT_IS_WRITE = False
 CURRENT_RETRY_FIELDS: dict[str, Any] = {}
 CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
+PLAN_ORIGINAL_START = "<!-- github-plan:original-request:start -->"
+PLAN_ORIGINAL_END = "<!-- github-plan:original-request:end -->"
+PLAN_MANAGED_START = "<!-- github-plan:managed:start -->"
+PLAN_MANAGED_END = "<!-- github-plan:managed:end -->"
+FULLY_MANAGED_AUTHOR_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+PLAN_OWNERSHIP_MARKERS = (
+    PLAN_ORIGINAL_START,
+    PLAN_ORIGINAL_END,
+    PLAN_MANAGED_START,
+    PLAN_MANAGED_END,
+)
+PLAN_MANAGED_NOTICE = "_The following implementation plan is maintained by project automation._"
+PLAN_SECTION_NAMES = frozenset(
+    {
+        "Objective",
+        "Finish Line",
+        "Current Status",
+        "Scope",
+        "Acceptance Criteria",
+        "Relationships",
+        "Validation",
+        "Decisions",
+        "Open Questions",
+    }
+)
 
 PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "index": ("rest_api", "rest_core", False),
@@ -1418,6 +1443,131 @@ def replace_section(body: str, section: str, new_text: str) -> str:
     return f"{body}\n{replacement}".lstrip()
 
 
+def issue_author_login(issue: dict[str, Any]) -> str | None:
+    author = issue.get("user") or issue.get("author")
+    if not isinstance(author, dict):
+        return None
+    login = author.get("login")
+    return login.strip() if isinstance(login, str) and login.strip() else None
+
+
+def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
+    author = issue.get("user") or issue.get("author")
+    author_login = issue_author_login(issue)
+    if author_login and author_login.casefold() == EXPECTED_ACTOR.casefold():
+        return True
+    if isinstance(author, dict) and str(author.get("type", "")).casefold() == "bot":
+        return False
+    association = issue.get("author_association") or issue.get("authorAssociation")
+    return isinstance(association, str) and association.upper() in FULLY_MANAGED_AUTHOR_ASSOCIATIONS
+
+
+def marked_block(body: str, start_marker: str, end_marker: str) -> tuple[int, int, str] | None:
+    start_count = body.count(start_marker)
+    end_count = body.count(end_marker)
+    if start_count == 0 and end_count == 0:
+        return None
+    if start_count != 1 or end_count != 1:
+        raise PlanError("Issue body contains duplicate or incomplete GitHub plan ownership markers")
+    start_match = re.search(rf"(?m)^{re.escape(start_marker)}[ \t]*(?:\r?\n|$)", body)
+    end_match = re.search(rf"(?m)^{re.escape(end_marker)}[ \t]*(?:\r?\n|$)", body)
+    if start_match is None or end_match is None:
+        raise PlanError("GitHub plan ownership markers must occupy their own lines")
+    content_start = start_match.end()
+    content_end = end_match.start()
+    if content_end < content_start:
+        raise PlanError("Issue body contains out-of-order GitHub plan ownership markers")
+    if body[content_end - 2:content_end] == "\r\n":
+        content_end -= 2
+    elif body[content_end - 1:content_end] == "\n":
+        content_end -= 1
+    content_end = max(content_start, content_end)
+    return content_start, content_end, body[content_start:content_end]
+
+
+def contributor_plan_body(issue: dict[str, Any]) -> str | None:
+    body = issue.get("body") or ""
+    if not any(marker in body for marker in PLAN_OWNERSHIP_MARKERS):
+        return None
+    managed = marked_block(body, PLAN_MANAGED_START, PLAN_MANAGED_END)
+    original = marked_block(body, PLAN_ORIGINAL_START, PLAN_ORIGINAL_END)
+    if managed is None or original is None:
+        raise PlanError("Contributor issue has incomplete GitHub plan ownership markers")
+    newline = r"\r?\n"
+    canonical = re.fullmatch(
+        rf"## Original request{newline}{newline}{re.escape(PLAN_ORIGINAL_START)}[ \t]*{newline}"
+        rf"(?P<original>.*?){newline}{re.escape(PLAN_ORIGINAL_END)}[ \t]*{newline}{newline}---{newline}{newline}"
+        rf"{re.escape(PLAN_MANAGED_NOTICE)}{newline}{newline}{re.escape(PLAN_MANAGED_START)}[ \t]*{newline}"
+        rf"(?P<managed>.*?){newline}{re.escape(PLAN_MANAGED_END)}(?:[ \t]*{newline})*[ \t]*",
+        body,
+        flags=re.DOTALL,
+    )
+    if canonical is None:
+        raise PlanError("Contributor issue GitHub plan ownership markers are not in the canonical envelope")
+    return managed[2]
+
+
+def ensure_unmarked_contributor_body_is_unambiguous(issue: dict[str, Any]) -> None:
+    body = issue.get("body") or ""
+    recognized_sections = PLAN_SECTION_NAMES.intersection(section_map(body))
+    if recognized_sections:
+        headings = ", ".join(sorted(recognized_sections))
+        raise PlanError(
+            "Contributor issue already contains unmarked planning sections "
+            f"({headings}); automation cannot safely distinguish the original request from prior managed content. "
+            "Preserve the request in a linked maintainer-owned plan or migrate it explicitly."
+        )
+
+
+def wrap_contributor_plan(issue: dict[str, Any], managed_body: str) -> str:
+    original_body = issue.get("body") or ""
+    if any(marker in original_body for marker in PLAN_OWNERSHIP_MARKERS):
+        raise PlanError("Contributor request already contains reserved GitHub plan ownership markers")
+    original_request = original_body if original_body else str(issue.get("title") or "").strip()
+    return (
+        "## Original request\n\n"
+        f"{PLAN_ORIGINAL_START}\n"
+        f"{original_request}\n"
+        f"{PLAN_ORIGINAL_END}\n\n"
+        "---\n\n"
+        f"{PLAN_MANAGED_NOTICE}\n\n"
+        f"{PLAN_MANAGED_START}\n"
+        f"{managed_body.rstrip()}\n"
+        f"{PLAN_MANAGED_END}\n"
+    )
+
+
+def replace_issue_plan_section(issue: dict[str, Any], section: str, new_text: str) -> str:
+    body = issue.get("body") or ""
+    if issue_body_is_fully_managed(issue):
+        return replace_section(body, section, new_text)
+    if section.casefold() == "original request":
+        raise PlanError("Contributor-authored original request content is immutable")
+    if any(marker in new_text for marker in PLAN_OWNERSHIP_MARKERS):
+        raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
+    managed_body = contributor_plan_body(issue)
+    if managed_body is None:
+        ensure_unmarked_contributor_body_is_unambiguous(issue)
+    updated_managed = replace_section(managed_body or "", section, new_text)
+    if managed_body is None:
+        return wrap_contributor_plan(issue, updated_managed)
+    managed = marked_block(body, PLAN_MANAGED_START, PLAN_MANAGED_END)
+    if managed is None:
+        raise PlanError("Contributor issue managed plan block disappeared during update")
+    start, end, _ = managed
+    return body[:start] + updated_managed.rstrip() + body[end:]
+
+
+def issue_plan_sections(issue: dict[str, Any]) -> dict[str, str]:
+    if issue_body_is_fully_managed(issue):
+        return section_map(issue.get("body") or "")
+    managed_body = contributor_plan_body(issue)
+    if managed_body is None:
+        ensure_unmarked_contributor_body_is_unambiguous(issue)
+        return {}
+    return section_map(managed_body)
+
+
 def template_body(title: str) -> str:
     return f"""## Objective
 
@@ -1486,26 +1636,30 @@ def relationship_line(rel: str, target: dict[str, Any]) -> str:
     return f"- {rel}: {target_repo}#{target_number} - {target.get('html_url') or target.get('url')}"
 
 
-def add_relationship_note(body: str, rel: str, target: dict[str, Any]) -> str:
+def add_relationship_note(issue: dict[str, Any], rel: str, target: dict[str, Any]) -> str:
     line = relationship_line(rel, target)
-    sections = section_map(body)
+    sections = issue_plan_sections(issue)
     current = sections.get("Relationships", "")
-    if line in current:
-        return body
+    current_lines = [item.strip() for item in current.splitlines()]
+    if line in current_lines:
+        return issue.get("body") or ""
     if not current or current.strip() in {"- None yet.", "None yet.", "None."}:
         new_text = line
     else:
         new_text = current.rstrip() + "\n" + line
-    return replace_section(body, "Relationships", new_text)
+    return replace_issue_plan_section(issue, "Relationships", new_text)
 
 
-def remove_relationship_note(body: str, rel: str, target: dict[str, Any]) -> str:
+def remove_relationship_note(issue: dict[str, Any], rel: str, target: dict[str, Any]) -> str:
     line = relationship_line(rel, target)
-    sections = section_map(body)
+    sections = issue_plan_sections(issue)
     current = sections.get("Relationships", "")
+    current_lines = [item.strip() for item in current.splitlines()]
+    if line not in current_lines:
+        return issue.get("body") or ""
     kept = [item for item in current.splitlines() if item.strip() != line]
     new_text = "\n".join(kept).strip() or "- None yet."
-    return replace_section(body, "Relationships", new_text)
+    return replace_issue_plan_section(issue, "Relationships", new_text)
 
 
 def ensure_labels(
@@ -1633,7 +1787,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["body"] = body
     else:
         names = args.sections or config.get("default_sections") or []
-        sections = section_map(body)
+        sections = issue_plan_sections(issue)
         result["sections"] = {name: sections.get(name, "") for name in names}
     emit({"ok": True, "actor": actor, "issue": result})
 
@@ -1763,9 +1917,8 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     _, issue = get_issue(args.issue, repo)
-    body = issue.get("body") or ""
     new_text = read_body(args)
-    updated = replace_section(body, args.section, new_text)
+    updated = replace_issue_plan_section(issue, args.section, new_text)
     actor, refreshed = rest_edit_issue(issue_repo, number, body=updated)
     emit({"ok": True, "actor": actor, "updated_section": args.section, "issue": compact_issue(refreshed)})
 
@@ -1779,6 +1932,7 @@ def cmd_link(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
+    issue_plan_sections(source)
 
     if rel == "blocked-by":
         actor, _ = api_json(
@@ -1802,7 +1956,7 @@ def cmd_link(args: argparse.Namespace) -> None:
             failed_step="link_subissue",
         )
     elif rel == "related":
-        updated = add_relationship_note(source.get("body") or "", "related", target)
+        updated = add_relationship_note(source, "related", target)
         actor, source = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
@@ -1825,6 +1979,7 @@ def cmd_unlink(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
+    issue_plan_sections(source)
     if rel == "blocked-by":
         actor, _ = api_json(
             "DELETE",
@@ -1845,7 +2000,7 @@ def cmd_unlink(args: argparse.Namespace) -> None:
             failed_step="unlink_subissue",
         )
     elif rel == "related":
-        updated = remove_relationship_note(source.get("body") or "", "related", target)
+        updated = remove_relationship_note(source, "related", target)
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
