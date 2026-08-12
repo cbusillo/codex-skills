@@ -118,6 +118,12 @@ second planning backend.
   block. Unknown authors and issues created by bots other than the acting
   planning bot fail closed into this preservation mode. Do not retitle
   contributor issues as part of plan expansion.
+- Treat generic GitHub operation comments such as
+  `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
+  they never establish ownership of an issue body. Association-based managed
+  bodies require the explicit `<!-- github-plan:managed-provenance -->` marker
+  emitted by `gh-plan create`. Existing contributor envelopes remain
+  contributor-owned even if the author's repository association changes later.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions and the preferred durable handoff surface for
   GitHub-backed planning work.

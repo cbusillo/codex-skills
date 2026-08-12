@@ -37,6 +37,18 @@ block after adoption. Any unmarked recognized planning heading is ambiguous and
 must fail closed. Section content must not contain the reserved ownership
 markers.
 
+Fully managed plans created by `gh-plan` begin with:
+
+```markdown
+<!-- github-plan:managed-provenance -->
+```
+
+This marker establishes plan-body provenance for member/collaborator-authored
+issues. The generic `<!-- github-skill-operation:... -->` comment is only
+request reconciliation evidence and never grants body ownership. The acting
+planning bot and repository owner remain fully managed without the provenance
+marker; existing contributor envelopes always remain contributor-owned.
+
 ## Required Headings
 
 ```markdown

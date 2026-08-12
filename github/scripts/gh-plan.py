@@ -41,13 +41,15 @@ PLAN_ORIGINAL_START = "<!-- github-plan:original-request:start -->"
 PLAN_ORIGINAL_END = "<!-- github-plan:original-request:end -->"
 PLAN_MANAGED_START = "<!-- github-plan:managed:start -->"
 PLAN_MANAGED_END = "<!-- github-plan:managed:end -->"
-FULLY_MANAGED_AUTHOR_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+PLAN_MANAGED_PROVENANCE_MARKER = "<!-- github-plan:managed-provenance -->"
 PLAN_OWNERSHIP_MARKERS = (
     PLAN_ORIGINAL_START,
     PLAN_ORIGINAL_END,
     PLAN_MANAGED_START,
     PLAN_MANAGED_END,
 )
+PLAN_RESERVED_MARKERS = PLAN_OWNERSHIP_MARKERS + (PLAN_MANAGED_PROVENANCE_MARKER,)
+PROVENANCE_MANAGED_AUTHOR_ASSOCIATIONS = frozenset({"MEMBER", "COLLABORATOR"})
 PLAN_MANAGED_NOTICE = "_The following implementation plan is maintained by project automation._"
 PLAN_SECTION_NAMES = frozenset(
     {
@@ -1434,6 +1436,8 @@ def section_map(body: str) -> dict[str, str]:
 
 def replace_section(body: str, section: str, new_text: str) -> str:
     body = body or ""
+    if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
+        raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
     pattern = re.compile(rf"(?ms)^##\s+{re.escape(section)}\s*\n.*?(?=^##\s+|\Z)")
     replacement = f"## {section}\n\n{new_text.strip()}\n\n"
     if pattern.search(body):
@@ -1451,6 +1455,25 @@ def issue_author_login(issue: dict[str, Any]) -> str | None:
     return login.strip() if isinstance(login, str) and login.strip() else None
 
 
+def issue_author_association(issue: dict[str, Any]) -> str | None:
+    association = issue.get("author_association") or issue.get("authorAssociation")
+    if not isinstance(association, str):
+        return None
+    normalized = association.strip().upper()
+    return normalized or None
+
+
+def has_managed_provenance(body: str) -> bool:
+    count = body.count(PLAN_MANAGED_PROVENANCE_MARKER)
+    if count == 0:
+        return False
+    if count != 1:
+        raise PlanError("Issue body contains duplicate GitHub plan provenance markers")
+    if re.search(rf"(?m)^{re.escape(PLAN_MANAGED_PROVENANCE_MARKER)}[ \t]*\r?$", body) is None:
+        raise PlanError("GitHub plan provenance marker must occupy its own line")
+    return True
+
+
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
     author = issue.get("user") or issue.get("author")
     author_login = issue_author_login(issue)
@@ -1458,8 +1481,13 @@ def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
         return True
     if isinstance(author, dict) and str(author.get("type", "")).casefold() == "bot":
         return False
-    association = issue.get("author_association") or issue.get("authorAssociation")
-    return isinstance(association, str) and association.upper() in FULLY_MANAGED_AUTHOR_ASSOCIATIONS
+    body = issue.get("body") or ""
+    if contributor_plan_body(issue) is not None:
+        return False
+    association = issue_author_association(issue)
+    if association == "OWNER":
+        return True
+    return association in PROVENANCE_MANAGED_AUTHOR_ASSOCIATIONS and has_managed_provenance(body)
 
 
 def marked_block(body: str, start_marker: str, end_marker: str) -> tuple[int, int, str] | None:
@@ -1521,9 +1549,9 @@ def ensure_unmarked_contributor_body_is_unambiguous(issue: dict[str, Any]) -> No
 
 def wrap_contributor_plan(issue: dict[str, Any], managed_body: str) -> str:
     original_body = issue.get("body") or ""
-    if any(marker in original_body for marker in PLAN_OWNERSHIP_MARKERS):
-        raise PlanError("Contributor request already contains reserved GitHub plan ownership markers")
     original_request = original_body if original_body else str(issue.get("title") or "").strip()
+    if any(marker in original_request for marker in PLAN_RESERVED_MARKERS):
+        raise PlanError("Contributor request already contains reserved GitHub plan ownership markers")
     return (
         "## Original request\n\n"
         f"{PLAN_ORIGINAL_START}\n"
@@ -1539,12 +1567,12 @@ def wrap_contributor_plan(issue: dict[str, Any], managed_body: str) -> str:
 
 def replace_issue_plan_section(issue: dict[str, Any], section: str, new_text: str) -> str:
     body = issue.get("body") or ""
+    if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
+        raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
     if issue_body_is_fully_managed(issue):
         return replace_section(body, section, new_text)
     if section.casefold() == "original request":
         raise PlanError("Contributor-authored original request content is immutable")
-    if any(marker in new_text for marker in PLAN_OWNERSHIP_MARKERS):
-        raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
     managed_body = contributor_plan_body(issue)
     if managed_body is None:
         ensure_unmarked_contributor_body_is_unambiguous(issue)
@@ -1569,7 +1597,9 @@ def issue_plan_sections(issue: dict[str, Any]) -> dict[str, str]:
 
 
 def template_body(title: str) -> str:
-    return f"""## Objective
+    return f"""{PLAN_MANAGED_PROVENANCE_MARKER}
+
+## Objective
 
 {title}
 
@@ -1611,6 +1641,14 @@ Last verified: Not yet verified.
 
 - None yet.
 """
+
+
+def ensure_managed_provenance(body: str) -> str:
+    if any(marker in body for marker in PLAN_OWNERSHIP_MARKERS):
+        raise PlanError("Fully managed plan body contains contributor ownership markers")
+    if has_managed_provenance(body):
+        return body
+    return f"{PLAN_MANAGED_PROVENANCE_MARKER}\n\n{body.lstrip()}"
 
 
 def read_body(args: argparse.Namespace, fallback: str = "") -> str:
@@ -1836,6 +1874,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     body = read_body(args, template_body(title))
     if args.finish_line:
         body = replace_section(body, "Finish Line", args.finish_line)
+    body = ensure_managed_provenance(body)
     project_config = config.get("projects") or {}
     project = args.project
     if project is None and project_config.get("enabled", True):
