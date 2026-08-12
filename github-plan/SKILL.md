@@ -111,6 +111,13 @@ second planning backend.
 - Search before creating; update an existing issue when intent overlaps.
 - Promote durable work to one canonical issue with the configured planning
   label, usually `plan`.
+- Treat contributor-authored titles and bodies as immutable source material.
+  Prefer a bot-authored planning comment or a linked maintainer-owned plan. If
+  planning must remain in the contributor issue body, preserve the original
+  request verbatim and update only the marker-delimited automation-owned plan
+  block. Unknown authors and issues created by bots other than the acting
+  planning bot fail closed into this preservation mode. Do not retitle
+  contributor issues as part of plan expansion.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions and the preferred durable handoff surface for
   GitHub-backed planning work.
