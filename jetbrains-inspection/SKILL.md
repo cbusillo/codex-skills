@@ -264,6 +264,11 @@ lease-bound request; it does not issue a second app-level open that could create
 an unowned window or trust prompt. A timed-out lifecycle-open response is
 treated as ambiguous rather than absent: the helper waits for the exact route
 and requires a successful lease-bound claim before it can close anything.
+When the plugin advertises `lifecycle_open_diagnostic_version >= 1`, route
+waiting uses the strictly non-scheduling `probe=true` contract and disables the
+legacy blind `already_opening` reschedule. Timeout JSON preserves the latest
+`lifecycle_open_probe`, and terminal output emits `LIFECYCLE_OPEN_PROBE:` with
+the latest phase, outcome, elapsed time, and ownership/readiness booleans.
 That potential ownership evidence remains recoverable through route/claim
 timeouts and is discarded only after a definitive `not_owned` claim.
 If preparation then fails, the helper closes immediately when a live claim
