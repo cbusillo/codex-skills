@@ -6074,6 +6074,100 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotIn("fallback", calls)
         self.assertEqual(raised.exception.payload["open_attempts"], open_attempts)
 
+    def test_wait_for_exact_route_after_open_probes_diagnostics_without_rescheduling(self):
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "ownership_registered": True,
+                "lifecycle_open_diagnostic_version": 1,
+            }
+        ]
+        ticks = iter([0, 0, 2])
+        with (
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(
+                jb_inspect,
+                "probe_lifecycle_open",
+                return_value={
+                    "status": "opening",
+                    "probe": True,
+                    "lifecycle_open_diagnostic": {"phase": "edt_started"},
+                },
+            ) as probe,
+            patch.object(jb_inspect, "open_via_running_ide") as open_again,
+            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_for_exact_route_after_open(
+                    Namespace(port=None, background_open=True),
+                    {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    1,
+                    open_attempts,
+                    {"lease_id": "lease-1"},
+                )
+
+        probe.assert_called_once()
+        open_again.assert_not_called()
+        self.assertEqual(
+            raised.exception.payload["lifecycle_open_probe"]["lifecycle_open_diagnostic"]["phase"],
+            "edt_started",
+        )
+
+    def test_diagnostic_probe_disables_legacy_already_opening_reschedule(self):
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "open_outcome": "already_opening",
+                "lifecycle_open_diagnostic_version": 1,
+            }
+        ]
+        ticks = iter([0, 0, 2])
+        with (
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "probe_lifecycle_open", return_value={"status": "opening"}),
+            patch.object(jb_inspect, "open_via_running_ide") as open_again,
+            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.wait_for_exact_route_after_open(
+                    Namespace(port=None, background_open=True),
+                    {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    1,
+                    open_attempts,
+                    {"lease_id": "lease-1"},
+                )
+
+        open_again.assert_not_called()
+
+    def test_probe_lifecycle_open_requires_advertised_version(self):
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                    }
+                ],
+            ),
+            patch.object(jb_inspect, "http_get") as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertIsNone(result)
+        http_get.assert_not_called()
+
     def test_wait_until_route_ready_requires_consecutive_ready_statuses(self):
         statuses = iter([
             {"indexing": True},
@@ -8920,6 +9014,19 @@ class HumanOutputTest(unittest.TestCase):
                 "prepare_timeout_ms": 1234,
                 "selected_trusted_root": "/tmp",
             },
+            "lifecycle_open_probe": {
+                "status": "opening",
+                "reason": "already_opening",
+                "lifecycle_open_diagnostic": {
+                    "phase": "readiness-wait",
+                    "outcome_phase": None,
+                    "elapsed_ms": 1234,
+                    "open_returned": True,
+                    "ownership_registered": True,
+                    "readiness_waiting": True,
+                    "unresolved": False,
+                },
+            },
         }
         output = io.StringIO()
 
@@ -8932,6 +9039,8 @@ class HumanOutputTest(unittest.TestCase):
         self.assertIn("background_open=True", text)
         self.assertIn("prepare_timeout_ms=1234", text)
         self.assertIn("PROJECT_OPEN_BLOCKED_HINT: JetBrains may be waiting on a Trust Project, safe-mode, or open-project prompt.", text)
+        self.assertIn("LIFECYCLE_OPEN_PROBE: status=opening reason=already_opening phase=readiness-wait", text)
+        self.assertIn("elapsed_ms=1234", text)
 
     def test_human_output_prints_zero_project_hint(self):
         payload = {
