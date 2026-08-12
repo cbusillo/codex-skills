@@ -6168,6 +6168,79 @@ class LifecycleTest(unittest.TestCase):
         self.assertIsNone(result)
         http_get.assert_not_called()
 
+    def test_probe_lifecycle_open_preserves_conflict_diagnostic_payload(self):
+        error = jb_inspect.InspectError(
+            "open state unknown",
+            3,
+            {
+                "status": "failed",
+                "reason": "open_state_unknown",
+                "lifecycle_open_diagnostic": {
+                    "phase": "unresolved",
+                    "outcome_phase": "unresolved",
+                },
+            },
+        )
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                        "lifecycle_open_diagnostic_version": 1,
+                    }
+                ],
+            ),
+            patch.object(jb_inspect, "http_get", side_effect=error),
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(result["reason"], "open_state_unknown")
+        self.assertEqual(result["lifecycle_open_diagnostic"]["phase"], "unresolved")
+        self.assertEqual(result["status"], "error")
+
+    def test_wait_for_exact_route_keeps_last_successful_lifecycle_probe(self):
+        open_attempts = [
+            {
+                "method": "running_ide",
+                "accepted": True,
+                "ownership_registered": True,
+                "lifecycle_open_diagnostic_version": 1,
+            }
+        ]
+        probes = iter([
+            {"status": "opening", "lifecycle_open_diagnostic": {"phase": "readiness_wait"}},
+            None,
+        ])
+        ticks = iter([0, 0, 1, 2])
+        with (
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "probe_lifecycle_open", side_effect=lambda *args: next(probes)),
+            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_for_exact_route_after_open(
+                    Namespace(port=None, background_open=True),
+                    {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                    1,
+                    open_attempts,
+                    {"lease_id": "lease-1"},
+                )
+
+        self.assertEqual(
+            raised.exception.payload["lifecycle_open_probe"]["lifecycle_open_diagnostic"]["phase"],
+            "readiness_wait",
+        )
+
     def test_wait_until_route_ready_requires_consecutive_ready_statuses(self):
         statuses = iter([
             {"indexing": True},

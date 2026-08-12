@@ -3846,7 +3846,9 @@ def wait_for_exact_route_after_open(
         if route is not None:
             return route
         if diagnostic_probe_supported:
-            last_lifecycle_open_probe = probe_lifecycle_open(args, context, lease)
+            current_probe = probe_lifecycle_open(args, context, lease)
+            if current_probe is not None:
+                last_lifecycle_open_probe = current_probe
         if retry_opening:
             try:
                 retry_attempt = open_via_running_ide(
@@ -4250,11 +4252,13 @@ def probe_lifecycle_open(
                 timeout=max(DEFAULT_TIMEOUT_SECONDS, 30.0),
             )
         except InspectError as error:
-            return {
+            payload = public_payload(error.payload)
+            payload.update({
                 "status": "error",
                 "error_reason": infer_error_reason(error, error.payload),
                 "message": str(error),
-            }
+            })
+            return payload
         return public_payload(response.body)
     return None
 
