@@ -3,6 +3,40 @@
 Durable planning issues should follow a consistent structure to ensure they
 are easily scannable and contain the necessary context for agents and humans.
 
+For issues authored by contributors outside the repository owner/member/
+collaborator set, preserve the original request verbatim. Prefer a bot-authored
+comment or a linked maintainer-owned planning issue. When the plan must live in
+the contributor issue body, use this ownership boundary:
+
+```markdown
+## Original request
+
+<!-- github-plan:original-request:start -->
+[Original body verbatim, or the original title when the body was empty]
+<!-- github-plan:original-request:end -->
+
+---
+
+_The following implementation plan is maintained by project automation._
+
+<!-- github-plan:managed:start -->
+[Required planning headings]
+<!-- github-plan:managed:end -->
+```
+
+Subsequent automation updates may change only the managed block. Duplicate,
+missing, or out-of-order markers must fail closed rather than rewriting the
+issue. Maintainer-owned and bot-authored planning issues may use the fully
+managed format below. An older contributor issue that already mixes unmarked
+planning headings with request text is ambiguous and must not be migrated by
+guessing; preserve its request in a linked maintainer-owned plan or perform an
+explicit, reviewed migration from issue history.
+
+`gh-plan show`, relationship updates, and section updates read only the managed
+block after adoption. Any unmarked recognized planning heading is ambiguous and
+must fail closed. Section content must not contain the reserved ownership
+markers.
+
 ## Required Headings
 
 ```markdown

@@ -142,6 +142,447 @@ def normalized_gh_args(command: list[str]) -> list[str]:
     return command
 
 
+def plan_issue(
+    *,
+    body: str,
+    title: str = "Contributor request",
+    login: str = "external-user",
+    author_type: str = "User",
+    association: str | None = "NONE",
+) -> dict[str, Any]:
+    issue: dict[str, Any] = {
+        "repo": "owner/repo",
+        "number": 1,
+        "id": 1001,
+        "title": title,
+        "body": body,
+        "html_url": "https://github.com/owner/repo/issues/1",
+        "labels": [],
+        "state": "open",
+        "user": {"login": login, "type": author_type},
+    }
+    if association is not None:
+        issue["author_association"] = association
+    return issue
+
+
+def test_contributor_plan_update_preserves_original_body_verbatim() -> None:
+    plan = load_plan_module()
+    original = "## Reproduction notes\n\nContributor words.\n\n<!-- literal marker-like text -->"
+    issue = plan_issue(body=original)
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+    assert updated.count(plan.PLAN_ORIGINAL_START) == 1, updated
+    assert updated.count(plan.PLAN_MANAGED_START) == 1, updated
+    original_block = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert original_block is not None and original_block[2] == original, original_block
+    managed_block = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed_block is not None, updated
+    assert plan.section_map(managed_block[2])["Current Status"] == "State: Active", managed_block
+
+
+def test_contributor_empty_body_preserves_original_title() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="", title="Original contributor title")
+
+    updated = plan.replace_issue_plan_section(issue, "Objective", "Managed objective")
+
+    original_block = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert original_block is not None and original_block[2] == "Original contributor title", original_block
+
+
+def test_contributor_repeat_update_only_changes_managed_block() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    first = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+    preserved_before = plan.marked_block(first, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert preserved_before is not None
+    issue["body"] = first
+
+    second = plan.replace_issue_plan_section(issue, "Current Status", "State: Blocked")
+
+    preserved_after = plan.marked_block(second, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert preserved_after is not None and preserved_after[2] == preserved_before[2], second
+    assert second.count(plan.PLAN_ORIGINAL_START) == 1, second
+    assert second.count(plan.PLAN_MANAGED_START) == 1, second
+    managed = plan.marked_block(second, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    assert plan.section_map(managed[2])["Current Status"] == "State: Blocked", managed
+
+
+def test_contributor_repeat_update_preserves_other_managed_sections() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    issue["body"] = plan.replace_issue_plan_section(issue, "Objective", "Managed objective")
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    sections = plan.section_map(managed[2])
+    assert sections["Objective"] == "Managed objective", sections
+    assert sections["Current Status"] == "State: Active", sections
+
+
+def test_legacy_contributor_plan_sections_require_explicit_migration() -> None:
+    plan = load_plan_module()
+    legacy = (
+        "Original context.\n\n"
+        "## Objective\n\nLegacy objective\n\n"
+        "## Relationships\n\n- related: owner/repo#7 - https://github.com/owner/repo/issues/7\n\n"
+        "## Current Status\n\nState: Old\n"
+    )
+    issue = plan_issue(body=legacy)
+
+    try:
+        plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+    except plan.PlanError as exc:
+        assert "cannot safely distinguish" in str(exc), exc
+        assert "migrate it explicitly" in str(exc), exc
+    else:
+        raise AssertionError("ambiguous legacy contributor plans should fail closed")
+
+
+def test_contributor_original_request_section_is_immutable() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    try:
+        plan.replace_issue_plan_section(issue, "Original Request", "replacement")
+    except plan.PlanError as exc:
+        assert "immutable" in str(exc), exc
+    else:
+        raise AssertionError("contributor original request should be immutable")
+
+
+def test_unknown_author_fails_closed_into_preservation_mode() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Unknown source", association=None)
+    issue.pop("user")
+
+    updated = plan.replace_issue_plan_section(issue, "Objective", "Managed objective")
+
+    assert plan.PLAN_ORIGINAL_START in updated, updated
+    assert not plan.issue_body_is_fully_managed(issue)
+
+
+def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
+    plan = load_plan_module()
+    cases = [
+        plan_issue(body="## Objective\n\nOld\n", association="OWNER"),
+        plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR),
+    ]
+
+    for issue in cases:
+        updated = plan.replace_issue_plan_section(issue, "Objective", "New")
+        assert plan.PLAN_ORIGINAL_START not in updated, updated
+        assert plan.section_map(updated)["Objective"] == "New", updated
+
+
+def test_third_party_bot_issue_uses_preservation_mode() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(
+        body="Original app request",
+        login="another-bot",
+        author_type="Bot",
+        association="MEMBER",
+    )
+
+    updated = plan.replace_issue_plan_section(issue, "Objective", "Managed")
+
+    assert plan.PLAN_ORIGINAL_START in updated, updated
+    original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert original is not None and original[2] == "Original app request", original
+
+
+def test_contributor_associations_use_preservation_mode() -> None:
+    plan = load_plan_module()
+    for association in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"):
+        issue = plan_issue(body="Original", association=association)
+        assert not plan.issue_body_is_fully_managed(issue), association
+        updated = plan.replace_issue_plan_section(issue, "Objective", "Managed")
+        assert plan.PLAN_ORIGINAL_START in updated, association
+
+
+def test_malformed_contributor_markers_fail_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body=f"{plan.PLAN_MANAGED_START}\n## Objective\n\nOld\n{plan.PLAN_MANAGED_END}\n")
+    try:
+        plan.replace_issue_plan_section(issue, "Objective", "New")
+    except plan.PlanError as exc:
+        assert "incomplete" in str(exc), exc
+    else:
+        raise AssertionError("incomplete ownership markers should fail closed")
+
+
+def test_noncanonical_contributor_markers_fail_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(
+        body=(
+            f"Contributor preface\n{plan.PLAN_ORIGINAL_START}\nOriginal\n{plan.PLAN_ORIGINAL_END}\n"
+            f"{plan.PLAN_MANAGED_START}\n## Objective\n\nOld\n{plan.PLAN_MANAGED_END}\n"
+        )
+    )
+    try:
+        plan.replace_issue_plan_section(issue, "Objective", "New")
+    except plan.PlanError as exc:
+        assert "canonical envelope" in str(exc), exc
+    else:
+        raise AssertionError("noncanonical ownership markers should fail closed")
+
+
+def test_reserved_marker_collision_fails_closed_before_wrapping() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body=f"Please preserve this text: {plan.PLAN_MANAGED_START}")
+    try:
+        plan.replace_issue_plan_section(issue, "Objective", "New")
+    except plan.PlanError as exc:
+        assert "incomplete" in str(exc) or "reserved" in str(exc), exc
+    else:
+        raise AssertionError("reserved marker collisions should fail closed")
+
+
+def test_reserved_marker_in_section_content_fails_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request")
+    try:
+        plan.replace_issue_plan_section(issue, "Objective", f"Unsafe {plan.PLAN_MANAGED_END}")
+    except plan.PlanError as exc:
+        assert "reserved" in str(exc), exc
+    else:
+        raise AssertionError("reserved markers in managed section input should fail closed")
+
+
+def test_crlf_contributor_envelope_remains_updatable() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    wrapped = plan.replace_issue_plan_section(issue, "Objective", "Managed objective")
+    issue["body"] = wrapped.replace("\n", "\r\n")
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+    original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert original is not None and original[2] == "Original request body", original
+    assert managed is not None
+    sections = plan.section_map(managed[2])
+    assert sections["Objective"] == "Managed objective", sections
+    assert sections["Current Status"] == "State: Active", sections
+
+
+def test_contributor_envelope_allows_trailing_blank_lines() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    issue["body"] = plan.replace_issue_plan_section(issue, "Objective", "Managed objective") + "\n \n\n"
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    sections = plan.section_map(managed[2])
+    assert sections["Objective"] == "Managed objective", sections
+    assert sections["Current Status"] == "State: Active", sections
+
+
+def test_contributor_envelope_allows_marker_line_whitespace() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    wrapped = plan.replace_issue_plan_section(issue, "Objective", "Managed objective")
+    issue["body"] = (
+        wrapped.replace(plan.PLAN_ORIGINAL_START, f"{plan.PLAN_ORIGINAL_START}  ")
+        .replace(plan.PLAN_ORIGINAL_END, f"{plan.PLAN_ORIGINAL_END}\t")
+        .replace(plan.PLAN_MANAGED_START, f"{plan.PLAN_MANAGED_START} ")
+        .replace(plan.PLAN_MANAGED_END, f"{plan.PLAN_MANAGED_END}\t")
+    )
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+    original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert original is not None and original[2] == "Original request body", original
+    assert managed is not None
+    sections = plan.section_map(managed[2])
+    assert sections["Objective"] == "Managed objective", sections
+    assert sections["Current Status"] == "State: Active", sections
+
+
+def test_contributor_relationship_updates_stay_inside_managed_block() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    issue["body"] = plan.replace_issue_plan_section(issue, "Relationships", "- None yet.")
+    original = plan.marked_block(issue["body"], plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    target = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+
+    linked = plan.add_relationship_note(issue, "related", target)
+    issue["body"] = linked
+    unlinked = plan.remove_relationship_note(issue, "related", target)
+
+    assert original is not None
+    linked_original = plan.marked_block(linked, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    unlinked_original = plan.marked_block(unlinked, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+    assert linked_original is not None and linked_original[2] == original[2]
+    assert unlinked_original is not None and unlinked_original[2] == original[2]
+    managed = plan.marked_block(unlinked, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    assert plan.section_map(managed[2])["Relationships"] == "- None yet.", managed
+
+
+def test_contributor_relationship_unlink_noop_does_not_wrap_issue() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    target = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+
+    updated = plan.remove_relationship_note(issue, "related", target)
+
+    assert updated == "Original request body", updated
+
+
+def test_unmarked_contributor_plan_read_and_unlink_fail_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="## Relationships\n\n- related: owner/repo#2 - https://github.com/owner/repo/issues/2\n")
+    target = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+
+    for operation in (
+        lambda: plan.issue_plan_sections(issue),
+        lambda: plan.remove_relationship_note(issue, "related", target),
+    ):
+        try:
+            operation()
+        except plan.PlanError as exc:
+            assert "cannot safely distinguish" in str(exc), exc
+        else:
+            raise AssertionError("unmarked contributor plan reads should fail closed")
+
+
+def test_cmd_show_unmarked_contributor_plan_fails_closed() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="## Current Status\n\nState: Active\n")
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+
+    try:
+        plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
+    except plan.PlanError as exc:
+        assert "cannot safely distinguish" in str(exc), exc
+    else:
+        raise AssertionError("show should fail closed on unmarked contributor plans")
+
+
+def test_native_link_and_unlink_preflight_ambiguous_contributor_body() -> None:
+    plan = load_plan_module()
+    source = plan_issue(body="## Current Status\n\nState: Active\n")
+    target = plan_issue(body="Target", title="Target", login="owner", association="OWNER")
+    target["number"] = 2
+    target["id"] = 1002
+    calls: list[tuple[Any, ...]] = []
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.get_issue = lambda ref, _repo: ("automation-gh", source if ref == "1" else target)
+    plan.api_json = lambda *args, **kwargs: calls.append((*args, kwargs))
+
+    for command in (plan.cmd_link, plan.cmd_unlink):
+        try:
+            command(types.SimpleNamespace(repo="owner/repo", issue="1", relationship="blocked-by", target="2"))
+        except plan.PlanError as exc:
+            assert "cannot safely distinguish" in str(exc), exc
+        else:
+            raise AssertionError("native relationship mutations should fail closed before writes")
+    assert calls == [], calls
+
+
+def test_contributor_relationship_add_noop_preserves_body() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    target = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+    issue["body"] = plan.replace_issue_plan_section(
+        issue,
+        "Relationships",
+        plan.relationship_line("related", target),
+    )
+
+    updated = plan.add_relationship_note(issue, "related", target)
+
+    assert updated == issue["body"], updated
+
+
+def test_relationship_add_does_not_confuse_similar_issue_numbers() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    target_two = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+    target_twenty = {
+        "repo": "owner/repo",
+        "number": 20,
+        "html_url": "https://github.com/owner/repo/issues/20",
+    }
+    issue["body"] = plan.replace_issue_plan_section(
+        issue,
+        "Relationships",
+        plan.relationship_line("related", target_twenty),
+    )
+
+    updated = plan.add_relationship_note(issue, "related", target_two)
+
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    relationships = plan.section_map(managed[2])["Relationships"].splitlines()
+    assert plan.relationship_line("related", target_two) in relationships, relationships
+    assert plan.relationship_line("related", target_twenty) in relationships, relationships
+
+
+def test_contributor_relationship_unlink_tolerates_line_whitespace() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Original request body")
+    target = {
+        "repo": "owner/repo",
+        "number": 2,
+        "html_url": "https://github.com/owner/repo/issues/2",
+    }
+    line = plan.relationship_line("related", target)
+    issue["body"] = plan.replace_issue_plan_section(issue, "Relationships", f"  {line}  ")
+
+    updated = plan.remove_relationship_note(issue, "related", target)
+
+    managed = plan.marked_block(updated, plan.PLAN_MANAGED_START, plan.PLAN_MANAGED_END)
+    assert managed is not None
+    assert plan.section_map(managed[2])["Relationships"] == "- None yet.", managed
+
+
+def test_cmd_show_reads_only_managed_contributor_sections() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Contributor status")
+    issue["body"] = plan.replace_issue_plan_section(issue, "Current Status", "Managed status")
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    output = StringIO()
+
+    with redirect_stdout(output):
+        plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
+
+    payload = json.loads(output.getvalue())
+    assert payload["issue"]["sections"] == {"Current Status": "Managed status"}, payload
+
+
 def test_issue_body_updates_use_rest_patch() -> None:
     plan = load_plan_module()
     calls: list[tuple[list[str], Optional[str]]] = []
@@ -155,6 +596,7 @@ def test_issue_body_updates_use_rest_patch() -> None:
             "html_url": "https://github.com/owner/repo/issues/1",
             "labels": [],
             "state": "open",
+            "author_association": "OWNER",
         },
         ("owner/repo", 2): {
             "repo": "owner/repo",
@@ -165,6 +607,7 @@ def test_issue_body_updates_use_rest_patch() -> None:
             "html_url": "https://github.com/owner/repo/issues/2",
             "labels": [],
             "state": "open",
+            "author_association": "OWNER",
         },
     }
 
@@ -5139,6 +5582,32 @@ def test_graphql_budget_retries_until_matrix_operation_has_capacity() -> None:
 
 def main() -> None:
     tests = [
+        test_contributor_plan_update_preserves_original_body_verbatim,
+        test_contributor_empty_body_preserves_original_title,
+        test_contributor_repeat_update_only_changes_managed_block,
+        test_contributor_repeat_update_preserves_other_managed_sections,
+        test_legacy_contributor_plan_sections_require_explicit_migration,
+        test_contributor_original_request_section_is_immutable,
+        test_unknown_author_fails_closed_into_preservation_mode,
+        test_maintainer_and_bot_issues_remain_fully_managed,
+        test_third_party_bot_issue_uses_preservation_mode,
+        test_contributor_associations_use_preservation_mode,
+        test_malformed_contributor_markers_fail_closed,
+        test_noncanonical_contributor_markers_fail_closed,
+        test_reserved_marker_collision_fails_closed_before_wrapping,
+        test_reserved_marker_in_section_content_fails_closed,
+        test_crlf_contributor_envelope_remains_updatable,
+        test_contributor_envelope_allows_trailing_blank_lines,
+        test_contributor_envelope_allows_marker_line_whitespace,
+        test_contributor_relationship_updates_stay_inside_managed_block,
+        test_contributor_relationship_unlink_noop_does_not_wrap_issue,
+        test_unmarked_contributor_plan_read_and_unlink_fail_closed,
+        test_cmd_show_unmarked_contributor_plan_fails_closed,
+        test_native_link_and_unlink_preflight_ambiguous_contributor_body,
+        test_contributor_relationship_add_noop_preserves_body,
+        test_relationship_add_does_not_confuse_similar_issue_numbers,
+        test_contributor_relationship_unlink_tolerates_line_whitespace,
+        test_cmd_show_reads_only_managed_contributor_sections,
         test_issue_body_updates_use_rest_patch,
         test_plan_index_paginates_filters_prs_and_honors_limit,
         test_plan_search_uses_search_bucket_and_conditional_state,
