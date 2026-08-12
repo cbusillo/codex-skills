@@ -146,8 +146,10 @@ preserved, or intentionally left in place.
    files hunk by hunk, retain the canonical shared form plus only safe hunks,
    and never blanket-revert, clean, stash, or overwrite unrelated local IDE
    changes during closeout. Do not delete ignored generated IDE state merely
-   because the workstream is closing; remove a specific known local artifact
-   only when the user explicitly requests that cleanup.
+   because the workstream is closing within a checkout that is being retained;
+   removing a merged, clean worktree under repository cleanup policy is not
+   standalone IDE-state deletion. Remove a specific known local artifact from a
+   retained checkout only when the user explicitly requests that cleanup.
 8. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
 9. Report final state concisely.

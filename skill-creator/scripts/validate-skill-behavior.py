@@ -1530,6 +1530,7 @@ def test_ide_configuration_policy_is_shared() -> None:
     closeout = " ".join(
         (ROOT / "work-closeout" / "SKILL.md").read_text().lower().split()
     )
+    metadata = json.loads((ROOT / ".github" / "github.json").read_text())
 
     require(
         "tracked" in policy
@@ -1574,6 +1575,11 @@ def test_ide_configuration_policy_is_shared() -> None:
         "inspection, readiness, and closeout must share one IDE configuration policy",
     )
     require(
+        metadata.get("docs", {}).get("ideConfigurationPolicy")
+        == "references/ide-configuration-policy.md",
+        "github.json must route the shared IDE configuration policy",
+    )
+    require(
         "do not stage untracked, non-ignored ide configuration automatically"
         in inspection
         and "ask when the sharing decision remains unclear" in inspection,
@@ -1583,7 +1589,9 @@ def test_ide_configuration_policy_is_shared() -> None:
         "unresolved tracked ide diff is not clean" in readiness
         and "tracked ide configuration is durable repository state" in closeout
         and "ignored generated ide state is local state to preserve" in closeout
-        and "do not delete ignored generated ide state merely because the workstream is closing"
+        and "do not delete ignored generated ide state merely because the workstream is closing within a checkout that is being retained"
+        in closeout
+        and "removing a merged, clean worktree under repository cleanup policy is not standalone ide-state deletion"
         in closeout,
         "readiness and closeout must distinguish durable IDE config from local generated state",
     )
