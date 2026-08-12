@@ -140,6 +140,16 @@ preserved, or intentionally left in place.
    `cleanup.handoffArtifacts.temporaryGlobs`, delete or migrate them once their
    content is captured in the owning GitHub issue or PR comment unless they are
    intentionally preserved as committed docs.
+   IDE paths follow `../references/ide-configuration-policy.md`: tracked IDE
+   configuration is durable repository state, not a transient artifact, and
+   ignored generated IDE state is local state to preserve. Inspect mixed tracked
+   files hunk by hunk, retain the canonical shared form plus only safe hunks,
+   and never blanket-revert, clean, stash, or overwrite unrelated local IDE
+   changes during closeout. Do not delete ignored generated IDE state merely
+   because the workstream is closing within a checkout that is being retained;
+   removing a merged, clean worktree under repository cleanup policy is not
+   standalone IDE-state deletion. Remove a specific known local artifact from a
+   retained checkout only when the user explicitly requests that cleanup.
 8. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
 9. Report final state concisely.

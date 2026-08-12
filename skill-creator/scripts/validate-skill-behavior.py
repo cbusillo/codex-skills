@@ -1514,6 +1514,89 @@ def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
     )
 
 
+def test_ide_configuration_policy_is_shared() -> None:
+    policy = " ".join(
+        (ROOT / "references" / "ide-configuration-policy.md")
+        .read_text()
+        .lower()
+        .split()
+    )
+    inspection = " ".join(
+        (ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower().split()
+    )
+    readiness = " ".join(
+        (ROOT / "repo-readiness" / "SKILL.md").read_text().lower().split()
+    )
+    closeout = " ".join(
+        (ROOT / "work-closeout" / "SKILL.md").read_text().lower().split()
+    )
+    metadata = json.loads((ROOT / ".github" / "github.json").read_text())
+
+    require(
+        "tracked" in policy
+        and "untracked and ignored" in policy
+        and "untracked and not ignored" in policy,
+        "IDE configuration policy must classify tracking state before action",
+    )
+    require(
+        "exact diff" in policy
+        and ".idea/.gitignore" in policy
+        and "git history" in policy
+        and "applicable `agents.md`" in policy,
+        "IDE configuration policy must require diff, ignore, policy, and history evidence",
+    )
+    for phrase in (
+        "inspection profiles",
+        "scopes",
+        "code style",
+        "canonical module or content roots",
+        "project-only vcs mappings",
+        "absolute paths",
+        "sibling-repository mappings",
+        "generated checkout or worktree paths",
+        "local sdk or interpreter paths",
+        "recent-file state",
+        "caches",
+        "credentials",
+        "workspace.xml",
+    ):
+        require(phrase in policy, f"IDE configuration policy must retain {phrase}")
+    require(
+        "canonical shared form plus only the safe hunks" in policy
+        and "do not blanket-commit" in policy
+        and "blanket-revert" in policy
+        and "never overwrite unrelated local ide changes" in policy,
+        "IDE configuration policy must preserve mixed files without blanket operations",
+    )
+    require(
+        "ide-configuration-policy.md" in inspection
+        and "ide-configuration-policy.md" in readiness
+        and "ide-configuration-policy.md" in closeout,
+        "inspection, readiness, and closeout must share one IDE configuration policy",
+    )
+    require(
+        metadata.get("docs", {}).get("ideConfigurationPolicy")
+        == "references/ide-configuration-policy.md",
+        "github.json must route the shared IDE configuration policy",
+    )
+    require(
+        "do not stage untracked, non-ignored ide configuration automatically"
+        in inspection
+        and "ask when the sharing decision remains unclear" in inspection,
+        "jetbrains-inspection must fail closed on ambiguous untracked IDE configuration",
+    )
+    require(
+        "unresolved tracked ide diff is not clean" in readiness
+        and "tracked ide configuration is durable repository state" in closeout
+        and "ignored generated ide state is local state to preserve" in closeout
+        and "do not delete ignored generated ide state merely because the workstream is closing within a checkout that is being retained"
+        in closeout
+        and "removing a merged, clean worktree under repository cleanup policy is not standalone ide-state deletion"
+        in closeout,
+        "readiness and closeout must distinguish durable IDE config from local generated state",
+    )
+
+
 def test_work_closeout_requires_issue_aware_safe_exit() -> None:
     closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
     normalized = " ".join(closeout_text.split())
@@ -1883,6 +1966,7 @@ def main() -> None:
         test_background_review_reporting_is_point_in_time,
         test_launchplane_delegates_github_surfaces,
         test_code_readiness_requires_jetbrains_inspection_evidence,
+        test_ide_configuration_policy_is_shared,
         test_work_closeout_requires_issue_aware_safe_exit,
         test_infra_ops_owns_live_infra_actions,
         test_infra_ops_private_context_command_detects_docs_pointer,

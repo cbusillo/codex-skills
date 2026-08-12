@@ -95,6 +95,15 @@ Use this skill to run and interpret JetBrains IDE inspections through the local
 inspection plugin HTTP API. The script-backed helper is the primary agent
 interface; prefer it over direct curl or MCP tool calls.
 
+When IDE configuration appears in the change set, use
+`../references/ide-configuration-policy.md` before deciding whether to keep,
+split, revert, ignore, or remove it. Inspect tracking state, the exact diff,
+ignore rules, repository policy, and history. Preserve the canonical shared form
+plus only safe hunks in mixed tracked files; never use blanket commit, revert,
+clean, or stash operations that can absorb machine-local or unrelated IDE state.
+Do not stage untracked, non-ignored IDE configuration automatically; check
+repository policy and ask when the sharing decision remains unclear.
+
 ## Before The First Inspection
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
@@ -113,6 +122,10 @@ Preparation may create ignored local worktree state such as `.venv/` and
 `.idea/` directories or files. That is allowed. What is not allowed is a
 nonzero exit or any tracked-file mutation. If either happens, stop and treat
 preparation as a blocker before the first inspection.
+
+Preparation-created ignored IDE state stays untracked and is not a reason to
+start versioning IDE configuration. Starting to track it is a durable repository
+policy change and requires explicit user direction.
 
 Python repositories should prefer the structured, skill-owned preparation
 shape instead of embedding an absolute helper path or copying IDE files between

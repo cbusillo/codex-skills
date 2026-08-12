@@ -7,6 +7,7 @@
     "githubWorkflow": "github/references/repo-workflow.md",
     "backgroundReviewReporting": "references/background-review-reporting.md",
     "executionEnvironment": "github/references/execution-environment.md",
+    "ideConfigurationPolicy": "references/ide-configuration-policy.md",
     "githubConfigSchema": "github/references/config-schema.md",
     "launchplaneSkill": "launchplane/SKILL.md",
     "launchplaneContextContract": "launchplane/references/context-helper-contract.md",
