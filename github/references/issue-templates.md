@@ -47,7 +47,9 @@ This marker establishes plan-body provenance for member/collaborator-authored
 issues. The generic `<!-- github-skill-operation:... -->` comment is only
 request reconciliation evidence and never grants body ownership. The acting
 planning bot and repository owner remain fully managed without the provenance
-marker; existing contributor envelopes always remain contributor-owned.
+marker. Legacy markerless member/collaborator plans remain managed only when
+they retain the exact canonical heading layout; existing contributor envelopes
+always remain contributor-owned.
 
 ## Required Headings
 

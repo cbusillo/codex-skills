@@ -116,6 +116,7 @@ REPOSITORY_PREPARATION_TERMINAL_REASONS = frozenset(
         "repository_preparation_untrusted",
         "repository_preparation_opted_out",
         "repository_preparation_recursion",
+        "repository_preparation_runtime_unavailable",
         "repository_preparation_command_failed",
         "repository_preparation_timeout",
         "repository_preparation_tracked_mutation",
@@ -964,18 +965,9 @@ def parse_structured_repository_preparation(
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare.python.extras requires sync=true."
         )
-    uv = shutil.which("uv")
-    if uv is None:
-        raise repository_preparation_config_error(
-            "Structured Python preparation requires the uv executable."
-        )
     script = Path(__file__).resolve().parent / "prepare-python-project.py"
-    if not script.is_file():
-        raise repository_preparation_config_error(
-            "Structured Python preparation helper is missing from the jetbrains-inspection skill."
-        )
     argv = [
-        uv,
+        "uv",
         "run",
         str(script),
         "--repo",
@@ -1260,6 +1252,8 @@ def repository_preparation_next_action(reason: str, preparation: dict[str, Any])
         return f"Run `{command}` manually in `{target}`, then rerun with --skip-preparation if the bypass is intentional."
     if reason == "repository_preparation_recursion":
         return "Remove the recursive jb-inspect invocation from qualityGate.inspection.prepare and rerun."
+    if reason == "repository_preparation_runtime_unavailable":
+        return "Install `uv` and restore the bundled `prepare-python-project.py` helper before rerunning repository preparation."
     if reason == "repository_preparation_generated_state_missing":
         return f"Run `{command}` in `{target}` and ensure all required generated state exists before rerunning."
     return f"Fix repository preparation in `{target}`, then rerun the inspection command."
@@ -1331,6 +1325,17 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         preparation["receipt_path"] = str(repository_preparation_receipt_path(context))
         preparation["generated_state_snapshot"] = generated_before
         return preparation
+
+    if state.get("kind") == "python" and (
+        shutil.which(argv[0]) is None or len(argv) < 3 or not Path(argv[2]).is_file()
+    ):
+        preparation["execution_state"] = "blocked"
+        preparation["failure_reason"] = "repository_preparation_runtime_unavailable"
+        raise repository_preparation_error(
+            "repository_preparation_runtime_unavailable",
+            "Structured Python repository preparation requires uv and the bundled prepare-python-project.py helper.",
+            preparation,
+        )
 
     timeout_ms = min(
         MAX_REPOSITORY_PREPARATION_TIMEOUT_MS,
