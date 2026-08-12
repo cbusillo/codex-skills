@@ -9,7 +9,6 @@ import json
 import os
 import plistlib
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -443,15 +442,16 @@ class BuildContextTest(unittest.TestCase):
                 },
             )
 
-            context = jb_inspect.build_context(
-                Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
-            )
+            with patch.object(jb_inspect.shutil, "which", side_effect=AssertionError("runtime probed")):
+                context = jb_inspect.build_context(
+                    Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+                )
 
         preparation = context["repository_preparation"]
         argv = context["_repository_preparation_argv"]
         self.assertEqual(preparation["kind"], "python")
         self.assertEqual(preparation["required_generated_state"], [".venv", ".idea"])
-        self.assertEqual(argv[:2], [shutil.which("uv"), "run"])
+        self.assertEqual(argv[:2], ["uv", "run"])
         self.assertEqual(Path(argv[2]).name, "prepare-python-project.py")
         self.assertEqual(
             argv[3:],
@@ -719,6 +719,51 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             refreshed = jb_inspect.run_repository_preparation(self.prep_args(force_preparation=True), context)
             self.assertEqual(refreshed["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
             self.assertEqual(counter.read_text(encoding="utf-8"), "3")
+
+    def test_structured_preparation_skip_reuse_and_missing_runtime(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        runtime_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime_directory.cleanup)
+        fake_uv = Path(runtime_directory.name) / "uv"
+        helper = Path(runtime_directory.name) / "prepare-python-project.py"
+        fake_uv.write_text("#!/bin/sh\nshift\nexec python3 \"$@\"\n", encoding="utf-8")
+        fake_uv.chmod(0o755)
+        helper.write_text(
+            "from pathlib import Path\nPath('generated').mkdir(exist_ok=True)\n",
+            encoding="utf-8",
+        )
+        argv = [str(fake_uv), "run", str(helper)]
+        context = self.make_context(root, argv, generated=["generated"])
+        context["repository_preparation"]["kind"] = "python"
+
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            first = jb_inspect.run_repository_preparation(self.prep_args(), context)
+        self.assertEqual(first["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+
+        fake_uv.unlink()
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            skipped = jb_inspect.run_repository_preparation(
+                self.prep_args(skip_preparation=True),
+                context,
+            )
+            reused = jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        self.assertEqual(skipped["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SKIPPED)
+        self.assertEqual(reused["execution_state"], jb_inspect.REPOSITORY_PREPARATION_REUSED)
+
+        Path(reused["receipt_path"]).unlink()
+        with (
+            patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}),
+            self.assertRaises(jb_inspect.InspectError) as unavailable,
+        ):
+            jb_inspect.run_repository_preparation(self.prep_args(), context)
+
+        self.assertEqual(
+            unavailable.exception.payload["error_reason"],
+            "repository_preparation_runtime_unavailable",
+        )
+        self.assertIn("uv", unavailable.exception.payload["next_action"])
 
     def test_structured_preparation_receipt_hash_changes_with_helper_content(self):
         with tempfile.TemporaryDirectory() as temporary:
