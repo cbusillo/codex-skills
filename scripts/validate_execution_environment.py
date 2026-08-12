@@ -343,18 +343,19 @@ def validate_wrapper_runtime(root: Path) -> list[str]:
     return violations
 
 
-def _load_helper_tests_manifest(path: Path) -> list[str]:
-    try:
-        content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"{path}: cannot read helper_tests manifest: {exc}") from exc
+def _load_shell_array(
+    content: str,
+    path: Path,
+    array_name: str,
+    *,
+    allow_empty: bool,
+) -> list[str]:
     lines = content.splitlines()
+    marker = f"{array_name}=("
     try:
-        start = next(
-            index for index, line in enumerate(lines) if line.strip() == "helper_tests=("
-        )
+        start = next(index for index, line in enumerate(lines) if line.strip() == marker)
     except StopIteration:
-        raise ValueError(f"{path}: helper_tests array could not be located")
+        raise ValueError(f"{path}: {array_name} array could not be located")
     entries: list[str] = []
     for line in lines[start + 1 :]:
         if line.strip() == ")":
@@ -362,12 +363,38 @@ def _load_helper_tests_manifest(path: Path) -> list[str]:
         try:
             entries.extend(shlex.split(line, comments=True))
         except ValueError as exc:
-            raise ValueError(f"{path}: invalid helper_tests entry: {exc}") from exc
+            raise ValueError(f"{path}: invalid {array_name} entry: {exc}") from exc
     else:
-        raise ValueError(f"{path}: helper_tests array is not terminated")
-    if not entries:
-        raise ValueError(f"{path}: helper_tests array is empty")
+        raise ValueError(f"{path}: {array_name} array is not terminated")
+    if not entries and not allow_empty:
+        raise ValueError(f"{path}: {array_name} array is empty")
     return entries
+
+
+def _load_helper_tests_manifest(path: Path) -> tuple[list[str], list[str], list[str]]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{path}: cannot read helper_tests manifest: {exc}") from exc
+    helper_tests = _load_shell_array(
+        content,
+        path,
+        "helper_tests",
+        allow_empty=False,
+    )
+    explicit_validators = _load_shell_array(
+        content,
+        path,
+        "explicit_helper_validators",
+        allow_empty=True,
+    )
+    skiplist = _load_shell_array(
+        content,
+        path,
+        "helper_test_skiplist",
+        allow_empty=True,
+    )
+    return helper_tests, explicit_validators, skiplist
 
 
 def _is_pytest_module_name(value: object) -> bool:
@@ -643,9 +670,31 @@ def validate_helper_tests(root: Path) -> list[str]:
     pep723_module = load_pep723_module()
     manifest_path = root / EXPECTED_HELPER_TESTS_PATH
     try:
-        helper_tests = _load_helper_tests_manifest(manifest_path)
+        helper_tests, explicit_validators, skiplist = _load_helper_tests_manifest(manifest_path)
     except ValueError as exc:
         return [str(exc)]
+
+    categories = {
+        "helper_tests": helper_tests,
+        "explicit_helper_validators": explicit_validators,
+        "helper_test_skiplist": skiplist,
+    }
+    categories_for_path: dict[str, list[str]] = {}
+    for category, entries in categories.items():
+        for relative_path in entries:
+            categories_for_path.setdefault(relative_path, []).append(category)
+
+    for relative_path, path_categories in categories_for_path.items():
+        if len(path_categories) > 1:
+            violations.append(
+                f"{manifest_path}: {relative_path} appears in multiple helper categories: "
+                f"{', '.join(path_categories)}"
+            )
+
+    for relative_path in explicit_validators:
+        path = root / relative_path
+        if not path.is_file():
+            violations.append(f"{path}: missing explicit helper validator")
 
     for relative_path in helper_tests:
         path = root / relative_path
