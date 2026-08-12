@@ -114,6 +114,35 @@ Preparation may create ignored local worktree state such as `.venv/` and
 nonzero exit or any tracked-file mutation. If either happens, stop and treat
 preparation as a blocker before the first inspection.
 
+Python repositories should prefer the structured, skill-owned preparation
+shape instead of embedding an absolute helper path or copying IDE files between
+worktrees:
+
+```json
+{
+  "qualityGate": {
+    "inspection": {
+      "prepare": {
+        "python": {
+          "version": "3.13",
+          "moduleName": "example-project",
+          "testRoots": ["tests"],
+          "sync": true,
+          "extras": ["dev"],
+          "requiredGeneratedState": [".venv", ".idea"]
+        }
+      }
+    }
+  }
+}
+```
+
+The helper resolves its bundled `prepare-python-project.py`, creates an ignored
+worktree-local SDK/project model, and optionally runs `uv sync`. String commands
+remain supported for repository-specific preparation. Structured preparation
+rejects unknown fields, path traversal, extras without sync, and outer-level
+`requiredGeneratedState` ambiguity.
+
 Run preparation before the first inspection assessment, not after an
 inspection has already started. Preparation is a repo-specific readiness step,
 not an inspection surrogate.
@@ -343,7 +372,7 @@ policy. The helper reads `.github/github.json` when present:
 - `qualityGate.inspection.ide`
 - `qualityGate.inspection.lanes`
 - `qualityGate.inspection.profile`
-- `qualityGate.inspection.prepare`
+- `qualityGate.inspection.prepare` (command string or structured `python` object)
 - `qualityGate.inspection.requiredGeneratedState`
 - `jetbrains.ide`
 - `jetbrains.ideChannel` / `jetbrains.ide_channel`

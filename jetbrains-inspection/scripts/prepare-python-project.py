@@ -116,12 +116,21 @@ def validate_existing_venv(venv: Path, requested_python: str) -> None:
         )
 
 
+def build_sync_command(python: str, extras: list[str]) -> list[str]:
+    command = ["uv", "sync", "--locked", "--python", python]
+    for extra in extras:
+        command.extend(("--extra", extra))
+    return command
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a worktree-local PyCharm project model.")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--python", default="3.12")
     parser.add_argument("--module-name", required=True)
     parser.add_argument("--test-root", action="append", default=[])
+    parser.add_argument("--sync", action="store_true")
+    parser.add_argument("--extra", action="append", default=[])
     args = parser.parse_args()
 
     repo = Path(args.repo).expanduser().resolve()
@@ -142,6 +151,12 @@ def main() -> int:
     validate_existing_venv(repo / ".venv", args.python)
     if not (repo / ".venv").exists():
         subprocess.run(["uv", "venv", "--python", args.python, ".venv"], cwd=repo, check=True)
+    if args.extra and not args.sync:
+        parser.error("--extra requires --sync")
+    if args.sync:
+        if not (repo / "pyproject.toml").is_file():
+            parser.error("--sync requires pyproject.toml in the repository root")
+        subprocess.run(build_sync_command(args.python, args.extra), cwd=repo, check=True)
     for path, content in project_files.items():
         atomic_write(path, content)
     return 0

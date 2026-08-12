@@ -58,6 +58,7 @@ DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_OUTCOME_ROUTING_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_OUTCOME_APPEND_LOCK_TIMEOUT_MS = 300_000
 DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS = 10_000
+ALREADY_OPENING_RETRY_LIMIT = 15
 LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
 USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
@@ -104,6 +105,8 @@ REPOSITORY_PREPARATION_EXECUTION_STATES = frozenset(
 MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH = 1024
 MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
 MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
+MAX_REPOSITORY_PREPARATION_TEST_ROOTS = 10
+MAX_REPOSITORY_PREPARATION_EXTRAS = 10
 MAX_REPOSITORY_PREPARATION_TIMEOUT_MS = 900_000
 REPOSITORY_PREPARATION_RECEIPT_SCHEMA_VERSION = 1
 REPOSITORY_PREPARATION_RECEIPT_DIRNAME = "repository-preparation"
@@ -846,12 +849,14 @@ def parse_repository_preparation(inspection: dict[str, Any]) -> dict[str, Any]:
             "execution_state": REPOSITORY_PREPARATION_NOT_CONFIGURED,
         }
 
-    raw_command = inspection.get("prepare")
-    if not isinstance(raw_command, str):
+    raw_prepare = inspection.get("prepare")
+    if isinstance(raw_prepare, dict):
+        return parse_structured_repository_preparation(raw_prepare, inspection)
+    if not isinstance(raw_prepare, str):
         raise repository_preparation_config_error(
-            "qualityGate.inspection.prepare must be a non-empty command string when configured."
+            "qualityGate.inspection.prepare must be a non-empty command string or supported preparation object when configured."
         )
-    command = raw_command.strip()
+    command = raw_prepare.strip()
     if not command:
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare must be a non-empty command string when configured."
@@ -874,33 +879,154 @@ def parse_repository_preparation(inspection: dict[str, Any]) -> dict[str, Any]:
         raise repository_preparation_config_error(
             "qualityGate.inspection.prepare must contain at least one command argument."
         )
-    generated_state = inspection.get("requiredGeneratedState", inspection.get("required_generated_state", []))
-    if generated_state is None:
-        generated_state = []
-    if not isinstance(generated_state, list) or len(generated_state) > MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS:
-        raise repository_preparation_config_error(
-            "qualityGate.inspection.requiredGeneratedState must be a bounded array of relative paths."
-        )
-    normalized_generated_state: list[str] = []
-    for value in generated_state:
-        if not isinstance(value, str) or not value.strip():
-            raise repository_preparation_config_error(
-                "qualityGate.inspection.requiredGeneratedState must contain non-empty relative paths."
-            )
-        path = Path(value.strip())
-        if path.is_absolute() or ".." in path.parts:
-            raise repository_preparation_config_error(
-                "qualityGate.inspection.requiredGeneratedState paths must stay inside the target worktree."
-            )
-        normalized_generated_state.append(path.as_posix())
+    generated_state = normalize_repository_preparation_paths(
+        inspection.get("requiredGeneratedState", inspection.get("required_generated_state", [])),
+        field_name="qualityGate.inspection.requiredGeneratedState",
+        maximum=MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS,
+    )
     return {
         "configured": True,
         "command": command,
         "source": REPOSITORY_PREPARATION_SOURCE,
         "execution_state": REPOSITORY_PREPARATION_NOT_RUN,
-        "required_generated_state": normalized_generated_state,
+        "required_generated_state": generated_state,
         "_argv": argv,
     }
+
+
+def parse_structured_repository_preparation(
+    raw_prepare: dict[str, Any],
+    inspection: dict[str, Any],
+) -> dict[str, Any]:
+    if set(raw_prepare) != {"python"} or not isinstance(raw_prepare.get("python"), dict):
+        raise repository_preparation_config_error(
+            "Structured qualityGate.inspection.prepare must contain exactly one 'python' object."
+        )
+    if "requiredGeneratedState" in inspection or "required_generated_state" in inspection:
+        raise repository_preparation_config_error(
+            "Structured preparation must place requiredGeneratedState inside qualityGate.inspection.prepare.python."
+        )
+    python = raw_prepare["python"]
+    allowed_keys = {
+        "version",
+        "moduleName",
+        "testRoots",
+        "sync",
+        "extras",
+        "requiredGeneratedState",
+    }
+    unknown_keys = sorted(set(python) - allowed_keys)
+    if unknown_keys:
+        raise repository_preparation_config_error(
+            f"Structured Python preparation contains unsupported fields: {', '.join(unknown_keys)}."
+        )
+    version = python.get("version")
+    if not isinstance(version, str) or re.fullmatch(r"\d+\.\d+", version) is None:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.version must use major.minor form, for example '3.13'."
+        )
+    module_name = python.get("moduleName")
+    if (
+        not isinstance(module_name, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", module_name) is None
+    ):
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.moduleName must contain only letters, numbers, '-' or '_'."
+        )
+    test_roots = normalize_repository_preparation_paths(
+        python.get("testRoots", []),
+        field_name="qualityGate.inspection.prepare.python.testRoots",
+        maximum=MAX_REPOSITORY_PREPARATION_TEST_ROOTS,
+    )
+    generated_state = normalize_repository_preparation_paths(
+        python.get("requiredGeneratedState", []),
+        field_name="qualityGate.inspection.prepare.python.requiredGeneratedState",
+        maximum=MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS,
+    )
+    sync = python.get("sync", False)
+    if not isinstance(sync, bool):
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.sync must be a boolean."
+        )
+    extras = python.get("extras", [])
+    if not isinstance(extras, list) or len(extras) > MAX_REPOSITORY_PREPARATION_EXTRAS:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.extras must be a bounded array."
+        )
+    normalized_extras: list[str] = []
+    for extra in extras:
+        if not isinstance(extra, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", extra) is None:
+            raise repository_preparation_config_error(
+                "qualityGate.inspection.prepare.python.extras must contain valid package extra names."
+            )
+        normalized_extras.append(extra)
+    if normalized_extras and not sync:
+        raise repository_preparation_config_error(
+            "qualityGate.inspection.prepare.python.extras requires sync=true."
+        )
+    uv = shutil.which("uv")
+    if uv is None:
+        raise repository_preparation_config_error(
+            "Structured Python preparation requires the uv executable."
+        )
+    script = Path(__file__).resolve().parent / "prepare-python-project.py"
+    if not script.is_file():
+        raise repository_preparation_config_error(
+            "Structured Python preparation helper is missing from the jetbrains-inspection skill."
+        )
+    argv = [
+        uv,
+        "run",
+        str(script),
+        "--repo",
+        ".",
+        "--python",
+        version,
+        "--module-name",
+        module_name,
+    ]
+    for test_root in test_roots:
+        argv.extend(("--test-root", test_root))
+    if sync:
+        argv.append("--sync")
+    for extra in normalized_extras:
+        argv.extend(("--extra", extra))
+    return {
+        "configured": True,
+        "command": shlex.join(argv),
+        "source": REPOSITORY_PREPARATION_SOURCE,
+        "execution_state": REPOSITORY_PREPARATION_NOT_RUN,
+        "kind": "python",
+        "required_generated_state": generated_state,
+        "_argv": argv,
+    }
+
+
+def normalize_repository_preparation_paths(
+    generated_state: Any,
+    *,
+    field_name: str,
+    maximum: int,
+) -> list[str]:
+    if generated_state is None:
+        generated_state = []
+    if not isinstance(generated_state, list) or len(generated_state) > maximum:
+        raise repository_preparation_config_error(
+            f"{field_name} must be a bounded array of relative paths."
+        )
+    normalized_generated_state: list[str] = []
+    for value in generated_state:
+        if not isinstance(value, str) or not value.strip():
+            raise repository_preparation_config_error(
+                f"{field_name} must contain non-empty relative paths."
+            )
+        path = Path(value.strip())
+        if path.is_absolute() or ".." in path.parts:
+            raise repository_preparation_config_error(
+                f"{field_name} paths must stay inside the target worktree."
+            )
+        normalized_generated_state.append(path.as_posix())
+    return normalized_generated_state
 
 
 def repository_preparation_config_error(message: str) -> InspectError:
@@ -937,7 +1063,19 @@ def repository_preparation_target(context: dict[str, Any]) -> Path:
 
 
 def repository_preparation_command_hash(argv: list[str]) -> str:
-    return stable_value_hash(json.dumps(argv, separators=(",", ":")))
+    helper_sha256 = None
+    if len(argv) >= 3 and Path(argv[2]).name == "prepare-python-project.py":
+        try:
+            helper_sha256 = hashlib.sha256(Path(argv[2]).read_bytes()).hexdigest()
+        except OSError:
+            helper_sha256 = "unavailable"
+    return stable_value_hash(
+        json.dumps(
+            {"argv": argv, "helper_sha256": helper_sha256},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 def repository_preparation_config_hash(context: dict[str, Any]) -> str:
@@ -3293,6 +3431,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
                 context,
                 getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS),
                 open_attempts,
+                lease,
             )
         else:
             open_method = "preexisting"
@@ -3682,12 +3821,55 @@ def wait_for_exact_route_after_open(
     context: dict[str, Any],
     timeout_ms: int,
     open_attempts: list[dict[str, Any]],
+    lease: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    try:
-        return wait_for_exact_route(args, context, timeout_ms)
-    except InspectError as error:
-        error.payload["open_attempts"] = open_attempts
-        raise
+    deadline = now_ms() + timeout_ms
+    retry_opening = any(
+        attempt.get("open_outcome") == "already_opening" for attempt in open_attempts
+    )
+    already_opening_retries = 0
+    last_error: InspectError | None = None
+    while now_ms() <= deadline:
+        route = find_exact_route(args, context)
+        if route is not None:
+            return route
+        if retry_opening:
+            try:
+                retry_attempt = open_via_running_ide(
+                    args,
+                    context,
+                    open_attempts,
+                    "running_ide_retry",
+                    lease,
+                )
+            except InspectError as error:
+                last_error = error
+            else:
+                if retry_attempt is not None and retry_attempt.get("open_outcome") == "already_opening":
+                    already_opening_retries += 1
+                    if already_opening_retries >= ALREADY_OPENING_RETRY_LIMIT:
+                        payload = auto_open_timeout_payload(args, context, timeout_ms)
+                        payload.update(
+                            {
+                                "error_reason": "already_opening_stuck",
+                                "open_attempts": open_attempts,
+                                "already_opening_retry_count": already_opening_retries,
+                            }
+                        )
+                        raise InspectError(
+                            "JetBrains lifecycle open remained stuck in already_opening.",
+                            3,
+                            payload,
+                        )
+                elif retry_attempt is not None:
+                    retry_opening = False
+        time.sleep(2)
+    payload = auto_open_timeout_payload(args, context, timeout_ms)
+    payload["error_reason"] = "project_open_blocked"
+    payload["open_attempts"] = open_attempts
+    if last_error is not None:
+        payload["last_error"] = str(last_error)
+    raise InspectError("Timed out waiting for JetBrains IDE to open the exact worktree.", 3, payload)
 
 
 def auto_open_timeout_payload(args: argparse.Namespace, context: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
@@ -5568,6 +5750,11 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         return "Wait for indexing/scanning to finish, then rerun inspection."
     if reason == "inspection_api_timeout":
         return "The IDE inspection API was busy. Wait for the active inspection or lifecycle operation to settle, then retry once."
+    if reason == "already_opening_stuck":
+        return (
+            "The configured JetBrains session retained a stale lifecycle opening for this exact worktree. "
+            "Close any partial project window, restart that IDE session, run cleanup-helper-leases, then rerun inspection."
+        )
     if reason == "run_changed":
         return "Another inspection replaced the accepted run. Wait for that run to settle, then resolve the route and retry once."
     if reason == "inspection_api_unavailable":
@@ -5687,6 +5874,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "ide_not_ready_timeout",
         "ide_open_failed",
         "project_open_blocked",
+        "already_opening_stuck",
         PROJECT_OPEN_BLOCKED_REASON,
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
         "language_sdk_missing",
@@ -8356,6 +8544,7 @@ def bounded_repository_preparation(
     if isinstance(configuration_status, str) and configuration_status.strip():
         result["configuration_status"] = configuration_status.strip()
     for key in (
+        "kind",
         "required_generated_state",
         "generated_state_snapshot",
         "receipt_reused",

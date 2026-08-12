@@ -9,6 +9,7 @@ import json
 import os
 import plistlib
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -418,6 +419,112 @@ class BuildContextTest(unittest.TestCase):
             },
         )
 
+    def test_structured_python_preparation_resolves_skill_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github").mkdir()
+            write_json(
+                root / ".github" / "github.json",
+                {
+                    "qualityGate": {
+                        "inspection": {
+                            "prepare": {
+                                "python": {
+                                    "version": "3.13",
+                                    "moduleName": "launchplane",
+                                    "testRoots": ["tests"],
+                                    "sync": True,
+                                    "extras": ["dev"],
+                                    "requiredGeneratedState": [".venv", ".idea"],
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+
+            context = jb_inspect.build_context(
+                Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+            )
+
+        preparation = context["repository_preparation"]
+        argv = context["_repository_preparation_argv"]
+        self.assertEqual(preparation["kind"], "python")
+        self.assertEqual(preparation["required_generated_state"], [".venv", ".idea"])
+        self.assertEqual(argv[:2], [shutil.which("uv"), "run"])
+        self.assertEqual(Path(argv[2]).name, "prepare-python-project.py")
+        self.assertEqual(
+            argv[3:],
+            [
+                "--repo",
+                ".",
+                "--python",
+                "3.13",
+                "--module-name",
+                "launchplane",
+                "--test-root",
+                "tests",
+                "--sync",
+                "--extra",
+                "dev",
+            ],
+        )
+
+    def test_structured_python_preparation_invalid_values_fail_closed(self):
+        invalid_python_configs = (
+            {"version": "3", "moduleName": "launchplane"},
+            {"version": "3.13", "moduleName": "launch plane"},
+            {"version": "3.13", "moduleName": "launchplane", "testRoots": ["../tests"]},
+            {"version": "3.13", "moduleName": "launchplane", "extras": ["dev"]},
+            {"version": "3.13", "moduleName": "launchplane", "unknown": True},
+        )
+        for python_config in invalid_python_configs:
+            with self.subTest(python_config=python_config), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".github").mkdir()
+                write_json(
+                    root / ".github" / "github.json",
+                    {"qualityGate": {"inspection": {"prepare": {"python": python_config}}}},
+                )
+
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    jb_inspect.build_context(
+                        Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+                    )
+
+            self.assertEqual(
+                raised.exception.payload["error_reason"],
+                "repository_preparation_config_invalid",
+            )
+
+    def test_structured_preparation_rejects_outer_generated_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github").mkdir()
+            write_json(
+                root / ".github" / "github.json",
+                {
+                    "qualityGate": {
+                        "inspection": {
+                            "prepare": {
+                                "python": {
+                                    "version": "3.13",
+                                    "moduleName": "launchplane",
+                                }
+                            },
+                            "requiredGeneratedState": [".venv"],
+                        }
+                    }
+                },
+            )
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.build_context(
+                    Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+                )
+
+        self.assertIn("inside", str(raised.exception))
+
     def test_repository_preparation_invalid_values_fail_closed(self):
         invalid_values = [None, "", "   ", [], "'unterminated"]
         for value in invalid_values:
@@ -612,6 +719,18 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             refreshed = jb_inspect.run_repository_preparation(self.prep_args(force_preparation=True), context)
             self.assertEqual(refreshed["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
             self.assertEqual(counter.read_text(encoding="utf-8"), "3")
+
+    def test_structured_preparation_receipt_hash_changes_with_helper_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            helper = Path(temporary) / "prepare-python-project.py"
+            helper.write_text("print('first')\n", encoding="utf-8")
+            argv = ["uv", "run", str(helper), "--repo", "."]
+
+            first = jb_inspect.repository_preparation_command_hash(argv)
+            helper.write_text("print('second')\n", encoding="utf-8")
+            second = jb_inspect.repository_preparation_command_hash(argv)
+
+        self.assertNotEqual(first, second)
 
     @unittest.skipUnless(os.name == "posix", "process-group timeout coverage requires POSIX")
     def test_timeout_kills_descendants_that_inherit_output_pipes(self):
@@ -4978,6 +5097,62 @@ class LifecycleTest(unittest.TestCase):
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.http_get = original_http_get
+
+    def test_route_wait_retries_stale_already_opening_request(self):
+        attempts = [{"open_outcome": "already_opening"}]
+        route = {"project_key": "path:/tmp/worktree", "worktree_path": "/tmp/worktree"}
+        retry_results = [
+            {"open_outcome": "already_opening"},
+            {
+                "open_outcome": "helper_registered",
+                "ownership_registered": True,
+            },
+        ]
+        routes = [None, None, route]
+
+        with (
+            patch.object(jb_inspect, "find_exact_route", side_effect=lambda *_: routes.pop(0)),
+            patch.object(
+                jb_inspect,
+                "open_via_running_ide",
+                side_effect=lambda *_args, **_kwargs: retry_results.pop(0),
+            ) as retry,
+            patch.object(jb_inspect.time, "sleep"),
+        ):
+            result = jb_inspect.wait_for_exact_route_after_open(
+                Namespace(),
+                {"worktree_root": "/tmp/worktree"},
+                10_000,
+                attempts,
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(result, route)
+        self.assertEqual(retry.call_count, 2)
+
+    def test_route_wait_fails_quickly_when_already_opening_never_clears(self):
+        attempts = [{"open_outcome": "already_opening"}]
+        with (
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(
+                jb_inspect,
+                "open_via_running_ide",
+                return_value={"open_outcome": "already_opening"},
+            ) as retry,
+            patch.object(jb_inspect.time, "sleep"),
+            self.assertRaises(jb_inspect.InspectError) as raised,
+        ):
+            jb_inspect.wait_for_exact_route_after_open(
+                Namespace(),
+                {"worktree_root": "/tmp/worktree"},
+                600_000,
+                attempts,
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(raised.exception.payload["error_reason"], "already_opening_stuck")
+        self.assertEqual(retry.call_count, jb_inspect.ALREADY_OPENING_RETRY_LIMIT)
+        self.assertIn("restart", jb_inspect.next_action_for_unknown("already_opening_stuck", {}))
 
     def test_identity_matches_exact_eap_version_from_identity_metadata(self):
         context = {

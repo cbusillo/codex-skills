@@ -4,9 +4,9 @@
 # dependencies = []
 # ///
 import importlib.util
+import subprocess
 import tempfile
 import unittest
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -62,6 +62,22 @@ class PreparePythonProjectTest(unittest.TestCase):
             subprocess.run(["git", "add", "-f", ".idea/misc.xml"], cwd=repo, check=True)
             with self.assertRaisesRegex(RuntimeError, "must not be tracked"):
                 prepare_python_project.ensure_ignored_outputs(repo, [repo / ".idea" / "misc.xml"])
+
+    def test_sync_command_uses_python_and_requested_extras(self):
+        self.assertEqual(
+            prepare_python_project.build_sync_command("3.13", ["dev", "docs"]),
+            [
+                "uv",
+                "sync",
+                "--locked",
+                "--python",
+                "3.13",
+                "--extra",
+                "dev",
+                "--extra",
+                "docs",
+            ],
+        )
 
 
 if __name__ == "__main__":
