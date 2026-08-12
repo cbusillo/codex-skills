@@ -271,11 +271,11 @@ def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
     cases = [
         plan_issue(body="## Objective\n\nOld\n", association="OWNER"),
         plan_issue(
-            body=f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n## Objective\n\nOld\n",
+            body=plan.template_body("Old"),
             association="MEMBER",
         ),
         plan_issue(
-            body=f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n## Objective\n\nOld\n",
+            body=plan.template_body("Old"),
             association="COLLABORATOR",
         ),
         plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR),
@@ -285,6 +285,95 @@ def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
         updated = plan.replace_issue_plan_section(issue, "Objective", "New")
         assert plan.PLAN_ORIGINAL_START not in updated, updated
         assert plan.section_map(updated)["Objective"] == "New", updated
+
+
+def test_legacy_member_and_collaborator_plans_remain_fully_managed() -> None:
+    plan = load_plan_module()
+    legacy_body = plan.template_body("Legacy plan").removeprefix(
+        f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n"
+    )
+    assert [
+        match.group(1).strip()
+        for match in re.finditer(r"(?m)^##\s+(.+?)\s*$", legacy_body)
+    ] == [
+        "Objective",
+        "Finish Line",
+        "Current Status",
+        "Scope",
+        "Acceptance Criteria",
+        "Relationships",
+        "Validation",
+        "Decisions",
+        "Open Questions",
+    ]
+
+    for association in ("MEMBER", "COLLABORATOR"):
+        issue = plan_issue(body=legacy_body, association=association)
+        updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+
+        assert plan.issue_body_is_fully_managed(issue), association
+        assert plan.PLAN_ORIGINAL_START not in updated, updated
+        assert updated.startswith(plan.PLAN_MANAGED_PROVENANCE_MARKER), updated
+        assert plan.section_map(updated)["Current Status"] == "State: Active", updated
+
+        issue["body"] = plan.replace_issue_plan_section(issue, "Notes", "Durable note")
+        updated_again = plan.replace_issue_plan_section(issue, "Current Status", "State: Done")
+        assert plan.issue_body_is_fully_managed(issue), association
+        assert plan.section_map(updated_again)["Notes"] == "Durable note", updated_again
+        assert plan.section_map(updated_again)["Current Status"] == "State: Done", updated_again
+
+
+def test_noncanonical_legacy_member_body_uses_preservation_mode() -> None:
+    plan = load_plan_module()
+    legacy_body = plan.template_body("Legacy plan").removeprefix(
+        f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n"
+    )
+    issue = plan_issue(
+        body="Contributor preface\n\n" + legacy_body,
+        association="MEMBER",
+    )
+
+    try:
+        plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+    except plan.PlanError as exc:
+        assert "cannot safely distinguish" in str(exc), exc
+    else:
+        raise AssertionError("noncanonical markerless member body should fail closed")
+
+
+def test_noncanonical_provenance_marker_does_not_grant_managed_ownership() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(
+        body=f"Contributor request\n\n{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n",
+        association="MEMBER",
+    )
+
+    try:
+        plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
+    except plan.PlanError as exc:
+        assert "reserved" in str(exc), exc
+    else:
+        raise AssertionError("noncanonical provenance marker should fail closed")
+
+
+def test_provenance_managed_custom_body_remains_updatable() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(
+        body=(
+            f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n"
+            "## Objective\n\nCustom plan\n\n"
+            "## Current Status\n\nState: Active\n\n"
+            "## Notes\n\nCreated from --body-file.\n"
+        ),
+        association="MEMBER",
+    )
+
+    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Done")
+
+    assert plan.issue_body_is_fully_managed(issue)
+    assert plan.PLAN_ORIGINAL_START not in updated, updated
+    assert plan.section_map(updated)["Current Status"] == "State: Done", updated
+    assert plan.section_map(updated)["Notes"] == "Created from --body-file.", updated
 
 
 def test_generic_operation_marker_does_not_grant_managed_ownership() -> None:
@@ -5672,6 +5761,10 @@ def main() -> None:
         test_contributor_original_request_section_is_immutable,
         test_unknown_author_fails_closed_into_preservation_mode,
         test_maintainer_and_bot_issues_remain_fully_managed,
+        test_legacy_member_and_collaborator_plans_remain_fully_managed,
+        test_noncanonical_legacy_member_body_uses_preservation_mode,
+        test_noncanonical_provenance_marker_does_not_grant_managed_ownership,
+        test_provenance_managed_custom_body_remains_updatable,
         test_generic_operation_marker_does_not_grant_managed_ownership,
         test_contributor_envelope_stays_preserved_after_association_change,
         test_managed_provenance_is_reserved_and_well_formed,

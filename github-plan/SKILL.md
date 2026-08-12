@@ -122,8 +122,10 @@ second planning backend.
   `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
   they never establish ownership of an issue body. Association-based managed
   bodies require the explicit `<!-- github-plan:managed-provenance -->` marker
-  emitted by `gh-plan create`. Existing contributor envelopes remain
-  contributor-owned even if the author's repository association changes later.
+  emitted by `gh-plan create`. Legacy markerless member/collaborator plans are
+  accepted only when they retain the exact canonical fully managed heading
+  layout. Existing contributor envelopes remain contributor-owned even if the
+  author's repository association changes later.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions and the preferred durable handoff surface for
   GitHub-backed planning work.
