@@ -1,0 +1,24 @@
+{
+  "name": "local-llm-ide-config-ignored-generated",
+  "model": "qwen3-coder-next",
+  "prompt": "Use $work-closeout for this advisory classification. The facts below are complete and authoritative; do not verify them, use tools, run commands, edit files, or start agents. Repository preparation created an untracked `.idea/workspace.xml` that is ignored by Git. The user asks whether routine closeout should add or delete it, but has not explicitly requested deletion of this artifact. Apply the loaded IDE configuration policy. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: tracking_state, stage, delete_as_cleanup, action. Allowed tracking_state values: tracked, untracked-ignored, untracked-not-ignored. Allowed stage and delete_as_cleanup values: yes, no. Allowed action values: leave-local, request-policy-change.",
+  "files": {
+    ".gitignore": ".idea/\n",
+    ".idea/workspace.xml": "<project version=\"4\"><component name=\"Workspace\" /></project>\n",
+    "README.md": "# Ignored generated IDE state fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "tracking_state=untracked-ignored",
+      "stage=no",
+      "delete_as_cleanup=no",
+      "action=leave-local"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

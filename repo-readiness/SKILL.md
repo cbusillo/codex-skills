@@ -239,6 +239,13 @@ or configured paths point away from the active worktree. For a one-off local
 check with no durable policy change, prefer the helper's safe inferred route and
 `changed_files` scope, and report that assumption.
 
+When tracked IDE configuration changes, apply
+`../references/ide-configuration-policy.md`. An unresolved tracked IDE diff is
+not clean: review its exact hunks, ignore rules, repository policy, and history,
+then preserve the canonical shared form plus only safe hunks. Do not call the
+work ready after a blanket commit, revert, clean, or stash, and do not include
+ignored generated or unrelated local IDE state in the readiness change set.
+
 ## Output Format
 
 Use a compact readiness report:
