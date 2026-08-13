@@ -76,7 +76,8 @@ with `status: "incomplete"` may still have a local token source; read the
 ## Exit Behavior
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
-  summary.
+  summary. For `status: "accepted_unverified"`, the write may have committed;
+  read back the active record before any retry.
 - `1`: Launchplane was reached but rejected the request, or the service was
   unavailable/invalid.
 - `2`: The requested write action could not be attempted because local operator
@@ -177,6 +178,52 @@ look for the Launchplane-owned reconciliation surface instead of widening the
 local helper. In Launchplane repositories this may be a deploy workflow or
 authz-grant reconciliation script run through GitHub Actions OIDC.
 
+## Change-Impact Policy
+
+Change-impact policy is runtime authority. Supply it only as explicit private
+operator input in a JSON file outside the active repository or worktree. The
+file contains the service envelope, including `record`, concurrency expectations,
+and the operator-owned source and reason. The helper overrides only `mode`.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  change-impact-policy-dry-run \
+  --payload-file /private/path/change-impact-policy.json
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  change-impact-policy-apply \
+  --payload-file /private/path/change-impact-policy.json \
+  --reviewed-dry-run \
+  --expected-policy-digest <digest-from-dry-run> \
+  --idempotency-key example-repository-policy-revision-1
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  change-impact-policy-read \
+  --repository-id <repository-id>
+```
+
+For apply, the operator asserts that the private payload is the one reviewed
+during dry-run. The helper requires a non-empty reason embedded in the policy
+record, explicit `--reviewed-dry-run` acknowledgement, the policy digest emitted
+by dry-run, and a stable idempotency key. The helper refuses to send apply when
+the supplied digest differs from a digest already present in the payload. When
+the record omits its server-derived digest, the helper inserts the reviewed
+dry-run digest before apply. These are local operator controls; the current
+service route does not independently bind apply to a
+persisted dry-run record or consume the idempotency header. After apply, run the
+bounded read command and compare the active revision and digest before relying
+on the policy.
+
+The public result contains only the apply status, policy record id, digest,
+revision, policy status, effective timestamp, and trace metadata. It never emits
+component rules, path prefixes, affected products, repository name, owner ID,
+source, reason, raw payloads, private paths, service URLs, or authorization
+headers. The record id intentionally embeds the numeric repository ID because
+successor policy revisions must reference it. Unexpected response fields fail
+closed. If apply receives HTTP success but the response cannot be safely
+projected, the helper reports `accepted_unverified` and requires read-back before
+any retry.
+
 ## Merge Train Controller
 
 The helper wraps the preferred merge-train route:
@@ -259,6 +306,11 @@ provider dictionary pass-through:
   `product-config-apply` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
   codes, and product-config/intent record ids.
+- `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
+  apply status, policy record id, digest, revision, policy status, and effective
+  timestamp.
+- `change-impact-policy-read` may emit only shadow/enforcement status, history
+  count, and the same bounded current-policy metadata.
 
 The projections recognize the current service envelopes, including idempotent
 replay metadata, nested merge-train candidate/landing/stack summaries, the
