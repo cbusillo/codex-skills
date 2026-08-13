@@ -16,7 +16,7 @@ Provides:
 - Error classification: invalid_credentials, actor_mismatch, permission_denied,
   rest_primary_rate_limited, graphql_primary_rate_limited,
   secondary_rate_limited, not_found, validation_error, conflict,
-  network_provider_failure
+  network_provider_failure, unconfigured_identity
 - Field redaction for tokens, headers, paths, private body keys
 - Bounded one-call-per-process /rate_limit probe
 - Configurable gh command path via gh_cmd parameter
@@ -43,6 +43,8 @@ import tomllib
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
+
+import github_identity
 
 SCHEMA_VERSION = 1
 DEFAULT_API_VERSION = "2022-11-28"
@@ -2803,13 +2805,47 @@ def call_gh(
     resolved_bucket = bucket or infer_api_bucket(path)
     resolved_host = host or DEFAULT_HOST
 
-    if expected_actor and actor and expected_actor.casefold() != actor.casefold():
+    normalized_expected_actor = str(expected_actor or "").strip() or None
+    resolved_expected_actor = (
+        normalized_expected_actor
+        if normalized_expected_actor is not None or github_identity.active_auth_fallback_allowed()
+        else github_identity.automation_login() if is_write else None
+    )
+    if is_write and resolved_expected_actor is None and not github_identity.active_auth_fallback_allowed():
+        failure = FailureDetail(
+            cause="unconfigured_identity",
+            message="GitHub write requires configured automation identity",
+            retryable=False,
+            fallback_eligible=True,
+            disposition="requires_authorization",
+            write_outcome="not_started",
+        )
+        failure.completed_steps = completed_steps
+        failure.failed_step = failed_step or "identity_validation"
+        return ApiResult(
+            ok=False,
+            status=0,
+            body=None,
+            operation=operation,
+            actor=actor,
+            expected_actor=resolved_expected_actor,
+            host=resolved_host,
+            bucket=resolved_bucket,
+            graphql_operation=resolved_graphql_operation,
+            completed_steps=completed_steps,
+            failed_step=failure.failed_step,
+            failure=failure,
+        )
+
+    expected_actor = resolved_expected_actor
+
+    if resolved_expected_actor and actor and resolved_expected_actor.casefold() != actor.casefold():
         failure = classify_error(
             0,
             {},
             None,
             is_write=is_write,
-            expected_actor=expected_actor,
+            expected_actor=resolved_expected_actor,
             actual_actor=actor,
         )
         failure.completed_steps = completed_steps
@@ -2820,7 +2856,7 @@ def call_gh(
             body=None,
             operation=operation,
             actor=actor,
-            expected_actor=expected_actor,
+            expected_actor=resolved_expected_actor,
             host=resolved_host,
             bucket=resolved_bucket,
             graphql_operation=resolved_graphql_operation,

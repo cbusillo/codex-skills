@@ -16,7 +16,7 @@
               "type": "function_call",
               "call_id": "call_classify_github_failure",
               "name": "shell_command",
-              "arguments": "{\"command\": \"python3 \\\"$CODE_HOME/skills/github/scripts/github_api.py\\\" classify-legacy --returncode 1 --stdout-file fixtures/stdout.txt --stderr-file fixtures/stderr.txt --operation github.plan.project_list --expected-actor shiny-code-bot --transport gh_cli_graphql --bucket graphql --graphql-operation query > envelope.json 2> human.err; status=$?; test \\\"$status\\\" -eq 1\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"python3 \\\"$CODE_HOME/skills/github/scripts/github_api.py\\\" classify-legacy --returncode 1 --stdout-file fixtures/stdout.txt --stderr-file fixtures/stderr.txt --operation github.plan.project_list --expected-actor fixture-automation --transport gh_cli_graphql --bucket graphql --graphql-operation query > envelope.json 2> human.err; status=$?; test \\\"$status\\\" -eq 1\", \"timeout_ms\": 30000}"
             }
           }
         ]

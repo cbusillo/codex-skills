@@ -14,13 +14,19 @@
         "match": {
           "contains": ["api", "/user"]
         },
-        "stdout": "{\"login\":\"shiny-code-bot\"}"
+        "stdout": "{\"login\":\"fixture-automation\"}"
+      },
+      {
+        "match": {
+          "contains": ["api", "--method", "GET", "/repos/cbusillo/codex-skills/issues?state=all&sort=created&direction=desc&per_page=100&page=1"]
+        },
+        "stdout": "[]"
       },
       {
         "match": {
           "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues"]
         },
-        "stdout": "{\"id\":91200,\"number\":1200,\"title\":\"Narrated action check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1200\",\"user\":{\"login\":\"shiny-code-bot\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
+        "stdout": "{\"id\":91200,\"number\":1200,\"title\":\"Narrated action check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1200\",\"user\":{\"login\":\"fixture-automation\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
       }
     ]
   },
@@ -34,7 +40,7 @@
               "type": "function_call",
               "call_id": "call_create_narrated_issue",
               "name": "shell_command",
-              "arguments": "{\"command\": \"printf '%s\\n' 'Narrated action body.' | env GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Narrated action check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"printf '%s\\n' 'Narrated action body.' | env CODEX_AUTOMATION_LOGIN=fixture-automation GH_ISSUE_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-issue\\\" create 'Narrated action check' --repo cbusillo/codex-skills --label plan\", \"timeout_ms\": 30000}"
             }
           }
         ]

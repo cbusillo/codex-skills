@@ -26,6 +26,10 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
+os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+
 # ---------------------------------------------------------------------------
 # Load module under test
 # ---------------------------------------------------------------------------
@@ -399,7 +403,7 @@ def test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback()
         result = _api.call_gh(
             "GET",
             "/repos/owner/repo",
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             expected_actor=None,
         )
     assert result.ok is True, result.as_dict()
@@ -416,12 +420,66 @@ def test_call_gh_unannounced_actor_change_fails_closed_after_write() -> None:
             "POST",
             "/repos/owner/repo/issues",
             {"title": "demo"},
-            actor="shiny-code-bot",
-            expected_actor="shiny-code-bot",
+            actor="fixture-automation",
+            expected_actor="fixture-automation",
         )
     assert result.ok is False, result.as_dict()
     assert result.failure.cause == "actor_mismatch", result.failure
     assert result.failure.write_outcome == "unknown", result.failure
+
+
+def test_call_gh_unconfigured_write_fails_before_subprocess() -> None:
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("subprocess.run") as run,
+    ):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            expected_actor=None,
+        )
+    run.assert_not_called()
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "unconfigured_identity", result.failure
+    assert result.failure.write_outcome == "not_started", result.failure
+
+
+def test_call_gh_blank_expected_actor_fails_before_subprocess() -> None:
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("subprocess.run") as run,
+    ):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            expected_actor="  ",
+        )
+    run.assert_not_called()
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "unconfigured_identity", result.failure
+
+
+def test_call_gh_explicit_fallback_allows_unconfigured_write() -> None:
+    proc = _fake_proc(stdout=_include_output(201, body={"id": 42}))
+    with (
+        patch.dict(
+            os.environ,
+            {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"},
+            clear=True,
+        ),
+        patch("subprocess.run", return_value=proc) as run,
+    ):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            expected_actor=None,
+        )
+    run.assert_called_once()
+    assert result.ok is True, result.as_dict()
+    assert result.expected_actor is None, result.as_dict()
 
 
 def test_call_gh_post_sends_body_as_json_stdin() -> None:
@@ -497,8 +555,8 @@ def test_call_gh_timeout_preserves_authorized_fallback_actor() -> None:
         result = _api.call_gh(
             "GET",
             "/repos/owner/repo",
-            actor="shiny-code-bot",
-            expected_actor="shiny-code-bot",
+            actor="fixture-automation",
+            expected_actor="fixture-automation",
             timeout_seconds=0.25,
         )
     assert result.actor == "octocat", result.as_dict()
@@ -1094,7 +1152,7 @@ def test_terminal_envelopes_have_stable_fields_and_redaction() -> None:
         },
         operation="github.plan.index",
         actor="automation-gh",
-        expected_actor="shiny-code-bot",
+        expected_actor="fixture-automation",
         transport="rest_api",
         bucket="rest_core",
     )
@@ -1542,7 +1600,7 @@ def test_aggregate_retry_summaries_prefers_write_certainty() -> None:
             attempts=1,
             elapsed_wait=0.0,
             retry_eligible=True,
-            last_actor="shiny-code-bot",
+            last_actor="fixture-automation",
             last_bucket="rest_core",
             outcome_certainty=certainty,
             reconciliation=None,
@@ -1608,7 +1666,7 @@ def retry_failure(
     *,
     retryable: bool,
     write_outcome: Optional[str] = None,
-    actor: str = "shiny-code-bot",
+    actor: str = "fixture-automation",
     bucket: str = "rest_core",
     reset: Optional[int] = None,
     retry_after: Optional[int] = None,
@@ -1640,7 +1698,7 @@ def retry_failure(
     )
 
 
-def retry_success(*, actor: str = "shiny-code-bot", bucket: str = "rest_core") -> Any:
+def retry_success(*, actor: str = "fixture-automation", bucket: str = "rest_core") -> Any:
     return _api.ApiResult(
         ok=True,
         status=200,
@@ -1672,8 +1730,8 @@ def test_retry_waits_until_primary_reset_and_succeeds() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
-            expected_actor="shiny-code-bot",
+            actor="fixture-automation",
+            expected_actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -1683,7 +1741,7 @@ def test_retry_waits_until_primary_reset_and_succeeds() -> None:
         assert calls == 2, calls
         assert payload["attempts"] == 2, payload
         assert payload["elapsed_wait"] == 10.0, payload
-        assert payload["last_actor"] == "shiny-code-bot", payload
+        assert payload["last_actor"] == "fixture-automation", payload
         assert payload["last_bucket"] == "rest_core", payload
 
 
@@ -1707,7 +1765,7 @@ def test_retry_honors_secondary_retry_after() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -1736,7 +1794,7 @@ def test_retry_idempotent_write_recovers_from_unknown_network_failure() -> None:
             attempt,
             operation="github.issue.edit",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(
                 Path(temp_dir),
@@ -1770,7 +1828,7 @@ def test_retry_outer_deadline_wins_without_second_call() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             retry_policy=retry_policy(Path(temp_dir)),
@@ -1797,7 +1855,7 @@ def test_expired_deadline_blocks_first_write_attempt() -> None:
             attempt,
             operation="github.issue.edit",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=999.0,
             retry_policy=retry_policy(Path(temp_dir)),
@@ -1824,7 +1882,7 @@ def test_precancelled_operation_blocks_first_attempt() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock, cancelled=lambda: True),
@@ -1862,7 +1920,7 @@ def test_jitter_is_clamped_to_preserve_feasible_deadline() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1006.0,
             retry_policy=retry_policy(Path(temp_dir), jitter_seconds=3.0),
@@ -1882,7 +1940,7 @@ def test_retry_timeout_callback_receives_remaining_deadline() -> None:
             lambda: retry_success(),
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             retry_policy=retry_policy(Path(temp_dir)),
@@ -1906,7 +1964,7 @@ def test_retry_inherited_deadline_environment_wins() -> None:
                 ),
                 operation="github.api.rate_limit",
                 is_write=False,
-                actor="shiny-code-bot",
+                actor="fixture-automation",
                 bucket="rest_core",
                 retry_policy=retry_policy(Path(temp_dir)),
                 retry_runtime=retry_runtime(clock),
@@ -1934,7 +1992,7 @@ def test_retry_cancellation_interrupts_wait() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(
@@ -1979,7 +2037,7 @@ def test_retry_progress_is_periodic_and_stderr_only() -> None:
                 attempt,
                 operation="github.api.rate_limit",
                 is_write=False,
-                actor="shiny-code-bot",
+                actor="fixture-automation",
                 bucket="rest_core",
                 retry_policy=retry_policy(
                     Path(temp_dir),
@@ -2010,7 +2068,7 @@ def test_retry_never_repeats_authentication_failure() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -2044,8 +2102,8 @@ def test_authorized_actor_change_starts_distinct_retry_context() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
-            expected_actor="shiny-code-bot",
+            actor="fixture-automation",
+            expected_actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -2071,7 +2129,7 @@ def test_unknown_operation_fails_closed_without_repeat() -> None:
             attempt,
             operation="github.unknown.operation",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -2102,7 +2160,7 @@ def test_manual_non_idempotent_operation_never_retries() -> None:
             attempt,
             operation="github.pr.create",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="mixed",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -2118,8 +2176,8 @@ def test_manual_operation_still_rejects_actor_mismatch() -> None:
         lambda: retry_success(actor="octocat"),
         operation="github.pr.create",
         is_write=True,
-        actor="shiny-code-bot",
-        expected_actor="shiny-code-bot",
+        actor="fixture-automation",
+        expected_actor="fixture-automation",
         bucket="rest_core",
     )
     assert result.ok is False, result.as_dict()
@@ -2132,8 +2190,8 @@ def test_manual_operation_still_rejects_bucket_mismatch() -> None:
         lambda: retry_success(bucket="search"),
         operation="github.pr.create",
         is_write=True,
-        actor="shiny-code-bot",
-        expected_actor="shiny-code-bot",
+        actor="fixture-automation",
+        expected_actor="fixture-automation",
         bucket="rest_core",
     )
     assert result.ok is False, result.as_dict()
@@ -2159,7 +2217,7 @@ def test_unknown_write_reconciliation_match_prevents_duplicate_call() -> None:
             attempt,
             operation="github.plan.create",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             reconcile=lambda _result, _context: _api.ReconciliationDecision(
                 "matched",
@@ -2192,7 +2250,7 @@ def test_reconciliation_receives_parent_deadline_context() -> None:
             ),
             operation="github.comment.issue",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             reconcile=lambda _result, context: observed.append(context)
@@ -2229,7 +2287,7 @@ def test_reconciliation_does_not_start_after_parent_deadline() -> None:
             attempt,
             operation="github.comment.issue",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             reconcile=reconcile,
@@ -2253,7 +2311,7 @@ def test_reconciliation_releases_matured_outer_cooldown_lease() -> None:
         )
         clock = FakeRetryClock()
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             key,
             ready_at=1000.0,
@@ -2275,7 +2333,7 @@ def test_reconciliation_releases_matured_outer_cooldown_lease() -> None:
                 nested_attempt,
                 operation="github.api.rate_limit",
                 is_write=False,
-                actor="shiny-code-bot",
+                actor="fixture-automation",
                 bucket="rest_core",
                 deadline_at=context.deadline_at,
                 retry_policy=context.retry_policy,
@@ -2292,8 +2350,8 @@ def test_reconciliation_releases_matured_outer_cooldown_lease() -> None:
             ),
             operation="github.comment.issue",
             is_write=True,
-            actor="shiny-code-bot",
-            expected_actor="shiny-code-bot",
+            actor="fixture-automation",
+            expected_actor="fixture-automation",
             bucket="rest_core",
             reconcile=reconcile,
             retry_policy=policy,
@@ -2328,7 +2386,7 @@ def test_unknown_non_idempotent_write_fails_closed_after_no_match() -> None:
             attempt,
             operation="github.plan.create",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             reconcile=reconcile,
             retry_policy=retry_policy(Path(temp_dir)),
@@ -2365,7 +2423,7 @@ def test_rejected_non_idempotent_write_can_retry_without_reconciliation() -> Non
             attempt,
             operation="github.issue.create",
             is_write=True,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(Path(temp_dir)),
             retry_runtime=retry_runtime(clock),
@@ -2381,7 +2439,7 @@ def test_shared_cooldown_blocks_second_process_before_remote_call() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         state_dir = Path(temp_dir)
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         lease = store._open_lock(key, blocking=True)
         assert lease is not None
         script = (
@@ -2414,7 +2472,7 @@ def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> No
         policy = retry_policy(state_dir)
         clock = FakeRetryClock()
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             key,
             ready_at=1010.0,
@@ -2433,7 +2491,7 @@ def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> No
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             retry_policy=policy,
@@ -2452,7 +2510,7 @@ def test_shared_cooldown_reaching_deadline_blocks_first_remote_call() -> None:
         policy = retry_policy(state_dir)
         clock = FakeRetryClock()
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             key,
             ready_at=1005.0,
@@ -2471,7 +2529,7 @@ def test_shared_cooldown_reaching_deadline_blocks_first_remote_call() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             deadline_at=1005.0,
             retry_policy=policy,
@@ -2491,8 +2549,8 @@ def test_shared_cooldown_keys_do_not_block_other_buckets() -> None:
         state_dir = Path(temp_dir)
         policy = retry_policy(state_dir)
         store = _api.SharedCooldownStore(state_dir)
-        search_key = _api._cooldown_key("github.com", "shiny-code-bot", "search")
-        rest_key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        search_key = _api._cooldown_key("github.com", "fixture-automation", "search")
+        rest_key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             search_key,
             ready_at=1010.0,
@@ -2514,7 +2572,7 @@ def test_cooldown_publication_honors_deadline_when_lock_is_busy() -> None:
         store = _api.SharedCooldownStore(state_dir)
         store._open_lock = lambda _key, *, blocking: None  # type: ignore[method-assign]
         reason = store.publish(
-            _api._cooldown_key("github.com", "shiny-code-bot", "rest_core"),
+            _api._cooldown_key("github.com", "fixture-automation", "rest_core"),
             ready_at=1010.0,
             cause="rest_primary_rate_limited",
             now=1000.0,
@@ -2531,7 +2589,7 @@ def test_cooldown_publication_never_shortens_existing_reset() -> None:
         state_dir = Path(temp_dir)
         policy = retry_policy(state_dir)
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             key,
             ready_at=1010.0,
@@ -2594,7 +2652,7 @@ def test_unavailable_cooldown_storage_fails_closed_before_repeat() -> None:
             attempt,
             operation="github.api.rate_limit",
             is_write=False,
-            actor="shiny-code-bot",
+            actor="fixture-automation",
             bucket="rest_core",
             retry_policy=retry_policy(blocked),
             retry_runtime=retry_runtime(clock),
@@ -2611,7 +2669,7 @@ def test_stale_cooldown_state_is_ignored() -> None:
         state_dir = Path(temp_dir)
         policy = retry_policy(state_dir)
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         store.publish(
             key,
             ready_at=1010.0,
@@ -2634,7 +2692,7 @@ def test_malformed_cooldown_state_is_removed() -> None:
         state_dir = Path(temp_dir)
         policy = retry_policy(state_dir)
         store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "shiny-code-bot", "rest_core")
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
         _, state_path = store._paths(key)
         state_path.write_text(
             json.dumps({"updated_at": "bad", "expires_at": 2000, "ready_at": 1500}),
@@ -2686,6 +2744,9 @@ def main() -> None:
         test_call_gh_surfaces_explicit_active_auth_actor,
         test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback,
         test_call_gh_unannounced_actor_change_fails_closed_after_write,
+        test_call_gh_unconfigured_write_fails_before_subprocess,
+        test_call_gh_blank_expected_actor_fails_before_subprocess,
+        test_call_gh_explicit_fallback_allows_unconfigured_write,
         test_call_gh_post_sends_body_as_json_stdin,
         test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment,
         test_call_gh_timeout_marks_started_write_outcome_unknown,

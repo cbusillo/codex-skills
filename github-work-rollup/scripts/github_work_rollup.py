@@ -25,12 +25,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml  # type: ignore[import-untyped]
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-with-env-token")
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_PEOPLE_INDEX = ROOT / ".local/people.yaml"
+
 SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
 REPORT_MODES = {"activity", "backlog", "standup"}

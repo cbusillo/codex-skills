@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import github_api as github_api_core
+import github_identity
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -30,7 +31,7 @@ AUTOMATION_GH = os.environ.get("GITHUB_WORKFLOW_BABYSIT_AUTOMATION_GH") or str(
     SCRIPT_DIR / "gh-with-env-token"
 )
 ACTIVE_GH = os.environ.get("GITHUB_WORKFLOW_BABYSIT_ACTIVE_GH") or "gh"
-EXPECTED_AUTOMATION_LOGIN = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+EXPECTED_AUTOMATION_LOGIN = github_identity.automation_login()
 DISPATCH_API_VERSION = "2026-03-10"
 DEFAULT_TIMEOUT_SECONDS = 1800.0
 MAX_TIMEOUT_SECONDS = 7200.0
@@ -138,7 +139,7 @@ class GitHubWorkflowClient:
         *,
         automation_gh: str = AUTOMATION_GH,
         active_gh: str = ACTIVE_GH,
-        expected_automation_login: str = EXPECTED_AUTOMATION_LOGIN,
+        expected_automation_login: str | None = EXPECTED_AUTOMATION_LOGIN,
         deadline_at: float | None = None,
     ) -> None:
         self.repo = normalize_repo(repo)
@@ -167,6 +168,11 @@ class GitHubWorkflowClient:
         ref: str,
         inputs: Mapping[str, str | int | float | bool],
     ) -> RunReference:
+        if self.expected_automation_login is None and not github_identity.active_auth_fallback_allowed():
+            raise WorkflowBabysitError(
+                "unconfigured_identity",
+                "workflow dispatch requires configured automation identity",
+            )
         automation_login = self._resolve_automation_login()
         workflow_segment = urllib.parse.quote(normalize_required(workflow, "workflow"), safe="")
         normalized_inputs = validate_inputs(inputs)
@@ -290,7 +296,7 @@ class GitHubWorkflowClient:
             expected_actor=self.expected_automation_login,
         )
         login = response_login(result.body, "automation GitHub identity")
-        if login.casefold() != self.expected_automation_login.casefold():
+        if self.expected_automation_login and login.casefold() != self.expected_automation_login.casefold():
             raise WorkflowBabysitError(
                 "automation_actor_mismatch",
                 (

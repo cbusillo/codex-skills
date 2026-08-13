@@ -678,9 +678,9 @@ Helper-first ritual for PR work:
 - Use `scripts/gh-pr.py view/checks/create/edit/comment/merge` for PR reads,
   writes, check snapshots, and approved merges.
 - Use `scripts/git-commit-as-bot` for commits made by Code or spawned agents so
-  the commit author and committer are `shiny-code-bot`.
+  the configured automation name and email are used.
 - Use `scripts/git-push-as-bot` for pushes made by Code or spawned agents so
-  GitHub push events and Actions runs are attributed to `shiny-code-bot`.
+  GitHub push events and Actions runs are attributed to the configured automation account.
 - Use `github-ci-diagnose.py` for CI failure diagnosis, and switch to
   `babysit-pr` when the task becomes repeated PR CI/review/mergeability
   follow-through.
@@ -828,7 +828,7 @@ invocation rules.
   Mention related issues or PRs when useful, and avoid self-references to the PR
   being edited.
 - **Bot Ownership**: Work performed by Code or spawned agents should be owned by
-  `shiny-code-bot` in GitHub. Use `scripts/git-commit-as-bot` for commits,
+  the configured automation account in GitHub. Use `scripts/git-commit-as-bot` for commits,
   `scripts/git-push-as-bot` for pushes, helper-backed PR/issue/comment/merge
   flows for GitHub writes, and `scripts/gh-with-env-token` for unsupported raw
   `gh` surfaces such as API, review, workflow, release, and Actions commands. Do
@@ -847,6 +847,11 @@ invocation rules.
   wrapper prefix `--require-automation-auth`; shell callers may use the
   equivalent `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`. Both take
   precedence over fallback settings loaded from the local env file.
+  Configure the portable automation role with `CODEX_AUTOMATION_LOGIN` and
+  `CODEX_AUTOMATION_EMAIL` in the ignored `local.env`; optionally set a quoted
+  `CODEX_AUTOMATION_BOT_LOGINS` list for additional bot classification. The
+  selected local env file is loaded after ambient variables and therefore wins
+  when the same identity key is present in both places.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 - **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix
@@ -883,6 +888,8 @@ consistent auth/retry behavior, and safe formatting:
   parsing, diagnostics envelope, legacy command classification, GraphQL
   query/mutation context, redaction, bounded rate-limit probe, matrix-gated
   reset-aware retries, inherited deadlines, and lock-safe shared cooldowns.
+- `scripts/github_identity.py`: Shared portable automation identity and
+  local-environment resolution for Python helpers.
 - `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
   pagination, edit-last selection, and deletion-race handling.
 - `scripts/github_issue.py`: Shared actor-aware REST issue create, edit,

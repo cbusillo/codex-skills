@@ -1,17 +1,51 @@
 #!/bin/sh
 set -eu
 
-bot_name=${GIT_COMMIT_AS_BOT_NAME:-shiny-code-bot}
-bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-chris@shinycomputers.com}
 git_bin=${GIT_COMMIT_AS_BOT_GIT:-git}
+
+if [ -n "${CODEX_SKILLS_ENV_FILE:-}" ]; then
+	env_file=$CODEX_SKILLS_ENV_FILE
+elif [ -n "${CODE_HOME:-}" ]; then
+	env_file=$CODE_HOME/local.env
+elif [ -n "${CODEX_HOME:-}" ]; then
+	env_file=$CODEX_HOME/local.env
+elif [ -n "${HOME:-}" ]; then
+	env_file=$HOME/.code/local.env
+else
+	env_file=
+fi
+
+if [ -f "$env_file" ]; then
+	identity_values=$(
+		# Load private configuration in a subshell so unrelated values and
+		# credentials never reach git commit or its hooks.
+		# shellcheck disable=SC1090
+		. "$env_file" >/dev/null
+		printf '%s\n%s\n' \
+			"${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}" \
+			"${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}"
+	)
+	bot_name=$(printf '%s\n' "$identity_values" | sed -n '1p')
+	bot_email=$(printf '%s\n' "$identity_values" | sed -n '2p')
+else
+	bot_name=${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}
+	bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}
+fi
 
 if [ "$#" -eq 0 ]; then
 	echo "usage: git-commit-as-bot <git commit args...>" >&2
 	exit 2
 fi
 
+if [ -z "$bot_name" ] || [ -z "$bot_email" ]; then
+	echo "error: git-commit-as-bot requires configured commit name and email" >&2
+	echo "hint: set CODEX_AUTOMATION_LOGIN and CODEX_AUTOMATION_EMAIL in local.env" >&2
+	exit 1
+fi
+
 GIT_AUTHOR_NAME=$bot_name \
 	GIT_AUTHOR_EMAIL=$bot_email \
 	GIT_COMMITTER_NAME=$bot_name \
 	GIT_COMMITTER_EMAIL=$bot_email \
+	env -u CODEX_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN \
 	"$git_bin" commit "$@"

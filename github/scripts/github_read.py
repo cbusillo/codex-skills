@@ -19,11 +19,12 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 import github_api as github_api_core
+import github_identity
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_GH = os.environ.get("GITHUB_READ_GH") or str(SCRIPT_DIR / "gh-with-env-token")
-EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+EXPECTED_ACTOR = github_identity.automation_login()
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
     "blocked": "BLOCKED",
