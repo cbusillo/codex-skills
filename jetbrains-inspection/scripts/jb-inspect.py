@@ -50,6 +50,7 @@ else:
 
 DEFAULT_PORT_RANGE = range(63340, 63350)
 DEFAULT_TIMEOUT_SECONDS = 3.0
+MIN_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS = 0.25
 DEFAULT_WAIT_TIMEOUT_MS = 120_000
 DEFAULT_POLL_MS = 1_000
 DEFAULT_PREPARE_TIMEOUT_MS = 300_000
@@ -3846,7 +3847,7 @@ def wait_for_exact_route_after_open(
         if route is not None:
             return route
         if diagnostic_probe_supported:
-            current_probe = probe_lifecycle_open(args, context, lease)
+            current_probe = probe_lifecycle_open(args, context, lease, deadline_ms=deadline)
             if current_probe is not None:
                 last_lifecycle_open_probe = current_probe
         if retry_opening:
@@ -4224,11 +4225,14 @@ def probe_lifecycle_open(
     args: argparse.Namespace,
     context: dict[str, Any],
     lease: dict[str, Any] | None,
+    *,
+    deadline_ms: int | None = None,
 ) -> dict[str, Any] | None:
     try:
         identities = discover_open_identities(args, context)
     except InspectError:
         return None
+    best_error: dict[str, Any] | None = None
     for identity in identities:
         if not identity_matches_context(identity, context):
             continue
@@ -4237,6 +4241,12 @@ def probe_lifecycle_open(
         port = identity.get("port")
         if not port:
             continue
+        timeout_seconds = max(DEFAULT_TIMEOUT_SECONDS, 30.0)
+        if deadline_ms is not None:
+            remaining_seconds = (deadline_ms - now_ms()) / 1000.0
+            if remaining_seconds < MIN_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS:
+                break
+            timeout_seconds = min(timeout_seconds, remaining_seconds)
         try:
             response = http_get(
                 int(port),
@@ -4249,7 +4259,7 @@ def probe_lifecycle_open(
                     "lease_id": lease.get("lease_id") if lease is not None else None,
                     "probe": "true",
                 },
-                timeout=max(DEFAULT_TIMEOUT_SECONDS, 30.0),
+                timeout=timeout_seconds,
             )
         except InspectError as error:
             payload = public_payload(error.payload)
@@ -4258,9 +4268,14 @@ def probe_lifecycle_open(
                 "error_reason": infer_error_reason(error, error.payload),
                 "message": str(error),
             })
-            return payload
+            if best_error is None or (
+                not isinstance(best_error.get("lifecycle_open_diagnostic"), dict)
+                and isinstance(payload.get("lifecycle_open_diagnostic"), dict)
+            ):
+                best_error = payload
+            continue
         return public_payload(response.body)
-    return None
+    return best_error
 
 
 def open_via_running_ide(
