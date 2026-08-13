@@ -32,6 +32,7 @@ fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
 require_automation_auth=0
+require_automation_auth_from_process=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
@@ -39,6 +40,12 @@ stdin_file=$(mktemp)
 stdin_captured=0
 
 trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
+
+case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
+1 | true | TRUE | yes | YES)
+	require_automation_auth_from_process=1
+	;;
+esac
 
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
@@ -68,6 +75,9 @@ case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
 	require_automation_auth=1
 	;;
 esac
+if [ "$require_automation_auth_from_process" -eq 1 ]; then
+	require_automation_auth=1
+fi
 readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}

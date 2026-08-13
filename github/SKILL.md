@@ -878,6 +878,8 @@ consistent auth/retry behavior, and safe formatting:
   parsing, diagnostics envelope, legacy command classification, GraphQL
   query/mutation context, redaction, bounded rate-limit probe, matrix-gated
   reset-aware retries, inherited deadlines, and lock-safe shared cooldowns.
+- `scripts/github_identity.py`: Shared portable automation identity and
+  local-environment resolution for Python helpers.
 - `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
   pagination, edit-last selection, and deletion-race handling.
 - `scripts/github_issue.py`: Shared actor-aware REST issue create, edit,

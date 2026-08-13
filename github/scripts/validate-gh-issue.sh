@@ -281,6 +281,8 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 
 grep -qx 'codex-token' "$env_log"
 
+export CODEX_SKILLS_ENV_FILE=/definitely/missing/codex-skills-test.env
+
 cat >"$tmpdir/record-git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

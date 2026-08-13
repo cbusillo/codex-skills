@@ -42,6 +42,8 @@ PENDING_CHECK_STATES = {
 REVIEW_BOT_LOGIN_KEYWORDS = {
     "codex",
 }
+
+
 def configured_bot_logins() -> frozenset[str]:
     automation_login = github_identity.automation_login()
     return frozenset(
@@ -51,6 +53,8 @@ def configured_bot_logins() -> frozenset[str]:
             *([automation_login] if automation_login else []),
         )
     )
+
+
 MERGE_BLOCKING_REVIEW_DECISIONS = {
     "REVIEW_REQUIRED",
     "CHANGES_REQUESTED",

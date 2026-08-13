@@ -16,7 +16,7 @@ Provides:
 - Error classification: invalid_credentials, actor_mismatch, permission_denied,
   rest_primary_rate_limited, graphql_primary_rate_limited,
   secondary_rate_limited, not_found, validation_error, conflict,
-  network_provider_failure
+  network_provider_failure, unconfigured_identity
 - Field redaction for tokens, headers, paths, private body keys
 - Bounded one-call-per-process /rate_limit probe
 - Configurable gh command path via gh_cmd parameter
