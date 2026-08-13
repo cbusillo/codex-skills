@@ -424,7 +424,7 @@ loads `$CODE_HOME/local.env` by default, falling back to
 `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. Commands fail
 closed without changing actor when automation auth is missing, rejected, or
 rate-limited. Write-like commands also require the authenticated login to match
-`shiny-code-bot`. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
+the configured automation account. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
 an explicitly approved one-off command whose human-owned actor is acceptable.
 `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
 it overrides the fallback setting even when an env file enables fallback.
@@ -450,7 +450,7 @@ preflight failures use the shared classifier before the mutation is refused.
 For commits and pushes performed by Code or spawned agents, use
 `scripts/git-commit-as-bot` and `scripts/git-push-as-bot` so Git author,
 committer, push events, and resulting Actions runs stay owned by
-`shiny-code-bot`.
+the configured automation account.
 
 Planning helpers preserve the selected actor when authentication or quota
 failures occur. Set `GH_PLAN_SKIP_BOT=1` for explicitly authorized temporary

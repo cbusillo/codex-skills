@@ -30,7 +30,7 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
 	GIT_PUSH_AS_BOT_TOKEN=$GITHUB_TOKEN
 else
 	echo "error: no bot GitHub token found; refusing to push as active local git user" >&2
-	echo "hint: configure CODEX_GITHUB_TOKEN for shiny-code-bot" >&2
+	echo "hint: configure CODEX_GITHUB_TOKEN for the automation role" >&2
 	exit 1
 fi
 

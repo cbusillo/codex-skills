@@ -55,6 +55,7 @@ helper_tests=(
 	github/scripts/test_github_api.py
 	github/scripts/test_github_ci_diagnose.py
 	github/scripts/test_github_comment.py
+	github/scripts/test_github_identity.py
 	github/scripts/test_github_issue.py
 	github/scripts/test_github_read.py
 	github/scripts/test_github_workflow_babysit.py

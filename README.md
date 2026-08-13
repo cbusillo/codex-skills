@@ -129,14 +129,25 @@ Copy `.env.example` to `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, or
 - `GITHUB_TOKEN`
 - `CODEX_GITHUB_TOKEN`
 
+Configure the automation role separately from the token:
+
+- `CODEX_AUTOMATION_LOGIN`
+- `CODEX_AUTOMATION_EMAIL`
+
+`GH_WITH_ENV_TOKEN_EXPECTED_LOGIN`, `GIT_COMMIT_AS_BOT_NAME`, and
+`GIT_COMMIT_AS_BOT_EMAIL` remain supported as higher-precedence per-tool
+overrides. The same local environment precedence is used by shell and Python
+helpers: `CODEX_SKILLS_ENV_FILE`, `$CODE_HOME/local.env`,
+`$CODEX_HOME/local.env`, then `~/.code/local.env`.
+
 Then call:
 
 ```sh
 github/scripts/gh-with-env-token pr view
 ```
 
-GitHub commands require the configured automation token and never change to the
-active local `gh` account implicitly. Set
+GitHub writes require a configured automation identity and token and never
+change to the active local `gh` account implicitly. Set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
 one-off command whose human-owned actor is acceptable.
 

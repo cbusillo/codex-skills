@@ -13,19 +13,19 @@
         "match": {
           "contains": ["api", "/user"]
         },
-        "stdout": "{\"login\":\"shiny-code-bot\"}"
+        "stdout": "{\"login\":\"fixture-automation\"}"
       },
       {
         "match": {
           "contains": ["api", "--method", "GET", "/repos/owner/repo/issues/42/comments?per_page=100&page=1"]
         },
-        "stdout": "[{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"shiny-code-bot\"},\"created_at\":\"2026-07-16T12:00:00Z\"}]"
+        "stdout": "[{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"fixture-automation\"},\"created_at\":\"2026-07-16T12:00:00Z\"}]"
       },
       {
         "match": {
           "contains": ["api", "--method", "PATCH", "/repos/owner/repo/issues/comments/7"]
         },
-        "stdout": "{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"shiny-code-bot\"},\"updated_at\":\"2026-07-16T19:00:00Z\"}"
+        "stdout": "{\"id\":7,\"html_url\":\"https://github.com/owner/repo/issues/42#issuecomment-7\",\"user\":{\"login\":\"fixture-automation\"},\"updated_at\":\"2026-07-16T19:00:00Z\"}"
       }
     ]
   },

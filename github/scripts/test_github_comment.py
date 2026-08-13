@@ -12,6 +12,10 @@ import subprocess
 import tempfile
 from typing import Any, Callable
 
+os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
+
 import github_api
 import github_comment
 
@@ -43,7 +47,7 @@ def failure(status: int, body: Any, *, is_write: bool) -> github_api.ApiResult:
 
 def comment_body(
     comment_id: int,
-    actor: str = "shiny-code-bot",
+    actor: str = "fixture-automation",
     *,
     created_at: str = "2026-07-16T12:00:00Z",
     body: str = "body",
@@ -94,7 +98,7 @@ def test_create_preserves_markdown_body() -> None:
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([])
         assert method == "POST"
@@ -125,7 +129,7 @@ def test_dedupe_body_reuses_existing_actor_comment_without_write() -> None:
 
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([comment_body(1001, "someone-else", body=markdown), existing])
         raise AssertionError("deduplicated comment must not write")
@@ -151,7 +155,7 @@ def test_dedupe_body_reuses_existing_actor_comment_without_write() -> None:
 def test_edit_last_paginates_and_selects_latest_actor_comment() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if "&page=1" in path:
             return success(
                 [comment_body(1, "someone-else")],
@@ -187,7 +191,7 @@ def test_edit_last_paginates_and_selects_latest_actor_comment() -> None:
 def test_edit_last_without_existing_comment_fails_closed() -> None:
     def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         return success([comment_body(1, "someone-else")])
 
     def run(calls: list[dict[str, Any]]) -> None:
@@ -217,7 +221,7 @@ def test_edit_last_without_existing_comment_fails_closed() -> None:
 def test_create_if_none_creates_only_when_initial_lookup_is_empty() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([])
         assert method == "POST"
@@ -243,7 +247,7 @@ def test_create_if_none_creates_only_when_initial_lookup_is_empty() -> None:
 def test_deletion_race_never_falls_back_to_create() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([comment_body(5)])
         assert method == "PATCH"
@@ -334,7 +338,7 @@ def test_explicit_active_fallback_accepts_and_reports_actual_actor() -> None:
 def test_active_fallback_reports_response_actor_after_route_switch() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([])
         assert method == "POST"
@@ -363,7 +367,7 @@ def test_unknown_create_no_match_fails_closed_without_repeat() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal post_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             assert path.startswith("/repos/owner/repo/issues/42/comments?"), path
             return success([])
@@ -397,7 +401,7 @@ def test_rejected_create_retries_without_reconciliation() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal post_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             return success([])
         assert method == "POST", (method, path)
@@ -439,7 +443,7 @@ def test_create_unknown_outcome_returns_reconciled_comment_without_retry() -> No
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, post_calls, submitted_body
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             post_calls += 1
             submitted_body = str(body["body"])
@@ -496,7 +500,7 @@ def test_create_reconciliation_uses_explicit_fallback_actor_context() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, post_calls, submitted_body
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             post_calls += 1
             submitted_body = str(body["body"])
@@ -554,7 +558,7 @@ def test_create_reconciliation_rejects_concurrent_identical_comment() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
         get_calls += 1
@@ -608,7 +612,7 @@ def test_create_reconciliation_excludes_preexisting_same_second_comment() -> Non
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, post_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             post_calls += 1
             return failure(503, "Unicorn!", is_write=True)

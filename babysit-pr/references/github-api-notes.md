@@ -40,7 +40,7 @@ Used by Codex to classify branch-related vs flaky/unrelated failures. Prefer the
 - `github/scripts/gh-with-env-token run rerun <run-id> --failed`
 
 Reruns only failed jobs (and dependencies) for a workflow run. This is a
-GitHub write and must be owned by `shiny-code-bot`.
+GitHub write and must be owned by the configured automation account.
 
 ## Review-related endpoints
 

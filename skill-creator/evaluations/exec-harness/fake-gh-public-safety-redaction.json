@@ -16,13 +16,13 @@
         "match": {
           "contains": ["api", "/user"]
         },
-        "stdout": "{\"login\":\"shiny-code-bot\"}"
+        "stdout": "{\"login\":\"fixture-automation\"}"
       },
       {
         "match": {
           "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues"]
         },
-        "stdout": "{\"id\":91100,\"number\":1100,\"title\":\"Public safety redaction check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1100\",\"user\":{\"login\":\"shiny-code-bot\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
+        "stdout": "{\"id\":91100,\"number\":1100,\"title\":\"Public safety redaction check\",\"state\":\"open\",\"state_reason\":null,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/1100\",\"user\":{\"login\":\"fixture-automation\"},\"labels\":[{\"name\":\"plan\"}],\"assignees\":[],\"milestone\":null}"
       }
     ]
   },

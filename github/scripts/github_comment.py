@@ -19,11 +19,12 @@ import sys
 from typing import Any, Callable, Optional
 
 import github_api as github_api_core
+import github_identity
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_GH = os.environ.get("GH_COMMENT_GH") or str(SCRIPT_DIR / "gh-with-env-token")
-EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+EXPECTED_ACTOR = github_identity.automation_login()
 PER_PAGE = 100
 MAX_PAGES = 1000
 RECONCILIATION_CLOCK_SKEW_SECONDS = 5
@@ -48,11 +49,7 @@ class CommentError(Exception):
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
-    if str(os.environ.get("GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK") or "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }:
+    if github_identity.active_auth_fallback_allowed():
         return None
     return expected_actor
 

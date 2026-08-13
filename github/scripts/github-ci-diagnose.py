@@ -16,6 +16,7 @@ from shutil import which
 from typing import Any, Iterable, Optional, Sequence
 
 import github_read as github_read_core
+import github_identity
 
 
 FAILURE_VALUES = {"failure", "error", "cancelled", "timed_out", "action_required", "startup_failure"}
@@ -35,7 +36,7 @@ FAILURE_MARKERS = (
 )
 SCRIPT_DIR = Path(__file__).resolve().parent
 GH_COMMAND = os.environ.get("GITHUB_CI_DIAGNOSE_GH") or str(SCRIPT_DIR / "gh-with-env-token")
-EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+EXPECTED_ACTOR = github_identity.automation_login()
 
 
 def main() -> int:

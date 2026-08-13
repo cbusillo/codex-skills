@@ -25,12 +25,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml  # type: ignore[import-untyped]
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 GH = os.environ.get("GITHUB_WORK_ROLLUP_GH") or str(ROOT / "github/scripts/gh-with-env-token")
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_PEOPLE_INDEX = ROOT / ".local/people.yaml"
+
+IDENTITY_SCRIPT_DIR = ROOT / "github" / "scripts"
+if str(IDENTITY_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+import github_identity
 SCRIPT_VERSION = 1
 SUMMARY_LEVELS = {"concise", "standard", "detailed"}
 REPORT_MODES = {"activity", "backlog", "standup"}
@@ -1253,7 +1257,18 @@ def search_window(window: Window) -> str:
 def should_skip_bot(login: str | None, actor: object, settings: dict[str, Any]) -> bool:
     if settings.get("include_bots"):
         return False
-    if login and (login.casefold().endswith("[bot]") or login.casefold() in {"dependabot", "github-actions"}):
+    configured_logins = {
+        value.casefold()
+        for value in (
+            *github_identity.configured_bot_logins(),
+            *([github_identity.automation_login()] if github_identity.automation_login() else []),
+        )
+    }
+    if login and (
+        login.casefold().endswith("[bot]")
+        or login.casefold() in {"dependabot", "github-actions"}
+        or login.casefold() in configured_logins
+    ):
         return True
     return isinstance(actor, dict) and str(actor.get("type") or "").casefold() == "bot"
 

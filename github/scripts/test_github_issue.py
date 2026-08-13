@@ -11,6 +11,10 @@ import pathlib
 import tempfile
 from typing import Any, Callable
 
+os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
+
 import github_api
 import github_issue
 
@@ -48,7 +52,7 @@ def failure(status: int, body: Any, *, is_write: bool) -> github_api.ApiResult:
 def issue_body(
     number: int = 42,
     *,
-    actor: str = "shiny-code-bot",
+    actor: str = "fixture-automation",
     state: str = "open",
     state_reason: str | None = None,
     body: str = "body",
@@ -108,7 +112,7 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if "/milestones?" in path:
             return success([{"number": 7, "title": "Sprint 7"}])
         if method == "GET":
@@ -119,7 +123,7 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
         assert body["body"].startswith(markdown)
         assert github_api.OPERATION_MARKER_PREFIX in body["body"]
         assert body["labels"] == ["plan", "enhancement"]
-        assert body["assignees"] == ["shiny-code-bot", "octocat", "copilot-swe-agent[bot]"]
+        assert body["assignees"] == ["fixture-automation", "octocat", "copilot-swe-agent[bot]"]
         assert body["milestone"] == 7
         return success(issue_body(), status=201)
 
@@ -137,7 +141,7 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
         assert marker["kind"] == "request_fingerprint", marker
         assert len(marker["value"]) == 64, marker
         assert len(marker["operation_id"]) == 32, marker
-        assert payload["actor"] == "shiny-code-bot", payload
+        assert payload["actor"] == "fixture-automation", payload
         assert payload["updated_at"] == "2026-07-17T03:20:00Z", payload
         assert payload["completed_steps"] == ["resolve_actor", "resolve_milestone", "create_issue"], payload
         assert [call["method"] for call in calls] == ["GET", "GET", "GET", "POST"], calls
@@ -148,12 +152,12 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
 def test_create_unknown_outcome_requires_reconciliation_before_retry() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
         assert method == "GET"
         if "creator=" in path:
-            assert "creator=shiny-code-bot" in path
+            assert "creator=fixture-automation" in path
         return success([])
 
     def run(calls: list[dict[str, Any]]) -> None:
@@ -197,7 +201,7 @@ def test_create_unknown_outcome_returns_unique_reconciled_issue() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, submitted_body
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             submitted_body = str(body["body"])
             return failure(503, "Unicorn!", is_write=True)
@@ -248,7 +252,7 @@ def test_create_reconciliation_survives_explicit_actor_fallback() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, submitted_body
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             submitted_body = str(body["body"])
             result = failure(503, "Unicorn!", is_write=True)
@@ -306,7 +310,7 @@ def test_create_reconciliation_rejects_concurrent_identical_issue() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
         get_calls += 1
@@ -353,7 +357,7 @@ def test_create_reconciliation_rejects_preexisting_identical_issue() -> None:
 
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             return failure(503, "Unicorn!", is_write=True)
         preexisting = issue_body(body="body", created_at="2026-07-16T21:59:59Z")
@@ -401,7 +405,7 @@ def test_create_reconciliation_excludes_preexisting_same_second_issue() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal get_calls, post_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "POST":
             post_calls += 1
             return failure(503, "Unicorn!", is_write=True)
@@ -439,10 +443,10 @@ def test_unknown_retry_enabled_issue_create_fails_closed_after_no_match() -> Non
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             nonlocal post_calls
             if path == "/user":
-                return success({"login": "shiny-code-bot"})
+                return success({"login": "fixture-automation"})
             if method == "GET":
                 if "creator=" in path:
-                    assert "creator=shiny-code-bot" in path, path
+                    assert "creator=fixture-automation" in path, path
                 return success([])
             post_calls += 1
             return failure(503, "Unicorn!", is_write=True)
@@ -475,7 +479,7 @@ def test_rejected_retry_enabled_issue_create_can_retry() -> None:
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             nonlocal post_calls
             if path == "/user":
-                return success({"login": "shiny-code-bot"})
+                return success({"login": "fixture-automation"})
             if method == "GET":
                 return success([])
             assert method == "POST", (method, path)
@@ -503,7 +507,7 @@ def test_rejected_retry_enabled_issue_create_can_retry() -> None:
 def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "PATCH":
             assert body == {"body": "replacement", "title": "New title", "milestone": None}
             return success(issue_body())
@@ -517,7 +521,7 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
             assert body == {"assignees": ["octocat"]}
             return success(issue_body())
         if path.endswith("/assignees") and method == "DELETE":
-            assert body == {"assignees": ["shiny-code-bot"]}
+            assert body == {"assignees": ["fixture-automation"]}
             return success(issue_body())
         assert method == "GET"
         assert path == "/repos/owner/repo/issues/42"
@@ -563,7 +567,7 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
 def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "PATCH":
             return success(issue_body())
         return failure(503, "Unicorn!", is_write=True)
@@ -593,7 +597,7 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
 def test_edit_local_validation_preserves_prior_retry_summary() -> None:
     def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         assert path == "/user"
-        return success({"login": "shiny-code-bot"})
+        return success({"login": "fixture-automation"})
 
     def run(calls: list[dict[str, Any]]) -> None:
         try:
@@ -620,11 +624,11 @@ def test_close_partial_failure_preserves_comment_step() -> None:
     original_comment = github_issue.github_comment.comment
 
     def fake_comment(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"actor": "shiny-code-bot"}
+        return {"actor": "fixture-automation"}
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         assert method == "PATCH"
         assert path == "/repos/owner/repo/issues/42"
         assert body == {"state": "closed", "state_reason": "completed"}
@@ -662,7 +666,7 @@ def test_reopen_comment_uses_non_idempotent_comment_retry_policy() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         nonlocal post_calls
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET" and "/comments?" in path:
             return success([])
         if method == "POST" and path.endswith("/comments"):
@@ -705,7 +709,7 @@ def test_close_and_reopen_use_explicit_state_reasons() -> None:
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         assert method == "PATCH"
         state, reason = expected.pop(0)
         assert body == {"state": state, "state_reason": reason}
@@ -742,7 +746,7 @@ def test_close_and_reopen_use_explicit_state_reasons() -> None:
 def test_duplicate_close_resolves_database_id() -> None:
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return success({"login": "shiny-code-bot"})
+            return success({"login": "fixture-automation"})
         if method == "GET":
             assert path == "/repos/owner/repo/issues/41"
             return success({"id": 9041, "number": 41})
@@ -810,11 +814,11 @@ def test_invalid_duplicate_target_does_not_post_comment() -> None:
     def fake_comment(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         nonlocal comment_called
         comment_called = True
-        return {"actor": "shiny-code-bot"}
+        return {"actor": "fixture-automation"}
 
     def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         assert path == "/user"
-        return success({"login": "shiny-code-bot"})
+        return success({"login": "fixture-automation"})
 
     def run(calls: list[dict[str, Any]]) -> None:
         github_issue.github_comment.comment = fake_comment

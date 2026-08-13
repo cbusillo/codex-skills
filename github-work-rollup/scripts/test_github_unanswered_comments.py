@@ -102,7 +102,7 @@ def classify(
         comments,
         {candidate.key for candidate in candidates},
         {"cbusillo"},
-        {"shiny-code-bot"},
+        {"fixture-automation"},
         reaction_map,
     )
 
@@ -116,7 +116,7 @@ def test_generic_bot_closeout_neither_addresses_nor_acknowledges() -> None:
     )
     closeout = comment(
         comment_id=2,
-        author="shiny-code-bot",
+        author="fixture-automation",
         body="Completed through PR #43.",
         created_at="2026-07-26T04:07:20Z",
     )
@@ -246,7 +246,7 @@ def test_bot_reply_addresses_but_does_not_prove_owner_saw_comment() -> None:
     )
     response = comment(
         comment_id=2,
-        author="shiny-code-bot",
+        author="fixture-automation",
         body="@outside-user yes, the next release includes that behavior.",
         created_at="2026-07-25T15:05:00Z",
     )
@@ -269,7 +269,7 @@ def test_bot_inline_reply_still_needs_owner_acknowledgement() -> None:
     )
     response = comment(
         comment_id=11,
-        author="shiny-code-bot",
+        author="fixture-automation",
         body="Yes, added coverage.",
         created_at="2026-07-25T15:05:00Z",
         kind="review_comment",
@@ -281,7 +281,7 @@ def test_bot_inline_reply_still_needs_owner_acknowledgement() -> None:
         [external, response],
         {external.key},
         {"cbusillo"},
-        {"shiny-code-bot"},
+        {"fixture-automation"},
         {external.key: []},
     )
 
@@ -318,7 +318,7 @@ def test_inline_reply_does_not_clear_multiple_external_comments_in_same_thread()
         [first, second, response],
         {first.key, second.key},
         {"cbusillo"},
-        {"shiny-code-bot"},
+        {"fixture-automation"},
         {first.key: [], second.key: []},
     )
 
@@ -354,7 +354,7 @@ def test_owner_reaction_plus_bot_reply_marks_comment_handled() -> None:
     )
     response = comment(
         comment_id=2,
-        author="shiny-code-bot",
+        author="fixture-automation",
         body="@outside-user thanks; this is implemented.",
         created_at="2026-07-25T15:06:00Z",
     )
@@ -467,7 +467,7 @@ def test_bot_login_overlap_never_counts_as_owner_awareness() -> None:
     )
     response = comment(
         comment_id=2,
-        author="shiny-code-bot",
+        author="fixture-automation",
         body="@outside-user thanks; this is implemented.",
         created_at="2026-07-25T15:06:00Z",
     )
@@ -476,8 +476,8 @@ def test_bot_login_overlap_never_counts_as_owner_awareness() -> None:
         thread(),
         [external, response],
         {external.key},
-        {"shiny-code-bot"},
-        {"shiny-code-bot"},
+        {"fixture-automation"},
+        {"fixture-automation"},
         {external.key: []},
     )
 
@@ -496,7 +496,7 @@ def test_unknown_external_author_is_not_filtered() -> None:
     assert github_unanswered_comments.is_external_comment(
         external,
         {"cbusillo"},
-        {"shiny-code-bot"},
+        {"fixture-automation"},
     )
 
 
@@ -624,7 +624,7 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
         created_at="2026-05-01T12:00:00Z",
         kind="review",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "shiny-code-bot")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_thread",
@@ -656,7 +656,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
         created_at="2026-07-25T12:00:00Z",
         kind="review",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "shiny-code-bot")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_thread",
@@ -689,7 +689,7 @@ def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> Non
         body="A useful suggestion.",
         created_at="2026-07-25T14:59:27Z",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "shiny-code-bot")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [external], []))
     monkeypatch.setattr(
         github_unanswered_comments,
@@ -771,8 +771,10 @@ def test_degraded_markdown_never_claims_no_attention_as_all_clear() -> None:
     assert "No external comments need attention" not in rendered
 
 
-def test_resolve_settings_infers_owner_and_defaults_to_thirty_days() -> None:
+def test_resolve_settings_infers_owner_and_defaults_to_thirty_days(monkeypatch: pytest.MonkeyPatch) -> None:
     now = datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc)
+    monkeypatch.delenv("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", raising=False)
+    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-automation")
 
     settings = github_unanswered_comments.resolve_settings(
         args(repo_owner=["cbusillo"]),
@@ -781,7 +783,7 @@ def test_resolve_settings_infers_owner_and_defaults_to_thirty_days() -> None:
     )
 
     assert settings["self_logins"] == ["cbusillo"]
-    assert settings["bot_logins"] == ["shiny-code-bot"]
+    assert settings["bot_logins"] == ["fixture-automation"]
     assert settings["since"] == datetime(2026, 6, 26, 20, 0, tzinfo=timezone.utc)
     assert settings["until"] == now
 

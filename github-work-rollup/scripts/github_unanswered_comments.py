@@ -30,11 +30,16 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import github_work_rollup as rollup
 
+IDENTITY_SCRIPT_DIR = ROOT / "github" / "scripts"
+if str(IDENTITY_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+import github_identity
+
 
 GH = os.environ.get("GITHUB_UNANSWERED_COMMENTS_GH") or rollup.GH
 DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_WINDOW = "30d"
-DEFAULT_BOT_LOGINS = ("shiny-code-bot",)
+DEFAULT_BOT_LOGINS = ()
 MAX_WORKERS = 8
 EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
@@ -129,8 +134,15 @@ def resolve_settings(
     if not configured_self:
         configured_self = rollup.as_str_list(config.get("subjects"))
     self_logins = rollup.unique([*configured_self, *args.self_login])
+    configured_login = github_identity.automation_login()
     bot_logins = rollup.unique(
-        [*DEFAULT_BOT_LOGINS, *rollup.as_str_list(config.get("comment_bot_logins")), *args.bot_login]
+        [
+            *DEFAULT_BOT_LOGINS,
+            *github_identity.configured_bot_logins(),
+            *([configured_login] if configured_login else []),
+            *rollup.as_str_list(config.get("comment_bot_logins")),
+            *args.bot_login,
+        ]
     )
     inferred_self = [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)]
     self_logins = rollup.unique([*self_logins, *inferred_self])

@@ -19,6 +19,10 @@ from urllib.parse import urlparse
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
+IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
+if str(IDENTITY_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+import github_identity
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -38,9 +42,15 @@ PENDING_CHECK_STATES = {
 REVIEW_BOT_LOGIN_KEYWORDS = {
     "codex",
 }
-AUTOMATION_BOT_LOGINS = {
-    "shiny-code-bot",
-}
+def configured_bot_logins() -> frozenset[str]:
+    automation_login = github_identity.automation_login()
+    return frozenset(
+        login.casefold()
+        for login in (
+            *github_identity.configured_bot_logins(),
+            *([automation_login] if automation_login else []),
+        )
+    )
 MERGE_BLOCKING_REVIEW_DECISIONS = {
     "REVIEW_REQUIRED",
     "CHANGES_REQUESTED",
@@ -520,7 +530,9 @@ def extract_login(user_obj):
 
 def is_bot_login(login):
     normalized = str(login or "").casefold()
-    return bool(normalized) and (normalized.endswith("[bot]") or normalized in AUTOMATION_BOT_LOGINS)
+    return bool(normalized) and (
+        normalized.endswith("[bot]") or normalized in configured_bot_logins()
+    )
 
 
 def is_actionable_review_bot_login(login):

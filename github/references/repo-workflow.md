@@ -112,7 +112,7 @@ treated as ordinary execution.
 
 Agent-authored commits and pushes should use `github/scripts/git-commit-as-bot`
 and `github/scripts/git-push-as-bot` so GitHub attribution remains
-`shiny-code-bot`. Write-like `gh-with-env-token` commands verify the
+the configured automation account. Write-like `gh-with-env-token` commands verify the
 authenticated login before running and fail closed instead of silently using the
 active human account.
 

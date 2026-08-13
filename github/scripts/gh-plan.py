@@ -24,13 +24,14 @@ from typing import Any, Optional
 import github_api as github_api_core
 import github_comment as github_comment_core
 import github_issue as github_issue_core
+import github_identity
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
 BOT_GH = SKILL_DIR.parent / "github/scripts/gh-with-env-token"
 PEOPLE_RESOLVER = SKILL_DIR.parent / "people/scripts/resolve_person.py"
 API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
-EXPECTED_ACTOR = os.environ.get("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN") or "shiny-code-bot"
+EXPECTED_ACTOR = github_identity.automation_login()
 CURRENT_OPERATION = "github.plan.unknown"
 CURRENT_TRANSPORT = "helper"
 CURRENT_BUCKET = "unknown"
@@ -1496,7 +1497,7 @@ def is_legacy_canonical_managed_plan_body(body: str) -> bool:
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
     author = issue.get("user") or issue.get("author")
     author_login = issue_author_login(issue)
-    if author_login and author_login.casefold() == EXPECTED_ACTOR.casefold():
+    if author_login and EXPECTED_ACTOR and author_login.casefold() == EXPECTED_ACTOR.casefold():
         return True
     if isinstance(author, dict) and str(author.get("type", "")).casefold() == "bot":
         return False

@@ -668,9 +668,9 @@ Helper-first ritual for PR work:
 - Use `scripts/gh-pr.py view/checks/create/edit/comment/merge` for PR reads,
   writes, check snapshots, and approved merges.
 - Use `scripts/git-commit-as-bot` for commits made by Code or spawned agents so
-  the commit author and committer are `shiny-code-bot`.
+  the configured automation name and email are used.
 - Use `scripts/git-push-as-bot` for pushes made by Code or spawned agents so
-  GitHub push events and Actions runs are attributed to `shiny-code-bot`.
+  GitHub push events and Actions runs are attributed to the configured automation account.
 - Use `github-ci-diagnose.py` for CI failure diagnosis, and switch to
   `babysit-pr` when the task becomes repeated PR CI/review/mergeability
   follow-through.
@@ -818,7 +818,7 @@ invocation rules.
   Mention related issues or PRs when useful, and avoid self-references to the PR
   being edited.
 - **Bot Ownership**: Work performed by Code or spawned agents should be owned by
-  `shiny-code-bot` in GitHub. Use `scripts/git-commit-as-bot` for commits,
+  the configured automation account in GitHub. Use `scripts/git-commit-as-bot` for commits,
   `scripts/git-push-as-bot` for pushes, helper-backed PR/issue/comment/merge
   flows for GitHub writes, and `scripts/gh-with-env-token` for unsupported raw
   `gh` surfaces such as API, review, workflow, release, and Actions commands. Do

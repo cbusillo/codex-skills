@@ -220,7 +220,7 @@ def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
         sample_pr(),
         state,
         fresh_state=True,
-        authenticated_login="shiny-code-bot",
+        authenticated_login="fixture-automation",
     )
 
     assert [(item["author"], item["author_association"]) for item in items] == [
@@ -231,7 +231,7 @@ def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
 def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     automation_comment = {
         "id": 10,
-        "user": {"login": "shiny-code-bot"},
+        "user": {"login": "fixture-automation"},
         "author_association": "COLLABORATOR",
         "created_at": "2026-07-26T12:00:00Z",
         "body": "Completed through PR #123.",
@@ -251,7 +251,7 @@ def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
             sample_pr(),
             {},
             fresh_state=True,
-            authenticated_login="shiny-code-bot",
+            authenticated_login="fixture-automation",
         )
         == []
     )

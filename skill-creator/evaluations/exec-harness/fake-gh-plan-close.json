@@ -25,7 +25,7 @@
         "match": {
           "contains": ["api", "/user"]
         },
-        "stdout": "{\"login\":\"shiny-code-bot\"}"
+        "stdout": "{\"login\":\"fixture-automation\"}"
       },
       {
         "match": {
@@ -61,7 +61,7 @@
         "match": {
           "contains": ["api", "--method", "POST", "/repos/cbusillo/codex-skills/issues/900/comments"]
         },
-        "stdout": "{\"id\":9001,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900#issuecomment-9001\",\"user\":{\"login\":\"shiny-code-bot\"}}"
+        "stdout": "{\"id\":9001,\"html_url\":\"https://github.com/cbusillo/codex-skills/issues/900#issuecomment-9001\",\"user\":{\"login\":\"fixture-automation\"}}"
       },
       {
         "match": {

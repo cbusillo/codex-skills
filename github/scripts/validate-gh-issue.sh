@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export GITHUB_RETRY_MAX_ATTEMPTS=1
+export CODEX_AUTOMATION_LOGIN=fixture-automation
+export CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
@@ -113,7 +115,7 @@ elif [[ "${1:-}" == "api" && "$*" == *"--method GET"* && "$*" == *"/user"* ]]; t
 		printf 'gh: HTTP 503\n' >&2
 		exit 1
 	elif [[ -n "${GH_TOKEN:-}" ]]; then
-		printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n{"login":"shiny-code-bot"}\n'
+		printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n{"login":"fixture-automation"}\n'
 	else
 		printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n{"login":"cbusillo"}\n'
 	fi
@@ -125,7 +127,7 @@ elif [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
 		printf "invalid character '<' looking for beginning of value\n" >&2
 		exit 1
 	elif [[ -n "${GH_TOKEN:-}" ]]; then
-		printf 'shiny-code-bot\n'
+		printf 'fixture-automation\n'
 	else
 		printf 'cbusillo\n'
 	fi
@@ -301,10 +303,27 @@ chmod +x "$tmpdir/record-git"
 
 : >"$env_log"
 PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
-	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
+	CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
 	"$repo_root/github/scripts/git-commit-as-bot" -m "bot commit" >/dev/null
 
-grep -q 'author=shiny-code-bot <chris@shinycomputers.com> committer=shiny-code-bot <chris@shinycomputers.com>' "$env_log"
+grep -q 'author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>' "$env_log"
+
+: >"$env_log"
+if env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	"$repo_root/github/scripts/git-commit-as-bot" -m "unconfigured" >/dev/null 2>"$stderr_log"; then
+	echo "error: unconfigured git-commit-as-bot must fail closed" >&2
+	exit 1
+fi
+
+grep -q 'requires configured commit name and email' "$stderr_log"
+if [[ -s "$env_log" ]]; then
+	echo "error: unconfigured git-commit-as-bot invoked git" >&2
+	exit 1
+fi
 
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -675,11 +694,11 @@ issue() {
 	local number="$1"
 	local state="${2:-open}"
 	local reason="${3:-}"
-	printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":%s,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[{"name":"plan"}],"assignees":[{"login":"shiny-code-bot"}],"milestone":{"number":7,"title":"Sprint 7"}}\n' \
+	printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":%s,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"fixture-automation"},"labels":[{"name":"plan"}],"assignees":[{"login":"fixture-automation"}],"milestone":{"number":7,"title":"Sprint 7"}}\n' \
 		"$number" "$number" "$state" "$([[ -n "$reason" ]] && printf '"%s"' "$reason" || printf 'null')" "$number"
 }
 case "$*" in
-	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'/milestones?'*) printf '[{"number":7,"title":"Sprint 7"}]\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues?state=all'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues'*) issue 100 ;;
@@ -720,7 +739,7 @@ assert payload["title"] == "Issue title", payload
 assert payload["body"].startswith("Body with `literal markdown` and $(do-not-run).\n"), payload
 assert re.search(r"<!-- github-skill-operation:[0-9a-f]{32} -->", payload["body"]), payload
 assert payload["labels"] == ["plan"], payload
-assert payload["assignees"] == ["shiny-code-bot"], payload
+assert payload["assignees"] == ["fixture-automation"], payload
 assert payload["milestone"] == 7, payload
 PY
 
@@ -728,7 +747,7 @@ cat >"$tmpdir/create-503-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == *'/user'* ]]; then
-	printf '{"login":"shiny-code-bot"}\n'
+	printf '{"login":"fixture-automation"}\n'
 elif [[ "$*" == *'--method GET'* && "$*" == *'/repos/owner/repo/issues?state=all'* ]]; then
 	printf '[]\n'
 else
@@ -779,18 +798,18 @@ write_body() {
 }
 case "$*" in
 	*'/user'*)
-		printf '{"login":"shiny-code-bot"}\n'
+		printf '{"login":"fixture-automation"}\n'
 		;;
 	*'--method GET'*'/repos/owner/repo/issues/42/comments?'*)
-		printf '[{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"shiny-code-bot"},"created_at":"2026-07-16T12:00:00Z"}]\n'
+		printf '[{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"fixture-automation"},"created_at":"2026-07-16T12:00:00Z"}]\n'
 		;;
 	*'--method PATCH'*'/repos/owner/repo/issues/comments/7'*)
 		write_body
-		printf '{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"shiny-code-bot"}}\n'
+		printf '{"id":7,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-7","user":{"login":"fixture-automation"}}\n'
 		;;
 	*'--method POST'*'/repos/owner/repo/issues/42/comments'*)
 		write_body
-		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
+		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/42#issuecomment-1","user":{"login":"fixture-automation"}}\n'
 		;;
 	*)
 		printf 'unexpected gh args: %s\n' "$*" >&2
@@ -814,7 +833,7 @@ grep -q '/repos/owner/repo/issues/42/comments' "$log"
 printf 'Issue comment with `literal markdown`.\n' >"$tmpdir/expected-comment-body"
 assert_marked_body "$tmpdir/expected-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.issue 'https://github.com/owner/repo/issues/42#issuecomment-1'
-jq -e '.comment_action == "created" and .actor == "shiny-code-bot"' "$stdout_log" >/dev/null
+jq -e '.comment_action == "created" and .actor == "fixture-automation"' "$stdout_log" >/dev/null
 
 : >"$log"
 : >"$env_log"
@@ -840,7 +859,7 @@ if [[ "$*" == *'--input -'* ]]; then
 fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
 	*'--method GET'*'/comments?'*) printf '[]\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
@@ -850,12 +869,12 @@ case "$*" in
 			/repos/owner/repo/issues/*) number="${arg##*/}" ;;
 			esac
 		done
-		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"fixture-automation"},"labels":[],"assignees":[],"milestone":null}\n' \
 			"$number" "$number" "$number"
 		;;
 	*'--method POST'*'/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
-		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1","user":{"login":"shiny-code-bot"}}\n'
+		printf '{"id":1,"html_url":"https://github.com/owner/repo/issues/1#issuecomment-1","user":{"login":"fixture-automation"}}\n'
 		;;
 	*'--method PATCH'*'/repos/owner/repo/issues/'*)
 		number=''
@@ -866,7 +885,7 @@ case "$*" in
 		done
 		state="$(printf '%s' "$payload" | jq -r .state)"
 		reason="$(printf '%s' "$payload" | jq -r .state_reason)"
-		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":"%s","html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"shiny-code-bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+		printf '{"id":90%s,"number":%s,"title":"Issue title","state":"%s","state_reason":"%s","html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"fixture-automation"},"labels":[],"assignees":[],"milestone":null}\n' \
 			"$number" "$number" "$state" "$reason" "$number"
 		;;
 	*)
@@ -965,11 +984,11 @@ payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/12/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/12/comments'*)
 		printf '%s' "$payload" | jq -rj .body >"$GH_ISSUE_ENV_LOG"
-		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"shiny-code-bot"}}\n'
+		printf '{"id":12,"html_url":"https://github.com/owner/repo/issues/12#issuecomment-12","user":{"login":"fixture-automation"}}\n'
 		;;
 	*'--method PATCH'*'/repos/owner/repo/issues/12'*)
 		printf 'HTTP/2.0 503 Service Unavailable\r\ncontent-type: application/json\r\nx-github-request-id: CLOSE-503\r\n\r\n{"message":"Service temporarily unavailable"}\n'
@@ -1026,7 +1045,7 @@ payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
 case "$*" in
-	*'/user'*) printf '{"login":"shiny-code-bot"}\n' ;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/14/comments?'*) printf '[]\n' ;;
 	*'--method POST'*'/repos/owner/repo/issues/14/comments'*)
 		printf 'comment failed\n' >&2
@@ -1173,7 +1192,7 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.github.diagnostics.components.openIssues.requestId == "SNAPSHOT:123" and
 		.github.diagnostics.components.openIssues.quota.remaining == 4999 and
 		.github.diagnostics.components.openIssues.actor == "ok" and
-		.github.diagnostics.components.openIssues.expectedActor == "shiny-code-bot" and
+		.github.diagnostics.components.openIssues.expectedActor == "fixture-automation" and
 		([.github.diagnostics.components.openIssues.diagnostics.degradedComponents[]] | index("actor")) != null and
 		.launchplane.status == "configured" and
 		.launchplane.service.contextUrlEnv == "LAUNCHPLANE_CONTEXT_URL" and

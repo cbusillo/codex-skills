@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
+
 import github_read  # noqa: E402
 
 
@@ -155,7 +158,7 @@ def test_reader_aggregates_retry_summary_across_requests() -> None:
                 attempts=2,
                 elapsed_wait=3.0,
                 retry_eligible=True,
-                last_actor="shiny-code-bot",
+                last_actor="fixture-automation",
                 last_bucket="rest_core",
                 outcome_certainty="confirmed",
                 reconciliation=None,
@@ -171,7 +174,7 @@ def test_reader_aggregates_retry_summary_across_requests() -> None:
                 attempts=1,
                 elapsed_wait=0.0,
                 retry_eligible=True,
-                last_actor="shiny-code-bot",
+                last_actor="fixture-automation",
                 last_bucket="rest_core",
                 outcome_certainty="confirmed",
                 reconciliation=None,
@@ -207,7 +210,7 @@ def test_reader_cli_operations_are_matrix_approved() -> None:
 
 def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({"private": False, "visibility": "public"})),
     ]
     with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}):
@@ -228,7 +231,7 @@ def test_secret_scanning_status_public_repo_is_unavailable_without_alert_request
 
 def test_secret_scanning_status_counts_findings_without_secret_material() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({
             "private": True,
             "visibility": "private",
@@ -259,7 +262,7 @@ def test_secret_scanning_status_counts_findings_without_secret_material() -> Non
 def test_secret_scanning_status_preserves_hidden_values_on_followup_pages() -> None:
     next_page = "https://api.github.com/repos/o/r/secret-scanning/alerts?page=2&per_page=3"
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({"private": True, "visibility": "private"})),
         process(include_output([{"secret": "first"}], headers={"link": f'<{next_page}>; rel="next"'})),
         process(include_output([{"secret": "second"}])),
@@ -278,7 +281,7 @@ def test_secret_scanning_status_preserves_hidden_values_on_followup_pages() -> N
 
 def test_secret_scanning_status_empty_alerts_is_clean() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({"private": True, "visibility": "private"})),
         process(include_output([])),
     ]
@@ -292,7 +295,7 @@ def test_secret_scanning_status_empty_alerts_is_clean() -> None:
 
 def test_secret_scanning_status_permission_denied_is_unavailable_without_fallback() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({"private": True, "visibility": "private"})),
         process(
             include_output({"message": "Resource not accessible by integration"}, status=403),
@@ -316,7 +319,7 @@ def test_secret_scanning_status_permission_denied_is_unavailable_without_fallbac
 
 def test_secret_scanning_status_404_is_ambiguous_and_never_clean() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({"private": True, "visibility": "private"})),
         process(include_output({"message": "Not Found"}, status=404), returncode=1),
     ]
@@ -330,7 +333,7 @@ def test_secret_scanning_status_404_is_ambiguous_and_never_clean() -> None:
 
 def test_secret_scanning_status_repository_permission_failure_is_unavailable() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(
             include_output({"message": "Resource not accessible by integration"}, status=403),
             returncode=1,
@@ -347,7 +350,7 @@ def test_secret_scanning_status_repository_permission_failure_is_unavailable() -
 
 def test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_request() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(include_output({
             "private": True,
             "visibility": "private",
@@ -379,7 +382,7 @@ def test_secret_scanning_status_actor_mismatch_fails_closed_as_unavailable() -> 
 
 def test_secret_scanning_status_rejects_actor_change_after_preflight() -> None:
     responses = [
-        process(include_output({"login": "shiny-code-bot"})),
+        process(include_output({"login": "fixture-automation"})),
         process(
             include_output({"private": True, "visibility": "private"}),
             stderr=(
@@ -452,7 +455,7 @@ def test_reader_failed_request_dominates_aggregate_certainty() -> None:
             attempts=1,
             elapsed_wait=0.0,
             retry_eligible=True,
-            last_actor="shiny-code-bot",
+            last_actor="fixture-automation",
             last_bucket="rest_core",
             outcome_certainty="confirmed",
             reconciliation=None,
@@ -468,7 +471,7 @@ def test_reader_failed_request_dominates_aggregate_certainty() -> None:
             attempts=1,
             elapsed_wait=0.0,
             retry_eligible=False,
-            last_actor="shiny-code-bot",
+            last_actor="fixture-automation",
             last_bucket="rest_core",
             outcome_certainty="not_applicable",
             reconciliation=None,
@@ -518,7 +521,7 @@ def test_explicit_active_auth_actor_is_visible_and_degraded() -> None:
         github_read.repository(reader, "o/r")
     diagnostics = reader.diagnostics()
     assert diagnostics["actor"] == "octocat"
-    assert diagnostics["expectedActor"] == "shiny-code-bot"
+    assert diagnostics["expectedActor"] == "fixture-automation"
     assert diagnostics["degraded"] is True
     assert diagnostics["degradedComponents"] == ["actor"]
 
