@@ -24,6 +24,7 @@ fi
 
 bot_name=${GIT_COMMIT_AS_BOT_NAME:-${CODEX_AUTOMATION_LOGIN:-}}
 bot_email=${GIT_COMMIT_AS_BOT_EMAIL:-${CODEX_AUTOMATION_EMAIL:-}}
+unset CODEX_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
 
 if [ "$#" -eq 0 ]; then
 	echo "usage: git-commit-as-bot <git commit args...>" >&2

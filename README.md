@@ -133,12 +133,18 @@ Configure the automation role separately from the token:
 
 - `CODEX_AUTOMATION_LOGIN`
 - `CODEX_AUTOMATION_EMAIL`
+- `CODEX_AUTOMATION_BOT_LOGINS` for an optional quoted, space-separated list
+  of additional automation accounts used only for bot classification
 
 `GH_WITH_ENV_TOKEN_EXPECTED_LOGIN`, `GIT_COMMIT_AS_BOT_NAME`, and
 `GIT_COMMIT_AS_BOT_EMAIL` remain supported as higher-precedence per-tool
 overrides. The same local environment precedence is used by shell and Python
 helpers: `CODEX_SKILLS_ENV_FILE`, `$CODE_HOME/local.env`,
 `$CODEX_HOME/local.env`, then `~/.code/local.env`.
+
+Existing installations that previously configured only a GitHub token must add
+`CODEX_AUTOMATION_LOGIN` before GitHub writes will proceed. Quote values that
+contain spaces, including multi-login lists.
 
 Then call:
 

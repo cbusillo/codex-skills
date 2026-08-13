@@ -2805,9 +2805,10 @@ def call_gh(
     resolved_bucket = bucket or infer_api_bucket(path)
     resolved_host = host or DEFAULT_HOST
 
+    normalized_expected_actor = str(expected_actor or "").strip() or None
     resolved_expected_actor = (
-        expected_actor
-        if expected_actor is not None or github_identity.active_auth_fallback_allowed()
+        normalized_expected_actor
+        if normalized_expected_actor is not None or github_identity.active_auth_fallback_allowed()
         else github_identity.automation_login() if is_write else None
     )
     if is_write and resolved_expected_actor is None and not github_identity.active_auth_fallback_allowed():

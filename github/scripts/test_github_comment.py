@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from typing import Any, Callable
 
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
 os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"

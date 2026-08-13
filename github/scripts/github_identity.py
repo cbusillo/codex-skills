@@ -47,7 +47,7 @@ def load_local_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
             parsed = shlex.split(raw_value, comments=True, posix=True)
         except ValueError:
             continue
-        if len(parsed) > 1:
+        if len(parsed) > 1 or "$" in raw_value or "`" in raw_value:
             continue
         values[key] = parsed[0] if parsed else ""
     return values
@@ -77,32 +77,6 @@ def automation_login(environ: Mapping[str, str] | None = None) -> str | None:
         local_env=local_values,
     ) or configured_value(
         "CODEX_AUTOMATION_LOGIN",
-        environ=values,
-        local_env=local_values,
-    )
-
-
-def automation_email(environ: Mapping[str, str] | None = None) -> str | None:
-    values = os.environ if environ is None else environ
-    local_values = load_local_env(values)
-    return configured_value("CODEX_AUTOMATION_EMAIL", environ=values, local_env=local_values)
-
-
-def commit_name(environ: Mapping[str, str] | None = None) -> str | None:
-    values = os.environ if environ is None else environ
-    local_values = load_local_env(values)
-    return configured_value("GIT_COMMIT_AS_BOT_NAME", environ=values, local_env=local_values) or configured_value(
-        "CODEX_AUTOMATION_LOGIN",
-        environ=values,
-        local_env=local_values,
-    )
-
-
-def commit_email(environ: Mapping[str, str] | None = None) -> str | None:
-    values = os.environ if environ is None else environ
-    local_values = load_local_env(values)
-    return configured_value("GIT_COMMIT_AS_BOT_EMAIL", environ=values, local_env=local_values) or configured_value(
-        "CODEX_AUTOMATION_EMAIL",
         environ=values,
         local_env=local_values,
     )
@@ -138,7 +112,3 @@ def active_auth_fallback_allowed(environ: Mapping[str, str] | None = None) -> bo
         "true",
         "yes",
     }
-
-
-def automation_identity_configured(environ: Mapping[str, str] | None = None) -> bool:
-    return automation_login(environ) is not None

@@ -81,7 +81,7 @@
               "type": "function_call",
               "call_id": "call_plan_close",
               "name": "shell_command",
-              "arguments": "{\"command\": \"CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills close 900 --comment-file close-comment.md\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"CODEX_AUTOMATION_LOGIN=fixture-automation CODEX_GITHUB_TOKEN=synthetic-harness-token GH_WITH_ENV_TOKEN_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" uv run \\\"$CODE_HOME/skills/github/scripts/gh-plan.py\\\" --repo cbusillo/codex-skills close 900 --comment-file close-comment.md\", \"timeout_ms\": 30000}"
             }
           }
         ]

@@ -56,8 +56,6 @@ def test_per_tool_overrides_win_over_shared_identity() -> None:
         )
         values = {"CODEX_SKILLS_ENV_FILE": str(env_file)}
         assert github_identity.automation_login(values) == "github-tool"
-        assert github_identity.commit_name(values) == "Git Tool"
-        assert github_identity.commit_email(values) == "git@example.invalid"
 
 
 def test_unconfigured_identity_is_distinct_from_fallback() -> None:
@@ -69,23 +67,32 @@ def test_unconfigured_identity_is_distinct_from_fallback() -> None:
             assert github_identity.active_auth_fallback_allowed()
 
 
-def test_git_commit_identity_uses_shared_role_and_tool_override() -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        env_file = Path(directory) / "local.env"
-        env_file.write_text(
-            "CODEX_AUTOMATION_LOGIN='Automation Bot'\n"
-            "CODEX_AUTOMATION_EMAIL=automation@example.invalid\n",
-            encoding="utf-8",
-        )
-        values = {"CODEX_SKILLS_ENV_FILE": str(env_file)}
-        assert github_identity.commit_name(values) == "Automation Bot"
-        assert github_identity.commit_email(values) == "automation@example.invalid"
-
-
 def test_unquoted_multiword_values_are_ignored_like_invalid_shell_assignments() -> None:
     with tempfile.TemporaryDirectory() as directory:
         env_file = Path(directory) / "local.env"
         env_file.write_text("CODEX_AUTOMATION_LOGIN=Automation Bot\n", encoding="utf-8")
+        values = {"CODEX_SKILLS_ENV_FILE": str(env_file)}
+        assert github_identity.automation_login(values) is None
+
+
+def test_configured_bot_logins_support_quoted_space_separated_values() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = Path(directory) / "local.env"
+        env_file.write_text(
+            "CODEX_AUTOMATION_BOT_LOGINS='dependabot[bot] release-bot'\n",
+            encoding="utf-8",
+        )
+        values = {"CODEX_SKILLS_ENV_FILE": str(env_file)}
+        assert github_identity.configured_bot_logins(values) == (
+            "dependabot[bot]",
+            "release-bot",
+        )
+
+
+def test_shell_expansion_values_are_ignored_in_python_parser() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = Path(directory) / "local.env"
+        env_file.write_text("CODEX_AUTOMATION_LOGIN='${ORG}-bot'\n", encoding="utf-8")
         values = {"CODEX_SKILLS_ENV_FILE": str(env_file)}
         assert github_identity.automation_login(values) is None
 
@@ -95,8 +102,9 @@ def main() -> None:
         test_local_env_file_precedence_matches_shell,
         test_per_tool_overrides_win_over_shared_identity,
         test_unconfigured_identity_is_distinct_from_fallback,
-        test_git_commit_identity_uses_shared_role_and_tool_override,
         test_unquoted_multiword_values_are_ignored_like_invalid_shell_assignments,
+        test_shell_expansion_values_are_ignored_in_python_parser,
+        test_configured_bot_logins_support_quoted_space_separated_values,
     ]
     for test in tests:
         test()

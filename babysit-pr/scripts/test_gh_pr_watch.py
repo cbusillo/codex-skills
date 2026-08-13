@@ -7,7 +7,10 @@
 # ///
 
 import argparse
+import os
 from pathlib import Path
+
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
 import gh_pr_watch
 import pytest

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
 
@@ -442,6 +443,22 @@ def test_call_gh_unconfigured_write_fails_before_subprocess() -> None:
     assert result.ok is False, result.as_dict()
     assert result.failure.cause == "unconfigured_identity", result.failure
     assert result.failure.write_outcome == "not_started", result.failure
+
+
+def test_call_gh_blank_expected_actor_fails_before_subprocess() -> None:
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("subprocess.run") as run,
+    ):
+        result = _api.call_gh(
+            "POST",
+            "/repos/owner/repo/issues",
+            {"title": "demo"},
+            expected_actor="  ",
+        )
+    run.assert_not_called()
+    assert result.ok is False, result.as_dict()
+    assert result.failure.cause == "unconfigured_identity", result.failure
 
 
 def test_call_gh_explicit_fallback_allows_unconfigured_write() -> None:
@@ -2728,6 +2745,7 @@ def main() -> None:
         test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback,
         test_call_gh_unannounced_actor_change_fails_closed_after_write,
         test_call_gh_unconfigured_write_fails_before_subprocess,
+        test_call_gh_blank_expected_actor_fails_before_subprocess,
         test_call_gh_explicit_fallback_allows_unconfigured_write,
         test_call_gh_post_sends_body_as_json_stdin,
         test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment,

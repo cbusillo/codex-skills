@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
 
 MODULE_PATH = Path(__file__).with_name("github_unanswered_comments.py")

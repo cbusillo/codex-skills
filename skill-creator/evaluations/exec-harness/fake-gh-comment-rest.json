@@ -39,7 +39,7 @@
               "type": "function_call",
               "call_id": "call_comment_rest",
               "name": "shell_command",
-              "arguments": "{\"command\": \"GH_COMMENT_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-comment\\\" issue 42 --repo owner/repo --body-file comment.md --edit-last --create-if-none\", \"timeout_ms\": 30000}"
+              "arguments": "{\"command\": \"CODEX_AUTOMATION_LOGIN=fixture-automation GH_COMMENT_GH=\\\"$(dirname \\\"$(dirname \\\"$CODE_EXEC_HARNESS_GH_STATE\\\")\\\")/bin/gh\\\" \\\"$CODE_HOME/skills/github/scripts/gh-comment\\\" issue 42 --repo owner/repo --body-file comment.md --edit-last --create-if-none\", \"timeout_ms\": 30000}"
             }
           }
         ]

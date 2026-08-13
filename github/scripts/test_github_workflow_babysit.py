@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from unittest import mock
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 SPEC = importlib.util.spec_from_file_location(
     "github_workflow_babysit",
     SCRIPT_DIR / "github_workflow_babysit.py",
@@ -560,6 +562,29 @@ class GitHubWorkflowClientTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertFalse(any("/runs?" in path for path in calls))
+
+    def test_dispatch_without_configured_automation_identity_fails_before_api_call(self) -> None:
+        client = workflow_babysit.GitHubWorkflowClient(
+            "example/repo",
+            expected_automation_login=None,
+        )
+        with (
+            mock.patch.object(
+                workflow_babysit.github_identity,
+                "active_auth_fallback_allowed",
+                return_value=False,
+            ),
+            mock.patch.object(
+                workflow_babysit.github_api_core,
+                "call_gh_with_retry",
+            ) as call,
+        ):
+            with self.assertRaisesRegex(
+                workflow_babysit.WorkflowBabysitError,
+                "configured automation identity",
+            ):
+                client.dispatch(workflow="operator.yml", ref="main", inputs={})
+        call.assert_not_called()
 
     def test_reviewer_calls_explicitly_clear_automation_tokens(self) -> None:
         calls: list[dict[str, Any]] = []

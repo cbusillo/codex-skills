@@ -194,8 +194,9 @@ elif [[ "${1:-}" == "-R" && "${3:-}" == "run" && "${4:-}" == "rerun" ]]; then
 	fi
 	printf 'active:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 	printf 'active-success\n'
-elif [[ "${1:-}" == "issue" ]]; then
+elif [[ "${1:-}" == "issue" || ("${1:-}" == "-R" && "${3:-}" == "issue") ]]; then
 	printf '%s\n' "${GH_TOKEN:-}" >"$GH_ISSUE_ENV_LOG"
+	printf 'issue-token:%s\n' "${GH_TOKEN:-}" >>"$GH_ISSUE_TEST_LOG"
 	if [[ -n "${GH_TOKEN:-}" ]]; then
 		printf 'bot:%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
 		printf 'GraphQL: API rate limit already exceeded for user ID 279560559.\n' >&2
@@ -289,6 +290,9 @@ if [[ "$1" == "commit" ]]; then
 		"${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
 		"${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" \
 		>>"$GH_ISSUE_ENV_LOG"
+	printf 'commit_tokens=%s|%s|%s\n' \
+		"${CODEX_GITHUB_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" \
+		>>"$GH_ISSUE_ENV_LOG"
 elif [[ "$1 $2 $3" == "remote get-url origin" ]]; then
 	printf 'git@github.com:owner/repo.git\n'
 elif [[ "$1 $2 $3" == "remote set-url origin" ]]; then
@@ -304,10 +308,11 @@ chmod +x "$tmpdir/record-git"
 : >"$env_log"
 PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
-	CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid \
+	CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
 	"$repo_root/github/scripts/git-commit-as-bot" -m "bot commit" >/dev/null
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>' "$env_log"
+grep -q '^commit_tokens=||$' "$env_log"
 
 : >"$env_log"
 if env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL \
@@ -377,6 +382,37 @@ grep -q 'error: automation gh request was rate-limited; refusing to use active l
 grep -q 'hint: this command requires configured automation authentication' "$stderr_log"
 if grep -q 'active-success' "$stdout_log"; then
 	echo "error: automation-only mode used active gh auth" >&2
+	exit 1
+fi
+
+printf 'CODEX_GITHUB_TOKEN=codex-token\nGH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1\nGH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1\n' \
+	>"$tmpdir/automation-required.env"
+if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODEX_AUTOMATION_LOGIN \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/automation-required.env" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" -R owner/repo issue create \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: env-file automation-only mode must reject unconfigured writes" >&2
+	exit 1
+fi
+
+grep -q 'hint: this command requires configured automation authentication' "$stderr_log"
+
+: >"$env_log"
+: >"$log"
+if env -u CODEX_AUTOMATION_LOGIN PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
+	CODEX_GITHUB_TOKEN=codex-token GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1 \
+	GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" -R owner/repo issue create \
+	>"$stdout_log" 2>"$stderr_log"; then
+	:
+fi
+
+grep -q '^issue-token:codex-token$' "$log"
+grep -q '^issue-token:$' "$log"
+if grep -q 'no automation identity configured; explicitly authorized active-auth fallback' "$stderr_log"; then
+	echo "error: configured token was discarded when actor verification was explicitly bypassed" >&2
 	exit 1
 fi
 

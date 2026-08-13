@@ -40,12 +40,6 @@ stdin_captured=0
 
 trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
 
-case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
-1 | true | TRUE | yes | YES)
-	require_automation_auth=1
-	;;
-esac
-
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
 	--print-auth-account)
@@ -61,7 +55,6 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
-readonly require_automation_auth
 
 if [ -f "$env_file" ]; then
 	set -a
@@ -69,6 +62,13 @@ if [ -f "$env_file" ]; then
 	. "$env_file"
 	set +a
 fi
+
+case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
+1 | true | TRUE | yes | YES)
+	require_automation_auth=1
+	;;
+esac
+readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
@@ -391,9 +391,16 @@ verify_bot_login_for_write() {
 	if ! is_write_command "$@"; then
 		return 0
 	fi
-	if [ -z "$expected_login" ] && ! allows_active_auth_fallback; then
+	if [ -z "$expected_login" ]; then
+		if allows_active_auth_fallback; then
+			return 0
+		fi
 		echo "error: GitHub write requires configured automation login; refusing write" >&2
-		echo "hint: set CODEX_AUTOMATION_LOGIN in local.env or explicitly enable active-human fallback" >&2
+		if [ "$require_automation_auth" -eq 1 ]; then
+			echo "hint: this command requires configured automation authentication" >&2
+		else
+			echo "hint: set CODEX_AUTOMATION_LOGIN in local.env or explicitly enable active-human fallback" >&2
+		fi
 		return 1
 	fi
 	login_status=0
@@ -500,12 +507,16 @@ if ! validate_sensitive_read_policy "$@"; then
 	exit 2
 fi
 
-if [ -z "$expected_login" ] && is_write_command "$@"; then
+if [ -z "$expected_login" ] && [ -z "${GH_TOKEN:-}" ] && is_write_command "$@"; then
 	if refuse_active_auth_fallback "GitHub write requires configured automation identity"; then
 		exit 1
 	fi
 	fallback_login=$(active_auth_login)
 	echo "warning: no automation identity configured; explicitly authorized active-auth fallback; using the active gh account '${fallback_login:-unknown}'" >&2
+	if [ "$print_auth_account" -eq 1 ]; then
+		echo "gh auth status (active gh auth):" >&2
+		env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" auth status >&2 || true
+	fi
 	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 	exit $?
 fi

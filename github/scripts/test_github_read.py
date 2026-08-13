@@ -19,6 +19,7 @@ from typing import Any, Optional
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
 os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
