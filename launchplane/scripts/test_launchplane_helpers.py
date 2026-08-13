@@ -17,8 +17,11 @@ import sys
 import types
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager, redirect_stdout
 from email.message import Message
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import patch
 
@@ -36,9 +39,19 @@ def load_module(filename: str, name: str) -> types.ModuleType:
     return module
 
 
-safety = load_module("launchplane_safety.py", "launchplane_safety")
-write_action = load_module("launchplane-write-action.py", "launchplane_write_action")
-context_helper = load_module("launchplane-context.py", "launchplane_context")
+safety: Any = load_module("launchplane_safety.py", "launchplane_safety")
+write_action: Any = load_module("launchplane-write-action.py", "launchplane_write_action")
+context_helper: Any = load_module("launchplane-context.py", "launchplane_context")
+
+
+@contextmanager
+def temporary_attribute(target: Any, name: str, value: Any) -> Iterator[None]:
+    original = getattr(target, name)
+    setattr(target, name, value)
+    try:
+        yield
+    finally:
+        setattr(target, name, original)
 
 
 def run_helper(script: str, args: list[str], env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -114,7 +127,11 @@ def test_write_helper_validates_cli_env_and_json_url_sources() -> None:
     assert env_source["returncode"] == 2
     assert env_source["payload"]["warnings"][0]["code"] == "invalid_service_url_userinfo"
     args = argparse.Namespace(config="local.json", env_config=None, url=None)
-    with patch.object(write_action, "load_config", return_value={"service_url": "ftp://launchplane.example.invalid"}):
+    with temporary_attribute(
+        write_action,
+        "load_config",
+        lambda _path: {"service_url": "ftp://launchplane.example.invalid"},
+    ):
         with patch.dict(write_action.os.environ, {"LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret"}, clear=True):
             diagnostic = write_action.settings_diagnostic(args)
     assert diagnostic["classification"] == "invalid_service_url_scheme"
@@ -129,7 +146,11 @@ def test_context_helper_validates_env_and_json_url_sources() -> None:
     assert env_source["returncode"] == 0
     assert env_source["payload"]["status"] == "invalid"
     assert env_source["payload"]["warnings"][0]["code"] == "invalid_service_url_userinfo"
-    with patch.object(context_helper, "load_config", return_value={"service_url": "http://launchplane.example.invalid"}):
+    with temporary_attribute(
+        context_helper,
+        "load_config",
+        lambda _path: {"service_url": "http://launchplane.example.invalid"},
+    ):
         with patch.dict(context_helper.os.environ, {"LAUNCHPLANE_CONTEXT_TOKEN": "secret"}, clear=True):
             settings = context_helper.resolve_settings(argparse.Namespace(config="local.json", url=None))
     try:
@@ -266,6 +287,471 @@ def test_preview_feedback_remediation_body_and_projection() -> None:
         provider_payload=dry_run_provider,
     )
     assert "companion_feedback_id" not in dry_run["result"]
+
+
+def test_change_impact_policy_body_and_projection() -> None:
+    private_record = {
+        "schema_version": 1,
+        "record_id": "change-impact-policy-123-r1",
+        "status": "active",
+        "repository_id": "123",
+        "repository_owner_id": "456",
+        "repository": "example/repo",
+        "policy_revision": 1,
+        "component_rules": [
+            {
+                "schema_version": 1,
+                "rule_id": "change-impact-rule-private",
+                "component": "private-component",
+                "path_prefixes": ["private/path"],
+                "affected_products": [],
+                "review_tier": "routine",
+                "production_affecting": None,
+                "reason": "Private rule reason.",
+            }
+        ],
+        "default_unknown_review_tier": "sensitive",
+        "effective_at": "2026-08-13T20:00:00Z",
+        "source": "private operator input",
+        "reason": "Establish explicit repository maintenance impact policy.",
+        "supersedes_record_id": None,
+        "policy_digest": "a" * 64,
+    }
+    private_payload = {
+        "schema_version": 1,
+        "mode": "apply",
+        "expected_current_record_id": "",
+        "expected_current_policy_digest": "",
+        "record": private_record,
+    }
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "change-impact-policy.json"
+        payload_path.write_text(json.dumps(private_payload), encoding="utf-8")
+        apply_body = write_action.change_impact_policy_payload_body(
+            argparse.Namespace(
+                payload_file=str(payload_path),
+                idempotency_key="change-impact-policy-example-1",
+                reviewed_dry_run=True,
+                expected_policy_digest="a" * 64,
+            ),
+            mode="apply",
+        )
+        assert apply_body == private_payload
+        dry_run_body = write_action.change_impact_policy_payload_body(
+            argparse.Namespace(
+                payload_file=str(payload_path),
+                idempotency_key="",
+                reviewed_dry_run=False,
+                expected_policy_digest="",
+            ),
+            mode="dry_run",
+        )
+        assert dry_run_body["mode"] == "dry_run"
+        assert private_payload["mode"] == "apply"
+
+        payload_without_digest = {
+            **private_payload,
+            "record": {**private_record, "policy_digest": ""},
+        }
+        payload_path.write_text(json.dumps(payload_without_digest), encoding="utf-8")
+        digest_bound_body = write_action.change_impact_policy_payload_body(
+            argparse.Namespace(
+                payload_file=str(payload_path),
+                idempotency_key="change-impact-policy-example-1",
+                reviewed_dry_run=True,
+                expected_policy_digest="a" * 64,
+            ),
+            mode="apply",
+        )
+        assert digest_bound_body["record"]["policy_digest"] == "a" * 64
+
+    projected = write_action.summarize_success(
+        operation="change-impact-policy-dry-run",
+        request={"mode": "dry_run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "ok",
+            "trace_id": "launchplane_req_change_impact",
+            "result": {
+                "schema_version": 1,
+                "status": "would_apply",
+                "record": private_record,
+            },
+        },
+    )
+    assert projected["summary"]["policy_apply_status"] == "would_apply"
+    assert projected["result"] == {
+        "status": "would_apply",
+        "record": {
+            "record_id": "change-impact-policy-123-r1",
+            "policy_digest": "a" * 64,
+            "policy_revision": 1,
+            "status": "active",
+            "effective_at": "2026-08-13T20:00:00Z",
+        },
+    }
+    rendered = json.dumps(projected)
+    for private_value in (
+        "private-component",
+        "private/path",
+        "Private rule reason.",
+        "example/repo",
+        "private operator input",
+    ):
+        assert private_value not in rendered
+
+
+def test_change_impact_policy_apply_requires_review_idempotency_and_reason() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "change-impact-policy.json"
+        payload_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "record": {"reason": "Approved.", "policy_digest": "a" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="",
+            reviewed_dry_run=False,
+            expected_policy_digest="",
+        )
+        try:
+            write_action.change_impact_policy_payload_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "idempotency_key_required"
+        else:
+            raise AssertionError("expected change-impact apply idempotency requirement")
+        args.idempotency_key = "change-impact-policy-example-1"
+        try:
+            write_action.change_impact_policy_payload_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_required"
+        else:
+            raise AssertionError("expected reviewed dry-run acknowledgement")
+        args.reviewed_dry_run = True
+        args.expected_policy_digest = "a" * 64
+        payload_path.write_text(
+            json.dumps({"schema_version": 1, "record": {"reason": ""}}),
+            encoding="utf-8",
+        )
+        try:
+            write_action.change_impact_policy_payload_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reason_required"
+        else:
+            raise AssertionError("expected embedded policy reason requirement")
+        payload_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "record": {"reason": "Approved.", "policy_digest": "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            write_action.change_impact_policy_payload_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "policy_digest_mismatch"
+        else:
+            raise AssertionError("expected dry-run policy digest binding")
+        args.expected_policy_digest = "not-a-digest"
+        try:
+            write_action.change_impact_policy_payload_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "invalid_expected_policy_digest"
+        else:
+            raise AssertionError("expected local policy digest validation")
+
+
+def test_change_impact_policy_payload_rejects_repo_local_files() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        repo_root = Path(directory) / "repo"
+        repo_root.mkdir()
+        payload_path = repo_root / "change-impact-policy.json"
+        payload_path.write_text(
+            json.dumps({"schema_version": 1, "record": {"reason": "Approved."}}),
+            encoding="utf-8",
+        )
+        with temporary_attribute(write_action, "active_repo_root", lambda: repo_root):
+            try:
+                write_action.change_impact_policy_payload_body(
+                    argparse.Namespace(
+                        payload_file=str(payload_path),
+                        idempotency_key="",
+                        reviewed_dry_run=False,
+                        expected_policy_digest="",
+                    ),
+                    mode="dry_run",
+                )
+            except ValueError as exc:
+                assert str(exc) == "repo_local_payload_unsupported"
+            else:
+                raise AssertionError("expected repo-local change-impact payload rejection")
+
+
+def test_change_impact_policy_projection_fails_closed_on_extra_fields() -> None:
+    try:
+        write_action.summarize_success(
+            operation="change-impact-policy-apply",
+            request={"mode": "apply", "payload_source": "private_file"},
+            provider_payload={
+                "status": "ok",
+                "trace_id": "launchplane_req_change_impact",
+                "result": {
+                    "schema_version": 1,
+                    "status": "applied",
+                    "record": {
+                        "record_id": "change-impact-policy-123-r1",
+                        "status": "active",
+                        "repository_id": "123",
+                        "repository_owner_id": "456",
+                        "repository": "example/repo",
+                        "policy_revision": 1,
+                        "component_rules": [],
+                        "default_unknown_review_tier": "sensitive",
+                        "effective_at": "2026-08-13T20:00:00Z",
+                        "source": "private operator input",
+                        "reason": "Approved.",
+                        "supersedes_record_id": None,
+                        "policy_digest": "a" * 64,
+                        "unexpected_private_field": "must not pass",
+                    },
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected extra change-impact record field to fail closed")
+
+    nested_record = {
+        "schema_version": 1,
+        "record_id": "change-impact-policy-123-r1",
+        "status": "active",
+        "repository_id": "123",
+        "repository_owner_id": "456",
+        "repository": "example/repo",
+        "policy_revision": 1,
+        "component_rules": [
+            {
+                "schema_version": 1,
+                "rule_id": "change-impact-rule-private",
+                "component": "private-component",
+                "path_prefixes": ["private/path"],
+                "affected_products": [],
+                "review_tier": "routine",
+                "production_affecting": None,
+                "reason": "Private rule reason.",
+                "unexpected_private_field": "must not pass",
+            }
+        ],
+        "default_unknown_review_tier": "sensitive",
+        "effective_at": "2026-08-13T20:00:00Z",
+        "source": "private operator input",
+        "reason": "Approved.",
+        "supersedes_record_id": None,
+        "policy_digest": "a" * 64,
+    }
+    try:
+        write_action.summarize_success(
+            operation="change-impact-policy-apply",
+            request={"mode": "apply", "payload_source": "private_file"},
+            provider_payload={
+                "status": "ok",
+                "trace_id": "launchplane_req_change_impact",
+                "result": {
+                    "schema_version": 1,
+                    "status": "applied",
+                    "record": nested_record,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected nested change-impact field to fail closed")
+
+
+def test_change_impact_policy_cli_dispatches_exact_route_and_modes() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "change-impact-policy.json"
+        payload_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "record": {"reason": "Approved.", "policy_digest": "a" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        calls: list[dict[str, Any]] = []
+
+        def fake_execute_post(**kwargs: Any) -> int:
+            calls.append(kwargs)
+            return 0
+
+        with temporary_attribute(write_action, "execute_post", fake_execute_post):
+            assert (
+                write_action.main(
+                    [
+                        "change-impact-policy-dry-run",
+                        "--payload-file",
+                        str(payload_path),
+                    ]
+                )
+                == 0
+            )
+            assert (
+                write_action.main(
+                    [
+                        "change-impact-policy-apply",
+                        "--payload-file",
+                        str(payload_path),
+                        "--reviewed-dry-run",
+                        "--idempotency-key",
+                        "change-impact-policy-example-1",
+                        "--expected-policy-digest",
+                        "a" * 64,
+                    ]
+                )
+                == 0
+            )
+    assert [call["path"] for call in calls] == [
+        "/v1/change-impact/policies/apply",
+        "/v1/change-impact/policies/apply",
+    ]
+    assert [call["body"]["mode"] for call in calls] == ["dry_run", "apply"]
+    assert calls[0]["request"] == {
+        "mode": "dry_run",
+        "payload_source": "private_file",
+    }
+    assert calls[1]["request"] == {
+        "mode": "apply",
+        "payload_source": "private_file",
+    }
+
+
+def test_change_impact_policy_read_projection_is_bounded() -> None:
+    record = {
+        "schema_version": 1,
+        "record_id": "change-impact-policy-123-r1",
+        "status": "active",
+        "repository_id": "123",
+        "repository_owner_id": "456",
+        "repository": "example/repo",
+        "policy_revision": 1,
+        "component_rules": [
+            {
+                "schema_version": 1,
+                "rule_id": "change-impact-rule-private",
+                "component": "private-component",
+                "path_prefixes": ["private/path"],
+                "affected_products": [],
+                "review_tier": "routine",
+                "production_affecting": None,
+                "reason": "Private rule reason.",
+            }
+        ],
+        "default_unknown_review_tier": "sensitive",
+        "effective_at": "2026-08-13T20:00:00Z",
+        "source": "private operator input",
+        "reason": "Approved.",
+        "supersedes_record_id": None,
+        "policy_digest": "a" * 64,
+    }
+    payload = write_action.summarize_change_impact_policy_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "ok",
+            "trace_id": "launchplane_req_change_impact_read",
+            "read_model": {
+                "schema_version": 1,
+                "mode": "shadow",
+                "authoritative": False,
+                "enforcement_effect": "none",
+                "repository_id": "123",
+                "current_policy": record,
+                "policy_history_count": 1,
+            },
+        },
+    )
+    assert payload["result"]["current_policy"]["policy_digest"] == "a" * 64
+    rendered = json.dumps(payload)
+    for private_value in ("example/repo", "private-component", "private/path", "456"):
+        assert private_value not in rendered
+
+    empty_payload = write_action.summarize_change_impact_policy_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "ok",
+            "trace_id": "launchplane_req_change_impact_empty",
+            "read_model": {
+                "schema_version": 1,
+                "mode": "shadow",
+                "authoritative": False,
+                "enforcement_effect": "none",
+                "repository_id": "123",
+                "current_policy": None,
+                "policy_history_count": 0,
+            },
+        },
+    )
+    assert empty_payload["result"]["current_policy"] is None
+    assert empty_payload["result"]["policy_history_count"] == 0
+
+
+def test_change_impact_apply_success_projection_failure_is_unverified() -> None:
+    output = io.StringIO()
+    with temporary_attribute(
+        write_action,
+        "resolve_settings",
+        lambda _args: {
+            "service_url": "https://launchplane.example.invalid",
+            "token": "operator-token",
+            "public_url_hint_sources": [],
+        },
+    ):
+        with temporary_attribute(
+            write_action,
+            "request_launchplane",
+            lambda **_kwargs: {
+                "status": "ok",
+                "trace_id": "launchplane_req_applied_unverified",
+                "result": {"unexpected": "shape"},
+            },
+        ):
+            with redirect_stdout(output):
+                status = getattr(write_action, "execute_post")(
+                    args=argparse.Namespace(
+                        timeout=3,
+                        idempotency_key="change-impact-policy-example-1",
+                    ),
+                    operation="change-impact-policy-apply",
+                    path="/v1/change-impact/policies/apply",
+                    request={"mode": "apply", "payload_source": "private_file"},
+                    body={"schema_version": 1},
+                )
+    payload = json.loads(output.getvalue())
+    assert status == 0
+    assert payload["status"] == "accepted_unverified"
+    assert payload["warnings"][0]["code"] == "apply_response_unverified"
+
+
+def test_invalid_private_payload_does_not_expose_path() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "private-change-impact-policy.json"
+        payload_path.write_text("{broken", encoding="utf-8")
+        try:
+            write_action.read_payload_file(str(payload_path))
+        except ValueError as exc:
+            assert str(exc) == "invalid_payload"
+            assert str(payload_path) not in str(exc)
+        else:
+            raise AssertionError("expected invalid private payload rejection")
 
 
 def test_current_launchplane_service_response_shapes() -> None:
@@ -745,32 +1231,41 @@ def test_request_helpers_use_shared_safe_urlopen() -> None:
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        @staticmethod
+        def read() -> bytes:
             return b'{"status":"accepted","result":{"controller_action":"idle"}}'
 
     def fake_safe_urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
         calls.append({"url": request.full_url, "timeout": timeout, "headers": dict(request.header_items())})
         return Response()
 
-    with patch.object(write_action, "safe_urlopen", side_effect=fake_safe_urlopen):
+    with temporary_attribute(write_action, "safe_urlopen", fake_safe_urlopen):
         write_action.request_launchplane(service_url="https://launchplane.example.invalid", path="/v1/work-graph/merge-train/controller/run-once", settings={"token": "operator-token"}, body={"schema_version": 1}, timeout=3)
     assert calls[0]["url"] == "https://launchplane.example.invalid/v1/work-graph/merge-train/controller/run-once"
     assert calls[0]["headers"]["Authorization"] == "Bearer operator-token"
     context_calls: list[str] = []
 
     def fake_context_safe_urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
+        assert timeout == 3
         context_calls.append(request.full_url)
         return Response()
 
-    with patch.object(context_helper, "safe_urlopen", side_effect=fake_context_safe_urlopen):
+    with temporary_attribute(context_helper, "safe_urlopen", fake_context_safe_urlopen):
         context_helper.request_launchplane("https://launchplane.example.invalid/v1/agent/context?repository=example%2Frepo", {"token": "context-token"}, 3)
     assert context_calls == ["https://launchplane.example.invalid/v1/agent/context?repository=example%2Frepo"]
 
 
 def test_settings_diagnostic_validates_sources_without_printing_values() -> None:
     args = argparse.Namespace(config=None, env_config=None, url=None)
-    with patch.object(write_action, "load_config", return_value={}):
-        with patch.object(write_action, "load_operator_env", return_value={"LAUNCHPLANE_OPERATOR_URL": "http://launchplane.example.invalid", "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render"}):
+    with temporary_attribute(write_action, "load_config", lambda _path: {}):
+        with temporary_attribute(
+            write_action,
+            "load_operator_env",
+            lambda _args: {
+                "LAUNCHPLANE_OPERATOR_URL": "http://launchplane.example.invalid",
+                "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
+            },
+        ):
             with patch.dict(write_action.os.environ, {}, clear=True):
                 diagnostic = write_action.settings_diagnostic(args)
     rendered = json.dumps(diagnostic)
@@ -788,6 +1283,14 @@ def main() -> int:
         test_context_helper_validates_env_and_json_url_sources,
         test_success_projection_preserves_contracts,
         test_preview_feedback_remediation_body_and_projection,
+        test_change_impact_policy_body_and_projection,
+        test_change_impact_policy_apply_requires_review_idempotency_and_reason,
+        test_change_impact_policy_payload_rejects_repo_local_files,
+        test_change_impact_policy_projection_fails_closed_on_extra_fields,
+        test_change_impact_policy_cli_dispatches_exact_route_and_modes,
+        test_change_impact_policy_read_projection_is_bounded,
+        test_change_impact_apply_success_projection_failure_is_unverified,
+        test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
         test_optional_public_identifier_rejects_null_values,
         test_runtime_environment_projection_enforces_scope_identity,
