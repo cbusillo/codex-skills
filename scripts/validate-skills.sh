@@ -79,7 +79,6 @@ helper_tests=(
 	skill-creator/scripts/test_collect_exec_harness_performance.py
 	skill-creator/scripts/test_validate_skill_repo.py
 	skill-creator/scripts/test_validate_skill_scorecard.py
-	skill-creator/scripts/validate-command-policy-simulator.py
 	rollout-friction/scripts/validate_analyze_rollouts.py
 	rollout-friction/scripts/validate_classify_auto_review_ledger.py
 	rollout-friction/scripts/validate_cluster_rollout_episodes.py
@@ -93,28 +92,37 @@ helper_tests=(
 	rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
 )
 
-# Files matching these names are CLIs or fixtures that require arguments/live
-# context, not standalone helper tests. Keep the skip list explicit so newly
-# added test_*.py or validate_*.py files do not silently miss validation.
-helper_test_skiplist=(
+# Validators invoked by dedicated commands above rather than by the zero-argument
+# helper loop. This array classifies the files structurally; the commands and
+# gate trace provide execution evidence.
+explicit_helper_validators=(
 	github/scripts/validate-gh-plan.py
 	github/scripts/validate-operation-matrix.py
-	rollout-friction/scripts/validate_rollout_memory_llm_results.py
 	scripts/validate-public-safety.py
+	skill-creator/scripts/quick_validate.py
+	skill-creator/scripts/validate-command-policy-simulator.py
 	skill-creator/scripts/validate-skill-behavior.py
 	skill-creator/scripts/validate-skill-repo.py
 	skill-creator/scripts/validate-skill-scorecard.py
 )
 
-mapfile -t discovered_helper_tests < <(
-	git ls-files --cached --others --exclude-standard '*test_*.py' '*validate_*.py' '*validate-*.py' | sort
+# Files matching these names are CLIs or fixtures that require arguments/live
+# context and are not executed directly by this gate. Keep the skip list
+# explicit so newly added test_*.py or validate*.py files do not silently miss
+# validation.
+helper_test_skiplist=(
+	rollout-friction/scripts/validate_rollout_memory_llm_results.py
 )
 
-declared_helper_tests="$(printf '%s\n' "${helper_tests[@]}" "${helper_test_skiplist[@]}" | sort)"
+mapfile -t discovered_helper_tests < <(
+	git ls-files --cached --others --exclude-standard '*test_*.py' '*validate*.py' | sort
+)
+
+declared_helper_tests="$(printf '%s\n' "${helper_tests[@]}" "${explicit_helper_validators[@]}" "${helper_test_skiplist[@]}" | sort)"
 discovered_helper_tests_text="$(printf '%s\n' "${discovered_helper_tests[@]}")"
 if [[ "$declared_helper_tests" != "$discovered_helper_tests_text" ]]; then
 	printf 'helper test list is out of date\n' >&2
-	printf 'declared + skipped:\n%s\n' "$declared_helper_tests" >&2
+	printf 'loop + explicit + skipped:\n%s\n' "$declared_helper_tests" >&2
 	printf 'discovered:\n%s\n' "$discovered_helper_tests_text" >&2
 	exit 1
 fi
