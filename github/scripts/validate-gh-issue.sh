@@ -757,7 +757,7 @@ printf 'Updated body with `literal markdown`.\n' | \
 	--add-label enhancement --remove-label plan --add-assignee octocat --remove-assignee @me --remove-milestone \
 	>"$stdout_log" 2>"$stderr_log"
 assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/42'
-jq -e '.completed_steps == ["resolve_actor","edit_issue_fields","add_labels","remove_label","add_assignees","remove_assignees","read_after_write"]' "$stdout_log" >/dev/null
+jq -e '.completed_steps == ["resolve_actor","read_issue_ownership","edit_issue_fields","add_labels","remove_label","add_assignees","remove_assignees","read_after_write"]' "$stdout_log" >/dev/null
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/42' "$log"
 grep -q -- '--method POST.* /repos/owner/repo/issues/42/labels' "$log"
 grep -q -- '--method DELETE.* /repos/owner/repo/issues/42/labels/plan' "$log"

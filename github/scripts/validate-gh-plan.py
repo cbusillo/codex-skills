@@ -266,61 +266,25 @@ def test_unknown_author_fails_closed_into_preservation_mode() -> None:
     assert not plan.issue_body_is_fully_managed(issue)
 
 
-def test_maintainer_and_bot_issues_remain_fully_managed() -> None:
+def test_only_acting_bot_issues_are_fully_managed() -> None:
     plan = load_plan_module()
-    cases = [
-        plan_issue(body="## Objective\n\nOld\n", association="OWNER"),
-        plan_issue(
-            body=plan.template_body("Old"),
-            association="MEMBER",
-        ),
-        plan_issue(
-            body=plan.template_body("Old"),
-            association="COLLABORATOR",
-        ),
-        plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR),
-    ]
+    issue = plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR)
 
-    for issue in cases:
-        updated = plan.replace_issue_plan_section(issue, "Objective", "New")
-        assert plan.PLAN_ORIGINAL_START not in updated, updated
-        assert plan.section_map(updated)["Objective"] == "New", updated
+    updated = plan.replace_issue_plan_section(issue, "Objective", "New")
+
+    assert plan.PLAN_ORIGINAL_START not in updated, updated
+    assert plan.section_map(updated)["Objective"] == "New", updated
 
 
-def test_legacy_member_and_collaborator_plans_remain_fully_managed() -> None:
+def test_human_repository_roles_do_not_grant_plan_body_ownership() -> None:
     plan = load_plan_module()
-    legacy_body = plan.template_body("Legacy plan").removeprefix(
-        f"{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n\n"
-    )
-    assert [
-        match.group(1).strip()
-        for match in re.finditer(r"(?m)^##\s+(.+?)\s*$", legacy_body)
-    ] == [
-        "Objective",
-        "Finish Line",
-        "Current Status",
-        "Scope",
-        "Acceptance Criteria",
-        "Relationships",
-        "Validation",
-        "Decisions",
-        "Open Questions",
-    ]
-
-    for association in ("MEMBER", "COLLABORATOR"):
-        issue = plan_issue(body=legacy_body, association=association)
+    for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+        issue = plan_issue(body="Human-authored request", association=association)
         updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Active")
 
-        assert plan.issue_body_is_fully_managed(issue), association
-        assert plan.PLAN_ORIGINAL_START not in updated, updated
-        assert updated.startswith(plan.PLAN_MANAGED_PROVENANCE_MARKER), updated
-        assert plan.section_map(updated)["Current Status"] == "State: Active", updated
-
-        issue["body"] = plan.replace_issue_plan_section(issue, "Notes", "Durable note")
-        updated_again = plan.replace_issue_plan_section(issue, "Current Status", "State: Done")
-        assert plan.issue_body_is_fully_managed(issue), association
-        assert plan.section_map(updated_again)["Notes"] == "Durable note", updated_again
-        assert plan.section_map(updated_again)["Current Status"] == "State: Done", updated_again
+        assert not plan.issue_body_is_fully_managed(issue), association
+        original = plan.marked_block(updated, plan.PLAN_ORIGINAL_START, plan.PLAN_ORIGINAL_END)
+        assert original is not None and original[2] == "Human-authored request", original
 
 
 def test_noncanonical_legacy_member_body_uses_preservation_mode() -> None:
@@ -356,7 +320,7 @@ def test_noncanonical_provenance_marker_does_not_grant_managed_ownership() -> No
         raise AssertionError("noncanonical provenance marker should fail closed")
 
 
-def test_provenance_managed_custom_body_remains_updatable() -> None:
+def test_provenance_marker_does_not_transfer_human_body_ownership() -> None:
     plan = load_plan_module()
     issue = plan_issue(
         body=(
@@ -368,12 +332,12 @@ def test_provenance_managed_custom_body_remains_updatable() -> None:
         association="MEMBER",
     )
 
-    updated = plan.replace_issue_plan_section(issue, "Current Status", "State: Done")
-
-    assert plan.issue_body_is_fully_managed(issue)
-    assert plan.PLAN_ORIGINAL_START not in updated, updated
-    assert plan.section_map(updated)["Current Status"] == "State: Done", updated
-    assert plan.section_map(updated)["Notes"] == "Created from --body-file.", updated
+    try:
+        plan.replace_issue_plan_section(issue, "Current Status", "State: Done")
+    except plan.PlanError as exc:
+        assert "cannot safely distinguish" in str(exc), exc
+    else:
+        raise AssertionError("a provenance marker must not transfer human-authored body ownership")
 
 
 def test_generic_operation_marker_does_not_grant_managed_ownership() -> None:
@@ -765,6 +729,7 @@ def test_issue_body_updates_use_rest_patch() -> None:
             "html_url": "https://github.com/owner/repo/issues/1",
             "labels": [],
             "state": "open",
+            "user": {"login": plan.EXPECTED_ACTOR, "type": "User"},
             "author_association": "OWNER",
         },
         ("owner/repo", 2): {
@@ -776,6 +741,7 @@ def test_issue_body_updates_use_rest_patch() -> None:
             "html_url": "https://github.com/owner/repo/issues/2",
             "labels": [],
             "state": "open",
+            "user": {"login": plan.EXPECTED_ACTOR, "type": "User"},
             "author_association": "OWNER",
         },
     }
@@ -5760,11 +5726,11 @@ def main() -> None:
         test_legacy_contributor_plan_sections_require_explicit_migration,
         test_contributor_original_request_section_is_immutable,
         test_unknown_author_fails_closed_into_preservation_mode,
-        test_maintainer_and_bot_issues_remain_fully_managed,
-        test_legacy_member_and_collaborator_plans_remain_fully_managed,
+        test_only_acting_bot_issues_are_fully_managed,
+        test_human_repository_roles_do_not_grant_plan_body_ownership,
         test_noncanonical_legacy_member_body_uses_preservation_mode,
         test_noncanonical_provenance_marker_does_not_grant_managed_ownership,
-        test_provenance_managed_custom_body_remains_updatable,
+        test_provenance_marker_does_not_transfer_human_body_ownership,
         test_generic_operation_marker_does_not_grant_managed_ownership,
         test_contributor_envelope_stays_preserved_after_association_change,
         test_managed_provenance_is_reserved_and_well_formed,

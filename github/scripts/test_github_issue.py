@@ -501,7 +501,10 @@ def test_rejected_retry_enabled_issue_create_can_retry() -> None:
 
 
 def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
+    issue_reads = 0
+
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal issue_reads
         if path == "/user":
             return success({"login": "shiny-code-bot"})
         if method == "PATCH":
@@ -521,6 +524,7 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
             return success(issue_body())
         assert method == "GET"
         assert path == "/repos/owner/repo/issues/42"
+        issue_reads += 1
         return success(issue_body())
 
     def run(calls: list[dict[str, Any]]) -> None:
@@ -538,6 +542,7 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
         )
         assert payload["completed_steps"] == [
             "resolve_actor",
+            "read_issue_ownership",
             "edit_issue_fields",
             "add_labels",
             "remove_label",
@@ -545,9 +550,10 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
             "remove_assignees",
             "read_after_write",
         ], payload
-        assert payload["attempts"] == 7, payload
+        assert payload["attempts"] == 8, payload
         assert payload["outcome_certainty"] == "confirmed", payload
         assert [call["method"] for call in calls] == [
+            "GET",
             "GET",
             "PATCH",
             "POST",
@@ -556,14 +562,21 @@ def test_edit_uses_rest_membership_endpoints_and_reads_after_write() -> None:
             "DELETE",
             "GET",
         ], calls
+        assert issue_reads == 2, issue_reads
 
     with_call_stub(callback, run)
 
 
 def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
+    issue_read = False
+
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal issue_read
         if path == "/user":
             return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            issue_read = True
+            return success(issue_body())
         if method == "PATCH":
             return success(issue_body())
         return failure(503, "Unicorn!", is_write=True)
@@ -579,13 +592,99 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
             )
         except github_issue.IssueError as exc:
             assert exc.failure.failed_step == "add_labels", exc.failure
-            assert exc.failure.completed_steps == ["resolve_actor", "edit_issue_fields"], exc.failure
+            assert exc.failure.completed_steps == [
+                "resolve_actor",
+                "read_issue_ownership",
+                "edit_issue_fields",
+            ], exc.failure
             assert exc.payload["reconciliation"]["strategy"] == "read_issue_and_compare_requested_fields"
-            assert exc.payload["attempts"] == 3, exc.payload
+            assert exc.payload["attempts"] == 4, exc.payload
             assert exc.payload["outcome_certainty"] == "unknown", exc.payload
         else:
             raise AssertionError("expected partial edit failure")
-        assert [call["method"] for call in calls] == ["GET", "PATCH", "POST"], calls
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "POST"], calls
+        assert issue_read
+
+    with_call_stub(callback, run)
+
+
+def test_edit_rejects_cross_author_source_content_without_override() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        assert method == "GET"
+        return success(issue_body(actor="human-owner"))
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42,
+                body="replacement",
+                title="New title",
+                repo="owner/repo",
+                gh_cmd="fake-gh",
+            )
+        except github_issue.IssueError as exc:
+            assert exc.failure.cause == "authorization_denied", exc.failure
+            assert exc.failure.failed_step == "authorize_source_content_edit", exc.failure
+            assert exc.payload["issue_author"] == "human-owner", exc.payload
+        else:
+            raise AssertionError("cross-author source-content edit should fail closed")
+        assert [call["method"] for call in calls] == ["GET", "GET"], calls
+
+    with_call_stub(callback, run)
+
+
+def test_edit_allows_explicit_cross_author_source_content_override() -> None:
+    issue_reads = 0
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal issue_reads
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if method == "GET":
+            issue_reads += 1
+            return success(issue_body(actor="human-owner"))
+        assert method == "PATCH"
+        assert body == {"body": "replacement"}
+        return success(issue_body(actor="human-owner", body="replacement"))
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_issue.edit_issue(
+            42,
+            body="replacement",
+            repo="owner/repo",
+            cross_author_source_edit_reason="User explicitly requested restoration from issue history.",
+            gh_cmd="fake-gh",
+        )
+
+        assert "authorize_cross_author_source_edit" in payload["completed_steps"], payload
+        assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "GET"], calls
+        assert issue_reads == 2, issue_reads
+
+    with_call_stub(callback, run)
+
+
+def test_metadata_only_edit_does_not_require_source_content_ownership() -> None:
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "shiny-code-bot"})
+        if path.endswith("/labels") and method == "POST":
+            assert body == {"labels": ["plan"]}
+            return success([{"name": "plan"}])
+        assert method == "GET"
+        return success(issue_body(actor="human-owner"))
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_issue.edit_issue(
+            42,
+            repo="owner/repo",
+            add_labels=["plan"],
+            gh_cmd="fake-gh",
+        )
+
+        assert "read_issue_ownership" not in payload["completed_steps"], payload
+        assert [call["method"] for call in calls] == ["GET", "POST", "GET"], calls
 
     with_call_stub(callback, run)
 
@@ -855,6 +954,9 @@ TESTS = [
     test_rejected_retry_enabled_issue_create_can_retry,
     test_edit_uses_rest_membership_endpoints_and_reads_after_write,
     test_edit_partial_failure_preserves_completed_steps_and_guidance,
+    test_edit_rejects_cross_author_source_content_without_override,
+    test_edit_allows_explicit_cross_author_source_content_override,
+    test_metadata_only_edit_does_not_require_source_content_ownership,
     test_edit_local_validation_preserves_prior_retry_summary,
     test_close_partial_failure_preserves_comment_step,
     test_reopen_comment_uses_non_idempotent_comment_retry_policy,

@@ -781,10 +781,10 @@ test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_a
 [[operations]]
 id = "github.issue.edit"
 entrypoint = "github/scripts/gh-issue edit"
-intent = "Replace an issue body from stdin-backed Markdown body content."
+intent = "Edit issue source content or metadata, requiring an explicit override before replacing another author's title or body."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "PATCH /repos/{repo}/issues/{number}; POST/DELETE issue label and assignee endpoints; final GET reconciliation"
+endpoint_or_command = "GET /repos/{repo}/issues/{number} ownership preflight for title/body changes; PATCH /repos/{repo}/issues/{number}; POST/DELETE issue label and assignee endpoints; final GET reconciliation"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "update"
@@ -793,7 +793,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; issue body replacement maps directly to the REST issue update endpoint."
 source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:edit_issue"]
-test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_recovers_from_unknown_network_failure", "github/scripts/test_github_issue.py:test_edit_uses_rest_membership_endpoints_and_reads_after_write", "github/scripts/test_github_issue.py:test_edit_partial_failure_preserves_completed_steps_and_guidance", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_recovers_from_unknown_network_failure", "github/scripts/test_github_issue.py:test_edit_uses_rest_membership_endpoints_and_reads_after_write", "github/scripts/test_github_issue.py:test_edit_partial_failure_preserves_completed_steps_and_guidance", "github/scripts/test_github_issue.py:test_edit_rejects_cross_author_source_content_without_override", "github/scripts/test_github_issue.py:test_edit_allows_explicit_cross_author_source_content_override", "github/scripts/test_github_issue.py:test_metadata_only_edit_does_not_require_source_content_ownership", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.close"
