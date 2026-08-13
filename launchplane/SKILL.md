@@ -143,8 +143,70 @@ commands:
         "<key>",
       ]
     purpose: Dry-runs or applies one audited Launchplane-managed preview-feedback remediation.
+  - name: launchplane-change-impact-policy-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "change-impact-policy-dry-run",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Dry-runs an explicit private change-impact policy payload with redacted output.
+  - name: launchplane-change-impact-policy-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "change-impact-policy-apply",
+        "--payload-file",
+        "<private-file>",
+        "--reviewed-dry-run",
+        "--expected-policy-digest",
+        "<dry-run-digest>",
+        "--idempotency-key",
+        "<key>",
+      ]
+    purpose: Applies a reviewed private change-impact policy payload with redacted output.
+  - name: launchplane-change-impact-policy-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "change-impact-policy-read",
+        "--repository-id",
+        "<repository-id>",
+      ]
+    purpose: Reads bounded active change-impact policy metadata for verification.
 policy:
   command_policies:
+    - id: prefer-launchplane-write-helper-for-change-impact-policy-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/change-impact/policies/apply\\b"
+      action: require_preferred
+      message: Raw Launchplane change-impact policy calls bypass helper-owned private-file, dry-run/apply, idempotency, redaction, and trace discipline. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "change-impact-policy-dry-run",
+              "--payload-file",
+              "<private-file>",
+            ]
+          purpose: Dry-runs explicit operator policy input through the bounded helper.
     - id: prefer-launchplane-write-helper-for-product-config-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
@@ -463,7 +525,7 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
-  and merge-train controller calls.
+  change-impact policy dry-run/apply/read-back, and merge-train controller calls.
 - `operator-config-diagnostic`: Redacted source-presence diagnostic for local
   operator URL and token configuration. Global options such as `--url` must come
   before the subcommand.
@@ -471,6 +533,11 @@ verification.
   authorization and managed-secret binding evidence; never carries plaintext.
 - `POST /v1/product-config/apply`: Primary product-config operator path for
   signed-in/scoped operators; dry-run before apply.
+- `POST /v1/change-impact/policies/apply`: Change-impact policy dry-run/apply
+  path for explicit private operator input; apply must pin the dry-run policy
+  digest and be followed by bounded read-back.
+- `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
+  revision and digest verification.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - Launchplane host-only CLI helpers: Use only when you are explicitly on the
