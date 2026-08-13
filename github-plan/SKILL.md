@@ -111,21 +111,23 @@ second planning backend.
 - Search before creating; update an existing issue when intent overlaps.
 - Promote durable work to one canonical issue with the configured planning
   label, usually `plan`.
-- Treat contributor-authored titles and bodies as immutable source material.
+- Treat every human-authored title and body as immutable source material,
+  regardless of whether GitHub reports the author as `OWNER`, `MEMBER`,
+  `COLLABORATOR`, or `CONTRIBUTOR`. Repository role grants permissions, not
+  automation ownership of authored words.
   Prefer a bot-authored planning comment or a linked maintainer-owned plan. If
   planning must remain in the contributor issue body, preserve the original
   request verbatim and update only the marker-delimited automation-owned plan
   block. Unknown authors and issues created by bots other than the acting
   planning bot fail closed into this preservation mode. Do not retitle
-  contributor issues as part of plan expansion.
+  human-authored issues as part of plan expansion. A managed-provenance marker
+  alone never transfers a human-authored body to automation ownership.
 - Treat generic GitHub operation comments such as
   `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
   they never establish ownership of an issue body. Association-based managed
-  bodies require the explicit `<!-- github-plan:managed-provenance -->` marker
-  emitted by `gh-plan create`. Legacy markerless member/collaborator plans are
-  accepted only when they retain the exact canonical fully managed heading
-  layout. Existing contributor envelopes remain contributor-owned even if the
-  author's repository association changes later.
+  bodies establish ownership only when the issue was authored by the acting
+  planning bot. Existing contributor envelopes remain contributor-owned even
+  if the author's repository association changes later.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions and the preferred durable handoff surface for
   GitHub-backed planning work.
