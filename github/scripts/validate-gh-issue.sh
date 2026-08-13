@@ -400,6 +400,20 @@ fi
 
 grep -q 'hint: this command requires configured automation authentication' "$stderr_log"
 
+printf 'GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1\nGH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=0\n' \
+	>"$tmpdir/process-required.env"
+if env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODEX_AUTOMATION_LOGIN \
+	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/process-required.env" \
+	GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1 \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/env-gh" \
+	"$repo_root/github/scripts/gh-with-env-token" -R owner/repo issue create \
+	>"$stdout_log" 2>"$stderr_log"; then
+	echo "error: process automation-only mode must override env-file false value" >&2
+	exit 1
+fi
+
+grep -q 'hint: this command requires configured automation authentication' "$stderr_log"
+
 : >"$env_log"
 : >"$log"
 if env -u CODEX_AUTOMATION_LOGIN PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
