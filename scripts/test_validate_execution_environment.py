@@ -159,10 +159,19 @@ def helper_without_dependencies(*body_lines: str) -> str:
     ) + "\n"
 
 
-def helper_tests_manifest(entries: list[str], skiplist: list[str] | None = None) -> str:
+def helper_tests_manifest(
+    entries: list[str],
+    skiplist: list[str] | None = None,
+    explicit_validators: list[str] | None = None,
+) -> str:
     helper_tests_lines = ["helper_tests=("]
     helper_tests_lines.extend(f"\t{entry}" for entry in entries)
     helper_tests_lines.append(")")
+    explicit_validator_lines = ["explicit_helper_validators=("]
+    explicit_validator_lines.extend(
+        f"\t{entry}" for entry in explicit_validators or []
+    )
+    explicit_validator_lines.append(")")
     helper_test_skiplist_lines = ["helper_test_skiplist=("]
     helper_test_skiplist_lines.extend(f"\t{entry}" for entry in skiplist or [])
     helper_test_skiplist_lines.append(")")
@@ -171,7 +180,9 @@ def helper_tests_manifest(entries: list[str], skiplist: list[str] | None = None)
             "#!/usr/bin/env bash",
             "required_commands=(bash git gh jq node uv)",
             "uv run python --version",
+            *(f"uv run {entry}" for entry in explicit_validators or []),
             *helper_tests_lines,
+            *explicit_validator_lines,
             *helper_test_skiplist_lines,
         ]
     ) + "\n"
@@ -962,6 +973,54 @@ def test_skiplisted_pytest_cli_is_not_validated() -> None:
         assert MODULE.validate_repository(root, python_paths=[script]) == []
 
 
+def test_validate_skills_manifest_classifies_explicit_validators() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    manifest_path = repo_root / "scripts/validate-skills.sh"
+    helper_tests, explicit_validators, skiplist = MODULE._load_helper_tests_manifest(manifest_path)
+    assert "skill-creator/scripts/quick_validate.py" in explicit_validators
+    assert "skill-creator/scripts/validate-command-policy-simulator.py" in explicit_validators
+    assert "skill-creator/scripts/quick_validate.py" not in helper_tests
+    assert "skill-creator/scripts/validate-command-policy-simulator.py" not in helper_tests
+    assert set(helper_tests).isdisjoint(explicit_validators)
+    assert set(helper_tests).isdisjoint(skiplist)
+    assert set(explicit_validators).isdisjoint(skiplist)
+
+
+def test_missing_explicit_helper_validator_fails() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(
+            root / "scripts/validate-skills.sh",
+            helper_tests_manifest(
+                ["tool.py"],
+                explicit_validators=["missing-explicit.py"],
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "missing-explicit.py: missing explicit helper validator",
+        )
+
+
+def test_helper_manifest_categories_must_be_disjoint() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        script = valid_root(root)
+        write(root / "explicit.py", python_script())
+        write(
+            root / "scripts/validate-skills.sh",
+            helper_tests_manifest(
+                ["tool.py", "explicit.py"],
+                explicit_validators=["explicit.py"],
+            ),
+        )
+        assert_contains(
+            MODULE.validate_repository(root, python_paths=[script]),
+            "explicit.py appears in multiple helper categories: helper_tests, explicit_helper_validators",
+        )
+
+
 def test_dependabot_drift_fails() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
@@ -1094,6 +1153,9 @@ TESTS = [
     test_syntax_invalid_helper_fails,
     test_missing_declared_helper_fails,
     test_skiplisted_pytest_cli_is_not_validated,
+    test_validate_skills_manifest_classifies_explicit_validators,
+    test_missing_explicit_helper_validator_fails,
+    test_helper_manifest_categories_must_be_disjoint,
     test_dependabot_drift_fails,
     test_runner_and_python_drift_fail,
     test_version_and_pep_metadata_drift_fail,
