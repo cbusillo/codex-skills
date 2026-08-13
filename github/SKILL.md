@@ -837,6 +837,11 @@ invocation rules.
   wrapper prefix `--require-automation-auth`; shell callers may use the
   equivalent `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`. Both take
   precedence over fallback settings loaded from the local env file.
+  Configure the portable automation role with `CODEX_AUTOMATION_LOGIN` and
+  `CODEX_AUTOMATION_EMAIL` in the ignored `local.env`; optionally set a quoted
+  `CODEX_AUTOMATION_BOT_LOGINS` list for additional bot classification. The
+  selected local env file is loaded after ambient variables and therefore wins
+  when the same identity key is present in both places.
 - **Workflow Detail**: See `references/repo-workflow.md` for orientation,
   PR/check/review handling, and cleanup guardrails.
 - **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix

@@ -67,6 +67,20 @@ def test_unconfigured_identity_is_distinct_from_fallback() -> None:
             assert github_identity.active_auth_fallback_allowed()
 
 
+def test_local_require_automation_auth_overrides_process_fallback() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = Path(directory) / "local.env"
+        env_file.write_text(
+            "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1\n",
+            encoding="utf-8",
+        )
+        values = {
+            "CODEX_SKILLS_ENV_FILE": str(env_file),
+            "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+        }
+        assert not github_identity.active_auth_fallback_allowed(values)
+
+
 def test_unquoted_multiword_values_are_ignored_like_invalid_shell_assignments() -> None:
     with tempfile.TemporaryDirectory() as directory:
         env_file = Path(directory) / "local.env"
@@ -102,6 +116,7 @@ def main() -> None:
         test_local_env_file_precedence_matches_shell,
         test_per_tool_overrides_win_over_shared_identity,
         test_unconfigured_identity_is_distinct_from_fallback,
+        test_local_require_automation_auth_overrides_process_fallback,
         test_unquoted_multiword_values_are_ignored_like_invalid_shell_assignments,
         test_shell_expansion_values_are_ignored_in_python_parser,
         test_configured_bot_logins_support_quoted_space_separated_values,
