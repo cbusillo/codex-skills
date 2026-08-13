@@ -3834,10 +3834,21 @@ def wait_for_exact_route_after_open(
     )
     already_opening_retries = 0
     last_error: InspectError | None = None
+    last_lifecycle_open_probe: dict[str, Any] | None = None
+    diagnostic_probe_supported = any(
+        int(attempt.get("lifecycle_open_diagnostic_version") or 0) >= 1
+        for attempt in open_attempts
+    )
+    if diagnostic_probe_supported:
+        retry_opening = False
     while now_ms() <= deadline:
         route = find_exact_route(args, context)
         if route is not None:
             return route
+        if diagnostic_probe_supported:
+            current_probe = probe_lifecycle_open(args, context, lease)
+            if current_probe is not None:
+                last_lifecycle_open_probe = current_probe
         if retry_opening:
             try:
                 retry_attempt = open_via_running_ide(
@@ -3872,6 +3883,8 @@ def wait_for_exact_route_after_open(
     payload = auto_open_timeout_payload(args, context, timeout_ms)
     payload["error_reason"] = "project_open_blocked"
     payload["open_attempts"] = open_attempts
+    if last_lifecycle_open_probe is not None:
+        payload["lifecycle_open_probe"] = last_lifecycle_open_probe
     if last_error is not None:
         payload["last_error"] = str(last_error)
     raise InspectError("Timed out waiting for JetBrains IDE to open the exact worktree.", 3, payload)
@@ -4028,6 +4041,7 @@ def public_identity_summary(identity: dict[str, Any]) -> dict[str, Any]:
         "plugin_build_dirty": identity.get("plugin_build_dirty"),
         "inspection_execution_proof_version": identity.get("inspection_execution_proof_version"),
         "lifecycle_ownership_protocol": identity.get("lifecycle_ownership_protocol"),
+        "lifecycle_open_diagnostic_version": identity.get("lifecycle_open_diagnostic_version"),
         "session_id": identity.get("session_id"),
         "port": identity.get("port"),
         "pid": identity.get("pid"),
@@ -4197,10 +4211,56 @@ def open_attempt_payload(
         payload["lease_id"] = response.get("lease_id")
         payload["ownership_registered"] = response.get("ownership_registered")
         payload["lifecycle_ownership_protocol"] = response.get("lifecycle_ownership_protocol")
+        payload["lifecycle_open_diagnostic_version"] = response.get("lifecycle_open_diagnostic_version")
+        if isinstance(response.get("lifecycle_open_diagnostic"), dict):
+            payload["lifecycle_open_diagnostic"] = response["lifecycle_open_diagnostic"]
     if error:
         payload["error_reason"] = infer_error_reason(error, error.payload)
         payload["message"] = str(error)
     return payload
+
+
+def probe_lifecycle_open(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    lease: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    try:
+        identities = discover_open_identities(args, context)
+    except InspectError:
+        return None
+    for identity in identities:
+        if not identity_matches_context(identity, context):
+            continue
+        if int(identity.get("lifecycle_open_diagnostic_version") or 0) < 1:
+            continue
+        port = identity.get("port")
+        if not port:
+            continue
+        try:
+            response = http_get(
+                int(port),
+                "lifecycle/open",
+                {
+                    "worktree_path": lifecycle_target_path(context),
+                    "project_path": context.get("project_path"),
+                    "ide": context.get("ide"),
+                    "session_id": identity.get("session_id"),
+                    "lease_id": lease.get("lease_id") if lease is not None else None,
+                    "probe": "true",
+                },
+                timeout=max(DEFAULT_TIMEOUT_SECONDS, 30.0),
+            )
+        except InspectError as error:
+            payload = public_payload(error.payload)
+            payload.update({
+                "status": "error",
+                "error_reason": infer_error_reason(error, error.payload),
+                "message": str(error),
+            })
+            return payload
+        return public_payload(response.body)
+    return None
 
 
 def open_via_running_ide(
@@ -8225,6 +8285,7 @@ def print_error_details(payload: dict[str, Any]) -> None:
     if any(value is not None for value in context_details.values()):
         print(safe_text("CONTEXT: repo={repo} worktree={worktree} ide={ide} endpoint={endpoint} url={url}", context_details))
     print_blocked_diagnostic(payload.get("blocked_diagnostic"))
+    print_lifecycle_open_probe(payload.get("lifecycle_open_probe"))
     print_route_diagnostic(payload.get("route_diagnostic"))
     if payload.get("hint"):
         print(safe_text("HINT: {hint}", {"hint": payload.get("hint")}))
@@ -8318,6 +8379,29 @@ def print_blocked_diagnostic(diagnostic: Any) -> None:
     )
     if diagnostic.get("message"):
         print(safe_text("PROJECT_OPEN_BLOCKED_HINT: {message}", {"message": diagnostic.get("message")}))
+
+
+def print_lifecycle_open_probe(probe: Any) -> None:
+    if not isinstance(probe, dict):
+        return
+    diagnostic = probe.get("lifecycle_open_diagnostic")
+    diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    print(
+        safe_text(
+            "LIFECYCLE_OPEN_PROBE: status={status} reason={reason} phase={phase} outcome={outcome} elapsed_ms={elapsed_ms} open_returned={open_returned} ownership_registered={ownership_registered} readiness_waiting={readiness_waiting} unresolved={unresolved}",
+            {
+                "status": probe.get("status"),
+                "reason": probe.get("reason"),
+                "phase": diagnostic.get("phase"),
+                "outcome": diagnostic.get("outcome_phase"),
+                "elapsed_ms": diagnostic.get("elapsed_ms"),
+                "open_returned": diagnostic.get("open_returned"),
+                "ownership_registered": diagnostic.get("ownership_registered"),
+                "readiness_waiting": diagnostic.get("readiness_waiting"),
+                "unresolved": diagnostic.get("unresolved"),
+            },
+        )
+    )
 
 
 def print_route_diagnostic(diagnostic: Any) -> None:
