@@ -269,6 +269,9 @@ waiting uses the strictly non-scheduling `probe=true` contract and disables the
 legacy blind `already_opening` reschedule. Timeout JSON preserves the latest
 `lifecycle_open_probe`, and terminal output emits `LIFECYCLE_OPEN_PROBE:` with
 the latest phase, outcome, elapsed time, and ownership/readiness booleans.
+Each probe is capped by the route wait's remaining deadline, skips requests
+when too little useful time remains, and continues across matching IDE
+instances so one unavailable identity cannot hide a later healthy diagnostic.
 That potential ownership evidence remains recoverable through route/claim
 timeouts and is discarded only after a definitive `not_owned` claim.
 If preparation then fails, the helper closes immediately when a live claim
