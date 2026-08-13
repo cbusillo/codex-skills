@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -983,6 +984,56 @@ def test_github_and_github_plan_command_boundaries_are_partitioned() -> None:
         ("gh", "issue", "close"),
     ):
         require(execution_prefix in github_prefixes, f"github must own {execution_prefix}")
+
+
+def test_github_protects_human_authored_issue_content() -> None:
+    github_text = (ROOT / "github" / "SKILL.md").read_text().lower()
+    plan_text = (ROOT / "github-plan" / "SKILL.md").read_text().lower()
+    normalized_github = " ".join(github_text.split())
+    normalized_plan = " ".join(plan_text.split())
+
+    require(
+        "direct issue-resource patch requests bypass issue-author ownership" in normalized_github,
+        "GitHub must reject direct issue-resource PATCH operations",
+    )
+    require(
+        "rejects cross-author title/body replacement" in normalized_github,
+        "GitHub generic issue edits must expose cross-author source-content protection",
+    )
+    require(
+        "every human-authored title and body as immutable source material" in normalized_plan,
+        "github-plan must preserve human-authored issue source content regardless of role",
+    )
+    require(
+        "repository role grants permissions, not automation ownership" in normalized_plan,
+        "github-plan must distinguish repository permission from authored-content ownership",
+    )
+    direct_patch_policy = command_policy_by_id("github", "reject-direct-issue-resource-patch")
+    direct_patch_pattern = str(direct_patch_policy["match"]["shell_regex"])
+    for command in (
+        "gh api repos/owner/repo/issues/25 -X PATCH --input body.json",
+        "gh api --method PATCH repos/owner/repo/issues/25 --input body.json",
+        "github/scripts/gh-with-env-token api repos/owner/repo/issues/comments/123 --method=PATCH --input body.json",
+    ):
+        require(
+            re.search(direct_patch_pattern, command) is not None,
+            f"GitHub direct issue PATCH policy must match: {command}",
+        )
+    require(
+        re.search(direct_patch_pattern, "gh api repos/owner/repo/issues/25 --method GET")
+        is None,
+        "GitHub direct issue PATCH policy must not match issue reads",
+    )
+    wrapper_policy = command_policy_by_id(
+        "github", "reject-wrapper-cross-author-issue-source-edit"
+    )
+    wrapper_pattern = str(wrapper_policy["match"]["shell_regex"])
+    for flag in ("--body", "--body-file", "--title", "-b", "-F", "-t"):
+        command = f"github/scripts/gh-with-env-token issue edit 25 {flag} value"
+        require(
+            re.search(wrapper_pattern, command) is not None,
+            f"GitHub wrapper issue source-edit policy must match {flag}",
+        )
 
 
 def test_github_cross_repo_pr_create_is_explicit() -> None:
@@ -1957,6 +2008,7 @@ def main() -> None:
         test_github_plan_sweeps_stale_related_issues,
         test_github_plan_prefers_plan_close_for_completed_plans,
         test_github_and_github_plan_command_boundaries_are_partitioned,
+        test_github_protects_human_authored_issue_content,
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_github_unanswered_comment_gate_is_shared,

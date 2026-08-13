@@ -6207,6 +6207,208 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["lifecycle_open_diagnostic"]["phase"], "unresolved")
         self.assertEqual(result["status"], "error")
 
+    def test_probe_lifecycle_open_uses_remaining_deadline(self):
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                        "lifecycle_open_diagnostic_version": 1,
+                    }
+                ],
+            ),
+            patch.object(jb_inspect, "now_ms", return_value=1_000),
+            patch.object(
+                jb_inspect,
+                "http_get",
+                return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "url"),
+            ) as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+                deadline_ms=2_500,
+            )
+
+        self.assertEqual(result["status"], "opening")
+        self.assertEqual(http_get.call_args.kwargs["timeout"], 1.5)
+
+    def test_probe_lifecycle_open_skips_requests_after_deadline(self):
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                        "lifecycle_open_diagnostic_version": 1,
+                    }
+                ],
+            ),
+            patch.object(jb_inspect, "now_ms", return_value=2_500),
+            patch.object(jb_inspect, "http_get") as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+                deadline_ms=2_500,
+            )
+
+        self.assertIsNone(result)
+        http_get.assert_not_called()
+
+    def test_probe_lifecycle_open_skips_request_below_viable_timeout(self):
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                        "lifecycle_open_diagnostic_version": 1,
+                    }
+                ],
+            ),
+            patch.object(jb_inspect, "now_ms", return_value=2_300),
+            patch.object(jb_inspect, "http_get") as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+                deadline_ms=2_500,
+            )
+
+        self.assertIsNone(result)
+        http_get.assert_not_called()
+
+    def test_probe_lifecycle_open_continues_after_identity_failure(self):
+        failure = jb_inspect.InspectError(
+            "first IDE unavailable",
+            3,
+            {"reason": "inspection_api_unavailable"},
+        )
+        identities = [
+            {
+                "port": 63343,
+                "ide_name": "PyCharm 2026.2.1",
+                "ide_product_code": "PY",
+                "session_id": "session-1",
+                "lifecycle_open_diagnostic_version": 1,
+            },
+            {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.2.1",
+                "ide_product_code": "PY",
+                "session_id": "session-2",
+                "lifecycle_open_diagnostic_version": 1,
+            },
+        ]
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=identities),
+            patch.object(
+                jb_inspect,
+                "http_get",
+                side_effect=[failure, jb_inspect.HttpResult(200, {"status": "opening"}, "url")],
+            ) as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(result["status"], "opening")
+        self.assertEqual(http_get.call_count, 2)
+
+    def test_probe_lifecycle_open_prefers_diagnostic_identity_failure(self):
+        identities = [
+            {
+                "port": 63343,
+                "ide_name": "PyCharm 2026.2.1",
+                "ide_product_code": "PY",
+                "session_id": "session-1",
+                "lifecycle_open_diagnostic_version": 1,
+            },
+            {
+                "port": 63344,
+                "ide_name": "PyCharm 2026.2.1",
+                "ide_product_code": "PY",
+                "session_id": "session-2",
+                "lifecycle_open_diagnostic_version": 1,
+            },
+        ]
+        with (
+            patch.object(jb_inspect, "discover_open_identities", return_value=identities),
+            patch.object(
+                jb_inspect,
+                "http_get",
+                side_effect=[
+                    jb_inspect.InspectError(
+                        "first",
+                        3,
+                        {
+                            "reason": "first_failure",
+                            "lifecycle_open_diagnostic": {"phase": "readiness_wait"},
+                        },
+                    ),
+                    jb_inspect.InspectError("second", 3, {"reason": "second_failure"}),
+                ],
+            ),
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(result["reason"], "first_failure")
+        self.assertEqual(result["lifecycle_open_diagnostic"]["phase"], "readiness_wait")
+        self.assertEqual(result["status"], "error")
+
+    def test_probe_lifecycle_open_uses_default_timeout_without_deadline(self):
+        with (
+            patch.object(
+                jb_inspect,
+                "discover_open_identities",
+                return_value=[
+                    {
+                        "port": 63343,
+                        "ide_name": "PyCharm 2026.2.1",
+                        "ide_product_code": "PY",
+                        "session_id": "session-1",
+                        "lifecycle_open_diagnostic_version": 1,
+                    }
+                ],
+            ),
+            patch.object(
+                jb_inspect,
+                "http_get",
+                return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "url"),
+            ) as http_get,
+        ):
+            result = jb_inspect.probe_lifecycle_open(
+                Namespace(port=None),
+                {"ide": "PyCharm", "worktree_root": "/tmp/repo", "project_path": "/tmp/repo"},
+                {"lease_id": "lease-1"},
+            )
+
+        self.assertEqual(result["status"], "opening")
+        self.assertEqual(http_get.call_args.kwargs["timeout"], 30.0)
+
     def test_wait_for_exact_route_keeps_last_successful_lifecycle_probe(self):
         open_attempts = [
             {
@@ -6223,7 +6425,7 @@ class LifecycleTest(unittest.TestCase):
         ticks = iter([0, 0, 1, 2])
         with (
             patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "probe_lifecycle_open", side_effect=lambda *args: next(probes)),
+            patch.object(jb_inspect, "probe_lifecycle_open", side_effect=lambda *args, **kwargs: next(probes)),
             patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
             patch.object(jb_inspect.time, "sleep"),
         ):

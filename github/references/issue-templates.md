@@ -3,10 +3,12 @@
 Durable planning issues should follow a consistent structure to ensure they
 are easily scannable and contain the necessary context for agents and humans.
 
-For issues authored by contributors outside the repository owner/member/
-collaborator set, preserve the original request verbatim. Prefer a bot-authored
-comment or a linked maintainer-owned planning issue. When the plan must live in
-the contributor issue body, use this ownership boundary:
+For every human-authored issue, preserve the original title and request
+verbatim, regardless of the author's repository association. Repository owner,
+member, and collaborator roles grant permissions but never grant automation
+ownership of the author's words. Prefer a bot-authored comment or a linked
+automation-authored planning issue. When the plan must live in the human issue
+body, use this ownership boundary:
 
 ```markdown
 ## Original request
@@ -24,7 +26,9 @@ _The following implementation plan is maintained by project automation._
 <!-- github-plan:managed:end -->
 ```
 
-Subsequent automation updates may change only the managed block. Duplicate,
+Subsequent automation updates may change only the managed block. The managed
+provenance marker by itself never transfers human-authored content to
+automation ownership. Duplicate,
 missing, or out-of-order markers must fail closed rather than rewriting the
 issue. Maintainer-owned and bot-authored planning issues may use the fully
 managed format below. An older contributor issue that already mixes unmarked
@@ -43,13 +47,11 @@ Fully managed plans created by `gh-plan` begin with:
 <!-- github-plan:managed-provenance -->
 ```
 
-This marker establishes plan-body provenance for member/collaborator-authored
-issues. The generic `<!-- github-skill-operation:... -->` comment is only
-request reconciliation evidence and never grants body ownership. The acting
-planning bot and repository owner remain fully managed without the provenance
-marker. Legacy markerless member/collaborator plans remain managed only when
-they retain the exact canonical heading layout; existing contributor envelopes
-always remain contributor-owned.
+This marker records provenance for issues created by the acting planning bot.
+It does not transfer ownership of a human-authored issue body. The generic
+`<!-- github-skill-operation:... -->` comment is only request reconciliation
+evidence and never grants body ownership. Existing contributor envelopes always
+remain contributor-owned.
 
 ## Required Headings
 

@@ -433,6 +433,11 @@ policy:
               "secret-scanning-status",
             ]
           purpose: Forces hidden-secret REST reads and emits only status, counts, actor evidence, and degraded diagnostics.
+    - id: reject-direct-issue-resource-patch
+      match:
+        shell_regex: "(?:\\b(?:gh\\s+api|gh-with-env-token\\s+api)\\b[\\s\\S]*\\brepos/\\S+/\\S+/issues/(?:[0-9]+|comments/[0-9]+)\\b[\\s\\S]*(?:(?:--method|-X)(?:=|\\s*)PATCH\\b)|\\b(?:gh\\s+api|gh-with-env-token\\s+api)\\b[\\s\\S]*(?:(?:--method|-X)(?:=|\\s*)PATCH\\b)[\\s\\S]*\\brepos/\\S+/\\S+/issues/(?:[0-9]+|comments/[0-9]+)\\b)"
+      action: reject
+      message: Direct issue-resource PATCH requests bypass issue-author ownership and comment-author checks. Use github-plan for planning sections, github/scripts/gh-issue for issue edits, or github/scripts/gh-comment for comments.
     - id: prefer-gh-api-wrapper
       match:
         shell_regex: "\\bgh\\s+api\\s+(?!graphql\\b)"
@@ -498,7 +503,7 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "edit"]
       action: require_preferred
-      message: Raw `gh issue edit` uses active local auth and can mangle multiline issue bodies. Use `github/scripts/gh-issue` for REST-backed title, body, label, assignee, and milestone edits. For project, type, parent, sub-issue, or dependency flags outside that REST subset, use `github/scripts/gh-with-env-token issue edit --body-file ...` deliberately.
+      message: Raw `gh issue edit` bypasses human-authorship ownership checks, uses active local auth, and can overwrite contributor text. Use `github-plan` for planning body updates and `github/scripts/gh-issue` for ownership-aware generic edits or metadata-only changes.
       preferred:
         - kind: script
           path: scripts/gh-issue
@@ -510,7 +515,7 @@ policy:
               "--repo",
               "OWNER/REPO",
             ]
-          purpose: Edits issues by reading replacement Markdown from stdin; use `< body.md` or a quoted heredoc for the body.
+          purpose: Edits metadata safely and rejects cross-author title/body replacement unless an explicit source-content override is supplied.
         - kind: script
           path: scripts/gh-with-env-token
           example_argv:
@@ -522,7 +527,12 @@ policy:
               "--add-project",
               "<project>",
             ]
-          purpose: Preserves configured automation auth for edit flags that are intentionally outside the REST helper's supported subset.
+          purpose: Preserves configured automation auth for non-body edit flags that are intentionally outside the REST helper's supported subset; do not use it to replace human-authored title/body text.
+    - id: reject-wrapper-cross-author-issue-source-edit
+      match:
+        shell_regex: "\\bgh-with-env-token\\b.*\\bissue\\s+edit\\b.*(?:--body(?:-file)?|--title|-[bFt])\\b"
+      action: reject
+      message: Direct wrapper-backed issue title/body replacement bypasses human-authorship ownership checks. Use github-plan for managed planning sections or github/scripts/gh-issue with an explicit cross-author override when the user has specifically authorized replacing source content.
     - id: prefer-gh-issue-close-helper
       match:
         argv_prefix: ["gh", "issue", "close"]
