@@ -49,7 +49,6 @@ PLAN_OWNERSHIP_MARKERS = (
     PLAN_MANAGED_END,
 )
 PLAN_RESERVED_MARKERS = PLAN_OWNERSHIP_MARKERS + (PLAN_MANAGED_PROVENANCE_MARKER,)
-PROVENANCE_MANAGED_AUTHOR_ASSOCIATIONS = frozenset({"MEMBER", "COLLABORATOR"})
 PLAN_MANAGED_NOTICE = "_The following implementation plan is maintained by project automation._"
 PLAN_SECTION_NAMES = frozenset(
     {
@@ -1455,14 +1454,6 @@ def issue_author_login(issue: dict[str, Any]) -> str | None:
     return login.strip() if isinstance(login, str) and login.strip() else None
 
 
-def issue_author_association(issue: dict[str, Any]) -> str | None:
-    association = issue.get("author_association") or issue.get("authorAssociation")
-    if not isinstance(association, str):
-        return None
-    normalized = association.strip().upper()
-    return normalized or None
-
-
 def has_managed_provenance(body: str) -> bool:
     count = body.count(PLAN_MANAGED_PROVENANCE_MARKER)
     if count == 0:
@@ -1474,43 +1465,9 @@ def has_managed_provenance(body: str) -> bool:
     return True
 
 
-def is_legacy_canonical_managed_plan_body(body: str) -> bool:
-    if any(marker in body for marker in PLAN_RESERVED_MARKERS):
-        return False
-    if PLAN_MANAGED_NOTICE in body or not body.lstrip().startswith("## Objective"):
-        return False
-    headings = [match.group(1).strip() for match in re.finditer(r"(?m)^##\s+(.+?)\s*$", body)]
-    return headings == [
-        "Objective",
-        "Finish Line",
-        "Current Status",
-        "Scope",
-        "Acceptance Criteria",
-        "Relationships",
-        "Validation",
-        "Decisions",
-        "Open Questions",
-    ]
-
-
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
-    author = issue.get("user") or issue.get("author")
     author_login = issue_author_login(issue)
-    if author_login and author_login.casefold() == EXPECTED_ACTOR.casefold():
-        return True
-    if isinstance(author, dict) and str(author.get("type", "")).casefold() == "bot":
-        return False
-    body = issue.get("body") or ""
-    if contributor_plan_body(issue) is not None:
-        return False
-    association = issue_author_association(issue)
-    if association == "OWNER":
-        return True
-    if association not in PROVENANCE_MANAGED_AUTHOR_ASSOCIATIONS:
-        return False
-    if body.lstrip().startswith(PLAN_MANAGED_PROVENANCE_MARKER):
-        return has_managed_provenance(body)
-    return is_legacy_canonical_managed_plan_body(body)
+    return bool(author_login and author_login.casefold() == EXPECTED_ACTOR.casefold())
 
 
 def marked_block(body: str, start_marker: str, end_marker: str) -> tuple[int, int, str] | None:
@@ -1593,13 +1550,7 @@ def replace_issue_plan_section(issue: dict[str, Any], section: str, new_text: st
     if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
         raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
     if issue_body_is_fully_managed(issue):
-        updated = replace_section(body, section, new_text)
-        if (
-            issue_author_association(issue) in PROVENANCE_MANAGED_AUTHOR_ASSOCIATIONS
-            and not has_managed_provenance(body)
-        ):
-            return ensure_managed_provenance(updated)
-        return updated
+        return replace_section(body, section, new_text)
     if section.casefold() == "original request":
         raise PlanError("Contributor-authored original request content is immutable")
     managed_body = contributor_plan_body(issue)

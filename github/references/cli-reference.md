@@ -361,6 +361,11 @@ Create supports repeated or comma-separated `--label` and `--assignee` values
 plus milestone titles through `--milestone`. Edit supports body/title changes,
 label and assignee add/remove flags, and milestone set/remove operations. The
 helper resolves milestone titles through paged REST reads before writing.
+Title/body replacement is allowed by default only when the authenticated actor
+authored the issue. Use `--allow-cross-author-source-edit REASON` only after the
+user explicitly authorizes replacing another author's source content; planning
+updates should use `gh-plan.py update-section`, and ordinary clarification
+should use a separate comment.
 Edit, close, and reopen accept issue numbers, `#NUMBER`, `OWNER/REPO#NUMBER`, or
 full issue URLs; a repository encoded in the target takes precedence over
 `--repo`.

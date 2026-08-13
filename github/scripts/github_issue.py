@@ -844,6 +844,7 @@ def _edit_issue_impl(
     remove_assignees: Optional[list[str]] = None,
     milestone: Optional[str] = None,
     remove_milestone: bool = False,
+    cross_author_source_edit_reason: Optional[str] = None,
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
     operation: str = "github.issue.edit",
@@ -936,6 +937,55 @@ def _edit_issue_impl(
             completed_steps=steps,
             failed_step="input_validation",
         )
+    if body is not None or title is not None:
+        ownership_result = _call_api(
+            "GET",
+            f"/repos/{resolved_repo}/issues/{number}",
+            None,
+            gh_cmd=gh_cmd,
+            operation=operation,
+            actor=actor,
+            expected_actor=expected_actor,
+            completed_steps=steps,
+            failed_step="read_issue_ownership",
+            is_write=False,
+            write_outcome_if_missing="not_started",
+            retry_summaries=retry_summaries,
+        )
+        issue = ownership_result.body
+        author = issue.get("user") if isinstance(issue, dict) else None
+        author_login = author.get("login") if isinstance(author, dict) else None
+        if not isinstance(author_login, str) or not author_login.strip():
+            raise _local_error(
+                "Issue source-content ownership could not be determined",
+                operation=operation,
+                cause="invalid_response",
+                actor=actor,
+                expected_actor=expected_actor,
+                completed_steps=steps,
+                failed_step="authorize_source_content_edit",
+            )
+        override_reason = (cross_author_source_edit_reason or "").strip()
+        if author_login.casefold() != actor.casefold() and not override_reason:
+            raise _local_error(
+                "Refusing to replace another author's issue title or body without "
+                "--allow-cross-author-source-edit REASON; use github-plan for managed planning "
+                "updates or post a separate comment instead",
+                operation=operation,
+                cause="authorization_denied",
+                actor=actor,
+                expected_actor=expected_actor,
+                completed_steps=steps,
+                failed_step="authorize_source_content_edit",
+                payload={
+                    "repo": resolved_repo,
+                    "number": number,
+                    "issue_author": author_login,
+                },
+            )
+        steps.append("read_issue_ownership")
+        if author_login.casefold() != actor.casefold():
+            steps.append("authorize_cross_author_source_edit")
     reconciliation = _edit_reconciliation(resolved_repo, number, requested)
     failure_payload = {"repo": resolved_repo, "number": number, "reconciliation": reconciliation}
     if core:
@@ -1058,6 +1108,7 @@ def edit_issue(
     remove_assignees: Optional[list[str]] = None,
     milestone: Optional[str] = None,
     remove_milestone: bool = False,
+    cross_author_source_edit_reason: Optional[str] = None,
     gh_cmd: str = DEFAULT_GH,
     expected_actor: Optional[str] = EXPECTED_ACTOR,
     operation: str = "github.issue.edit",
@@ -1075,6 +1126,7 @@ def edit_issue(
             remove_assignees=remove_assignees,
             milestone=milestone,
             remove_milestone=remove_milestone,
+            cross_author_source_edit_reason=cross_author_source_edit_reason,
             gh_cmd=gh_cmd,
             expected_actor=expected_actor,
             operation=operation,
@@ -1294,6 +1346,7 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_group = edit.add_mutually_exclusive_group()
     milestone_group.add_argument("-m", "--milestone")
     milestone_group.add_argument("--remove-milestone", action="store_true")
+    edit.add_argument("--allow-cross-author-source-edit", metavar="REASON")
 
     close = sub.add_parser("close")
     close.add_argument("number")
@@ -1425,6 +1478,7 @@ def main() -> int:
                 remove_assignees=args.remove_assignee,
                 milestone=args.milestone,
                 remove_milestone=args.remove_milestone,
+                cross_author_source_edit_reason=args.allow_cross_author_source_edit,
                 expected_actor=expected_actor,
             )
         elif args.command == "close":
