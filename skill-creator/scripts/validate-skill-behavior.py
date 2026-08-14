@@ -1482,6 +1482,31 @@ def test_launchplane_delegates_github_surfaces() -> None:
     )
 
 
+def test_launchplane_preserves_stable_deploy_identity() -> None:
+    launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
+    normalized = " ".join(launchplane.split())
+
+    require(
+        "the product build workflow must publish both an immutable image digest and an immutable sha tag"
+        in normalized
+        and "as `artifact_id`" in normalized
+        and "as `deploy_reference`" in normalized,
+        "Launchplane must require product workflows to publish and submit both stable deploy identities",
+    )
+    require(
+        "uses `deploy_reference` only for the provider-facing dokploy image" in normalized
+        and "records that provider tag as `image_reference`" in normalized
+        and "never use `latest`" in normalized,
+        "Launchplane must separate artifact evidence from provider image read-back and reject floating tags",
+    )
+    require(
+        "repair the product repository's build/deploy workflow" in normalized
+        and "do not edit dokploy or launchplane runtime records directly" in normalized
+        and "delegate protected workflow dispatch and watching to the `github` skill" in normalized,
+        "Launchplane must route deploy-identity remediation through the product repo and GitHub skill",
+    )
+
+
 def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
     readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
     closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
@@ -2017,6 +2042,7 @@ def main() -> None:
         test_safe_exit_requires_love_gate_closeout,
         test_background_review_reporting_is_point_in_time,
         test_launchplane_delegates_github_surfaces,
+        test_launchplane_preserves_stable_deploy_identity,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_ide_configuration_policy_is_shared,
         test_work_closeout_requires_issue_aware_safe_exit,
