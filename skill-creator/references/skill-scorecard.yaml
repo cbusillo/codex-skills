@@ -475,16 +475,26 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: main
+          last_validated_ref: fix/550-launchplane-deploy-identity
           notes: >-
-            Launchplane routing and private-context boundaries covered by
-            behavior validation.
+            Launchplane routing, private-context boundaries, and stable deploy
+            identity guidance covered by behavior validation.
+      - check_id: launchplane-helper-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: fix/550-launchplane-deploy-identity
+          notes: >-
+            Focused Launchplane helper trust-boundary tests run through the
+            required skill validation suite.
     known_gaps:
       - >-
-        No focused script tests yet for Launchplane helper edge cases in this
-        scorecard. Integration tests require private Launchplane endpoint
-        responses; behavior is verified via static schema validation and mock
-        routing.
+        No exec-harness scenario yet for unsupported Launchplane deploy-helper
+        routing; deterministic helper and behavior coverage remain required.
   local-llm:
     status: active
     risk_classes:
