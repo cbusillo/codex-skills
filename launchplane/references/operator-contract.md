@@ -112,6 +112,15 @@ base-branch, and mutate mode. Mutating helper calls require an idempotency key;
 dry-run calls may omit it. Stop and report controller attention states instead
 of calling phase-specific endpoints by default.
 
+`POST /v1/admin/generic-web/deploy-recovery/dry-run` and
+`POST /v1/admin/generic-web/deploy-recovery/apply` accept a private payload
+with `schema_version`, `product`, `instance`, `original_deploy`, and `reason`.
+Both require the original deploy idempotency key as the `Idempotency-Key`
+header. Apply additionally requires `expected_recovery_digest` (64 lowercase hex)
+matching the `recovery_digest` returned by the preceding dry-run. The helper
+enforces this via `--expected-recovery-digest` and `--reviewed-dry-run`; do not
+send apply before a matching dry-run is complete and reviewed.
+
 Local bearer-token denial is not the same as missing credentials. For new or
 higher-authority runtime records, including authz grants, private health
 endpoint records, provider targets, route records, and operator/workflow grants,

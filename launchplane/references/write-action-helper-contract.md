@@ -224,6 +224,57 @@ closed. If apply receives HTTP success but the response cannot be safely
 projected, the helper reports `accepted_unverified` and requires read-back before
 any retry.
 
+## Generic-Web Deploy Recovery
+
+Generic-web deploy recovery is a bounded admin operation for recovering a
+generic-web product instance from a failed deploy. Supply the private payload
+only as explicit operator input in a JSON file outside the active repository or
+worktree. The file contains `schema_version`, `product`, `instance`,
+`original_deploy`, and `reason`. The apply request additionally requires
+`expected_recovery_digest`, which the helper inserts from the `--expected-recovery-digest`
+flag after verifying it against any value already in the payload.
+
+Both dry-run and apply require `--idempotency-key`. The idempotency key must be
+the original deploy's idempotency key for both calls — it is sent as the request
+`Idempotency-Key` header exactly as supplied.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  generic-web-deploy-recovery-dry-run \
+  --payload-file /private/path/deploy-recovery.json \
+  --idempotency-key <original-deploy-idempotency-key>
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  generic-web-deploy-recovery-apply \
+  --payload-file /private/path/deploy-recovery.json \
+  --idempotency-key <original-deploy-idempotency-key> \
+  --reviewed-dry-run \
+  --expected-recovery-digest <recovery-digest-from-dry-run>
+```
+
+For apply, the operator asserts that the private payload is the one reviewed
+during dry-run. The helper requires:
+
+- A non-empty `reason` embedded in the payload.
+- Explicit `--reviewed-dry-run` acknowledgement.
+- The `recovery_digest` emitted by the dry-run result, supplied as
+  `--expected-recovery-digest` (64 lowercase hex characters).
+- A stable idempotency key (the original deploy key, used for both calls).
+
+The helper refuses to send apply when the supplied digest conflicts with a
+`expected_recovery_digest` already present in the payload file. When the payload
+omits this field, the helper inserts the reviewed dry-run digest before apply.
+
+The public result projects only the service's bounded recovery contract:
+product/context/instance identity, reservation state and attempt, hashed target
+identifiers, bounded provider classification, the proposed or executed action,
+and the recovery digest. It never emits `original_deploy`, the idempotency key
+value, the payload file path, raw scope, reconciliation key, provider-target
+key, provider payload, service URL, or authorization headers. Unexpected
+response fields fail closed. If apply receives HTTP success but the response
+cannot be safely projected, the helper reports `accepted_unverified` and
+requires manual verification before any retry.
+
 ## Merge Train Controller
 
 The helper wraps the preferred merge-train route:
