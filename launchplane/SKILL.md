@@ -187,8 +187,78 @@ commands:
         "<repository-id>",
       ]
     purpose: Reads bounded active change-impact policy metadata for verification.
+  - name: launchplane-generic-web-deploy-recovery-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "generic-web-deploy-recovery-dry-run",
+        "--payload-file",
+        "<private-file>",
+        "--idempotency-key",
+        "<original-deploy-key>",
+      ]
+    purpose: Dry-runs an explicit private generic-web deploy-recovery payload with redacted output.
+  - name: launchplane-generic-web-deploy-recovery-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "generic-web-deploy-recovery-apply",
+        "--payload-file",
+        "<private-file>",
+        "--idempotency-key",
+        "<original-deploy-key>",
+        "--reviewed-dry-run",
+        "--expected-recovery-digest",
+        "<dry-run-digest>",
+      ]
+    purpose: Applies a reviewed private generic-web deploy-recovery payload with redacted output.
 policy:
   command_policies:
+    - id: prefer-launchplane-write-helper-for-generic-web-deploy-recovery-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply)\\b"
+      action: require_preferred
+      message: Raw Launchplane generic-web deploy-recovery calls bypass helper-owned private-file, dry-run/apply, idempotency, digest binding, redaction, and trace discipline. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "generic-web-deploy-recovery-dry-run",
+              "--payload-file",
+              "<private-file>",
+              "--idempotency-key",
+              "<original-deploy-key>",
+            ]
+          purpose: Dry-runs explicit operator recovery input through the bounded helper.
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "generic-web-deploy-recovery-apply",
+              "--payload-file",
+              "<private-file>",
+              "--idempotency-key",
+              "<original-deploy-key>",
+              "--reviewed-dry-run",
+              "--expected-recovery-digest",
+              "<dry-run-digest>",
+            ]
+          purpose: Applies only the exact reviewed recovery evidence through the bounded helper.
     - id: prefer-launchplane-write-helper-for-change-impact-policy-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/change-impact/policies/apply\\b"
@@ -561,6 +631,12 @@ verification.
   digest and be followed by bounded read-back.
 - `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
   revision and digest verification.
+- `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
+  deploy-recovery dry-run path; always run before apply and capture the
+  `recovery_digest` from the redacted result.
+- `POST /v1/admin/generic-web/deploy-recovery/apply`: Generic-web
+  deploy-recovery apply path; requires the original deploy idempotency key,
+  the dry-run digest, and reviewed acknowledgement.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - Launchplane host-only CLI helpers: Use only when you are explicitly on the

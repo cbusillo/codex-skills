@@ -238,6 +238,44 @@ CHANGE_IMPACT_POLICY_READ_FIELDS = {
     "current_policy",
     "policy_history_count",
 }
+GENERIC_WEB_DEPLOY_RECOVERY_DRY_RUN_FIELDS = {
+    "schema_version",
+    "status",
+    "mode",
+    "product",
+    "context",
+    "instance",
+    "reservation_state",
+    "reservation_attempt",
+    "reservation_created_at",
+    "reservation_updated_at",
+    "reservation_lease_expires_at",
+    "observed_at",
+    "reconciliation_key_sha256",
+    "provider_target_key_sha256",
+    "provider_effect_phase",
+    "provider_outcome",
+    "provider_status",
+    "retry_safe",
+    "proposed_action",
+    "recovery_digest",
+}
+GENERIC_WEB_DEPLOY_RECOVERY_APPLY_FIELDS = {
+    "schema_version",
+    "status",
+    "mode",
+    "trace_id",
+    "product",
+    "context",
+    "instance",
+    "reservation_state",
+    "reservation_attempt",
+    "recovery_action",
+    "recovery_digest",
+    "provider_outcome",
+    "provider_status",
+    "retry_safe",
+}
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
@@ -1181,6 +1219,89 @@ def _project_change_impact_policy_result(result: object) -> dict[str, object]:
     }
 
 
+def _project_sha256(value: object) -> str:
+    digest = public_identifier(value)
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return digest
+
+
+def _project_generic_web_deploy_recovery_result(
+    result: object, *, operation: str
+) -> dict[str, object]:
+    source = _require_dict(result)
+    dry_run = operation == "generic-web-deploy-recovery-dry-run"
+    allowed_fields = (
+        GENERIC_WEB_DEPLOY_RECOVERY_DRY_RUN_FIELDS
+        if dry_run
+        else GENERIC_WEB_DEPLOY_RECOVERY_APPLY_FIELDS
+    )
+    if any(str(key) not in allowed_fields for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    expected_status = "ok" if dry_run else "accepted"
+    expected_mode = "dry-run" if dry_run else "apply"
+    status = public_code(source.get("status"))
+    mode = public_code(source.get("mode"))
+    if status != expected_status or mode != expected_mode or source.get("schema_version") != 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    reservation_attempt = source.get("reservation_attempt")
+    retry_safe = source.get("retry_safe")
+    if (
+        not isinstance(reservation_attempt, int)
+        or isinstance(reservation_attempt, bool)
+        or reservation_attempt < 1
+        or not isinstance(retry_safe, bool)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": status,
+        "mode": mode,
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "reservation_state": public_code(source.get("reservation_state")),
+        "reservation_attempt": reservation_attempt,
+        "provider_outcome": public_code(source.get("provider_outcome")),
+        "retry_safe": retry_safe,
+        "recovery_digest": _project_sha256(source.get("recovery_digest")),
+    }
+    provider_status = source.get("provider_status")
+    if provider_status:
+        projected["provider_status"] = public_summary_string(provider_status)
+    if dry_run:
+        projected.update(
+            {
+                "reservation_created_at": public_timestamp(
+                    source.get("reservation_created_at")
+                ),
+                "reservation_updated_at": public_timestamp(
+                    source.get("reservation_updated_at")
+                ),
+                "observed_at": public_timestamp(source.get("observed_at")),
+                "reconciliation_key_sha256": _project_sha256(
+                    source.get("reconciliation_key_sha256")
+                ),
+                "provider_target_key_sha256": _project_sha256(
+                    source.get("provider_target_key_sha256")
+                ),
+                "proposed_action": public_code(source.get("proposed_action")),
+            }
+        )
+        provider_effect_phase = source.get("provider_effect_phase")
+        if provider_effect_phase:
+            projected["provider_effect_phase"] = public_code(provider_effect_phase)
+        lease_expires_at = source.get("reservation_lease_expires_at")
+        if lease_expires_at:
+            projected["reservation_lease_expires_at"] = public_timestamp(lease_expires_at)
+    else:
+        projected["trace_id"] = public_trace_id(source.get("trace_id"))
+        projected["recovery_action"] = public_code(source.get("recovery_action"))
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_change_impact_policy_read_model(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in CHANGE_IMPACT_POLICY_READ_FIELDS for key in source):
@@ -1203,6 +1324,14 @@ def _project_change_impact_policy_read_model(value: object) -> dict[str, object]
 
 
 def _project_success_output(operation: str, provider_payload: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
+    if operation in {
+        "generic-web-deploy-recovery-dry-run",
+        "generic-web-deploy-recovery-apply",
+    }:
+        return {}, _project_generic_web_deploy_recovery_result(
+            provider_payload,
+            operation=operation,
+        )
     if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     replayed = provider_payload.get("replayed")
@@ -1370,6 +1499,21 @@ def summarize_success(
                 if operation == "change-impact-policy-dry-run"
                 else "Read back the active change-impact policy before relying on it."
             )
+        elif operation in {
+            "generic-web-deploy-recovery-dry-run",
+            "generic-web-deploy-recovery-apply",
+        }:
+            summary["recovery_digest"] = result.get("recovery_digest")
+            summary["recovery_action"] = result.get(
+                "proposed_action"
+                if operation == "generic-web-deploy-recovery-dry-run"
+                else "recovery_action"
+            )
+            summary["recommendation"] = (
+                "Review the redacted dry-run result before applying the exact same private payload."
+                if operation == "generic-web-deploy-recovery-dry-run"
+                else "Verify the recovered reservation and a subsequent normal deploy before closing the recovery plan."
+            )
     assert_public_safe_shape(summary)
     payload["summary"] = {key: value for key, value in summary.items() if value not in {"", None}}
     return payload
@@ -1425,6 +1569,49 @@ def read_payload_file(path: str) -> dict[str, object]:
 def _require_idempotency(args: argparse.Namespace) -> None:
     if not args.idempotency_key.strip():
         raise ValueError("idempotency_key_required")
+
+
+def generic_web_deploy_recovery_body(
+    args: argparse.Namespace, *, mode: str
+) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    _require_idempotency(args)
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    product = body.get("product")
+    instance = body.get("instance")
+    reason = body.get("reason")
+    original_deploy = body.get("original_deploy")
+    if not isinstance(product, str) or not product.strip():
+        raise ValueError("product_required")
+    if not isinstance(instance, str) or not instance.strip():
+        raise ValueError("instance_required")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reason_required")
+    if not isinstance(original_deploy, dict):
+        raise ValueError("original_deploy_required")
+    deploy_request = original_deploy.get("deploy")
+    if (
+        str(original_deploy.get("product") or "").strip() != product.strip()
+        or not isinstance(deploy_request, dict)
+        or str(deploy_request.get("instance") or "").strip() != instance.strip()
+    ):
+        raise ValueError("original_deploy_identity_mismatch")
+    if mode == "apply":
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_recovery_digest = args.expected_recovery_digest.strip().lower()
+        if not expected_recovery_digest:
+            raise ValueError("expected_recovery_digest_required")
+        if len(expected_recovery_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_recovery_digest
+        ):
+            raise ValueError("invalid_expected_recovery_digest")
+        payload_recovery_digest = str(body.get("expected_recovery_digest") or "").strip().lower()
+        if payload_recovery_digest and payload_recovery_digest != expected_recovery_digest:
+            raise ValueError("recovery_digest_mismatch")
+        body["expected_recovery_digest"] = expected_recovery_digest
+    return body
 
 
 def product_config_preflight_body(args: argparse.Namespace) -> dict[str, object]:
@@ -1603,7 +1790,10 @@ def execute_post(
                 )
             )
         except LaunchplaneSafetyError:
-            if operation != "change-impact-policy-apply":
+            if operation not in {
+                "change-impact-policy-apply",
+                "generic-web-deploy-recovery-apply",
+            }:
                 raise
             try:
                 trace_id = public_trace_id(provider_payload.get("trace_id"))
@@ -1612,17 +1802,32 @@ def execute_post(
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
             )
+            recovery_apply = operation == "generic-web-deploy-recovery-apply"
             payload["summary"] = {
                 "trace_id": trace_id,
                 "recommendation": (
-                    "Launchplane accepted the apply request, but the response could not be "
-                    "verified locally. Read back the active policy before retrying."
+                    "Launchplane accepted the recovery apply, but the response could not be "
+                    "verified locally. Inspect the original deploy reservation and normal deploy "
+                    "evidence before retrying."
+                    if recovery_apply
+                    else (
+                        "Launchplane accepted the apply request, but the response could not be "
+                        "verified locally. Read back the active policy before retrying."
+                    )
                 ),
             }
             payload["warnings"] = [
                 warning(
                     "apply_response_unverified",
-                    "The apply response was not safe to project; do not retry before read-back.",
+                    (
+                        "The recovery apply response was not safe to project; do not retry before "
+                        "reservation verification."
+                        if recovery_apply
+                        else (
+                            "The apply response was not safe to project; do not retry before "
+                            "read-back."
+                        )
+                    ),
                 )
             ]
             emit(payload)
@@ -1857,6 +2062,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     change_impact_read.add_argument("--repository-id", required=True)
 
+    recovery_dry_run = subparsers.add_parser(
+        "generic-web-deploy-recovery-dry-run",
+        help="Submit a private generic-web deploy-recovery dry-run payload.",
+    )
+    recovery_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    recovery_dry_run.add_argument("--idempotency-key", required=True)
+
+    recovery_apply = subparsers.add_parser(
+        "generic-web-deploy-recovery-apply",
+        help="Submit a reviewed private generic-web deploy-recovery apply payload.",
+    )
+    recovery_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    recovery_apply.add_argument("--idempotency-key", required=True)
+    recovery_apply.add_argument("--reviewed-dry-run", action="store_true")
+    recovery_apply.add_argument("--expected-recovery-digest", required=True)
+
     controller = subparsers.add_parser(
         "merge-train-controller-run-once", help="Call the merge-train controller once."
     )
@@ -1996,6 +2221,26 @@ def main(argv: list[str]) -> int:
                 args=args,
                 operation=args.command,
                 path="/v1/previews/pr-feedback/remediation",
+                request=request,
+                body=body,
+            )
+        if args.command == "generic-web-deploy-recovery-dry-run":
+            request = {"mode": "dry_run", "payload_source": "private_file"}
+            body = generic_web_deploy_recovery_body(args, mode="dry_run")
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path="/v1/admin/generic-web/deploy-recovery/dry-run",
+                request=request,
+                body=body,
+            )
+        if args.command == "generic-web-deploy-recovery-apply":
+            request = {"mode": "apply", "payload_source": "private_file"}
+            body = generic_web_deploy_recovery_body(args, mode="apply")
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path="/v1/admin/generic-web/deploy-recovery/apply",
                 request=request,
                 body=body,
             )
