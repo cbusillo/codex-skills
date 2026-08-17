@@ -124,10 +124,15 @@ send apply before a matching dry-run is complete and reviewed.
 Local bearer-token denial is not the same as missing credentials. For new or
 higher-authority runtime records, including authz grants, private health
 endpoint records, provider targets, route records, and operator/workflow grants,
-look for the Launchplane authz reconciliation path first. In Launchplane repos
-this may be a deploy workflow or authz-grant reconciliation script running under
-GitHub Actions OIDC. Do not open-code denied routes or infer grants from
-checked-in examples.
+first classify the result as a scope denial against an existing capability or a
+capability gap. A capability gap escalates to the owning Launchplane
+authorization-architecture issue; it is not resolved by finding another
+credential. GitHub workflows, Actions secrets, and OIDC roles are transport for
+capabilities Launchplane already granted, never authorization authority for a
+denied action. Use a Launchplane-owned reconciliation entrypoint only when it
+already exists, is sanctioned for that record type, is operator-initiated, and
+is run unmodified. Do not open-code denied routes, infer grants from checked-in
+examples, or author a workflow to carry a denied call.
 
 ## Safety & Redaction
 

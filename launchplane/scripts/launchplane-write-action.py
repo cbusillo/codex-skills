@@ -1451,8 +1451,10 @@ def http_error_recommendation(status: str) -> str:
     recommendations = {
         "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
         "denied": (
-            "Credential was accepted but this action was denied; check the intended "
-            "Launchplane authz reconciliation or GitHub Actions OIDC path before probing routes manually."
+            "Credential was accepted but this action was denied; this is an authority-scope "
+            "result. Report the trace ID and stop. Escalate a missing capability to the owning "
+            "authorization-architecture issue. Do not probe routes manually or route this call "
+            "through a GitHub workflow, Actions secret, or OIDC role."
         ),
         "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
         "invalid_request": "Fix the private request payload before retrying this write action.",

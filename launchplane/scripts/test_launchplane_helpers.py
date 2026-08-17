@@ -1089,6 +1089,19 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
         raise AssertionError("expected unsafe HTTP error trace to fail closed")
 
 
+def test_denied_recommendation_escalates_without_borrowing_ci_authority() -> None:
+    recommendation = write_action.http_error_recommendation("denied").lower()
+
+    assert write_action._status_for_http_error(
+        403, {"error": {"code": "authorization_denied"}}
+    ) == "denied"
+    assert "authority-scope" in recommendation
+    assert "escalate" in recommendation
+    assert "do not probe routes manually" in recommendation
+    assert "workflow" in recommendation
+    assert "check the intended launchplane authz reconciliation" not in recommendation
+
+
 def test_context_projection_contract_and_secret_shape() -> None:
     provider_context = json.loads((SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text())
     raw_context = {"generated_at": provider_context["generated_at"], **provider_context["sections"]}
@@ -1635,6 +1648,7 @@ def main() -> int:
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,
+        test_denied_recommendation_escalates_without_borrowing_ci_authority,
         test_context_projection_contract_and_secret_shape,
         test_current_agent_context_service_shape,
         test_request_helpers_use_shared_safe_urlopen,

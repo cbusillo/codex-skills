@@ -323,6 +323,21 @@ policy:
               "--help",
             ]
           purpose: Advances the merge train through the bounded controller helper.
+    - id: reject-launchplane-authz-secret-authority
+      match:
+        shell_regex: "(?i)\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\b(?:secret|variable)\\s+set\\b[\\s\\S]*\\blaunchplane_authz_[a-z0-9_]+\\b"
+      action: reject
+      message: Launchplane authorization desired state must not be created or changed through GitHub secrets or variables. Route the capability gap to the DB-native authorization architecture.
+    - id: reject-raw-github-actions-secret-writes
+      match:
+        shell_regex: "(?i)\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\bapi\\b[\\s\\S]*(?:(?:--method|-X)\\s*(?:put|patch|post|delete)\\b[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:--method|-X)\\s*(?:put|patch|post|delete)\\b)"
+      action: reject
+      message: Raw GitHub Actions secret or variable writes can silently make GitHub an authorization authority. Use the owning product/operator contract; Launchplane auth gaps must escalate to the DB-native authorization architecture.
+    - id: reject-http-github-actions-secret-writes
+      match:
+        shell_regex: "(?i)\\b(?:curl|wget|http)\\b[\\s\\S]*(?:(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b)[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b))"
+      action: reject
+      message: Direct HTTP writes to GitHub Actions or environment secrets and variables bypass the authorization-authority guardrail. Launchplane auth gaps must escalate to the DB-native authorization architecture.
     - id: prefer-launchplane-helpers-over-global-cli
       match:
         argv_prefix: ["launchplane"]
@@ -507,15 +522,24 @@ Mutate runtime environments, managed secrets, and product config.
   `launchplane` binary or by poking provider config directly.
 - **Denied Actions**: A local operator token can be present and still lack a
   specific action. Report that as authorization denial, not missing credential.
-  When a denied action concerns authz grants, provider targets, private health
-  endpoints, route records, or other higher-authority runtime records, look for
-  the Launchplane authz reconciliation surface first, such as a repo-provided
-  deploy workflow or authz-grant reconciliation script running under GitHub
-  Actions OIDC. Do not use manual route probes as the next step.
+  Before choosing a next step, classify the denial. A scope denial means an
+  existing Launchplane capability does not grant this identity the requested
+  scope. A capability gap means no supported Launchplane surface owns the
+  operation. Neither case is solved by selecting another credential or CI job.
+- **GitHub Is Not Authorization Authority**: A GitHub workflow, Actions secret,
+  repository or environment variable, OIDC role, or CI job is never evidence
+  that a denied Launchplane action is authorized. Do not author, edit, extend,
+  retarget, or dispatch a workflow to carry a call Launchplane denied.
+  Repository workflow content is routing metadata, just like
+  `.github/github.json`; Launchplane DB/service records remain authority.
 - **Unsupported Helper Coverage**: If the helper lacks a command for the needed
-  runtime record workflow, stop at the supported Launchplane service/UI or
-  authz reconciliation path. Do not synthesize record payloads from issue text,
-  checked-in examples, workflow defaults, provider observations, or local files.
+  runtime record operation, treat that as a capability gap. Stop at the
+  supported Launchplane service/UI path and use `github-plan` to open or update
+  the owning authorization-architecture issue, record the denied operation and
+  trace ID, and add a native `blocked-by` edge from the affected work. Do not
+  synthesize record payloads from issue text, checked-in examples, workflow
+  defaults, provider observations, or local files, and do not close the gap with
+  a workflow.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
   2. Run operator config diagnostics before a write-capable helper call when
@@ -543,6 +567,25 @@ Agents may guide the operator, prepare request shape, summarize redacted dry-run
 evidence, and report trace IDs/status. Agents must not collect plaintext secret
 values in chat, issues, PRs, docs, logs, or helper output, and must not bypass
 Launchplane by editing provider configuration directly.
+
+### Sanctioned Reconciliation And Break-Glass
+
+A Launchplane-owned reconciliation entrypoint may run under GitHub Actions OIDC.
+That path executes authority Launchplane already granted; it never creates
+authority merely because another identity was denied. Use it only when every
+condition holds:
+
+- the entrypoint already exists and is named in repository routing metadata,
+  the operator contract, or explicit operator instruction;
+- Launchplane owns it and already sanctions it for this exact record type;
+- the operator initiated this run for the specific record;
+- the workflow, inputs, permissions, target, and secrets are used unmodified;
+- dry-run and reviewed evidence precede apply where supported.
+
+Delegate dispatch and watching to the `github` skill. If any condition fails,
+stop and escalate architecturally. Bootstrap and break-glass are
+operator-initiated exceptions with an audit trail; they are never the routine
+answer to `authorization_denied`.
 
 ## Merge Train (Controller)
 

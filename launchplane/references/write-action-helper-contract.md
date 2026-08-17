@@ -106,9 +106,11 @@ Configuration and error states are distinct:
 - `missing_operator_config`: both service URL and token are absent.
 - `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
 - `denied`: Launchplane accepted the credential but denied the specific action,
-  usually HTTP 403 or `authorization_denied`. For higher-authority runtime
-  records, check the Launchplane authz reconciliation or GitHub Actions OIDC
-  path before manual route probes.
+  usually HTTP 403 or `authorization_denied`. This is an authority-scope result,
+  not a credential-selection result. Report it with the trace ID and stop.
+  Escalate a capability gap to the owning authorization-architecture issue. Do
+  not probe routes manually or route the call through a GitHub workflow, Actions
+  secret, or OIDC role.
 - `stale`: retry requires refreshed dry-run or intent evidence.
 - `unavailable`: service/network/response failure; do not switch to provider
   mutation.
@@ -174,9 +176,11 @@ they came from Launchplane records or explicit scoped operator input.
 
 If a denied or unsupported operation concerns authz grants, private health
 endpoint records, provider targets, route records, or operator/workflow grants,
-look for the Launchplane-owned reconciliation surface instead of widening the
-local helper. In Launchplane repositories this may be a deploy workflow or
-authz-grant reconciliation script run through GitHub Actions OIDC.
+do not widen the local helper and do not substitute GitHub CI authority. An
+already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
+unmodified when the operator initiates it for that record. Otherwise this is a
+capability gap: stop and escalate to the owning authorization-architecture issue
+with the denied operation, record type, and trace ID.
 
 ## Change-Impact Policy
 
