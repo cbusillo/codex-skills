@@ -236,7 +236,8 @@ only as explicit operator input in a JSON file outside the active repository or
 worktree. The file contains `schema_version`, `product`, `instance`,
 `original_deploy`, and `reason`. The apply request additionally requires
 `expected_recovery_digest`, which the helper inserts from the `--expected-recovery-digest`
-flag after verifying it against any value already in the payload.
+flag after verifying it against any value already in the payload and the saved
+redacted dry-run evidence.
 
 Both dry-run and apply require `--idempotency-key`. The idempotency key must be
 the original deploy's idempotency key for both calls — it is sent as the request
@@ -253,7 +254,8 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --payload-file /private/path/deploy-recovery.json \
   --idempotency-key <original-deploy-idempotency-key> \
   --reviewed-dry-run \
-  --expected-recovery-digest <recovery-digest-from-dry-run>
+  --expected-recovery-digest <recovery-digest-from-dry-run> \
+  --dry-run-evidence-file /private/path/recovery-dry-run-output.json
 ```
 
 For apply, the operator asserts that the private payload is the one reviewed
@@ -263,9 +265,19 @@ during dry-run. The helper requires:
 - Explicit `--reviewed-dry-run` acknowledgement.
 - The `recovery_digest` emitted by the dry-run result, supplied as
   `--expected-recovery-digest` (64 lowercase hex characters).
+- The saved redacted helper output from that dry-run, supplied as
+  `--dry-run-evidence-file` from outside the active repository or worktree.
 - A stable idempotency key (the original deploy key, used for both calls).
 
-The helper refuses to send apply when the supplied digest conflicts with a
+The helper refuses to send apply unless the evidence is the successful
+generic-web recovery dry-run, its digest exactly matches the supplied digest,
+its product and instance exactly match the private apply payload,
+its proposed action is `adopt_observed` or `retry_original_operation`, its
+provider outcome is determinate (`present` or `absent`), and `retry_safe` is
+true. `hold_unknown`, `wait_for_active_lease`, `replay_completed`, unknown or
+uninspected provider evidence, malformed evidence, and digest mismatches fail
+locally with `reviewed_dry_run_not_apply_eligible`; no service request is sent.
+The helper also refuses when the supplied digest conflicts with an
 `expected_recovery_digest` already present in the payload file. When the payload
 omits this field, the helper inserts the reviewed dry-run digest before apply.
 

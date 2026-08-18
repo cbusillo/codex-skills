@@ -118,8 +118,12 @@ with `schema_version`, `product`, `instance`, `original_deploy`, and `reason`.
 Both require the original deploy idempotency key as the `Idempotency-Key`
 header. Apply additionally requires `expected_recovery_digest` (64 lowercase hex)
 matching the `recovery_digest` returned by the preceding dry-run. The helper
-enforces this via `--expected-recovery-digest` and `--reviewed-dry-run`; do not
-send apply before a matching dry-run is complete and reviewed.
+enforces this via `--expected-recovery-digest`, `--reviewed-dry-run`, and a
+private `--dry-run-evidence-file`. It sends apply only when that saved helper
+output has a matching digest, a determinate provider outcome, `retry_safe=true`,
+an apply-eligible action, and the same product/instance identity as the private
+apply payload. Do not send apply before matching evidence is complete and
+reviewed.
 
 Local bearer-token denial is not the same as missing credentials. For new or
 higher-authority runtime records, including authz grants, private health

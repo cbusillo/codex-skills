@@ -218,8 +218,10 @@ commands:
         "--reviewed-dry-run",
         "--expected-recovery-digest",
         "<dry-run-digest>",
+        "--dry-run-evidence-file",
+        "<private-dry-run-output>",
       ]
-    purpose: Applies a reviewed private generic-web deploy-recovery payload with redacted output.
+    purpose: Applies only apply-eligible reviewed generic-web deploy-recovery evidence with redacted output.
 policy:
   command_policies:
     - id: prefer-launchplane-write-helper-for-generic-web-deploy-recovery-api
@@ -257,8 +259,10 @@ policy:
               "--reviewed-dry-run",
               "--expected-recovery-digest",
               "<dry-run-digest>",
+              "--dry-run-evidence-file",
+              "<private-dry-run-output>",
             ]
-          purpose: Applies only the exact reviewed recovery evidence through the bounded helper.
+          purpose: Applies only exact, determinate, retry-safe reviewed recovery evidence through the bounded helper.
     - id: prefer-launchplane-write-helper-for-change-impact-policy-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/change-impact/policies/apply\\b"
