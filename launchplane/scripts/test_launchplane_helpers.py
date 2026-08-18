@@ -60,7 +60,6 @@ def run_helper(script: str, args: list[str], env: dict[str, str] | None = None) 
         merged_env.update(env)
     proc = subprocess.run(
         [sys.executable, str(SCRIPT_DIR / script), *args],
-        check=False,
         capture_output=True,
         text=True,
         env=merged_env,
@@ -1089,6 +1088,19 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
         raise AssertionError("expected unsafe HTTP error trace to fail closed")
 
 
+def test_denied_recommendation_escalates_without_borrowing_ci_authority() -> None:
+    recommendation = write_action.http_error_recommendation("denied").lower()
+
+    assert write_action._status_for_http_error(
+        403, {"error": {"code": "authorization_denied"}}
+    ) == "denied"
+    assert "authority-scope" in recommendation
+    assert "escalate" in recommendation
+    assert "do not probe routes manually" in recommendation
+    assert "workflow" in recommendation
+    assert "check the intended launchplane authz reconciliation" not in recommendation
+
+
 def test_context_projection_contract_and_secret_shape() -> None:
     provider_context = json.loads((SCRIPT_DIR.parent / "references" / "context.available.example.json").read_text())
     raw_context = {"generated_at": provider_context["generated_at"], **provider_context["sections"]}
@@ -1261,7 +1273,7 @@ def test_settings_diagnostic_validates_sources_without_printing_values() -> None
         with temporary_attribute(
             write_action,
             "load_operator_env",
-            lambda _args: {
+            lambda _args=None: {
                 "LAUNCHPLANE_OPERATOR_URL": "http://launchplane.example.invalid",
                 "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "secret-token-never-render",
             },
@@ -1295,11 +1307,48 @@ def _generic_web_deploy_recovery_payload(*, reason: str = "Recover from failed d
     }
 
 
+def _generic_web_deploy_recovery_evidence(
+    *,
+    recovery_digest: str = "a" * 64,
+    proposed_action: str = "retry_original_operation",
+    provider_outcome: str = "absent",
+    retry_safe: bool = True,
+    product: str = "example-product",
+    instance: str = "example-instance",
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "provider": "launchplane",
+        "operation": "generic-web-deploy-recovery-dry-run",
+        "generated_at": "2026-08-17T03:10:05Z",
+        "request": {"mode": "dry_run", "payload_source": "private_file"},
+        "summary": {},
+        "records": {},
+        "result": {
+            "status": "ok",
+            "mode": "dry-run",
+            "product": product,
+            "instance": instance,
+            "provider_outcome": provider_outcome,
+            "retry_safe": retry_safe,
+            "proposed_action": proposed_action,
+            "recovery_digest": recovery_digest,
+        },
+        "warnings": [],
+    }
+
+
 def test_generic_web_deploy_recovery_body_and_projection() -> None:
     private_payload = _generic_web_deploy_recovery_payload()
     with TemporaryDirectory(dir=Path.home()) as directory:
         payload_path = Path(directory) / "deploy-recovery.json"
+        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
         payload_path.write_text(json.dumps(private_payload), encoding="utf-8")
+        evidence_path.write_text(
+            json.dumps(_generic_web_deploy_recovery_evidence()),
+            encoding="utf-8",
+        )
 
         dry_run_body = write_action.generic_web_deploy_recovery_body(
             argparse.Namespace(
@@ -1318,6 +1367,7 @@ def test_generic_web_deploy_recovery_body_and_projection() -> None:
                 idempotency_key="original-deploy-key-1",
                 reviewed_dry_run=True,
                 expected_recovery_digest="a" * 64,
+                dry_run_evidence_file=str(evidence_path),
             ),
             mode="apply",
         )
@@ -1331,6 +1381,7 @@ def test_generic_web_deploy_recovery_body_and_projection() -> None:
                 idempotency_key="original-deploy-key-1",
                 reviewed_dry_run=True,
                 expected_recovery_digest="a" * 64,
+                dry_run_evidence_file=str(evidence_path),
             ),
             mode="apply",
         )
@@ -1401,8 +1452,13 @@ def test_generic_web_deploy_recovery_body_and_projection() -> None:
 def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         payload_path = Path(directory) / "deploy-recovery.json"
+        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
         payload_path.write_text(
             json.dumps(_generic_web_deploy_recovery_payload()),
+            encoding="utf-8",
+        )
+        evidence_path.write_text(
+            json.dumps(_generic_web_deploy_recovery_evidence()),
             encoding="utf-8",
         )
         args = argparse.Namespace(
@@ -1410,6 +1466,7 @@ def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reaso
             idempotency_key="",
             reviewed_dry_run=False,
             expected_recovery_digest="",
+            dry_run_evidence_file=str(evidence_path),
         )
         try:
             write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
@@ -1476,6 +1533,47 @@ def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reaso
             raise AssertionError("expected invalid_expected_recovery_digest")
 
 
+def test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "deploy-recovery.json"
+        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
+        payload_path.write_text(
+            json.dumps(_generic_web_deploy_recovery_payload()),
+            encoding="utf-8",
+        )
+        args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="original-deploy-key-1",
+            reviewed_dry_run=True,
+            expected_recovery_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        ineligible_evidence = (
+            _generic_web_deploy_recovery_evidence(proposed_action="hold_unknown"),
+            _generic_web_deploy_recovery_evidence(provider_outcome="unknown"),
+            _generic_web_deploy_recovery_evidence(retry_safe=False),
+            _generic_web_deploy_recovery_evidence(recovery_digest="b" * 64),
+            _generic_web_deploy_recovery_evidence(instance="another-instance"),
+            {"status": "ok", "result": {}},
+        )
+        for evidence in ineligible_evidence:
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            try:
+                write_action.generic_web_deploy_recovery_body(args, mode="apply")
+            except ValueError as exc:
+                assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+            else:
+                raise AssertionError("expected ineligible reviewed dry-run rejection")
+
+        args.dry_run_evidence_file = ""
+        try:
+            write_action.generic_web_deploy_recovery_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("expected reviewed dry-run evidence requirement")
+
+
 def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         repo_root = Path(directory) / "repo"
@@ -1504,8 +1602,13 @@ def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
 def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         payload_path = Path(directory) / "deploy-recovery.json"
+        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
         payload_path.write_text(
             json.dumps(_generic_web_deploy_recovery_payload()),
+            encoding="utf-8",
+        )
+        evidence_path.write_text(
+            json.dumps(_generic_web_deploy_recovery_evidence()),
             encoding="utf-8",
         )
         calls: list[dict[str, Any]] = []
@@ -1538,6 +1641,8 @@ def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
                         "--reviewed-dry-run",
                         "--expected-recovery-digest",
                         "a" * 64,
+                        "--dry-run-evidence-file",
+                        str(evidence_path),
                     ]
                 )
                 == 0
@@ -1551,6 +1656,56 @@ def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
     assert calls[1]["body"]["expected_recovery_digest"] == "a" * 64
     assert "original_deploy" not in json.dumps(calls[0]["request"])
     assert "original_deploy" not in json.dumps(calls[1]["request"])
+
+
+def test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_http() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "deploy-recovery.json"
+        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
+        payload_path.write_text(
+            json.dumps(_generic_web_deploy_recovery_payload()),
+            encoding="utf-8",
+        )
+        evidence_path.write_text(
+            json.dumps(
+                _generic_web_deploy_recovery_evidence(
+                    proposed_action="hold_unknown",
+                    provider_outcome="unknown",
+                    retry_safe=False,
+                )
+            ),
+            encoding="utf-8",
+        )
+        calls: list[dict[str, Any]] = []
+        output = io.StringIO()
+
+        with (
+            temporary_attribute(
+                write_action,
+                "execute_post",
+                lambda **kwargs: calls.append(kwargs) or 0,
+            ),
+            redirect_stdout(output),
+        ):
+            status = write_action.main(
+                [
+                    "generic-web-deploy-recovery-apply",
+                    "--payload-file",
+                    str(payload_path),
+                    "--idempotency-key",
+                    "original-deploy-key-1",
+                    "--reviewed-dry-run",
+                    "--expected-recovery-digest",
+                    "a" * 64,
+                    "--dry-run-evidence-file",
+                    str(evidence_path),
+                ]
+            )
+
+    assert status == 2
+    assert calls == []
+    emitted = json.loads(output.getvalue())
+    assert emitted["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
 def test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields() -> None:
@@ -1635,14 +1790,17 @@ def main() -> int:
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,
+        test_denied_recommendation_escalates_without_borrowing_ci_authority,
         test_context_projection_contract_and_secret_shape,
         test_current_agent_context_service_shape,
         test_request_helpers_use_shared_safe_urlopen,
         test_settings_diagnostic_validates_sources_without_printing_values,
         test_generic_web_deploy_recovery_body_and_projection,
         test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason,
+        test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence,
         test_generic_web_deploy_recovery_payload_rejects_repo_local_files,
         test_generic_web_deploy_recovery_cli_dispatches_exact_routes,
+        test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_http,
         test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields,
         test_generic_web_deploy_recovery_apply_unverified_on_projection_failure,
     ]
