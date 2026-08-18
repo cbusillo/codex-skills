@@ -787,9 +787,12 @@ def test_launchplane_write_action_helper_contract() -> None:
         denied_payload["summary"]["error_code"] == "authorization_denied",
         "Write-action denied summary must expose safe error code",
     )
+    denied_recommendation = denied_payload["summary"]["recommendation"].lower()
     require(
-        "authz reconciliation" in denied_payload["summary"]["recommendation"],
-        "Write-action denied recommendation must route to authz reconciliation instead of credential discovery",
+        "authority-scope" in denied_recommendation
+        and "authorization-architecture issue" in denied_recommendation
+        and "do not probe routes manually" in denied_recommendation,
+        "Write-action denied recommendation must stop and escalate instead of borrowing CI authority",
     )
     rendered_denied = json.dumps(denied_payload)
     require(
@@ -1482,6 +1485,117 @@ def test_launchplane_delegates_github_surfaces() -> None:
     )
 
 
+def test_launchplane_denials_escalate_instead_of_borrowing_ci_authority() -> None:
+    skill = " ".join((ROOT / "launchplane" / "SKILL.md").read_text().lower().split())
+    operator = " ".join(
+        (ROOT / "launchplane" / "references" / "operator-contract.md")
+        .read_text()
+        .lower()
+        .split()
+    )
+    helper_contract = " ".join(
+        (ROOT / "launchplane" / "references" / "write-action-helper-contract.md")
+        .read_text()
+        .lower()
+        .split()
+    )
+
+    require(
+        "a capability gap means no supported launchplane surface owns the operation"
+        in skill,
+        "Launchplane must distinguish scope denial from a missing native capability",
+    )
+    require(
+        "is never evidence that a denied launchplane action is authorized" in skill,
+        "Launchplane must reject GitHub CI as authorization authority",
+    )
+    require(
+        "do not author, edit, extend, retarget, or dispatch a workflow to carry a call launchplane denied"
+        in skill,
+        "Launchplane must forbid workflows from carrying denied calls",
+    )
+    require(
+        "use `github-plan` to open or update the owning authorization-architecture issue"
+        in skill
+        and "add a native `blocked-by` edge" in skill,
+        "Launchplane must route capability gaps into durable architecture blockers",
+    )
+    require(
+        "the workflow, inputs, permissions, target, and secrets are used unmodified"
+        in skill
+        and "operator-initiated exceptions with an audit trail" in skill,
+        "Launchplane must preserve only bounded operator-initiated reconciliation exceptions",
+    )
+    require(
+        "reject-launchplane-authz-secret-authority" in skill
+        and "action: reject" in skill
+        and "launchplane authorization desired state must not be created or changed through github secrets"
+        in skill,
+        "Launchplane must mechanically reject routine GitHub authz secret or variable writes",
+    )
+    secret_policy = command_policy_by_id("launchplane", "reject-launchplane-authz-secret-authority")
+    secret_pattern = re.compile(str(secret_policy["match"]["shell_regex"]))
+    for command in (
+        "gh secret set LAUNCHPLANE_AUTHZ_PRIMARY --body @managed.json",
+        "gh secret set launchplane_authz_primary --body @managed.json",
+        "gh secret set --repo example/launchplane LAUNCHPLANE_AUTHZ_PRIMARY --body @managed.json",
+        "gh --repo example/launchplane variable set LAUNCHPLANE_AUTHZ_PRIMARY --body value",
+        "gh-with-env-token secret set -R example/launchplane LAUNCHPLANE_AUTHZ_PRIMARY",
+    ):
+        require(
+            secret_pattern.search(command) is not None,
+            f"Launchplane authz secret policy must reject {command!r}",
+        )
+    require(
+        secret_pattern.search("gh secret set ORDINARY_DEPLOY_TOKEN --body value") is None,
+        "Launchplane authz secret policy must not reject unrelated repository secrets",
+    )
+    api_policy = command_policy_by_id("launchplane", "reject-raw-github-actions-secret-writes")
+    api_pattern = re.compile(str(api_policy["match"]["shell_regex"]))
+    for command in (
+        "gh-with-env-token api --method PUT /repos/example/launchplane/actions/secrets/NAME",
+        "gh api /repositories/1/environments/launchplane-authz-admin/secrets/NAME -X PUT",
+    ):
+        require(
+            api_pattern.search(command) is not None,
+            f"Launchplane must reject raw GitHub Actions secret writes through {command!r}",
+        )
+    require(
+        api_pattern.search("gh api /repos/example/launchplane/actions/secrets") is None,
+        "Launchplane raw secret-write policy must not reject read-only GitHub inventory",
+    )
+    http_api_policy = command_policy_by_id(
+        "launchplane", "reject-http-github-actions-secret-writes"
+    )
+    http_api_pattern = re.compile(str(http_api_policy["match"]["shell_regex"]))
+    for command in (
+        "curl -X PUT https://api.github.com/repos/example/launchplane/actions/secrets/NAME",
+        "http PUT https://api.github.com/repositories/1/environments/launchplane-authz-admin/secrets/NAME",
+        "wget https://api.github.com/repos/example/launchplane/actions/variables/NAME --method=PATCH",
+    ):
+        require(
+            http_api_pattern.search(command) is not None,
+            f"Launchplane must reject direct GitHub secret writes through {command!r}",
+        )
+    require(
+        http_api_pattern.search(
+            "curl https://api.github.com/repos/example/launchplane/actions/secrets"
+        )
+        is None,
+        "Launchplane HTTP secret-write policy must not reject read-only GitHub inventory",
+    )
+    for name, text in (
+        ("SKILL.md", skill),
+        ("operator contract", operator),
+        ("helper contract", helper_contract),
+    ):
+        require(
+            "such as a repo-provided deploy workflow" not in text
+            and "check the launchplane authz reconciliation or github actions oidc path" not in text,
+            f"{name} must not restore unbounded GitHub-OIDC denial routing",
+        )
+
+
 def test_launchplane_preserves_stable_deploy_identity() -> None:
     launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
     normalized = " ".join(launchplane.split())
@@ -2042,6 +2156,7 @@ def main() -> None:
         test_safe_exit_requires_love_gate_closeout,
         test_background_review_reporting_is_point_in_time,
         test_launchplane_delegates_github_surfaces,
+        test_launchplane_denials_escalate_instead_of_borrowing_ci_authority,
         test_launchplane_preserves_stable_deploy_identity,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_ide_configuration_policy_is_shared,

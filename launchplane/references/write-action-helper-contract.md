@@ -106,9 +106,11 @@ Configuration and error states are distinct:
 - `missing_operator_config`: both service URL and token are absent.
 - `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
 - `denied`: Launchplane accepted the credential but denied the specific action,
-  usually HTTP 403 or `authorization_denied`. For higher-authority runtime
-  records, check the Launchplane authz reconciliation or GitHub Actions OIDC
-  path before manual route probes.
+  usually HTTP 403 or `authorization_denied`. This is an authority-scope result,
+  not a credential-selection result. Report it with the trace ID and stop.
+  Escalate a capability gap to the owning authorization-architecture issue. Do
+  not probe routes manually or route the call through a GitHub workflow, Actions
+  secret, or OIDC role.
 - `stale`: retry requires refreshed dry-run or intent evidence.
 - `unavailable`: service/network/response failure; do not switch to provider
   mutation.
@@ -174,9 +176,11 @@ they came from Launchplane records or explicit scoped operator input.
 
 If a denied or unsupported operation concerns authz grants, private health
 endpoint records, provider targets, route records, or operator/workflow grants,
-look for the Launchplane-owned reconciliation surface instead of widening the
-local helper. In Launchplane repositories this may be a deploy workflow or
-authz-grant reconciliation script run through GitHub Actions OIDC.
+do not widen the local helper and do not substitute GitHub CI authority. An
+already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
+unmodified when the operator initiates it for that record. Otherwise this is a
+capability gap: stop and escalate to the owning authorization-architecture issue
+with the denied operation, record type, and trace ID.
 
 ## Change-Impact Policy
 
@@ -232,7 +236,8 @@ only as explicit operator input in a JSON file outside the active repository or
 worktree. The file contains `schema_version`, `product`, `instance`,
 `original_deploy`, and `reason`. The apply request additionally requires
 `expected_recovery_digest`, which the helper inserts from the `--expected-recovery-digest`
-flag after verifying it against any value already in the payload.
+flag after verifying it against any value already in the payload and the saved
+redacted dry-run evidence.
 
 Both dry-run and apply require `--idempotency-key`. The idempotency key must be
 the original deploy's idempotency key for both calls — it is sent as the request
@@ -249,7 +254,8 @@ uv run launchplane/scripts/launchplane-write-action.py \
   --payload-file /private/path/deploy-recovery.json \
   --idempotency-key <original-deploy-idempotency-key> \
   --reviewed-dry-run \
-  --expected-recovery-digest <recovery-digest-from-dry-run>
+  --expected-recovery-digest <recovery-digest-from-dry-run> \
+  --dry-run-evidence-file /private/path/recovery-dry-run-output.json
 ```
 
 For apply, the operator asserts that the private payload is the one reviewed
@@ -259,9 +265,19 @@ during dry-run. The helper requires:
 - Explicit `--reviewed-dry-run` acknowledgement.
 - The `recovery_digest` emitted by the dry-run result, supplied as
   `--expected-recovery-digest` (64 lowercase hex characters).
+- The saved redacted helper output from that dry-run, supplied as
+  `--dry-run-evidence-file` from outside the active repository or worktree.
 - A stable idempotency key (the original deploy key, used for both calls).
 
-The helper refuses to send apply when the supplied digest conflicts with a
+The helper refuses to send apply unless the evidence is the successful
+generic-web recovery dry-run, its digest exactly matches the supplied digest,
+its product and instance exactly match the private apply payload,
+its proposed action is `adopt_observed` or `retry_original_operation`, its
+provider outcome is determinate (`present` or `absent`), and `retry_safe` is
+true. `hold_unknown`, `wait_for_active_lease`, `replay_completed`, unknown or
+uninspected provider evidence, malformed evidence, and digest mismatches fail
+locally with `reviewed_dry_run_not_apply_eligible`; no service request is sent.
+The helper also refuses when the supplied digest conflicts with an
 `expected_recovery_digest` already present in the payload file. When the payload
 omits this field, the helper inserts the reviewed dry-run digest before apply.
 

@@ -313,7 +313,7 @@ def utc_now() -> str:
 
 
 def warning(code: str, message: str) -> dict[str, str]:
-    return {"code": code, "message": message}
+    return dict(code=code, message=message)
 
 
 def emit(payload: dict[str, object]) -> None:
@@ -413,7 +413,7 @@ def load_operator_env(path: str | None = None) -> dict[str, str]:
 
 def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
     config = load_config(args.config)
-    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env(None)
+    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env()
     if args.config:
         service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
     else:
@@ -504,7 +504,7 @@ def operator_config_message(classification: str) -> str:
 
 def settings_diagnostic(args: argparse.Namespace) -> dict[str, object]:
     config = load_config(args.config)
-    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env(None)
+    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env()
     token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
     subject_env = (
         config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
@@ -570,7 +570,7 @@ def request_launchplane(
     timeout: float,
     idempotency_key: str = "",
 ) -> dict[str, Any]:
-    data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    data = json.dumps(body, separators=(",", ":")).encode()
     request = urllib.request.Request(build_url(service_url, path), data=data, method="POST")
     request.add_header("Accept", "application/json")
     request.add_header("Content-Type", "application/json")
@@ -606,17 +606,17 @@ def request_launchplane_read(
 
 
 def _require_dict(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise LaunchplaneSafetyError("invalid_response")
-    return value
+    if isinstance(value, dict):
+        return value
+    raise LaunchplaneSafetyError("invalid_response")
 
 
 def _optional_bool(value: object) -> bool | None:
-    if value is None:
-        return None
     if isinstance(value, bool):
         return value
-    raise LaunchplaneSafetyError("invalid_response")
+    if value is not None:
+        raise LaunchplaneSafetyError("invalid_response")
+    return None
 
 
 def _optional_public_identifier(value: object) -> str | None:
@@ -687,6 +687,19 @@ def _project_key_safety_findings(value: object) -> list[dict[str, object]]:
     return projected
 
 
+def _project_key_safety_summary(source: dict[str, Any]) -> dict[str, object]:
+    projected: dict[str, object] = {}
+    if "status" in source:
+        projected["status"] = public_code(source["status"])
+    if "checked_binding_keys" in source:
+        projected["checked_binding_keys"] = _public_string_list(
+            source["checked_binding_keys"]
+        )
+    if "findings" in source:
+        projected["findings"] = _project_key_safety_findings(source["findings"])
+    return projected
+
+
 def _project_secret_evidence(value: object) -> dict[str, object]:
     source = _require_dict(value)
     allowed = {
@@ -707,16 +720,7 @@ def _project_secret_evidence(value: object) -> dict[str, object]:
             for key in destination_source
         ):
             raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected: dict[str, object] = {}
-    if "status" in source:
-        projected["status"] = public_code(source["status"])
-    if "checked_binding_keys" in source:
-        projected["checked_binding_keys"] = _public_string_list(
-            source["checked_binding_keys"]
-        )
-    if "findings" in source:
-        projected["findings"] = _project_key_safety_findings(source["findings"])
-    return projected
+    return _project_key_safety_summary(source)
 
 
 def _project_intent_evaluation(value: object) -> dict[str, object]:
@@ -814,8 +818,7 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     if not {"action", "scope", "context", "instance"}.issubset(source):
         raise LaunchplaneSafetyError("invalid_response")
-    projected: dict[str, object] = {}
-    projected["action"] = public_identifier(source["action"])
+    projected: dict[str, object] = {"action": public_identifier(source["action"])}
     scope = public_identifier(source["scope"])
     if scope not in {"global", "context", "instance"}:
         raise LaunchplaneSafetyError("invalid_response")
@@ -878,18 +881,10 @@ def _project_runtime_key_safety(value: object) -> dict[str, object]:
         for key in _require_dict(target)
     ):
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected: dict[str, object] = {}
+    projected = _project_key_safety_summary(source)
     required = _optional_bool(source.get("required"))
     if required is not None:
         projected["required"] = required
-    if "status" in source:
-        projected["status"] = public_code(source["status"])
-    if "checked_binding_keys" in source:
-        projected["checked_binding_keys"] = _public_string_list(
-            source["checked_binding_keys"]
-        )
-    if "findings" in source:
-        projected["findings"] = _project_key_safety_findings(source["findings"])
     return projected
 
 
@@ -1419,7 +1414,7 @@ def summarize_change_impact_policy_read(
 
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
     try:
-        raw = exc.read().decode("utf-8")
+        raw = exc.read().decode()
         parsed = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
         parsed = {}
@@ -1451,8 +1446,10 @@ def http_error_recommendation(status: str) -> str:
     recommendations = {
         "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
         "denied": (
-            "Credential was accepted but this action was denied; check the intended "
-            "Launchplane authz reconciliation or GitHub Actions OIDC path before probing routes manually."
+            "Credential was accepted but this action was denied; this is an authority-scope "
+            "result. Report the trace ID and stop. Escalate a missing capability to the owning "
+            "authorization-architecture issue. Do not probe routes manually or route this call "
+            "through a GitHub workflow, Actions secret, or OIDC role."
         ),
         "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
         "invalid_request": "Fix the private request payload before retrying this write action.",
@@ -1571,6 +1568,39 @@ def _require_idempotency(args: argparse.Namespace) -> None:
         raise ValueError("idempotency_key_required")
 
 
+def _require_apply_eligible_recovery_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_recovery_digest: str,
+    expected_product: str,
+    expected_instance: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if (
+        evidence.get("operation") != "generic-web-deploy-recovery-dry-run"
+        or evidence.get("status") != "ok"
+        or result.get("status") != "ok"
+        or result.get("mode") != "dry-run"
+        or result.get("proposed_action")
+        not in {"adopt_observed", "retry_original_operation"}
+        or result.get("provider_outcome") not in {"present", "absent"}
+        or result.get("retry_safe") is not True
+        or result.get("recovery_digest") != expected_recovery_digest
+        or result.get("product") != expected_product
+        or result.get("instance") != expected_instance
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
 def generic_web_deploy_recovery_body(
     args: argparse.Namespace, *, mode: str
 ) -> dict[str, object]:
@@ -1607,9 +1637,24 @@ def generic_web_deploy_recovery_body(
             character not in "0123456789abcdef" for character in expected_recovery_digest
         ):
             raise ValueError("invalid_expected_recovery_digest")
-        payload_recovery_digest = str(body.get("expected_recovery_digest") or "").strip().lower()
+        raw_payload_recovery_digest = body.get("expected_recovery_digest")
+        if raw_payload_recovery_digest is not None and not isinstance(
+            raw_payload_recovery_digest, str
+        ):
+            raise ValueError("invalid_expected_recovery_digest")
+        payload_recovery_digest = (
+            raw_payload_recovery_digest.strip().lower()
+            if isinstance(raw_payload_recovery_digest, str)
+            else ""
+        )
         if payload_recovery_digest and payload_recovery_digest != expected_recovery_digest:
             raise ValueError("recovery_digest_mismatch")
+        _require_apply_eligible_recovery_dry_run(
+            args,
+            expected_recovery_digest=expected_recovery_digest,
+            expected_product=product.strip(),
+            expected_instance=instance.strip(),
+        )
         body["expected_recovery_digest"] = expected_recovery_digest
     return body
 
@@ -2081,6 +2126,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     recovery_apply.add_argument("--idempotency-key", required=True)
     recovery_apply.add_argument("--reviewed-dry-run", action="store_true")
     recovery_apply.add_argument("--expected-recovery-digest", required=True)
+    recovery_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed recovery dry-run.",
+    )
 
     controller = subparsers.add_parser(
         "merge-train-controller-run-once", help="Call the merge-train controller once."
