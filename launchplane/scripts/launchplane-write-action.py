@@ -317,7 +317,8 @@ def warning(code: str, message: str) -> dict[str, str]:
 
 
 def emit(payload: dict[str, object]) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
 
 
 def base_payload(*, status: str, operation: str, request: dict[str, object]) -> dict[str, object]:
