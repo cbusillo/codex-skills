@@ -28,6 +28,26 @@ commands:
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
     purpose: Closes a completed or explicitly not-planned durable plan through relationship preflight and recoverable metadata reconciliation.
+  - name: github-plan-milestone-list
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
+    purpose: Lists repository milestones with bounded pagination and normalized due dates and issue counts.
+  - name: github-plan-milestone-show
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-show", "<number-or-exact-title>"]
+    purpose: Shows one milestone by number or exact title through the shared REST helper.
+  - name: github-plan-milestone-create
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-create", "<title>", "--due-on", "YYYY-MM-DD"]
+    purpose: Creates an exact-title-idempotent milestone with actor-aware, conflict-safe writes.
+  - name: github-plan-milestone-update
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-update", "<number-or-exact-title>", "--state", "open"]
+    purpose: Updates milestone metadata or reopens a milestone; closing is intentionally refused here.
+  - name: github-plan-milestone-close
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-close", "<number-or-exact-title>"]
+    purpose: Closes a milestone only when no open issue or pull request remains assigned.
 policy:
   command_policies:
     - id: prefer-gh-plan-index-for-issue-list
@@ -82,6 +102,16 @@ policy:
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
           purpose: Creates native planning relationships through the helper.
+    - id: prefer-gh-plan-helper-for-milestone-commands
+      match:
+        shell_regex: "\\b(?:gh\\s+api|gh-with-env-token\\s+api)\\b[\\s\\S]*\\brepos/\\S+/\\S+/milestones"
+      action: require_preferred
+      message: Raw milestone REST calls bypass normalized due dates, exact-title conflict handling, actor-aware write envelopes, and guarded closure. Use the maintained gh-plan milestone commands.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
+          purpose: Lists, shows, creates, updates, and guarded-closes milestones through the maintained REST helper.
 ---
 
 # GitHub Plan
@@ -171,6 +201,13 @@ theme labels or alternate backlogs.
 - If milestone size keeps growing, cut scope before silently extending the
   gate.
 
+Use `gh-plan.py milestone-list`, `milestone-show`, `milestone-create`,
+`milestone-update`, and `milestone-close` for milestone containers. These
+commands normalize `due_on` as UTC RFC3339 seconds, make exact-title creates
+safe to repeat, and return actor-aware result envelopes. `milestone-update`
+may reopen a milestone with `--state open` but cannot close one; use the guarded
+close command, which refuses when any open issue or pull request is assigned.
+
 ## Local Conventions
 
 If `.local/github-plan.md` exists, read it before creating, routing, or updating
@@ -193,7 +230,8 @@ and permissions before routing work, changing state, or trusting code.
 
 Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 
-- `../github/scripts/gh-plan.py` for compact planning issue and Project operations.
+- `../github/scripts/gh-plan.py` for compact planning issue, milestone, and
+  Project operations.
 - `../github/scripts/gh-pr.py` for PR status, checks, merge, and rate-limit
   reads when planning work needs PR evidence. The helper is REST-first for
   normal PR orientation and owns quota-aware degraded behavior.

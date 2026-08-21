@@ -46,6 +46,9 @@ resources:
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue and Project helper used by GitHub planning workflows.
+  - path: scripts/github_milestone.py
+    kind: script
+    description: Shared actor-aware REST milestone lifecycle helper used by gh-plan milestone commands.
   - path: references/repo-workflow.md
     kind: reference
     description: Detailed GitHub workflow, PR, checks, review, and cleanup guidance.
@@ -629,6 +632,16 @@ policy:
           example_argv:
             ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
           purpose: Pushes to GitHub using the configured automation token while restoring the normal remote URL afterward.
+    - id: prefer-github-plan-milestone-helper
+      match:
+        shell_regex: "\\b(?:gh\\s+api|gh-with-env-token\\s+api)\\b[\\s\\S]*\\brepos/\\S+/\\S+/milestones"
+      action: require_preferred
+      message: Milestone containers belong to github-plan. Raw milestone REST calls bypass normalized due dates, actor-aware write envelopes, exact-title conflict handling, and guarded close checks.
+      preferred:
+        - kind: script
+          path: scripts/gh-plan.py
+          example_argv: ["uv", "run", "scripts/gh-plan.py", "milestone-list", "--state", "all"]
+          purpose: Lists, shows, creates, updates, and guarded-closes milestones through the maintained REST helper.
 ---
 
 # GitHub Expert
