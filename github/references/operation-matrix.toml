@@ -964,3 +964,88 @@ reconciliation_strategy = "delegated_evidence"
 retained_graphql_rationale = "GraphQL decisions are delegated to the work-rollup collector; this wrapper stays read-only and preserves bounded evidence output."
 source_refs = ["github/scripts/github-work-evidence.py:main", "github/scripts/github-work-evidence.py:evidence_payload"]
 test_refs = ["github/scripts/test_github_work_evidence.py:test_evidence_payload_removes_audience_fields_and_preserves_facts", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.milestone_list"
+entrypoint = "github/scripts/gh-plan.py milestone-list"
+intent = "List repository milestones with bounded pagination and normalized lifecycle fields."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Bounded GET /repos/{repo}/milestones?state={state}&per_page=100&page={page}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No retained GraphQL transport; milestone listing is fully available through REST."
+source_refs = ["github/scripts/gh-plan.py:cmd_milestone_list", "github/scripts/github_milestone.py:list_milestones", "github/scripts/github_milestone.py:_list_raw"]
+test_refs = ["github/scripts/test_github_milestone.py:test_list_milestones_paginates_and_normalizes_due_on", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.milestone_show"
+entrypoint = "github/scripts/gh-plan.py milestone-show"
+intent = "Show one milestone by number or exact title with normalized output."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/milestones/{number}; bounded milestone listing for exact-title resolution"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; milestone inspection is fully available through REST."
+source_refs = ["github/scripts/gh-plan.py:cmd_milestone_show", "github/scripts/github_milestone.py:show_milestone", "github/scripts/github_milestone.py:_resolve_number"]
+test_refs = ["github/scripts/test_github_milestone.py:test_show_milestone_resolves_exact_title", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.milestone_create"
+entrypoint = "github/scripts/gh-plan.py milestone-create"
+intent = "Create a milestone only when its exact title is absent, with conflict-safe reconciliation after unknown writes."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/milestones followed by POST /repos/{repo}/milestones"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "create"
+idempotency = "non_idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "dedupe_then_create"
+retained_graphql_rationale = "No retained GraphQL transport; milestone creation uses body-safe REST and read-after-unknown reconciliation."
+source_refs = ["github/scripts/gh-plan.py:cmd_milestone_create", "github/scripts/github_milestone.py:create_milestone", "github/scripts/github_milestone.py:_authenticated_actor", "github/scripts/github_milestone.py:_reconcile_by_title"]
+test_refs = ["github/scripts/test_github_milestone.py:test_create_is_exact_title_idempotent_no_op", "github/scripts/test_github_milestone.py:test_create_rejects_case_insensitive_title_conflict", "github/scripts/test_github_milestone.py:test_create_rejects_actor_mismatch_before_milestone_reads", "github/scripts/test_github_milestone.py:test_reconciliation_callbacks_match_only_verified_state", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.milestone_update"
+entrypoint = "github/scripts/gh-plan.py milestone-update"
+intent = "Update milestone metadata or reopen it, while detecting no-op requests and refusing close through this command."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/milestones/{number} followed by PATCH /repos/{repo}/milestones/{number}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "update"
+idempotency = "idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; milestone updates and post-write reconciliation use REST."
+source_refs = ["github/scripts/gh-plan.py:cmd_milestone_update", "github/scripts/github_milestone.py:update_milestone", "github/scripts/github_milestone.py:_verified_write_response", "github/scripts/github_milestone.py:_reconcile_update"]
+test_refs = ["github/scripts/test_github_milestone.py:test_update_no_op_skips_patch", "github/scripts/test_github_milestone.py:test_update_verifies_success_response_and_clear_due_on", "github/scripts/test_github_milestone.py:test_update_accepts_server_coerced_due_on_time", "github/scripts/test_github_milestone.py:test_update_rejects_mismatched_success_response", "github/scripts/test_github_milestone.py:test_update_rejects_close_state", "github/scripts/test_github_milestone.py:test_reconciliation_callbacks_match_only_verified_state", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.plan.milestone_close"
+entrypoint = "github/scripts/gh-plan.py milestone-close"
+intent = "Close a milestone only after a bounded read confirms no open issue or pull request remains assigned."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET milestone; paged GET /repos/{repo}/issues?milestone={number}&state=open; guarded PATCH state=closed"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "close"
+idempotency = "idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; the guarded milestone close contract is implemented entirely with REST reads and writes."
+source_refs = ["github/scripts/gh-plan.py:cmd_milestone_close", "github/scripts/github_milestone.py:close_milestone", "github/scripts/github_milestone.py:_open_assigned_items", "github/scripts/github_milestone.py:_verified_write_response", "github/scripts/github_milestone.py:_reconcile_close"]
+test_refs = ["github/scripts/test_github_milestone.py:test_close_refuses_open_issue_and_pull_request", "github/scripts/test_github_milestone.py:test_close_patches_empty_milestone", "github/scripts/test_github_milestone.py:test_reconciliation_callbacks_match_only_verified_state", "github/scripts/validate-operation-matrix.py:self-test"]

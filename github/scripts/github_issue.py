@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 import github_api as github_api_core
 import github_comment
 import github_identity
+import github_milestone as github_milestone_core
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -315,13 +316,7 @@ def resolve_milestone_number(
             payload={"repo": repo, "milestone": value},
         )
 
-    exact = [item for item in milestones if item.get("title") == value]
-    folded = [
-        item
-        for item in milestones
-        if isinstance(item.get("title"), str) and item["title"].casefold() == value.casefold()
-    ]
-    matches = exact or folded
+    matches = github_milestone_core.matching_milestones(milestones, value)
     if len(matches) == 1 and isinstance(matches[0].get("number"), int):
         return int(matches[0]["number"])
     if len(matches) > 1:

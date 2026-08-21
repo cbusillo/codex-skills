@@ -306,6 +306,33 @@ or Project focus state.
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
 
+### Planning: Milestones
+
+- `milestone-list --state open|closed|all [--limit <n>]`: List milestones with
+  bounded REST pagination. Output normalizes `number`, `title`, `state`,
+  `description`, issue counts, URLs, timestamps, and `due_on` as UTC RFC3339
+  seconds or `null`.
+- `milestone-show <number-or-exact-title>`: Resolve a numeric milestone or an
+  exact title, then read its normalized REST representation.
+- `milestone-create <title>`: Create a milestone with `--description` or
+  `--description-file`, optional `--due-on`, and `--state open|closed`. An
+  existing exact title is returned as a no-op only when its requested fields
+  match; conflicting duplicates or fields fail closed. Unknown writes use a
+  pre-write snapshot and exact-title reconciliation before any retry.
+- `milestone-update <number-or-exact-title>`: Update `--title`, description,
+  `--due-on`, or `--clear-due-on`; `--state open` is the only state mutation
+  permitted. A matching current representation is returned as `no_op`, and
+  `--state closed` is rejected in favor of `milestone-close`.
+- `milestone-close <number-or-exact-title>`: Guarded-close a milestone only
+  after paging open milestone assignments. Any open issue or pull request
+  returns a conflict with compact blockers and no write is attempted. Closing
+  an already closed milestone is a no-op.
+
+All milestone writes use the configured automation actor, emit `actor` and
+`expected_actor`, and preserve fail-closed write-outcome and reconciliation
+fields from the shared API layer. Use these commands instead of raw
+`gh api .../milestones` calls.
+
 ### Planning: Projects
 
 - `project-list --owner <owner>`: List Projects.

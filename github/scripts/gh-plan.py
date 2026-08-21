@@ -24,6 +24,7 @@ from typing import Any, Optional
 import github_api as github_api_core
 import github_comment as github_comment_core
 import github_issue as github_issue_core
+import github_milestone as github_milestone_core
 import github_identity
 
 
@@ -79,6 +80,11 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
     "ensure-labels": ("rest_api", "rest_core", True),
+    "milestone-list": ("rest_api", "rest_core", False),
+    "milestone-show": ("rest_api", "rest_core", False),
+    "milestone-create": ("rest_api", "rest_core", True),
+    "milestone-update": ("rest_api", "rest_core", True),
+    "milestone-close": ("rest_api", "rest_core", True),
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -2629,6 +2635,115 @@ def cmd_ensure_labels(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "repo": repo, "ensured": wanted, "created": created})
 
 
+def milestone_description(args: argparse.Namespace) -> str | None:
+    if args.description is not None and args.description_file:
+        raise PlanError("--description and --description-file are mutually exclusive")
+    if args.description is not None:
+        return args.description
+    if args.description_file:
+        if args.description_file == "-":
+            return sys.stdin.read()
+        return pathlib.Path(args.description_file).read_text()
+    return None
+
+
+def milestone_route() -> tuple[str, str | None]:
+    _, gh_cmd, expected_actor = comment_route()
+    return gh_cmd, expected_actor
+
+
+def cmd_milestone_list(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    gh_cmd, expected_actor = milestone_route()
+    emit(
+        github_milestone_core.list_milestones(
+            repo,
+            state=args.state,
+            limit=args.limit,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+    )
+
+
+def cmd_milestone_show(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    gh_cmd, expected_actor = milestone_route()
+    emit(
+        github_milestone_core.show_milestone(
+            repo,
+            args.milestone,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+    )
+
+
+def cmd_milestone_create(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    gh_cmd, expected_actor = milestone_route()
+    emit(
+        github_milestone_core.create_milestone(
+            repo,
+            args.title,
+            description=milestone_description(args),
+            due_on=args.due_on,
+            state=args.state,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+    )
+
+
+def cmd_milestone_update(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    gh_cmd, expected_actor = milestone_route()
+    description = milestone_description(args)
+    updates: dict[str, Any] = {}
+    if description is not None:
+        updates["description"] = description
+    if args.title is not None:
+        updates["title"] = args.title
+    if args.due_on is not None:
+        updates["due_on"] = args.due_on
+    if args.clear_due_on:
+        updates["clear_due_on"] = True
+    if args.state is not None:
+        updates["state"] = args.state
+    emit(
+        github_milestone_core.update_milestone(
+            repo,
+            args.milestone,
+            **updates,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+    )
+
+
+def cmd_milestone_close(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    gh_cmd, expected_actor = milestone_route()
+    emit(
+        github_milestone_core.close_milestone(
+            repo,
+            args.milestone,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = github_api_core.TerminalArgumentParser(description="Compact GitHub issue planning helper")
     parser.add_argument("--repo", help="Default OWNER/REPO for issue refs")
@@ -2728,6 +2843,38 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ensure-labels", help="Create fixed planning labels when missing")
     p.set_defaults(func=cmd_ensure_labels)
 
+    p = sub.add_parser("milestone-list", help="List repository milestones")
+    p.add_argument("--state", default="open", choices=["open", "closed", "all"])
+    p.add_argument("--limit", type=positive_limit, default=100)
+    p.set_defaults(func=cmd_milestone_list)
+
+    p = sub.add_parser("milestone-show", help="Show one milestone by number or exact title")
+    p.add_argument("milestone")
+    p.set_defaults(func=cmd_milestone_show)
+
+    p = sub.add_parser("milestone-create", help="Create an exact-title-idempotent milestone")
+    p.add_argument("title")
+    p.add_argument("--description")
+    p.add_argument("--description-file")
+    p.add_argument("--due-on")
+    p.add_argument("--state", default="open", choices=["open", "closed"])
+    p.set_defaults(func=cmd_milestone_create)
+
+    p = sub.add_parser("milestone-update", help="Update or reopen a milestone")
+    p.add_argument("milestone")
+    p.add_argument("--title")
+    p.add_argument("--description")
+    p.add_argument("--description-file")
+    due_on_group = p.add_mutually_exclusive_group()
+    due_on_group.add_argument("--due-on")
+    due_on_group.add_argument("--clear-due-on", action="store_true")
+    p.add_argument("--state", choices=["open"])
+    p.set_defaults(func=cmd_milestone_update)
+
+    p = sub.add_parser("milestone-close", help="Guarded-close a milestone with no open items")
+    p.add_argument("milestone")
+    p.set_defaults(func=cmd_milestone_close)
+
     return parser
 
 
@@ -2782,6 +2929,14 @@ def main() -> None:
         die(
             str(exc),
             error_code=error_code,
+            failure=exc.failure,
+            api_result=exc.api_result,
+            extra_payload=exc.payload,
+        )
+    except github_milestone_core.MilestoneError as exc:
+        die(
+            str(exc),
+            error_code=exc.failure.cause,
             failure=exc.failure,
             api_result=exc.api_result,
             extra_payload=exc.payload,
