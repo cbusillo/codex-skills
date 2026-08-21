@@ -1,0 +1,23 @@
+{
+  "name": "local-llm-plan-next-selection",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Do not use tools, do not run commands, do not start agents, and do not edit files. A user asks what durable roadmap issue to work on next. Several open plan issues have milestones and Project Focus values, but some may have native blocked-by relationships. Choose the owning skill and helper command from the loaded skill metadata. Return final answer only as these exact key=value lines with no markdown and no spaces around equals. Required keys: skill, helper, command, mutates_state, authoritative_signal. Allowed value for skill: github-plan. Allowed value for helper: gh-plan.py. Allowed value for command: next. mutates_state must be exactly `no`. authoritative_signal must be exactly `native-blocked-by`.",
+  "files": {
+    "README.md": "# Harness plan next-work fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "skill=github-plan",
+      "helper=gh-plan.py",
+      "command=next",
+      "mutates_state=no",
+      "authoritative_signal=native-blocked-by"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

@@ -263,12 +263,7 @@ def test_create_rejects_actor_mismatch_before_milestone_reads() -> None:
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            create_milestone(
-                module,
-                "owner/repo",
-                "Sprint 3",
-                expected_actor=TEST_ACTOR,
-            )
+            create_milestone(module, "owner/repo", "Sprint 3")
         except module.MilestoneError as exc:
             assert exc.failure.cause == "actor_mismatch"
         else:

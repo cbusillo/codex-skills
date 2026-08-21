@@ -314,6 +314,23 @@ skills:
             Fake gh scenario verifies the planning helper routes index through
             the harness gh issue list boundary. Latest local performance sample
             was within advisory budget.
+      - check_id: plan-next-selection-local-scenario
+        kind: exec_harness
+        mode: trusted_local_provider
+        dimension: advisory_behavior
+        gate: advisory
+        model_family: qwen3-coder
+        scenario: >-
+          skill-creator/evaluations/exec-harness/local-llm-plan-next-selection.json
+        baseline:
+          outcome: pass
+          score: 1000
+          duration_ms_budget: 120000
+          last_validated_ref: feat-github-plan-next
+          notes: >-
+            Validates that roadmap selection routes through read-only
+            `gh-plan.py next` and treats native blocked-by relationships as the
+            authoritative signal. Raw harness artifacts remain local-only.
     known_gaps: []
   github-work-rollup:
     status: active

@@ -58,6 +58,7 @@ helper_tests=(
 	github/scripts/test_github_identity.py
 	github/scripts/test_github_issue.py
 	github/scripts/test_github_milestone.py
+	github/scripts/test_gh_plan_next.py
 	github/scripts/test_github_read.py
 	github/scripts/test_github_workflow_babysit.py
 	github/scripts/test_runtime_checkout_reconciliation.py
