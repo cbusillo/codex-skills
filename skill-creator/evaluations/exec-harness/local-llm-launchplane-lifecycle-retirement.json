@@ -1,0 +1,25 @@
+{
+  "name": "local-llm-launchplane-lifecycle-retirement",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Use $launchplane. Do not use tools, run commands, start agents, edit files, or use network. Public contract observation: execute_product_retirement supports protected_workflow with modes plan/apply and requires reviewed_plan_digest; the protected workflow policy delegates dispatch/watch to github_workflow_babysit.py and forbids raw dispatch. execute_detached_application_retirement has the same plan/apply evidence requirement; detached retirement requires authority_write_count=0 and candidate absence for completion. The operator has no reviewed plan digest or explicit apply approval. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: protected_surface, protected_mode, protected_apply, dispatch_helper, raw_dispatch, detached_authority_writes, detached_completion. Allowed values: protected_surface=protected_workflow; protected_mode=plan-before-apply; protected_apply=blocked-missing-reviewed-plan; dispatch_helper=github_workflow_babysit.py; raw_dispatch=forbidden; detached_authority_writes=0; detached_completion=candidate-absence-required.",
+  "files": {
+    "README.md": "# Synthetic Launchplane lifecycle fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "protected_surface=protected_workflow",
+      "protected_mode=plan-before-apply",
+      "protected_apply=blocked-missing-reviewed-plan",
+      "dispatch_helper=github_workflow_babysit.py",
+      "raw_dispatch=forbidden",
+      "detached_authority_writes=0",
+      "detached_completion=candidate-absence-required"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

@@ -1,0 +1,24 @@
+{
+  "name": "local-llm-launchplane-bounded-repair",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Use $launchplane. Do not use tools, run commands, start agents, edit files, or use network. Classify three public-safe requests. (1) Operation apply_product_stable_lane_repair is contract-backed with protected_workflow, dry-run/apply modes, apply idempotency, and reviewed_plan_digest. (2) Generic-web deploy recovery is named by the skill as a bounded local extension with separate dry-run and apply helpers; apply requires reviewed apply-eligible dry-run evidence and the original idempotency key. (3) Direct repair of an unprojected provider database record has no contract operation or helper. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: stable_lane_sequence, stable_lane_surface, generic_web_contract_status, generic_web_sequence, unsupported_repair, nearby_helper_substitution. Allowed values: stable_lane_sequence=dry-run-review-apply; stable_lane_surface=protected_workflow; generic_web_contract_status=bounded-local-extension; generic_web_sequence=dry-run-review-apply; unsupported_repair=capability-gap; nearby_helper_substitution=forbidden.",
+  "files": {
+    "README.md": "# Synthetic Launchplane bounded-repair fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "stable_lane_sequence=dry-run-review-apply",
+      "stable_lane_surface=protected_workflow",
+      "generic_web_contract_status=bounded-local-extension",
+      "generic_web_sequence=dry-run-review-apply",
+      "unsupported_repair=capability-gap",
+      "nearby_helper_substitution=forbidden"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

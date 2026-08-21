@@ -1,0 +1,29 @@
+{
+  "name": "local-llm-launchplane-merge-recovery-outcomes",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Use $launchplane. Do not use tools, run commands, start agents, edit files, or use network. A merge-train controller terminal result confirms final landing SHA aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. The controller helper requires an idempotency key and advances one bounded phase per call. Remote PR closure is confirmed, post-merge checks pass, but protected runtime reconciliation is blocked by unexpected local state and cleanup has not run. A recovery patch has evidence, but no new operator authorization. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: controller_helper, controller_command, idempotency_key, merge_result, remote_closure, post_merge_checks, runtime_reconciliation, installed_runtime_current, local_cleanup, landing_sha_source, recovery_authority. Allowed values: controller_helper=launchplane-write-action.py; controller_command=merge-train-controller-run-once; idempotency_key=required; merge_result=confirmed; remote_closure=separate-outcome; post_merge_checks=separate-outcome; runtime_reconciliation=blocked; installed_runtime_current=no; local_cleanup=separate-outcome; landing_sha_source=terminal-controller-result-only; recovery_authority=unchanged.",
+  "files": {
+    "README.md": "# Synthetic Launchplane merge-recovery fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "controller_helper=launchplane-write-action.py",
+      "controller_command=merge-train-controller-run-once",
+      "idempotency_key=required",
+      "merge_result=confirmed",
+      "remote_closure=separate-outcome",
+      "post_merge_checks=separate-outcome",
+      "runtime_reconciliation=blocked",
+      "installed_runtime_current=no",
+      "local_cleanup=separate-outcome",
+      "landing_sha_source=terminal-controller-result-only",
+      "recovery_authority=unchanged"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

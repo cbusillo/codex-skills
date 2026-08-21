@@ -470,6 +470,26 @@ contain them. Do not describe them as contract-backed. If a later artifact adds
 those routes, migrate them deliberately and remove the local-extension entries
 instead of retaining parallel sources of truth.
 
+### Contract-Backed Lifecycle And Repair Routing
+
+For lifecycle retirement, managed authorization reconciliation, and stable-lane
+repair, resolve the requested operation from the vendored contract before
+choosing a surface. Use the operation's modes, idempotency, reviewed-evidence
+requirements, and supported surfaces as the boundary. When the selected surface
+is `protected_workflow`, resolve exactly one protected-workflow binding whose
+route matches the operation path, then delegate dispatch and watching to the
+`github` skill and `github_workflow_babysit.py`. Never open-code workflow
+authentication, dispatch, polling, retry, or reconciliation in this skill.
+
+Fail closed when the contract does not contain one unambiguous operation and,
+when required, one unambiguous workflow binding. Report the scenario as an
+unsupported capability gap and track focused follow-up coverage; do not route it
+through a nearby helper, workflow, or endpoint. Plan or dry-run first, and do not
+apply without every contract-required reviewed-evidence field, explicit operator
+approval, and an apply-eligible result. Detached application retirement must
+preserve zero authority writes and is complete only when candidate absence is
+proved.
+
 ## Core Goal
 
 Provide situational awareness and safe runtime management. Always favor

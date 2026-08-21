@@ -1,0 +1,24 @@
+{
+  "name": "local-llm-launchplane-protected-workflow-routing",
+  "model": "qwen3-coder-next",
+  "prompt": "Advisory classification only. Use $launchplane. Do not use tools, run commands, start agents, edit files, or use network. Public contract observation: operation apply_product_stable_lane_repair has path /v1/product-profiles/stable-lane-repair/apply and supported surface protected_workflow. The unique protected_workflows binding with that route is .github/workflows/product-onboarding-manifest.yml. The protected workflow invariant names github_workflow_babysit.py and raw_workflow_dispatch_allowed=false. Return final answer only as these exact key=value lines with no markdown and no spaces around equals: operation, binding, dispatch_owner, dispatch_helper, raw_gh_dispatch, launchplane_github_policy. Allowed values: operation=apply_product_stable_lane_repair; binding=.github/workflows/product-onboarding-manifest.yml; dispatch_owner=github; dispatch_helper=github_workflow_babysit.py; raw_gh_dispatch=forbidden; launchplane_github_policy=delegated-not-duplicated.",
+  "files": {
+    "README.md": "# Synthetic Launchplane protected-workflow fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "operation=apply_product_stable_lane_repair",
+      "binding=.github/workflows/product-onboarding-manifest.yml",
+      "dispatch_owner=github",
+      "dispatch_helper=github_workflow_babysit.py",
+      "raw_gh_dispatch=forbidden",
+      "launchplane_github_policy=delegated-not-duplicated"
+    ]
+  },
+  "max_seconds": 120,
+  "timeout_seconds": 180
+}

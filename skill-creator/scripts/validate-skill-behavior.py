@@ -1687,6 +1687,146 @@ def test_launchplane_preserves_stable_deploy_identity() -> None:
     )
 
 
+def test_launchplane_routes_lifecycle_and_repair_from_contract() -> None:
+    launchplane = " ".join((ROOT / "launchplane" / "SKILL.md").read_text().lower().split())
+    require(
+        "resolve the requested operation from the vendored contract before choosing a surface"
+        in launchplane,
+        "Launchplane must source lifecycle and repair routing from the vendored contract",
+    )
+    require(
+        "resolve exactly one protected-workflow binding whose route matches the operation path"
+        in launchplane,
+        "Launchplane must select protected workflows through contract route bindings",
+    )
+    require(
+        "delegate dispatch and watching to the `github` skill and `github_workflow_babysit.py`"
+        in launchplane,
+        "Launchplane must preserve GitHub ownership of protected workflow execution",
+    )
+    require(
+        "never open-code workflow authentication, dispatch, polling, retry, or reconciliation"
+        in launchplane,
+        "Launchplane must not duplicate protected workflow policy",
+    )
+    require(
+        "report the scenario as an unsupported capability gap" in launchplane
+        and "do not route it through a nearby helper, workflow, or endpoint" in launchplane,
+        "Launchplane must fail closed instead of guessing unsupported repair routes",
+    )
+    require(
+        "do not apply without every contract-required reviewed-evidence field, explicit operator approval, and an apply-eligible result"
+        in launchplane,
+        "Launchplane must preserve reviewed evidence, approval, and eligibility gates",
+    )
+    require(
+        "detached application retirement must preserve zero authority writes" in launchplane
+        and "complete only when candidate absence is proved" in launchplane,
+        "Launchplane must preserve detached retirement's zero-authority completion invariant",
+    )
+
+
+def test_launchplane_exec_harness_scenarios_cover_contract_boundaries() -> None:
+    scenario_root = ROOT / "skill-creator" / "evaluations" / "exec-harness"
+    fake_scenarios = {
+        "fake-responses-launchplane-bounded-repair.json",
+        "fake-responses-launchplane-lifecycle-retirement.json",
+        "fake-responses-launchplane-merge-recovery-outcomes.json",
+        "fake-responses-launchplane-protected-workflow-routing.json",
+    }
+    local_scenarios = {
+        "local-llm-launchplane-bounded-repair.json",
+        "local-llm-launchplane-lifecycle-retirement.json",
+        "local-llm-launchplane-merge-recovery-outcomes.json",
+        "local-llm-launchplane-protected-workflow-routing.json",
+    }
+    scenarios = {
+        name: json.loads((scenario_root / name).read_text())
+        for name in sorted(fake_scenarios | local_scenarios)
+    }
+    for name, scenario in scenarios.items():
+        require(
+            scenario.get("sandbox") == "read-only",
+            f"Launchplane scenario {name} must remain read-only",
+        )
+        require(
+            scenario.get("skill_roots") == ["../../.."],
+            f"Launchplane scenario {name} must load the repository skill root",
+        )
+        require(
+            scenario.get("expect", {}).get("returncode") == 0,
+            f"Launchplane scenario {name} must assert a successful agent turn",
+        )
+        require(
+            "launchplane" in scenario.get("prompt", "").lower(),
+            f"Launchplane scenario {name} must invoke the Launchplane skill",
+        )
+
+    for name in fake_scenarios:
+        scenario = scenarios[name]
+        require(
+            scenario.get("responses_api") and scenario["expect"].get("responses_request_count") == 1,
+            f"Launchplane scenario {name} must use one deterministic fake Responses turn",
+        )
+        require(
+            scenario["expect"].get("responses"),
+            f"Launchplane scenario {name} must assert injected skill context",
+        )
+
+    for name in local_scenarios:
+        scenario = scenarios[name]
+        require(
+            scenario.get("model") == "qwen3-coder-next"
+            and 'model_provider = "lmstudio"' in scenario.get("config_toml", ""),
+            f"Launchplane scenario {name} must use the trusted local provider fixture",
+        )
+        require(
+            scenario["expect"].get("assistant_contains"),
+            f"Launchplane scenario {name} must assert observable model judgment",
+        )
+
+    contract = json.loads(
+        (ROOT / "launchplane" / "references" / "agent-operator-contract.json").read_text()
+    )["contract"]
+    operations = {operation["operation_id"]: operation for operation in contract["operations"]}
+    workflows = {workflow["route"]: workflow for workflow in contract["protected_workflows"]}
+    lifecycle_prompt = scenarios["local-llm-launchplane-lifecycle-retirement.json"]["prompt"]
+    retirement = operations["execute_product_retirement"]
+    detached = contract["invariants"]["detached_retirement"]
+    require(
+        retirement["operation_id"] in lifecycle_prompt
+        and retirement["reviewed_evidence"][0] in lifecycle_prompt
+        and f"authority_write_count={detached['authority_write_count']}" in lifecycle_prompt,
+        "Lifecycle scenario must stay tied to the current retirement contract",
+    )
+
+    protected_prompt = scenarios["local-llm-launchplane-protected-workflow-routing.json"]["prompt"]
+    stable_lane = operations["apply_product_stable_lane_repair"]
+    stable_workflow = workflows[stable_lane["path"]]
+    require(
+        stable_lane["operation_id"] in protected_prompt
+        and stable_lane["path"] in protected_prompt
+        and stable_workflow["workflow_file"] in protected_prompt,
+        "Protected-workflow scenario must stay tied to the current stable-lane binding",
+    )
+
+    bounded_prompt = scenarios["local-llm-launchplane-bounded-repair.json"]["prompt"]
+    require(
+        stable_lane["operation_id"] in bounded_prompt
+        and "bounded local extension" in bounded_prompt
+        and "no contract operation or helper" in bounded_prompt,
+        "Bounded-repair scenario must distinguish contract, extension, and unsupported classes",
+    )
+
+    merge_prompt = scenarios["local-llm-launchplane-merge-recovery-outcomes.json"]["prompt"]
+    reconciliation = contract["invariants"]["reconciliation"]
+    require(
+        "merge-train-controller-run-once" in merge_prompt
+        and reconciliation["landing_sha_source"].replace("_", "-") in merge_prompt,
+        "Merge-recovery scenario must preserve terminal controller landing-SHA authority",
+    )
+
+
 def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
     readiness_text = (ROOT / "repo-readiness" / "SKILL.md").read_text().lower()
     closeout_text = (ROOT / "work-closeout" / "SKILL.md").read_text().lower()
@@ -2225,6 +2365,8 @@ def main() -> None:
         test_launchplane_delegates_github_surfaces,
         test_launchplane_denials_escalate_instead_of_borrowing_ci_authority,
         test_launchplane_preserves_stable_deploy_identity,
+        test_launchplane_routes_lifecycle_and_repair_from_contract,
+        test_launchplane_exec_harness_scenarios_cover_contract_boundaries,
         test_code_readiness_requires_jetbrains_inspection_evidence,
         test_ide_configuration_policy_is_shared,
         test_work_closeout_requires_issue_aware_safe_exit,

@@ -1,0 +1,58 @@
+{
+  "name": "fake-responses-launchplane-lifecycle-retirement",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $launchplane. Advisory only: classify a protected product retirement and a detached application retirement when reviewed plan evidence is missing. Explain the safe routing and fail-closed boundaries, then reply with exactly: ok",
+  "files": {
+    "README.md": "# Synthetic Launchplane lifecycle fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "sandbox": "read-only",
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-launchplane-lifecycle-retirement",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Use the contract-backed protected workflow route, but do not apply without the required reviewed plan and approval. Detached retirement preserves zero authority writes and requires candidate absence before completion."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "assistant_contains": [
+      "contract-backed protected workflow route",
+      "do not apply without the required reviewed plan and approval",
+      "zero authority writes",
+      "candidate absence"
+    ],
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "<name>launchplane</name>",
+          "Contract-Backed Lifecycle And Repair Routing",
+          "resolve the requested operation from the vendored contract before",
+          "apply without every contract-required reviewed-evidence field, explicit operator",
+          "Detached application retirement must",
+          "zero authority writes",
+          "candidate absence is"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}
