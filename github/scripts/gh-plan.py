@@ -581,6 +581,8 @@ def run_raw(
 
 PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}
 GRAPHQL_PREFLIGHT_MINIMUM = 25
+NEXT_PROJECT_ITEM_LIMIT = 1000
+NEXT_RELATIONSHIP_LIMIT = 100
 
 
 def classify_project_error(message: str) -> str:
@@ -2052,9 +2054,10 @@ def cmd_deps(args: argparse.Namespace) -> None:
 
 
 def project_item_field_value(item: dict[str, Any], field_name: str) -> str | None:
-    wanted = field_name.casefold()
+    wanted = re.sub(r"[^a-z0-9]+", "", field_name.casefold())
     for key, value in item.items():
-        if key.casefold() == wanted and isinstance(value, str) and value.strip():
+        normalized_key = re.sub(r"[^a-z0-9]+", "", key.casefold())
+        if normalized_key == wanted and isinstance(value, str) and value.strip():
             return value.strip()
     return None
 
@@ -2078,15 +2081,24 @@ def next_focus_context(
             str(owner),
             project_number,
             query=f"repo:{repo}",
-            limit=1000,
+            limit=NEXT_PROJECT_ITEM_LIMIT + 1,
             recoverable=True,
         )
     except PlanError as exc:
-        return None, {}, {
+        failure = project_failure_payload(
+            exc,
+            owner=str(owner),
+            project=str(project_ref),
+            operation="next_focus_context",
+        )
+        failure.update({
             "available": False,
             "reason": "project_focus_unavailable",
-            "detail": github_api_core.redact_string(str(exc)),
-        }
+        })
+        failure["error"] = github_api_core.redact_string(str(exc))
+        return None, {}, failure
+    truncated = len(items) > NEXT_PROJECT_ITEM_LIMIT
+    items = items[:NEXT_PROJECT_ITEM_LIMIT]
     focus_field = (config.get("project_fields") or {}).get("focus", "Focus")
     focus_by_url: dict[str, str] = {}
     for item in items:
@@ -2101,6 +2113,8 @@ def next_focus_context(
         "project": project.get("title") or project_ref,
         "project_number": project_number,
         "matched_items": len(focus_by_url),
+        "item_limit": NEXT_PROJECT_ITEM_LIMIT,
+        "truncated": truncated,
     }
 
 
@@ -2147,6 +2161,60 @@ def next_relationship_summary(
     }
 
 
+def read_next_issue_relationships(
+    issue_repo: str,
+    number: int,
+    *,
+    limit: int = NEXT_RELATIONSHIP_LIMIT,
+) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
+    relationships: dict[str, list[dict[str, Any]]] = {}
+    truncated: list[str] = []
+    actor = ""
+    endpoints = [
+        ("blocked_by", f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by"),
+        ("blocking", f"/repos/{issue_repo}/issues/{number}/dependencies/blocking"),
+        ("sub_issues", f"/repos/{issue_repo}/issues/{number}/sub_issues"),
+    ]
+    for relationship, endpoint in endpoints:
+        page_actor, items = collect_paged_rest_items(
+            endpoint,
+            query={},
+            bucket="rest_core",
+            step_prefix=f"next_{relationship}",
+            limit=limit + 1,
+        )
+        actor = page_actor or actor
+        if len(items) > limit:
+            truncated.append(relationship)
+            items = items[:limit]
+        relationships[relationship] = [
+            compact_relationship_issue(item, relationship)
+            for item in items
+        ]
+    return actor, relationships, truncated
+
+
+def next_static_exclusion(
+    issue: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    focus: str | None,
+) -> dict[str, Any] | None:
+    state = str(issue.get("state") or "").casefold()
+    status = next_plan_status(issue, config)
+    base = {
+        **compact_list_issue(str(issue.get("repo") or ""), issue),
+        "plan_status": status,
+        "focus": focus,
+        "milestone": next_milestone_context(issue),
+    }
+    if state != "open" or status == "done":
+        return {**base, "exclusion": "completed", "evidence": []}
+    if status == "stale":
+        return {**base, "exclusion": "stale_needs_review", "evidence": []}
+    return None
+
+
 def evaluate_next_plan(
     issue: dict[str, Any],
     *,
@@ -2155,7 +2223,6 @@ def evaluate_next_plan(
     relationships: dict[str, list[dict[str, Any]]] | None,
     relationship_error: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    state = str(issue.get("state") or "").casefold()
     status = next_plan_status(issue, config)
     milestone = next_milestone_context(issue)
     base = {
@@ -2164,10 +2231,9 @@ def evaluate_next_plan(
         "focus": focus,
         "milestone": milestone,
     }
-    if state != "open" or status == "done":
-        return "excluded", {**base, "exclusion": "completed", "evidence": []}
-    if status == "stale":
-        return "excluded", {**base, "exclusion": "stale_needs_review", "evidence": []}
+    static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
+    if static_exclusion is not None:
+        return "excluded", static_exclusion
     if relationship_error is not None or relationships is None:
         return "excluded", {
             **base,
@@ -2288,20 +2354,33 @@ def cmd_next(args: argparse.Namespace) -> None:
     actor = actor or project_actor
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    dependency_degraded_count = 0
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
+        static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
+        if static_exclusion is not None:
+            excluded.append(static_exclusion)
+            continue
         relationship_error = None
         relationships = None
+        truncated_relationships: list[str] = []
         try:
-            relation_actor, relationships = read_issue_relationships(
+            relation_actor, relationships, truncated_relationships = read_next_issue_relationships(
                 repo,
                 int(issue["number"]),
-                include_blocking=True,
             )
             actor = relation_actor or actor
         except PlanError as exc:
+            if isinstance(exc, ClassifiedPlanError) or exc.failure is not None:
+                raise
             relationship_error = github_api_core.redact_string(str(exc))
+        if truncated_relationships:
+            relationship_error = (
+                f"dependency relationship reads exceeded the per-relationship limit "
+                f"of {NEXT_RELATIONSHIP_LIMIT}"
+            )
+            relationships = None
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
@@ -2309,6 +2388,10 @@ def cmd_next(args: argparse.Namespace) -> None:
             relationships=relationships,
             relationship_error=relationship_error,
         )
+        if relationship_error is not None:
+            dependency_degraded_count += 1
+            if truncated_relationships:
+                evaluated["truncated_relationships"] = truncated_relationships
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     rank_next_candidates(candidates)
@@ -2319,6 +2402,10 @@ def cmd_next(args: argparse.Namespace) -> None:
         notes.append("scan_limit_truncated_open_plans")
     if not focus_context.get("available"):
         notes.append("project_focus_unavailable")
+    if focus_context.get("truncated"):
+        notes.append("project_focus_truncated")
+    if dependency_degraded_count:
+        notes.append("dependency_reads_degraded")
     emit({
         "ok": True,
         "actor": actor,
@@ -2328,6 +2415,11 @@ def cmd_next(args: argparse.Namespace) -> None:
             "milestone": milestone_scope,
         },
         "focus_context": focus_context,
+        "dependency_context": {
+            "complete": dependency_degraded_count == 0,
+            "degraded_count": dependency_degraded_count,
+            "relationship_limit": NEXT_RELATIONSHIP_LIMIT,
+        },
         "evaluated": len(issues),
         "truncated": truncated,
         "candidates": candidates[: args.limit],

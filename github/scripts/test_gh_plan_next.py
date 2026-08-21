@@ -161,6 +161,18 @@ def test_next_ranking_is_deterministic_and_dependency_aware() -> None:
         {**issue(1, updated_at="2026-08-20T00:00:00Z"), "focus": "Next", "blocking": [related(10)], "milestone": None},
         {**issue(2, updated_at="2026-08-21T00:00:00Z"), "focus": "Now", "blocking": [], "milestone": None},
         {**issue(3, updated_at="2026-08-21T00:00:00Z"), "focus": "Next", "blocking": [related(11), related(12)], "milestone": None},
+        {
+            **issue(4, updated_at="2026-08-21T00:00:00Z"),
+            "focus": "Next",
+            "blocking": [],
+            "milestone": {"due_on": "2026-09-02T00:00:00Z"},
+        },
+        {
+            **issue(5, updated_at="2026-08-21T00:00:00Z"),
+            "focus": "Next",
+            "blocking": [],
+            "milestone": {"due_on": "2026-09-01T00:00:00Z"},
+        },
     ]
     expected = None
     for seed in range(5):
@@ -170,7 +182,48 @@ def test_next_ranking_is_deterministic_and_dependency_aware() -> None:
         numbers = [item["number"] for item in candidates]
         expected = expected or numbers
         assert numbers == expected
-    assert expected == [2, 3, 1]
+    assert expected == [2, 3, 1, 5, 4]
+
+
+def test_next_focus_context_normalizes_keys_and_reports_truncation() -> None:
+    module = load_module()
+    config = {
+        **module.DEFAULT_CONFIG,
+        "projects": {"enabled": True, "owner": "owner", "default_project": "4"},
+        "project_fields": {"focus": "Next Up"},
+    }
+    items = [
+        {
+            "content": {"url": f"https://github.com/owner/repo/issues/{number}"},
+            "nextUp": "Later" if number == 1 else "Next",
+        }
+        for number in range(1, module.NEXT_PROJECT_ITEM_LIMIT + 2)
+    ]
+
+    original_meta = module.project_meta
+    original_items = module.project_items
+    module.project_meta = lambda *_args, **_kwargs: (
+        "automation-gh",
+        4,
+        {"title": "Roadmap"},
+    )
+
+    def fake_items(*_args: Any, limit: int, **_kwargs: Any) -> list[dict[str, Any]]:
+        assert limit == module.NEXT_PROJECT_ITEM_LIMIT + 1
+        return items
+
+    module.project_items = fake_items
+    try:
+        actor, focus_by_url, context = module.next_focus_context("owner/repo", config)
+    finally:
+        module.project_meta = original_meta
+        module.project_items = original_items
+
+    assert actor == "automation-gh"
+    assert focus_by_url["https://github.com/owner/repo/issues/1"] == "Later"
+    assert len(focus_by_url) == module.NEXT_PROJECT_ITEM_LIMIT
+    assert context["truncated"] is True
+    assert context["item_limit"] == module.NEXT_PROJECT_ITEM_LIMIT
 
 
 def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
@@ -199,17 +252,14 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     def fake_relationships(
         _repo: str,
         number: int,
-        *,
-        include_blocking: bool,
-    ) -> tuple[str, dict[str, list[dict[str, Any]]]]:
-        assert include_blocking is True
+    ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
         if number == 2:
-            return "automation-gh", relationships(blocked_by=[related(1)])
-        return "automation-gh", relationships()
+            return "automation-gh", relationships(blocked_by=[related(1)]), []
+        return "automation-gh", relationships(), []
 
     original_collect = module.collect_paged_rest_items
     original_focus = module.next_focus_context
-    original_relationships = module.read_issue_relationships
+    original_relationships = module.read_next_issue_relationships
     original_emit = module.emit
     module.collect_paged_rest_items = fake_collect
     module.next_focus_context = lambda _repo, _config: (
@@ -217,7 +267,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
         {plans[0]["html_url"]: "Now", plans[1]["html_url"]: "Next"},
         {"available": True},
     )
-    module.read_issue_relationships = fake_relationships
+    module.read_next_issue_relationships = fake_relationships
     module.emit = captured.update
     try:
         module.cmd_next(
@@ -230,7 +280,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     finally:
         module.collect_paged_rest_items = original_collect
         module.next_focus_context = original_focus
-        module.read_issue_relationships = original_relationships
+        module.read_next_issue_relationships = original_relationships
         module.emit = original_emit
 
     assert observed_query["state"] == "open"
@@ -239,6 +289,124 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     assert [item["number"] for item in captured["candidates"]] == [1]
     assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
     assert "scan_limit_truncated_open_plans" in captured["notes"]
+    assert captured["dependency_context"]["complete"] is True
+
+
+def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
+    module = load_module()
+    captured: dict[str, Any] = {}
+    plans = [issue(1), issue(2, labels=["plan", "plan:stale"])]
+    relationship_calls: list[int] = []
+
+    original_collect = module.collect_paged_rest_items
+    original_focus = module.next_focus_context
+    original_relationships = module.read_next_issue_relationships
+    original_emit = module.emit
+    module.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", plans)
+    module.next_focus_context = lambda _repo, _config: (
+        "automation-gh",
+        {},
+        {"available": False, "reason": "project_not_configured"},
+    )
+
+    def fake_relationships(_repo: str, number: int) -> Any:
+        relationship_calls.append(number)
+        raise module.PlanError("dependency endpoint unavailable")
+
+    module.read_next_issue_relationships = fake_relationships
+    module.emit = captured.update
+    try:
+        module.cmd_next(
+            type(
+                "Args",
+                (),
+                {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5},
+            )()
+        )
+    finally:
+        module.collect_paged_rest_items = original_collect
+        module.next_focus_context = original_focus
+        module.read_next_issue_relationships = original_relationships
+        module.emit = original_emit
+
+    assert relationship_calls == [1]
+    assert [item["exclusion"] for item in captured["excluded"]] == [
+        "unknown_dependencies",
+        "stale_needs_review",
+    ]
+    assert captured["dependency_context"]["complete"] is False
+    assert captured["dependency_context"]["degraded_count"] == 1
+    assert "dependency_reads_degraded" in captured["notes"]
+
+
+def test_cmd_next_reraises_dependency_api_failures() -> None:
+    module = load_module()
+    original_collect = module.collect_paged_rest_items
+    original_focus = module.next_focus_context
+    original_relationships = module.read_next_issue_relationships
+    module.collect_paged_rest_items = lambda *_args, **_kwargs: (
+        "automation-gh",
+        [issue(1)],
+    )
+    module.next_focus_context = lambda _repo, _config: (
+        "automation-gh",
+        {},
+        {"available": False, "reason": "project_not_configured"},
+    )
+    failure = module.github_api_core.FailureDetail(
+        cause="rate_limited",
+        message="retry later",
+        retryable=True,
+        fallback_eligible=False,
+        disposition="retry",
+    )
+    module.read_next_issue_relationships = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        module.PlanError("retry later", failure=failure)
+    )
+    try:
+        try:
+            module.cmd_next(
+                type(
+                    "Args",
+                    (),
+                    {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5},
+                )()
+            )
+        except module.PlanError as exc:
+            assert exc.failure is not None
+            assert exc.failure.cause == "rate_limited"
+        else:
+            raise AssertionError("expected classified dependency failure")
+    finally:
+        module.collect_paged_rest_items = original_collect
+        module.next_focus_context = original_focus
+        module.read_next_issue_relationships = original_relationships
+
+
+def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
+    module = load_module()
+    observed_limits: list[int] = []
+
+    def fake_collect(path: str, *, limit: int, **_kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+        observed_limits.append(limit)
+        if path.endswith("/blocked_by"):
+            return "automation-gh", [related(number) for number in range(1, limit + 1)]
+        return "automation-gh", []
+
+    original_collect = module.collect_paged_rest_items
+    module.collect_paged_rest_items = fake_collect
+    try:
+        actor, plan_relationships, truncated = module.read_next_issue_relationships(
+            "owner/repo",
+            1,
+        )
+    finally:
+        module.collect_paged_rest_items = original_collect
+
+    assert actor == "automation-gh"
+    assert observed_limits == [module.NEXT_RELATIONSHIP_LIMIT + 1] * 3
+    assert len(plan_relationships["blocked_by"]) == module.NEXT_RELATIONSHIP_LIMIT
+    assert truncated == ["blocked_by"]
 
 
 def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
@@ -258,7 +426,7 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
 
     original_collect = module.collect_paged_rest_items
     original_focus = module.next_focus_context
-    original_relationships = module.read_issue_relationships
+    original_relationships = module.read_next_issue_relationships
     original_emit = module.emit
     original_route = module.milestone_route
     original_show = module.github_milestone_core.show_milestone
@@ -268,9 +436,10 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
         {},
         {"available": False, "reason": "project_focus_unavailable"},
     )
-    module.read_issue_relationships = lambda *_args, **_kwargs: (
+    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
         "automation-gh",
         relationships(),
+        [],
     )
     module.milestone_route = lambda: ("gh", "automation-gh")
     module.github_milestone_core.show_milestone = lambda *_args, **_kwargs: {
@@ -294,7 +463,7 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
     finally:
         module.collect_paged_rest_items = original_collect
         module.next_focus_context = original_focus
-        module.read_issue_relationships = original_relationships
+        module.read_next_issue_relationships = original_relationships
         module.emit = original_emit
         module.milestone_route = original_route
         module.github_milestone_core.show_milestone = original_show
@@ -310,7 +479,11 @@ TESTS = [
     test_next_excludes_non_actionable_states_with_reasons,
     test_next_closed_milestone_is_context_not_exclusion,
     test_next_ranking_is_deterministic_and_dependency_aware,
+    test_next_focus_context_normalizes_keys_and_reports_truncation,
     test_cmd_next_is_bounded_read_only_and_explainable,
+    test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions,
+    test_cmd_next_reraises_dependency_api_failures,
+    test_next_relationship_reads_are_bounded_and_report_truncation,
     test_cmd_next_supports_milestone_scope_and_focus_degradation,
 ]
 
