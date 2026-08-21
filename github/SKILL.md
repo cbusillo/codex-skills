@@ -45,7 +45,7 @@ resources:
     description: Collect bounded read-only cross-repo GitHub work evidence as JSON for planning, readiness, closeout, or LLM-led reporting.
   - path: scripts/gh-plan.py
     kind: script
-    description: Shared planning issue and Project helper used by GitHub planning workflows.
+    description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
   - path: scripts/github_milestone.py
     kind: script
     description: Shared actor-aware REST milestone lifecycle helper used by gh-plan milestone commands.
@@ -71,6 +71,11 @@ resources:
     kind: reference
     description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: github-plan-milestone-list
+    source: skill
+    resource_path: scripts/gh-plan.py
+    example_argv: ["uv", "run", "scripts/gh-plan.py", "milestone-list", "--state", "all"]
+    purpose: Routes milestone container work through the maintained planning helper.
   - name: github-api-call
     source: skill
     resource_path: scripts/github_api.py
@@ -893,7 +898,8 @@ invocation rules.
 Always prefer the bundled scripts for structured state, ergonomic workflows,
 consistent auth/retry behavior, and safe formatting:
 
-- `scripts/gh-plan.py`: Issue and Project management (see
+- `scripts/gh-plan.py`: Issue, milestone, Project, and dependency-aware
+  next-work management (see
   `references/cli-reference.md`).
 - `scripts/github-repo-snapshot.sh`: Situational awareness.
 - `scripts/github-ci-diagnose.py`: CI log analysis.

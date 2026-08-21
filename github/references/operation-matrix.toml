@@ -677,6 +677,23 @@ source_refs = ["github/scripts/gh-plan.py:cmd_deps"]
 test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
+id = "github.plan.next"
+entrypoint = "github/scripts/gh-plan.py next"
+intent = "Rank actionable durable plans from native dependency state while using milestones and configured Project Focus only as advisory context."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Paged GET open plan issues; GET native blocked_by, blocking, and sub_issues per bounded candidate; optional gh project list/item-list reads for configured Focus context"
+quota_bucket = "mixed"
+actor_policy = "automation_required_with_explicit_project_override"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "degraded_snapshot"
+retained_graphql_rationale = "GraphQL is retained only for read-only Project Focus context; plan discovery, milestone context, and authoritative dependency relationships use REST."
+source_refs = ["github/scripts/gh-plan.py:cmd_next", "github/scripts/gh-plan.py:evaluate_next_plan", "github/scripts/gh-plan.py:rank_next_candidates", "github/scripts/gh-plan.py:next_focus_context"]
+test_refs = ["github/scripts/test_gh_plan_next.py:test_next_beta_rc_stable_chain_respects_native_blockers", "github/scripts/test_gh_plan_next.py:test_next_excludes_non_actionable_states_with_reasons", "github/scripts/test_gh_plan_next.py:test_next_closed_milestone_is_context_not_exclusion", "github/scripts/test_gh_plan_next.py:test_next_ranking_is_deterministic_and_dependency_aware", "github/scripts/test_gh_plan_next.py:test_cmd_next_is_bounded_read_only_and_explainable", "github/scripts/test_gh_plan_next.py:test_cmd_next_supports_milestone_scope_and_focus_degradation", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
 id = "github.plan.close"
 entrypoint = "github/scripts/gh-plan.py close"
 intent = "Fail closed on unsafe or incomplete native relationships, synchronize configured Project fields, close a completed or not-planned durable plan, and reconcile post-close labels/comments without duplicate evidence."

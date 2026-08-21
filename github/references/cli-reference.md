@@ -306,6 +306,22 @@ or Project focus state.
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
 
+### Planning: Next Work
+
+- `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
+  Rank actionable open plans without mutating labels, relationships, milestones,
+  Projects, or workflows. Native `blocked-by` relationships are authoritative.
+- The command excludes done, stale, waiting, Later-focus, inconsistently
+  `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
+  exclusion includes a normalized reason and dependency evidence when present.
+- Configured Project Focus and milestone state/due date are advisory ranking and
+  context signals only. A closed milestone does not hide an otherwise open,
+  unblocked plan. Project read failures degrade to explicit notes rather than
+  making dependency state look safe.
+- `--scan-limit` bounds relationship reads and reports truncation; `--limit`
+  bounds the ranked candidate list while preserving the evaluated exclusion
+  evidence.
+
 ### Planning: Milestones
 
 - `milestone-list --state open|closed|all [--limit <n>]`: List milestones with

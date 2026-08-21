@@ -28,6 +28,10 @@ commands:
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
     purpose: Closes a completed or explicitly not-planned durable plan through relationship preflight and recoverable metadata reconciliation.
+  - name: github-plan-next
+    source: repo
+    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "next", "--limit", "5"]
+    purpose: Ranks actionable plans from native blockers, plan state, Project Focus, sub-issues, and milestone context without mutating planning state.
   - name: github-plan-milestone-list
     source: repo
     example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
@@ -315,6 +319,12 @@ Did the plan or issue graph change?
 What blocker, evidence, or decision explains the direction?
 ```
 
+When durable GitHub plans exist, run `gh-plan.py next` before choosing roadmap
+work. Treat its native `blocked-by` evidence as authoritative; milestone and
+Project Focus fields explain context and ranking but do not override blockers.
+The command is advisory and read-only, so update labels, Focus, or relationships
+separately only after the direction is confirmed.
+
 Run this checkpoint:
 
 - after each implementation slice
@@ -537,8 +547,9 @@ Before saying a plan is captured, verify:
 2. Resolve the repo and read the active issue's finish line, `Current Status`,
    next action, blockers, and comments; comments may supersede the original
    body.
-3. Run `index` or `search` before creating anything, then draft or revise the
-   issue shape with the user in chat when intent is unclear.
+3. Run `next` before selecting roadmap work, and use `index` or `search` before
+   creating anything; then draft or revise the issue shape with the user in chat
+   when intent is unclear.
 4. Create or update the canonical parent issue and choose one next action.
 5. For broad workstreams, create scoped sub-issues and represent blockers,
    dependencies, and related context in the issue graph.

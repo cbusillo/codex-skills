@@ -75,6 +75,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "link": ("rest_api", "rest_core", True),
     "unlink": ("rest_api", "rest_core", True),
     "deps": ("rest_api", "rest_core", False),
+    "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
@@ -2050,6 +2051,292 @@ def cmd_deps(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "issue": compact_issue(issue), **relationships})
 
 
+def project_item_field_value(item: dict[str, Any], field_name: str) -> str | None:
+    wanted = field_name.casefold()
+    for key, value in item.items():
+        if key.casefold() == wanted and isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def next_focus_context(
+    repo: str,
+    config: dict[str, Any],
+) -> tuple[str | None, dict[str, str], dict[str, Any]]:
+    project_config = config.get("projects") or {}
+    owner = project_config.get("owner")
+    project_ref = project_config.get("default_project")
+    if not project_config.get("enabled") or not owner or not project_ref:
+        return None, {}, {"available": False, "reason": "project_not_configured"}
+    try:
+        actor, project_number, project = project_meta(
+            str(owner),
+            str(project_ref),
+            recoverable=True,
+        )
+        items = project_items(
+            str(owner),
+            project_number,
+            query=f"repo:{repo}",
+            limit=1000,
+            recoverable=True,
+        )
+    except PlanError as exc:
+        return None, {}, {
+            "available": False,
+            "reason": "project_focus_unavailable",
+            "detail": github_api_core.redact_string(str(exc)),
+        }
+    focus_field = (config.get("project_fields") or {}).get("focus", "Focus")
+    focus_by_url: dict[str, str] = {}
+    for item in items:
+        content = item.get("content") or {}
+        url = content.get("url") if isinstance(content, dict) else None
+        focus = project_item_field_value(item, str(focus_field))
+        if isinstance(url, str) and focus:
+            focus_by_url[url] = focus
+    return actor, focus_by_url, {
+        "available": True,
+        "owner": owner,
+        "project": project.get("title") or project_ref,
+        "project_number": project_number,
+        "matched_items": len(focus_by_url),
+    }
+
+
+def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
+    milestone = issue.get("milestone")
+    if not isinstance(milestone, dict):
+        return None
+    normalized = github_milestone_core.normalize_milestone(milestone)
+    return {
+        "number": normalized.get("number"),
+        "title": normalized.get("title"),
+        "state": normalized.get("state"),
+        "due_on": normalized.get("due_on"),
+        "url": normalized.get("url"),
+    }
+
+
+def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | None:
+    issue_label_names = {name.casefold() for name in issue_labels(issue)}
+    plan_labels = config.get("labels") or {}
+    for status in ("done", "stale", "blocked", "waiting", "active"):
+        label = plan_labels.get(status)
+        if isinstance(label, str) and label.casefold() in issue_label_names:
+            return status
+    return None
+
+
+def next_relationship_summary(
+    relationships: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    blocked_by = relationships.get("blocked_by") or []
+    blocking = relationships.get("blocking") or []
+    sub_issues = relationships.get("sub_issues") or []
+    open_blockers = [item for item in blocked_by if item.get("state") == "open"]
+    open_blocking = [item for item in blocking if item.get("state") == "open"]
+    open_sub_issues = [item for item in sub_issues if item.get("state") == "open"]
+    return {
+        "blocked_by": blocked_by,
+        "blocking": blocking,
+        "sub_issues": sub_issues,
+        "open_blockers": open_blockers,
+        "open_blocking": open_blocking,
+        "open_sub_issues": open_sub_issues,
+    }
+
+
+def evaluate_next_plan(
+    issue: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    focus: str | None,
+    relationships: dict[str, list[dict[str, Any]]] | None,
+    relationship_error: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    state = str(issue.get("state") or "").casefold()
+    status = next_plan_status(issue, config)
+    milestone = next_milestone_context(issue)
+    base = {
+        **compact_list_issue(str(issue.get("repo") or ""), issue),
+        "plan_status": status,
+        "focus": focus,
+        "milestone": milestone,
+    }
+    if state != "open" or status == "done":
+        return "excluded", {**base, "exclusion": "completed", "evidence": []}
+    if status == "stale":
+        return "excluded", {**base, "exclusion": "stale_needs_review", "evidence": []}
+    if relationship_error is not None or relationships is None:
+        return "excluded", {
+            **base,
+            "exclusion": "unknown_dependencies",
+            "evidence": [],
+            "detail": relationship_error or "dependency reads unavailable",
+        }
+
+    summary = next_relationship_summary(relationships)
+    open_blockers = summary["open_blockers"]
+    if open_blockers:
+        return "excluded", {
+            **base,
+            "exclusion": "blocked_by_open_dependency",
+            "evidence": relationship_refs(open_blockers, str(issue.get("repo") or "")),
+            "blocked_by": open_blockers,
+        }
+    if status == "blocked":
+        return "excluded", {
+            **base,
+            "exclusion": "label_blocked_without_native_edge",
+            "evidence": [],
+            "inconsistency": True,
+        }
+    normalized_focus = focus.casefold() if isinstance(focus, str) else None
+    if status == "waiting" or normalized_focus == "waiting":
+        return "excluded", {**base, "exclusion": "waiting", "evidence": []}
+    if normalized_focus == "later":
+        return "excluded", {**base, "exclusion": "later_focus", "evidence": []}
+    open_sub_issues = summary["open_sub_issues"]
+    if open_sub_issues:
+        return "excluded", {
+            **base,
+            "exclusion": "delegated_to_open_sub_issues",
+            "evidence": relationship_refs(open_sub_issues, str(issue.get("repo") or "")),
+            "open_sub_issues": open_sub_issues,
+        }
+
+    notes: list[str] = []
+    if milestone and milestone.get("state") == "closed":
+        notes.append("milestone_closed_but_plan_open")
+    reasons = ["no_open_blockers"]
+    if focus:
+        reasons.append(f"focus_{focus.casefold()}")
+    if summary["open_blocking"]:
+        reasons.append(f"unblocks_{len(summary['open_blocking'])}_open_plan(s)")
+    return "candidate", {
+        **base,
+        "blocked_by": [],
+        "blocking": summary["open_blocking"],
+        "sub_issues": {
+            "open": len(open_sub_issues),
+            "closed": len(summary["sub_issues"]) - len(open_sub_issues),
+        },
+        "reasons": reasons,
+        "notes": notes,
+    }
+
+
+def rank_next_candidates(candidates: list[dict[str, Any]]) -> None:
+    focus_rank = {"now": 0, "next": 1, None: 2}
+    candidates.sort(key=lambda item: int(item.get("number") or 0))
+    candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    candidates.sort(
+        key=lambda item: (
+            focus_rank.get(
+                item.get("focus").casefold() if isinstance(item.get("focus"), str) else None,
+                3,
+            ),
+            -len(item.get("blocking") or []),
+            str((item.get("milestone") or {}).get("due_on") or "9999-12-31T00:00:00Z"),
+        )
+    )
+    for rank, item in enumerate(candidates, start=1):
+        item["rank"] = rank
+
+
+def cmd_next(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    config = load_config(repo)
+    actor: str | None = None
+    milestone_scope: dict[str, Any] | None = None
+    issue_query: dict[str, Any] = {
+        "labels": config["labels"]["plan"],
+        "state": "open",
+        "sort": "updated",
+        "direction": "desc",
+    }
+    if args.milestone:
+        gh_cmd, expected_actor = milestone_route()
+        milestone_result = github_milestone_core.show_milestone(
+            repo,
+            args.milestone,
+            operation=CURRENT_OPERATION,
+            actor=None,
+            expected_actor=expected_actor,
+            gh_cmd=gh_cmd,
+        )
+        actor = milestone_result.get("actor")
+        milestone_scope = milestone_result["milestone"]
+        issue_query["milestone"] = milestone_scope["number"]
+
+    page_actor, issues = collect_paged_rest_items(
+        f"/repos/{repo}/issues",
+        query=issue_query,
+        bucket="rest_core",
+        step_prefix="next_plan_issues",
+        limit=args.scan_limit + 1,
+        issue_only=True,
+    )
+    actor = page_actor or actor
+    truncated = len(issues) > args.scan_limit
+    issues = issues[: args.scan_limit]
+    for issue in issues:
+        issue["repo"] = repo
+
+    project_actor, focus_by_url, focus_context = next_focus_context(repo, config)
+    actor = actor or project_actor
+    candidates: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for issue in issues:
+        issue_url = issue.get("html_url") or issue.get("url")
+        focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
+        relationship_error = None
+        relationships = None
+        try:
+            relation_actor, relationships = read_issue_relationships(
+                repo,
+                int(issue["number"]),
+                include_blocking=True,
+            )
+            actor = relation_actor or actor
+        except PlanError as exc:
+            relationship_error = github_api_core.redact_string(str(exc))
+        disposition, evaluated = evaluate_next_plan(
+            issue,
+            config=config,
+            focus=focus,
+            relationships=relationships,
+            relationship_error=relationship_error,
+        )
+        (candidates if disposition == "candidate" else excluded).append(evaluated)
+
+    rank_next_candidates(candidates)
+    notes = ["native_blocked_by_relationships_are_authoritative"]
+    notes.append("milestones_are_context_not_execution_order")
+    notes.append("closed_plans_are_excluded_by_the_open_issue_source_query")
+    if truncated:
+        notes.append("scan_limit_truncated_open_plans")
+    if not focus_context.get("available"):
+        notes.append("project_focus_unavailable")
+    emit({
+        "ok": True,
+        "actor": actor,
+        "repo": repo,
+        "scope": {
+            "kind": "milestone" if milestone_scope else "repository",
+            "milestone": milestone_scope,
+        },
+        "focus_context": focus_context,
+        "evaluated": len(issues),
+        "truncated": truncated,
+        "candidates": candidates[: args.limit],
+        "candidate_count": len(candidates),
+        "excluded": excluded,
+        "notes": notes,
+    })
+
+
 def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any] | None]:
     if title_or_number.isdigit():
         return "unknown", int(title_or_number), None
@@ -2808,6 +3095,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("deps", help="Show dependencies and sub-issues")
     p.add_argument("issue")
     p.set_defaults(func=cmd_deps)
+
+    p = sub.add_parser("next", help="Rank the next actionable durable plans")
+    p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
+    p.add_argument("--limit", type=positive_limit, default=5)
+    p.add_argument("--scan-limit", type=positive_limit, default=50)
+    p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
     p.add_argument("issue")
