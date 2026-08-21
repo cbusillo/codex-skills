@@ -71,6 +71,11 @@ resources:
     kind: reference
     description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: github-plan-milestone-list
+    source: skill
+    resource_path: scripts/gh-plan.py
+    example_argv: ["uv", "run", "scripts/gh-plan.py", "milestone-list", "--state", "all"]
+    purpose: Routes milestone container work through the maintained planning helper.
   - name: github-api-call
     source: skill
     resource_path: scripts/github_api.py

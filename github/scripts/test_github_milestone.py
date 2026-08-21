@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Focused regression tests for the shared milestone lifecycle helper."""
 
 from __future__ import annotations
