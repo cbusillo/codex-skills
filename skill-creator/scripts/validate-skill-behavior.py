@@ -838,6 +838,54 @@ def test_launchplane_write_action_helper_contract() -> None:
     )
 
 
+def test_launchplane_contract_freshness_is_advisory_and_bounded() -> None:
+    skill = " ".join(
+        (ROOT / "launchplane" / "SKILL.md").read_text().lower().split()
+    )
+    guide = " ".join(
+        (
+            ROOT
+            / "launchplane"
+            / "references"
+            / "agent-operator-contract.md"
+        )
+        .read_text()
+        .lower()
+        .split()
+    )
+    public_safety = " ".join(
+        (
+            ROOT / "launchplane" / "references" / "public-safety.md"
+        )
+        .read_text()
+        .lower()
+        .split()
+    )
+    require(
+        all(value in skill for value in ("`current`", "`known-stale`", "`unknown`")),
+        "Launchplane skill must preserve the exact freshness classifications",
+    )
+    require(
+        "repeated mismatches reuse the same open issue" in skill,
+        "Launchplane skill must make maintenance issue reuse explicit",
+    )
+    require(
+        "manual dispatch is compare-only unless issue reporting is explicitly selected"
+        in guide,
+        "Launchplane freshness manual dispatch must remain bounded",
+    )
+    require(
+        "does not grant runtime authority" in guide
+        and "must not block ordinary launchplane helper reads" in guide,
+        "Launchplane freshness evidence must remain advisory",
+    )
+    require(
+        "must not publish fetch urls, credentials, response bodies, contract bodies"
+        in public_safety,
+        "Launchplane freshness output must keep remote diagnostics public-safe",
+    )
+
+
 def test_stale_injected_override_paths_are_nonfatal() -> None:
     validator_path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
     injected = str(ROOT / ".system" / "plan" / "SKILL.md")
@@ -2161,6 +2209,7 @@ def main() -> None:
         test_launchplane_product_config_uses_operator_api_first,
         test_launchplane_operator_config_stays_private_and_optional,
         test_launchplane_write_action_helper_contract,
+        test_launchplane_contract_freshness_is_advisory_and_bounded,
         test_stale_injected_override_paths_are_nonfatal,
         test_github_plan_sweeps_stale_related_issues,
         test_github_plan_prefers_plan_close_for_completed_plans,

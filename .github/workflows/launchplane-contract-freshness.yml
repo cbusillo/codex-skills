@@ -1,0 +1,99 @@
+name: Launchplane Contract Freshness
+
+on:
+  schedule:
+    - cron: "23 8 * * 2"
+  workflow_dispatch:
+    inputs:
+      report_issue:
+        description: Open or update the maintenance issue on known semantic drift
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: launchplane-contract-freshness
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      classification: ${{ steps.evidence.outputs.classification }}
+      evidence: ${{ steps.evidence.outputs.evidence }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          cache-dependency-glob: "**/*.py"
+          python-version: "3.12"
+
+      - name: Compare semantic contract identity
+        run: |
+          set -euo pipefail
+          uv run launchplane/scripts/check-agent-operator-contract-freshness.py compare \
+            --timeout 10 \
+            --attempts 3 \
+            --retry-delay 1 > freshness.json
+          jq empty freshness.json
+          cat freshness.json
+
+      - name: Publish freshness evidence
+        id: evidence
+        run: |
+          set -euo pipefail
+          echo "classification=$(jq -r '.classification' freshness.json)" >> "$GITHUB_OUTPUT"
+          echo "evidence=$(jq -c '.' freshness.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Mark unknown evidence retryable
+        if: steps.evidence.outputs.classification == 'unknown'
+        run: |
+          echo "Upstream freshness is unknown; retry this advisory comparison." >&2
+          exit 1
+
+  report:
+    needs: compare
+    if: >-
+      always() &&
+      needs.compare.result == 'success' &&
+      needs.compare.outputs.classification == 'known-stale' &&
+      (github.event_name == 'schedule' || inputs.report_issue)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          cache-dependency-glob: "**/*.py"
+          python-version: "3.12"
+
+      - name: Open or update maintenance issue
+        env:
+          FRESHNESS_EVIDENCE: ${{ needs.compare.outputs.evidence }}
+          GH_TOKEN: ${{ github.token }}
+          GH_WITH_ENV_TOKEN_EXPECTED_LOGIN: github-actions[bot]
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$FRESHNESS_EVIDENCE" > freshness.json
+          uv run launchplane/scripts/check-agent-operator-contract-freshness.py report \
+            --repository "$GITHUB_REPOSITORY" \
+            --evidence-file freshness.json

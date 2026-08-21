@@ -47,6 +47,13 @@ Run `../scripts/check-agent-operator-contract.py` to reject malformed or unsafe
 content and then run the repository public-safety validator. Neither check
 proves that the artifact is fresh upstream.
 
+The separate freshness comparison may publish only the fixed public source
+repository/ref/path, schema and normalization versions, semantic digests,
+source-SHA provenance, classification, retryability, and bounded next action.
+It must not publish fetch URLs, credentials, response bodies, contract bodies,
+raw provider errors, private context, or local paths. `unknown` evidence carries
+only normalized public-safe error codes and never creates a drift issue.
+
 ## Safe Examples
 
 Use fake placeholders in committed examples:

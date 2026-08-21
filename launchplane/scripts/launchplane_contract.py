@@ -365,8 +365,6 @@ def _operation_map(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         ):
             raise ContractError("invalid_operation_fingerprint")
         operation_map[operation_id] = operation
-    if set(operation_map) != set(EXPECTED_OPERATION_CONTRACTS):
-        raise ContractError("unexpected_operation_allow_list")
     return operation_map
 
 
@@ -399,9 +397,9 @@ def _validate_helper_bindings(
             raise ContractError("local_extension_now_projected")
 
 
-def _validate_protected_workflows(
+def _protected_workflow_map(
     contract: Mapping[str, Any], operation_map: Mapping[str, Mapping[str, Any]]
-) -> None:
+) -> dict[str, Mapping[str, Any]]:
     workflows = contract.get("protected_workflows")
     if not isinstance(workflows, list):
         raise ContractError("invalid_protected_workflows")
@@ -432,7 +430,16 @@ def _validate_protected_workflows(
             or not _WORKFLOW_PATTERN.fullmatch(reusable)
         ):
             raise ContractError("invalid_reusable_workflow_file")
+        if route not in {operation["path"] for operation in operation_map.values()}:
+            raise ContractError("unknown_protected_workflow_route")
         actual[workflow_file] = workflow
+    return actual
+
+
+def _validate_protected_workflows(
+    actual: Mapping[str, Mapping[str, Any]],
+    operation_map: Mapping[str, Mapping[str, Any]],
+) -> None:
     if set(actual) != set(EXPECTED_PROTECTED_WORKFLOWS):
         raise ContractError("unexpected_protected_workflows")
     for workflow_file, expected in EXPECTED_PROTECTED_WORKFLOWS.items():
@@ -467,7 +474,9 @@ def _validate_operation_coverage(
         raise ContractError("incomplete_operation_coverage")
 
 
-def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
+def _validate_semantic_artifact(
+    artifact: Mapping[str, Any], *, verify_digest: bool
+) -> tuple[dict[str, object], dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
     _require_exact_keys(artifact, _ARTIFACT_KEYS, "invalid_artifact_keys")
     if artifact.get("schema_version") != SCHEMA_VERSION:
         raise ContractError("unsupported_schema_version")
@@ -489,21 +498,47 @@ def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
     _require_exact_keys(contract, _CONTRACT_KEYS, "invalid_contract_keys")
     _validate_public_safety(artifact)
     operation_map = _operation_map(contract)
-    _validate_operation_contracts(operation_map)
-    _validate_helper_bindings(operation_map)
-    _validate_protected_workflows(contract, operation_map)
-    _validate_operation_coverage(operation_map)
-    if contract.get("invariants") != EXPECTED_INVARIANTS:
-        raise ContractError("invariant_contract_mismatch")
-    if semantic_digest(artifact) != digest:
+    workflow_map = _protected_workflow_map(contract, operation_map)
+    invariants = contract.get("invariants")
+    if not isinstance(invariants, Mapping):
+        raise ContractError("invalid_invariants")
+    if verify_digest and semantic_digest(artifact) != digest:
         raise ContractError("semantic_digest_mismatch")
-    return {
+    summary: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "normalization_version": NORMALIZATION_VERSION,
         "semantic_digest_sha256": digest,
         "source_commit_sha": source_sha,
         "operation_count": len(operation_map),
-        "protected_workflow_count": len(EXPECTED_PROTECTED_WORKFLOWS),
+        "protected_workflow_count": len(workflow_map),
+    }
+    return summary, operation_map, workflow_map
+
+
+def validate_semantic_artifact(artifact: Mapping[str, Any]) -> dict[str, object]:
+    summary, _operation_map_value, _workflow_map_value = _validate_semantic_artifact(
+        artifact, verify_digest=True
+    )
+    return summary
+
+
+def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
+    summary, operation_map, workflow_map = _validate_semantic_artifact(
+        artifact, verify_digest=False
+    )
+    if set(operation_map) != set(EXPECTED_OPERATION_CONTRACTS):
+        raise ContractError("unexpected_operation_allow_list")
+    _validate_operation_contracts(operation_map)
+    _validate_helper_bindings(operation_map)
+    _validate_protected_workflows(workflow_map, operation_map)
+    _validate_operation_coverage(operation_map)
+    contract = artifact["contract"]
+    if contract.get("invariants") != EXPECTED_INVARIANTS:
+        raise ContractError("invariant_contract_mismatch")
+    if semantic_digest(artifact) != artifact["semantic_digest_sha256"]:
+        raise ContractError("semantic_digest_mismatch")
+    return {
+        **summary,
         "projected_helper_command_count": len(PROJECTED_HELPER_COMMANDS),
         "local_extension_count": len(LOCAL_EXTENSION_ROUTES),
         "hermetic_only": True,
