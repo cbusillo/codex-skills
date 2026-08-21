@@ -1,0 +1,60 @@
+{
+  "name": "fake-responses-launchplane-protected-workflow-routing",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $launchplane. Advisory only: a contract-backed operation resolves to a protected workflow. Explain who owns dispatch and watching and whether raw GitHub workflow commands belong in the Launchplane skill, then reply with exactly: ok",
+  "files": {
+    "README.md": "# Synthetic Launchplane protected-workflow fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "sandbox": "read-only",
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-launchplane-protected-workflow-routing",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Resolve the unique contract workflow binding, then delegate dispatch and watching to the GitHub skill and github_workflow_babysit.py. Raw dispatch and duplicated GitHub auth, polling, retry, or reconciliation policy are forbidden."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "assistant_contains": [
+      "unique contract workflow binding",
+      "github_workflow_babysit.py",
+      "Raw dispatch",
+      "forbidden"
+    ],
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "resolve exactly one protected-workflow binding whose",
+          "delegate dispatch and watching to the",
+          "`github` skill and `github_workflow_babysit.py`",
+          "Never open-code workflow",
+          "authentication, dispatch, polling, retry, or reconciliation",
+          "protected workflow dispatch",
+          "watching stay delegated to `github_workflow_babysit.py`",
+          "raw protected",
+          "workflow dispatch is not allowed"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

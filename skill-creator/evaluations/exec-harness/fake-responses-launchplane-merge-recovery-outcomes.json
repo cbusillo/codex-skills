@@ -1,0 +1,60 @@
+{
+  "name": "fake-responses-launchplane-merge-recovery-outcomes",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $launchplane. Advisory only: the merge-train controller reports a final merge commit, but post-merge runtime reconciliation is blocked. Explain the controller, evidence, authority, and outcome boundaries, then reply with exactly: ok",
+  "files": {
+    "README.md": "# Synthetic Launchplane merge recovery fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "sandbox": "read-only",
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-launchplane-merge-recovery-outcomes",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Use the bounded merge-train controller helper with an idempotency key and the terminal controller landing SHA. Preserve the confirmed merge while reporting post-merge checks, runtime reconciliation, installed-runtime freshness, remote closure, and local cleanup as separate outcomes. Recovery evidence grants no new mutation authority."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "assistant_contains": [
+      "merge-train controller helper with an idempotency key",
+      "terminal controller landing SHA",
+      "Preserve the confirmed merge",
+      "separate outcomes",
+      "grants no new mutation authority"
+    ],
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "merge-train-controller-run-once` instead of open-coding the route. Mutating",
+          "calls require an idempotency key",
+          "Each call advances one safe phase at a time",
+          "confirms a final landing",
+          "final landing SHA from that terminal controller result",
+          "Launchplane landing success independently when local reconciliation is blocked",
+          "block only claims that installed runtime behavior or the local",
+          "default checkout is current"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}

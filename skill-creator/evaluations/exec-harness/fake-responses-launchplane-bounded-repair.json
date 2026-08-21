@@ -1,0 +1,59 @@
+{
+  "name": "fake-responses-launchplane-bounded-repair",
+  "model": "gpt-5.1-codex",
+  "prompt": "Use $launchplane. Advisory only: compare a contract-backed stable-lane repair, generic-web deploy recovery, and an unsupported repair request. Explain sequencing and unsupported routing, then reply with exactly: ok",
+  "files": {
+    "README.md": "# Synthetic Launchplane repair fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "sandbox": "read-only",
+  "responses_api": {
+    "responses": [
+      {
+        "response_id": "resp-launchplane-bounded-repair",
+        "events": [
+          {
+            "item": {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Stable-lane repair follows contract-backed dry-run, review, and apply. Generic-web recovery remains a bounded local extension with reviewed dry-run evidence. Unsupported repairs are capability gaps and must not be routed through a nearby helper."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "returncode": 0,
+    "responses_request_count": 1,
+    "assistant_contains": [
+      "contract-backed dry-run, review, and apply",
+      "bounded local extension",
+      "capability gaps",
+      "must not be routed through a nearby helper"
+    ],
+    "responses": [
+      {
+        "request": 0,
+        "scope": "input",
+        "contains_all": [
+          "generic-web deploy-recovery dry-run and apply routes are explicit bounded",
+          "Do not describe them as contract-backed",
+          "Report the scenario as an",
+          "unsupported capability gap",
+          "do not route it",
+          "through a nearby helper, workflow, or endpoint",
+          "Plan or dry-run first",
+          "an apply-eligible result"
+        ]
+      }
+    ]
+  },
+  "max_seconds": 30,
+  "timeout_seconds": 90
+}
