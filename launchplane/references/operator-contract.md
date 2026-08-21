@@ -3,6 +3,24 @@
 This reference defines the safety rules and execution patterns for the
 Launchplane Operator.
 
+## Vendored Public Contract
+
+The machine-readable public operation/workflow projection is vendored at
+`agent-operator-contract.json` and validated by
+`../scripts/check-agent-operator-contract.py`. Use it for projected operation
+paths and supported surfaces. Keep the fail-closed runtime authority and review
+rules in this reference.
+
+Hermetic validation proves local contract/helper consistency only. It does not
+prove that the vendored artifact is current upstream. A source-provenance-only
+change is non-gating when schema version, normalization version, semantic digest,
+and contract content are unchanged.
+
+The generic-web deploy-recovery routes remain bounded local extensions until
+the upstream public projection includes them. Their private-file, dry-run,
+review, digest-binding, idempotency, redaction, and trace requirements remain
+fully enforced, but they must not be reported as contract-backed.
+
 ## Execution Rules
 
 - **Auth**: Prefer signed-in, scoped operator sessions for human-approved

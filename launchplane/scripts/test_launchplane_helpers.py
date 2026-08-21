@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import io
 import json
@@ -39,6 +40,7 @@ def load_module(filename: str, name: str) -> types.ModuleType:
     return module
 
 
+contract: Any = load_module("launchplane_contract.py", "launchplane_contract")
 safety: Any = load_module("launchplane_safety.py", "launchplane_safety")
 write_action: Any = load_module("launchplane-write-action.py", "launchplane_write_action")
 context_helper: Any = load_module("launchplane-context.py", "launchplane_context")
@@ -64,6 +66,10 @@ def run_helper(script: str, args: list[str], env: dict[str, str] | None = None) 
         text=True,
         env=merged_env,
     )
+    if not proc.stdout.strip():
+        raise AssertionError(
+            f"{script} emitted no JSON output; stderr={proc.stderr.strip()!r}"
+        )
     return {"returncode": proc.returncode, "payload": json.loads(proc.stdout)}
 
 
@@ -74,6 +80,122 @@ def assert_rejects_url(value: str, code: str) -> None:
         assert exc.code == code, exc.code
     else:
         raise AssertionError(f"expected {value!r} to be rejected")
+
+
+def contract_artifact() -> dict[str, Any]:
+    return json.loads(contract.DEFAULT_CONTRACT_PATH.read_text(encoding="utf-8"))
+
+
+def assert_contract_error(artifact: dict[str, Any], code: str) -> None:
+    try:
+        contract.validate_contract(artifact)
+    except contract.ContractError as exc:
+        assert exc.code == code, exc.code
+    else:
+        raise AssertionError(f"expected contract error {code}")
+
+
+def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
+    artifact = contract_artifact()
+    summary = contract.validate_contract(artifact)
+    assert summary["semantic_digest_sha256"] == (
+        "5ca368e08c9d1d094eba3ed5cf47a789b144bb81e6ff8722138440ebaff23b64"
+    )
+    assert summary["operation_count"] == 12
+    assert summary["protected_workflow_count"] == 4
+    assert summary["local_extension_count"] == 2
+    assert summary["hermetic_only"] is True
+    assert summary["upstream_freshness_proven"] is False
+
+    provenance_only = copy.deepcopy(artifact)
+    provenance_only["provenance"]["source_commit_sha"] = "f" * 40
+    assert contract.semantic_digest(provenance_only) == contract.semantic_digest(
+        artifact
+    )
+    contract.validate_contract(provenance_only)
+
+
+def test_agent_operator_contract_rejects_drift_and_unsafe_content() -> None:
+    artifact = contract_artifact()
+
+    unsupported = copy.deepcopy(artifact)
+    unsupported["normalization_version"] = 2
+    assert_contract_error(unsupported, "unsupported_normalization_version")
+
+    unsupported_schema = copy.deepcopy(artifact)
+    unsupported_schema["schema_version"] = 2
+    assert_contract_error(unsupported_schema, "unsupported_schema_version")
+
+    digest_drift = copy.deepcopy(artifact)
+    digest_drift["contract"]["invariants"]["governance"][
+        "owner_acceptance_authoritative"
+    ] = False
+    assert_contract_error(digest_drift, "invariant_contract_mismatch")
+
+    unsafe = copy.deepcopy(artifact)
+    unsafe["contract"]["operations"][0]["purpose"] = (
+        "Contact https://private.example.invalid for details."
+    )
+    unsafe["semantic_digest_sha256"] = contract.semantic_digest(unsafe)
+    assert_contract_error(unsafe, "unsafe_public_value")
+
+    malformed = copy.deepcopy(artifact)
+    malformed["contract"]["operations"][0]["unexpected"] = True
+    assert_contract_error(malformed, "invalid_operation_keys")
+
+    digest_mismatch = copy.deepcopy(artifact)
+    digest_mismatch["contract"]["operations"][0][
+        "schema_fingerprint_sha256"
+    ] = "f" * 64
+    assert_contract_error(digest_mismatch, "semantic_digest_mismatch")
+
+    projected_extension = copy.deepcopy(artifact)
+    for operation in projected_extension["contract"]["operations"]:
+        if operation["operation_id"] == "evaluate_agent_write_intent":
+            operation["path"] = contract.LOCAL_EXTENSION_ROUTES[
+                "generic-web-deploy-recovery-dry-run"
+            ]["path"]
+            break
+    assert_contract_error(projected_extension, "local_extension_now_projected")
+
+
+def test_agent_operator_contract_routes_every_local_consumer() -> None:
+    artifact = contract_artifact()
+    operation_paths = {
+        operation["operation_id"]: operation["path"]
+        for operation in artifact["contract"]["operations"]
+    }
+    for command, (operation_id, modes) in contract.PROJECTED_HELPER_COMMANDS.items():
+        assert contract.helper_command_path(command) == operation_paths[operation_id]
+        assert modes
+    for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():
+        assert contract.helper_command_path(command) == extension["path"]
+        assert extension["path"] not in operation_paths.values()
+    context_args = argparse.Namespace(
+        repo="example/repo", branch=None, issue=None, pr=None
+    )
+    assert context_helper.build_context_url(
+        "https://launchplane.example.invalid", context_args
+    ) == (
+        "https://launchplane.example.invalid/v1/agent/context"
+        "?repository=example%2Frepo"
+    )
+    for helper_filename in (
+        "launchplane-context.py",
+        "launchplane-write-action.py",
+    ):
+        helper_source = (SCRIPT_DIR / helper_filename).read_text(encoding="utf-8")
+        assert '"/v1/' not in helper_source
+
+
+def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
+    result = run_helper("check-agent-operator-contract.py", [])
+    assert result["returncode"] == 0
+    payload = result["payload"]
+    assert payload["status"] == "ok"
+    assert payload["summary"]["hermetic_only"] is True
+    assert payload["summary"]["upstream_freshness_proven"] is False
+    assert "url" not in json.dumps(payload).lower()
 
 
 def test_endpoint_validation_policy() -> None:
@@ -1770,6 +1892,10 @@ def test_generic_web_deploy_recovery_apply_unverified_on_projection_failure() ->
 
 def main() -> int:
     tests = [
+        test_agent_operator_contract_identity_and_provenance_semantics,
+        test_agent_operator_contract_rejects_drift_and_unsafe_content,
+        test_agent_operator_contract_routes_every_local_consumer,
+        test_agent_operator_contract_cli_is_public_safe_and_hermetic,
         test_endpoint_validation_policy,
         test_build_url_and_redirect_policy,
         test_write_helper_validates_cli_env_and_json_url_sources,

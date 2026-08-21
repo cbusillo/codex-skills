@@ -1,0 +1,430 @@
+{
+  "contract": {
+    "invariants": {
+      "detached_retirement": {
+        "authority_write_count": 0,
+        "completion_requires_candidate_absence": true
+      },
+      "governance": {
+        "authorization_admission_and_landing_are_independent": true,
+        "engineering_review_advisory": true,
+        "github_projection_role": "routing_and_status_only",
+        "owner_acceptance_authoritative": true
+      },
+      "product_lifecycle": {
+        "active_automation_states": [
+          "active"
+        ],
+        "retired_previews_enabled": false,
+        "states": [
+          "active",
+          "retiring",
+          "retired"
+        ],
+        "transitions": [
+          "active->retiring",
+          "retiring->retired"
+        ]
+      },
+      "protected_workflow_policy": {
+        "dispatch_and_watch_helper": "github_workflow_babysit.py",
+        "raw_workflow_dispatch_allowed": false
+      },
+      "reconciliation": {
+        "effect_unknown": "reconciliation_required_before_reexecution",
+        "landing_sha_source": "terminal_controller_result_only",
+        "pre_effect": "retry_only_after_fixing_the_block"
+      },
+      "stable_deploy_identity": {
+        "artifact_id": "digest_pinned_evidence_and_runtime_identity",
+        "deploy_reference": "published_same_repository_immutable_sha_tag",
+        "floating_tags_allowed": false,
+        "image_reference": "provider_tag_readback",
+        "target_category": "application"
+      }
+    },
+    "operations": [
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_identity"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_agent_context",
+        "path": "/v1/agent/context",
+        "purpose": "Read public-safe Launchplane context for an agent task.",
+        "response_statuses": [
+          "200",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "c49fedac49b94dbc12172b8a8cf85fe3e2684565f3f072baa065e89d1ad92c9b",
+        "supported_surfaces": [
+          "agent_helper",
+          "read_only_service"
+        ]
+      },
+      {
+        "idempotency": "optional",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "preflight"
+        ],
+        "operation_id": "evaluate_agent_write_intent",
+        "path": "/v1/agent/write-intents/evaluate",
+        "purpose": "Evaluate a bounded agent write intent before mutation.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "1f0c8b32c85ddf362d9ee75b310a9c21948d59ee50af95043e991c1ba3e1d87c",
+        "supported_surfaces": [
+          "agent_helper",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "apply_product_config",
+        "path": "/v1/product-config/apply",
+        "purpose": "Dry-run or apply reviewed product configuration.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_dry_run"
+        ],
+        "schema_fingerprint_sha256": "e333fb2783fbefcc0c15c44efb40f2ceb13a60095e4e7287a04cf89c937ca6eb",
+        "supported_surfaces": [
+          "agent_helper",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "apply_change_impact_policy",
+        "path": "/v1/change-impact/policies/apply",
+        "purpose": "Dry-run or apply a reviewed change-impact policy revision.",
+        "response_statuses": [
+          "202",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_dry_run",
+          "expected_policy_digest"
+        ],
+        "schema_fingerprint_sha256": "56d45106f7ec59d196201e101da8e74a63e2c697cc145200325fec68466e14b8",
+        "supported_surfaces": [
+          "agent_helper",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_identity"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_change_impact_policy",
+        "path": "/v1/change-impact/policy",
+        "purpose": "Read active change-impact policy revision evidence.",
+        "response_statuses": [
+          "200",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "5aaa63991adeec924cd6ad00b45e79f0ad9813bcc541dfe512d2ad78a5c34911",
+        "supported_surfaces": [
+          "agent_helper",
+          "read_only_service"
+        ]
+      },
+      {
+        "idempotency": "mutate",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "mutate"
+        ],
+        "operation_id": "write_merge_train_controller_run_once",
+        "path": "/v1/work-graph/merge-train/controller/run-once",
+        "purpose": "Advance one merge-train controller phase with bounded recovery evidence.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "502",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "c7351558badf1ffc4c955a82c5152bb878a2c0b652f9d8df6f2ee748e640ae83",
+        "supported_surfaces": [
+          "agent_helper",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "remediate_preview_pr_feedback",
+        "path": "/v1/previews/pr-feedback/remediation",
+        "purpose": "Dry-run or apply bounded historical preview-feedback remediation.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_dry_run"
+        ],
+        "schema_fingerprint_sha256": "5b2b1930447b9b0b1ff88c95e9395b4bf27625922d55d7f7b642a4bcb7fa49be",
+        "supported_surfaces": [
+          "agent_helper",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "always",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "plan",
+          "apply"
+        ],
+        "operation_id": "execute_product_retirement",
+        "path": "/v1/product-retirement",
+        "purpose": "Plan or apply protected product retirement.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_digest"
+        ],
+        "schema_fingerprint_sha256": "2557624b0cdc6c8bc56f13efbe706499eb75e859a08fa12698f42287fd36ee4d",
+        "supported_surfaces": [
+          "protected_workflow",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "always",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "plan",
+          "apply"
+        ],
+        "operation_id": "execute_detached_application_retirement",
+        "path": "/v1/detached-application-retirement",
+        "purpose": "Plan or apply detached application retirement with zero authority writes.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_digest"
+        ],
+        "schema_fingerprint_sha256": "67c78f2fad901e7f865073383374a1cdd2eb153eed16e4110c9155915e771c8b",
+        "supported_surfaces": [
+          "protected_workflow",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "reconcile_managed_authz_policy",
+        "path": "/v1/authz-policies/managed-rule-sets/reconcile",
+        "purpose": "Dry-run or apply managed authorization reconciliation.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_digest"
+        ],
+        "schema_fingerprint_sha256": "115bc60d6691fdcbd7bc8ffd42667a523a5e89f106503083150dbb3bf4e29425",
+        "supported_surfaces": [
+          "protected_workflow",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "apply_product_stable_lane_repair",
+        "path": "/v1/product-profiles/stable-lane-repair/apply",
+        "purpose": "Dry-run or apply a bounded stable-lane profile repair.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_digest"
+        ],
+        "schema_fingerprint_sha256": "31b99d73df6ce6efcf92c2c2384780949b46b225e8379ad9dc3d08e0d5a0b8e3",
+        "supported_surfaces": [
+          "protected_workflow",
+          "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_identity"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_governance_projection",
+        "path": "/v1/governance/projection",
+        "purpose": "Read governance evidence without granting mutation authority.",
+        "response_statuses": [
+          "200",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "28daa2b5e8010b8460a67bc7e4ea45f12cc8be3fb3d3d76e075222eef9226b8c",
+        "supported_surfaces": [
+          "read_only_service",
+          "operator_ui"
+        ]
+      }
+    ],
+    "protected_workflows": [
+      {
+        "reusable_workflow_file": ".github/workflows/reusable-product-retirement.yml",
+        "route": "/v1/product-retirement",
+        "workflow_file": ".github/workflows/product-retirement.yml"
+      },
+      {
+        "reusable_workflow_file": ".github/workflows/reusable-detached-application-retirement.yml",
+        "route": "/v1/detached-application-retirement",
+        "workflow_file": ".github/workflows/detached-application-retirement.yml"
+      },
+      {
+        "reusable_workflow_file": ".github/workflows/reusable-authz-policy-reconcile.yml",
+        "route": "/v1/authz-policies/managed-rule-sets/reconcile",
+        "workflow_file": ".github/workflows/authz-policy-reconcile.yml"
+      },
+      {
+        "route": "/v1/product-profiles/stable-lane-repair/apply",
+        "workflow_file": ".github/workflows/product-onboarding-manifest.yml"
+      }
+    ]
+  },
+  "normalization_version": 1,
+  "provenance": {
+    "source_commit_sha": "3f8e22ff1762be0b81d5eeb19f237a14b6a8bd4f"
+  },
+  "schema_version": 1,
+  "semantic_digest_sha256": "5ca368e08c9d1d094eba3ed5cf47a789b144bb81e6ff8722138440ebaff23b64"
+}

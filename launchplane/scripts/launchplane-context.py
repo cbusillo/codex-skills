@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_contract import operation_path  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -145,7 +146,9 @@ def build_context_url(service_url: str, args: argparse.Namespace) -> str:
     if args.pr is not None:
         query["pr_number"] = str(args.pr)
     encoded = urllib.parse.urlencode(query)
-    return build_launchplane_url(service_url, "/v1/agent/context", query=encoded)
+    return build_launchplane_url(
+        service_url, operation_path("read_agent_context"), query=encoded
+    )
 
 
 def request_launchplane(url: str, settings: dict[str, str], timeout: float) -> dict[str, Any]:
