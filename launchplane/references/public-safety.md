@@ -34,6 +34,19 @@ branch bindings, authz grants, and operator identities can steer production
 behavior. Committed files may describe generic schemas or fake/public-safe
 examples, but they must not become the source of truth for current live values.
 
+## Vendored Contract
+
+`agent-operator-contract.json` is a narrow public-safe projection, not a dump of
+Launchplane runtime state. It may contain allow-listed operation paths,
+operation IDs, structural fingerprints, protected workflow filenames, semantic
+invariants, versions, a semantic digest, and source-SHA provenance. It must not
+contain real product, tenant, repository, branch, domain, lane, provider target,
+credential, operator, service URL, or runtime-topology values.
+
+Run `../scripts/check-agent-operator-contract.py` to reject malformed or unsafe
+content and then run the repository public-safety validator. Neither check
+proves that the artifact is fresh upstream.
+
 ## Safe Examples
 
 Use fake placeholders in committed examples:

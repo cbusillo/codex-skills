@@ -1,5 +1,10 @@
 # Launchplane Context Helper Contract
 
+The context helper resolves `GET /v1/agent/context` from the vendored public
+`agent-operator-contract.json` through `launchplane_contract.py`. The offline
+conformance gate verifies that route and its agent-helper surface; it does not
+prove upstream freshness or grant runtime authority.
+
 This contract defines the public-safe JSON shape that skills can consume from
 the Launchplane context helper. The helper is optional: skills must behave as
 they do today when it is missing, unconfigured, unauthorized, or unable to reach

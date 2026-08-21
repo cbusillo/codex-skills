@@ -38,6 +38,7 @@ uv run skill-creator/scripts/validate-command-policy-simulator.py
 uv run skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
+uv run launchplane/scripts/check-agent-operator-contract.py
 uv run scripts/update_pep723_dependencies.py --check
 uv run skill-creator/scripts/quick_validate.py --self-test
 uv run skill-creator/scripts/validate-skill-repo.py

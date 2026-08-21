@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -1982,7 +1983,7 @@ def execute_change_impact_policy_read(
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
-            path="/v1/change-impact/policy",
+            path=helper_command_path("change-impact-policy-read"),
             settings=settings,
             query={"repository_id": args.repository_id},
             timeout=args.timeout,
@@ -2194,7 +2195,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/agent/write-intents/evaluate",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2204,7 +2205,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/product-config/apply",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2214,7 +2215,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/product-config/apply",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2224,7 +2225,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/change-impact/policies/apply",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2234,7 +2235,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/change-impact/policies/apply",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2253,7 +2254,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/work-graph/merge-train/controller/run-once",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2270,7 +2271,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/previews/pr-feedback/remediation",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2280,7 +2281,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/admin/generic-web/deploy-recovery/dry-run",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )
@@ -2290,7 +2291,7 @@ def main(argv: list[str]) -> int:
             return execute_post(
                 args=args,
                 operation=args.command,
-                path="/v1/admin/generic-web/deploy-recovery/apply",
+                path=helper_command_path(args.command),
                 request=request,
                 body=body,
             )

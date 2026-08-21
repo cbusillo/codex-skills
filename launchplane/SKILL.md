@@ -10,6 +10,15 @@ resources:
   - path: scripts/launchplane-write-action.py
     kind: script
     description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
+  - path: scripts/check-agent-operator-contract.py
+    kind: script
+    description: Validate the vendored public agent/operator contract and local consumer bindings offline.
+  - path: references/agent-operator-contract.json
+    kind: reference
+    description: Vendored public Launchplane agent/operator contract artifact.
+  - path: references/agent-operator-contract.md
+    kind: reference
+    description: Contract identity, validation, freshness, and local-extension guidance.
   - path: references/context-helper-contract.md
     kind: reference
     description: Contract for Launchplane context helper configuration, fallback, output, and redaction behavior.
@@ -35,6 +44,12 @@ resources:
     kind: reference
     description: Public-safe example for private operator helper configuration.
 commands:
+  - name: launchplane-contract-validate
+    source: skill
+    resource_path: scripts/check-agent-operator-contract.py
+    example_argv:
+      ["uv", "run", "scripts/check-agent-operator-contract.py"]
+    purpose: Proves hermetic consistency between the vendored contract and local Launchplane consumers.
   - name: launchplane-context
     source: skill
     resource_path: scripts/launchplane-context.py
@@ -411,6 +426,34 @@ records, not checked-in repo metadata; if repo metadata and Launchplane service
 state disagree, service/operator state wins and the metadata is stale routing
 context to fix deliberately.
 
+## Agent/Operator Contract
+
+Use `references/agent-operator-contract.json` as the checked-in public contract
+for agent/helper operation routing, protected workflow bindings, and semantic
+invariants. Run `uv run scripts/check-agent-operator-contract.py` after changing
+Launchplane helper routes, workflow guidance, lifecycle guidance, governance
+boundaries, or the vendored artifact.
+
+The conformance gate is offline and non-authoritative. It proves that the local
+artifact, helper bindings, protected workflows, and durable invariants agree;
+it does not contact Launchplane and does not prove that the artifact is current
+upstream. Compare semantic digest and normalization version separately through
+the scheduled freshness workflow when that later slice exists. Ignore
+provenance-only source SHA movement when the semantic digest is unchanged.
+
+Keep durable fail-closed rules local: Owner acceptance is authoritative,
+engineering review is advisory, GitHub projection is routing/status only,
+authorization/admission/landing are independent, protected workflow dispatch
+and watching stay delegated to `github_workflow_babysit.py`, and raw protected
+workflow dispatch is not allowed. Source projected HTTP paths from the vendored
+operation map rather than adding duplicate literals.
+
+The generic-web deploy-recovery dry-run and apply routes are explicit bounded
+local extensions because the current upstream 12-operation projection does not
+contain them. Do not describe them as contract-backed. If a later artifact adds
+those routes, migrate them deliberately and remove the local-extension entries
+instead of retaining parallel sources of truth.
+
 ## Core Goal
 
 Provide situational awareness and safe runtime management. Always favor
@@ -666,6 +709,9 @@ verification.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
   change-impact policy dry-run/apply/read-back, and merge-train controller calls.
+- `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
+  public-safety, operation, workflow, invariant, and local-consumer conformance
+  gate. A green result is not upstream freshness evidence.
 - `operator-config-diagnostic`: Redacted source-presence diagnostic for local
   operator URL and token configuration. Global options such as `--url` must come
   before the subcommand.
@@ -686,6 +732,8 @@ verification.
   the dry-run digest, and reviewed acknowledgement.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
+- `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
+  feedback remediation path; dry-run before apply.
 - Launchplane host-only CLI helpers: Use only when you are explicitly on the
   Launchplane host via SSH or the repo provides a concrete command. Do not
   assume a global `launchplane` binary exists on ordinary workstations.

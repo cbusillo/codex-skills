@@ -5,6 +5,18 @@ actions. It is separate from `launchplane-context.py`: read-only context remains
 optional and soft-failing, while explicit write actions fail closed when
 operator configuration or authorization is missing.
 
+Projected operation paths are resolved from the vendored
+`agent-operator-contract.json` through `launchplane_contract.py`. Run
+`check-agent-operator-contract.py` to verify schema, semantic digest,
+public-safety, operation semantics, protected workflows, invariant coverage, and
+helper bindings without network access. This is local consistency evidence, not
+proof of upstream freshness.
+
+Generic-web deploy recovery is intentionally listed as a bounded local
+extension because its two routes are not in the current upstream projection.
+The conformance gate fails if those routes later appear upstream so migration
+cannot leave duplicate route authorities behind.
+
 The helper lives at `scripts/launchplane-write-action.py`.
 
 For stale Launchplane-managed preview comments that cannot be replayed under a

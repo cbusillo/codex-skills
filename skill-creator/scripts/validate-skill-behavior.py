@@ -350,6 +350,18 @@ def test_launchplane_write_action_helper_contract() -> None:
     ).read_text()
     helper = ROOT / "launchplane" / "scripts" / "launchplane-write-action.py"
     helper_text = helper.read_text()
+    agent_operator_contract = json.loads(
+        (
+            ROOT
+            / "launchplane"
+            / "references"
+            / "agent-operator-contract.json"
+        ).read_text()
+    )
+    operation_paths = {
+        operation["operation_id"]: operation["path"]
+        for operation in agent_operator_contract["contract"]["operations"]
+    }
     normalized_skill = " ".join(skill_text.lower().split())
     normalized_contract = " ".join(contract.lower().split())
     normalized_helper = " ".join(helper_text.lower().split())
@@ -404,12 +416,18 @@ def test_launchplane_write_action_helper_contract() -> None:
         "Write-action contract must forbid plaintext secret CLI arguments",
     )
     require(
-        "/v1/agent/write-intents/evaluate" in normalized_helper,
-        "Write-action helper must call the agent write-intent preflight route",
+        "helper_command_path(args.command)" in normalized_helper,
+        "Write-action helper must source projected routes from the vendored contract",
     )
     require(
-        "/v1/work-graph/merge-train/controller/run-once" in normalized_helper,
-        "Write-action helper must call the merge-train controller route",
+        operation_paths["evaluate_agent_write_intent"]
+        == "/v1/agent/write-intents/evaluate",
+        "Vendored contract must carry the agent write-intent preflight route",
+    )
+    require(
+        operation_paths["write_merge_train_controller_run_once"]
+        == "/v1/work-graph/merge-train/controller/run-once",
+        "Vendored contract must carry the merge-train controller route",
     )
     require(
         "stdin_payload_unsupported" in normalized_helper,
