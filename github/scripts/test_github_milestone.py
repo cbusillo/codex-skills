@@ -15,6 +15,7 @@ import github_api
 
 
 SCRIPT = Path(__file__).with_name("github_milestone.py")
+TEST_ACTOR = "automation-gh"
 
 
 def load_module() -> Any:
@@ -24,6 +25,21 @@ def load_module() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def create_milestone(module: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("expected_actor", TEST_ACTOR)
+    return module.create_milestone(*args, **kwargs)
+
+
+def update_milestone(module: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("expected_actor", TEST_ACTOR)
+    return module.update_milestone(*args, **kwargs)
+
+
+def close_milestone(module: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("expected_actor", TEST_ACTOR)
+    return module.close_milestone(*args, **kwargs)
 
 
 def milestone(number: int, *, title: str = "Sprint 1", state: str = "open", due_on: str | None = None) -> dict[str, Any]:
@@ -126,7 +142,7 @@ def test_show_milestone_resolves_exact_title() -> None:
 
     def fake_call(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append(path)
         if path.startswith("/repos/owner/repo/milestones?"):
             return api_result([milestone(7, title="Release 7")])
@@ -170,14 +186,14 @@ def test_create_is_exact_title_idempotent_no_op() -> None:
 
     def fake_call(method: str, _path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if _path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append(method)
         return api_result([milestone(3, title="Sprint 3")])
 
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
-        result = module.create_milestone("owner/repo", "Sprint 3")
+        result = create_milestone(module, "owner/repo", "Sprint 3")
     finally:
         module.github_api_core.call_gh_with_retry = original
 
@@ -192,14 +208,14 @@ def test_create_rejects_conflicting_exact_title() -> None:
 
     def fake_call(_method: str, _path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if _path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         return api_result([milestone(3, title="Sprint 3", due_on="2026-09-02T00:00:00Z")])
 
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            module.create_milestone("owner/repo", "Sprint 3", due_on="2026-09-01")
+            create_milestone(module, "owner/repo", "Sprint 3", due_on="2026-09-01")
         except module.MilestoneError as exc:
             assert exc.failure.cause == "conflict"
             assert exc.payload["requested"]["due_on"] == "2026-09-01T00:00:00Z"
@@ -216,14 +232,14 @@ def test_create_rejects_case_insensitive_title_conflict() -> None:
     def fake_call(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         calls.append(path)
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         return api_result([milestone(3, title="Sprint 3")])
 
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            module.create_milestone("owner/repo", "sprint 3")
+            create_milestone(module, "owner/repo", "sprint 3")
         except module.MilestoneError as exc:
             assert exc.failure.cause == "conflict"
             assert "case-insensitively" in str(exc)
@@ -247,7 +263,12 @@ def test_create_rejects_actor_mismatch_before_milestone_reads() -> None:
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            module.create_milestone("owner/repo", "Sprint 3")
+            create_milestone(
+                module,
+                "owner/repo",
+                "Sprint 3",
+                expected_actor=TEST_ACTOR,
+            )
         except module.MilestoneError as exc:
             assert exc.failure.cause == "actor_mismatch"
         else:
@@ -264,7 +285,7 @@ def test_update_no_op_skips_patch() -> None:
 
     def fake_call(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append(method)
         if "/milestones?" in path:
             return api_result([])
@@ -273,7 +294,7 @@ def test_update_no_op_skips_patch() -> None:
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
-        result = module.update_milestone("owner/repo", "4", title="Sprint 4")
+        result = update_milestone(module, "owner/repo", "4", title="Sprint 4")
     finally:
         module.github_api_core.call_gh_with_retry = original
 
@@ -288,7 +309,7 @@ def test_update_verifies_success_response_and_clear_due_on() -> None:
 
     def fake_call(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         if "/milestones?" in path:
             return api_result([])
         if method == "PATCH":
@@ -299,7 +320,7 @@ def test_update_verifies_success_response_and_clear_due_on() -> None:
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
-        result = module.update_milestone("owner/repo", "4", clear_due_on=True)
+        result = update_milestone(module, "owner/repo", "4", clear_due_on=True)
     finally:
         module.github_api_core.call_gh_with_retry = original
 
@@ -313,7 +334,7 @@ def test_update_accepts_server_coerced_due_on_time() -> None:
 
     def fake_call(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         if "/milestones?" in path:
             return api_result([])
         if method == "PATCH":
@@ -323,7 +344,8 @@ def test_update_accepts_server_coerced_due_on_time() -> None:
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
-        result = module.update_milestone(
+        result = update_milestone(
+            module,
             "owner/repo",
             "4",
             due_on="2026-09-01T12:34:56Z",
@@ -340,7 +362,7 @@ def test_update_rejects_mismatched_success_response() -> None:
 
     def fake_call(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         if "/milestones?" in path:
             return api_result([])
         if method == "PATCH":
@@ -351,7 +373,7 @@ def test_update_rejects_mismatched_success_response() -> None:
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            module.update_milestone("owner/repo", "4", title="Renamed")
+            update_milestone(module, "owner/repo", "4", title="Renamed")
         except module.MilestoneError as exc:
             assert exc.failure.cause == "invalid_response"
             assert exc.failure.write_outcome == "unknown"
@@ -367,7 +389,7 @@ def test_numeric_reference_preserves_title_lookup_compatibility() -> None:
 
     def fake_call(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append(path)
         if "/milestones?" in path:
             return api_result([milestone(9, title="4")])
@@ -387,7 +409,7 @@ def test_numeric_reference_preserves_title_lookup_compatibility() -> None:
 def test_update_rejects_close_state() -> None:
     module = load_module()
     try:
-        module.update_milestone("owner/repo", "4", state="closed")
+        update_milestone(module, "owner/repo", "4", state="closed")
     except module.MilestoneError as exc:
         assert exc.failure.cause == "validation_error"
         assert "milestone-close" in str(exc)
@@ -401,7 +423,7 @@ def test_close_refuses_open_issue_and_pull_request() -> None:
 
     def fake_call(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append(path)
         if "/milestones?" in path:
             return api_result([])
@@ -418,7 +440,7 @@ def test_close_refuses_open_issue_and_pull_request() -> None:
     module.github_api_core.call_gh_with_retry = fake_call
     try:
         try:
-            module.close_milestone("owner/repo", "5")
+            close_milestone(module, "owner/repo", "5")
         except module.MilestoneError as exc:
             assert exc.failure.cause == "conflict"
             assert [item["type"] for item in exc.payload["blocking_items"]] == ["issue", "pull_request"]
@@ -436,7 +458,7 @@ def test_close_patches_empty_milestone() -> None:
 
     def fake_call(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            return api_result({"login": module.EXPECTED_ACTOR})
+            return api_result({"login": TEST_ACTOR})
         calls.append((method, path, body))
         if "/milestones?" in path:
             return api_result([])
@@ -449,7 +471,7 @@ def test_close_patches_empty_milestone() -> None:
     original = module.github_api_core.call_gh_with_retry
     module.github_api_core.call_gh_with_retry = fake_call
     try:
-        result = module.close_milestone("owner/repo", "6")
+        result = close_milestone(module, "owner/repo", "6")
     finally:
         module.github_api_core.call_gh_with_retry = original
 
@@ -480,8 +502,8 @@ def test_reconciliation_callbacks_match_only_verified_state() -> None:
             {"title": "Sprint 4", "description": "", "due_on": None, "state": "open"},
             "fingerprint",
             operation="github.plan.milestone_create",
-            actor=module.EXPECTED_ACTOR,
-            expected_actor=module.EXPECTED_ACTOR,
+            actor=TEST_ACTOR,
+            expected_actor=TEST_ACTOR,
             gh_cmd="gh",
             retry_summaries=retry_summaries,
         )(api_result(None), context)
@@ -490,8 +512,8 @@ def test_reconciliation_callbacks_match_only_verified_state() -> None:
             4,
             {"title": "Renamed"},
             operation="github.plan.milestone_update",
-            actor=module.EXPECTED_ACTOR,
-            expected_actor=module.EXPECTED_ACTOR,
+            actor=TEST_ACTOR,
+            expected_actor=TEST_ACTOR,
             gh_cmd="gh",
             retry_summaries=retry_summaries,
         )(api_result(None), context)
@@ -499,8 +521,8 @@ def test_reconciliation_callbacks_match_only_verified_state() -> None:
             "owner/repo",
             4,
             operation="github.plan.milestone_close",
-            actor=module.EXPECTED_ACTOR,
-            expected_actor=module.EXPECTED_ACTOR,
+            actor=TEST_ACTOR,
+            expected_actor=TEST_ACTOR,
             gh_cmd="gh",
             retry_summaries=retry_summaries,
         )(api_result(None), context)
