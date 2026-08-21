@@ -25,6 +25,29 @@ helper, workflow, and invariant expectations are internally consistent. It does
 not contact Launchplane and does not prove that the vendored artifact is current
 upstream.
 
+Run the advisory remote comparison locally with:
+
+```bash
+uv run launchplane/scripts/check-agent-operator-contract-freshness.py compare
+```
+
+The separate `Launchplane Contract Freshness` workflow runs the same comparison
+on a weekly schedule and through manual dispatch. It reports exactly three
+classifications:
+
+- `current`: the validated upstream and vendored semantic digests match;
+- `known-stale`: the upstream artifact is valid and the semantic digests differ;
+- `unknown`: transport, decoding, schema, normalization, or comparison evidence
+  is insufficient.
+
+Provenance-only changes remain `current`. A scheduled `known-stale` result opens
+or updates one maintenance issue through the maintained GitHub issue helpers.
+Manual dispatch is compare-only unless issue reporting is explicitly selected.
+`unknown` is retryable when the provider or transport is unavailable and never
+creates a drift issue. The workflow is advisory maintenance evidence only: it
+does not grant runtime authority or change helper permissions, and it must not
+block ordinary Launchplane helper reads.
+
 The generic-web deploy-recovery dry-run and apply routes are currently bounded
 local extensions because they are consumed by `launchplane-write-action.py` but
 are not present in the upstream 12-operation projection. The validator keeps

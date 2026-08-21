@@ -13,6 +13,9 @@ resources:
   - path: scripts/check-agent-operator-contract.py
     kind: script
     description: Validate the vendored public agent/operator contract and local consumer bindings offline.
+  - path: scripts/check-agent-operator-contract-freshness.py
+    kind: script
+    description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
   - path: references/agent-operator-contract.json
     kind: reference
     description: Vendored public Launchplane agent/operator contract artifact.
@@ -50,6 +53,12 @@ commands:
     example_argv:
       ["uv", "run", "scripts/check-agent-operator-contract.py"]
     purpose: Proves hermetic consistency between the vendored contract and local Launchplane consumers.
+  - name: launchplane-contract-freshness
+    source: skill
+    resource_path: scripts/check-agent-operator-contract-freshness.py
+    example_argv:
+      ["uv", "run", "scripts/check-agent-operator-contract-freshness.py", "compare"]
+    purpose: Emits advisory current, known-stale, or unknown semantic-freshness evidence.
   - name: launchplane-context
     source: skill
     resource_path: scripts/launchplane-context.py
@@ -437,9 +446,16 @@ boundaries, or the vendored artifact.
 The conformance gate is offline and non-authoritative. It proves that the local
 artifact, helper bindings, protected workflows, and durable invariants agree;
 it does not contact Launchplane and does not prove that the artifact is current
-upstream. Compare semantic digest and normalization version separately through
-the scheduled freshness workflow when that later slice exists. Ignore
+upstream. Use `check-agent-operator-contract-freshness.py compare` or the
+scheduled `Launchplane Contract Freshness` workflow for separate advisory
+evidence. Treat matching semantic digests as `current`, a valid mismatch as
+`known-stale`, and unavailable or insufficient evidence as `unknown`. Ignore
 provenance-only source SHA movement when the semantic digest is unchanged.
+
+`unknown` never grants runtime authority and never opens a drift issue. A
+scheduled `known-stale` result opens or updates one maintenance issue through
+the maintained GitHub helpers; repeated mismatches reuse the same open issue.
+Manual dispatch is compare-only unless issue reporting is explicitly selected.
 
 Keep durable fail-closed rules local: Owner acceptance is authoritative,
 engineering review is advisory, GitHub projection is routing/status only,

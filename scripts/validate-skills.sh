@@ -67,6 +67,7 @@ helper_tests=(
 	infra-ops/scripts/test_npmplus_ops.py
 	partdb/scripts/test_partdb_read.py
 	partdb/scripts/test_partdb_write.py
+	launchplane/scripts/test_launchplane_contract_freshness.py
 	launchplane/scripts/test_launchplane_helpers.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
