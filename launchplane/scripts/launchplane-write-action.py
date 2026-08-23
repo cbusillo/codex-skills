@@ -99,6 +99,7 @@ AUTHZ_DECISION_REASONS = {
     "principal_binding_invalid",
     "no_matching_grant",
 }
+AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX = 2**63 - 1
 ATTENTION_CONTROLLER_ACTIONS = {
     "batch_landed",
     "candidate_failed",
@@ -2306,8 +2307,8 @@ def positive_int(value: str) -> int:
         parsed = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError("must be a positive integer") from None
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
+    if parsed < 1 or parsed > AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX:
+        raise argparse.ArgumentTypeError("must be a bounded positive integer")
     return parsed
 
 

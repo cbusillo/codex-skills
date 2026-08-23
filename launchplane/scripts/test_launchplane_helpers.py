@@ -99,7 +99,7 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     artifact = contract_artifact()
     summary = contract.validate_contract(artifact)
     assert summary["semantic_digest_sha256"] == (
-        "cd3ebae5f104042b4a8238a0ee4183c1bc01e8a60a764e44d1de734bde502da0"
+        "f4cdc0e0546831c78eb05e0194b59aa1ae0fad650af25a78b36b255e7ee469d8"
     )
     assert summary["operation_count"] == 13
     assert summary["protected_workflow_count"] == 4
@@ -904,6 +904,13 @@ def test_authz_activation_preflight_projection_is_bounded() -> None:
 
 
 def test_authz_activation_preflight_uses_admin_token_and_exact_route() -> None:
+    try:
+        write_action.positive_int(str(2**63))
+    except argparse.ArgumentTypeError:
+        pass
+    else:
+        raise AssertionError("expected oversized GitHub ID to fail closed")
+
     args = argparse.Namespace(
         config=None,
         env_config=None,

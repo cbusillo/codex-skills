@@ -111,13 +111,13 @@ session server-side and evaluates its exact `authz_policy_grant.write` access:
 ```sh
 uv run launchplane/scripts/launchplane-write-action.py \
   authz-activation-preflight-read \
-  --github-id <positive-github-id>
+  --github-id <bounded-positive-github-id>
 ```
 
 The helper reads the service URL from the normal operator URL sources and the
 bearer credential only from `LAUNCHPLANE_LOCAL_ADMIN_TOKEN` or an explicitly
 configured `admin_token_env`. It accepts no token argument and sends exactly
-`{"github_id": <positive integer>}` to
+`{"github_id": <signed-64-bit positive integer>}` to
 `POST /v1/authz-diagnostics/activation-preflight/read`. It projects only the
 trace, active policy identity, coarse session freshness, keyed identity
 fingerprint, fixed evaluated scope, decision/reason, and bounded unmanaged
