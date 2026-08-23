@@ -1,9 +1,10 @@
 # Launchplane Write-Action Helper Contract
 
-This contract defines the public-safe wrapper for bounded Launchplane write
+This contract defines the public-safe wrapper for bounded Launchplane operator
 actions. It is separate from `launchplane-context.py`: read-only context remains
-optional and soft-failing, while explicit write actions fail closed when
-operator configuration or authorization is missing.
+optional and soft-failing, explicit write actions fail closed, and bounded
+operator reads also fail closed when required configuration or authorization is
+missing.
 
 Projected operation paths are resolved from the vendored
 `agent-operator-contract.json` through `launchplane_contract.py`. Run
@@ -41,6 +42,7 @@ The committed example is fake and public-safe:
 ```json
 {
   "service_url": "https://launchplane.example.invalid",
+  "admin_token_env": "LAUNCHPLANE_LOCAL_ADMIN_TOKEN",
   "operator_token_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
   "operator_subject_env": "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
   "operator_token_label_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
@@ -68,7 +70,9 @@ subject, and label values. When no explicit JSON config is supplied, the helper
 may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
-`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`. The helper may also notice
+`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`, plus the distinct
+`LAUNCHPLANE_LOCAL_ADMIN_TOKEN` used by the activation-preflight read. The
+local-admin read never falls back to the operator token. The helper may also notice
 `LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the operator URL is
 missing, but it does not use that variable as write authority.
 
@@ -97,7 +101,29 @@ with `status: "incomplete"` may still have a local token source; read the
 
 Missing Launchplane config is still non-fatal for skills that only need context;
 it is a fail-closed result for this helper because every command is an explicit
-write-capable operation.
+operator operation.
+
+## Authorization Activation Preflight
+
+The supported service-native preflight resolves an existing GitHub-human
+session server-side and evaluates its exact `authz_policy_grant.write` access:
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  authz-activation-preflight-read \
+  --github-id <positive-github-id>
+```
+
+The helper reads the service URL from the normal operator URL sources and the
+bearer credential only from `LAUNCHPLANE_LOCAL_ADMIN_TOKEN` or an explicitly
+configured `admin_token_env`. It accepts no token argument and sends exactly
+`{"github_id": <positive integer>}` to
+`POST /v1/authz-diagnostics/activation-preflight/read`. It projects only the
+trace, active policy identity, coarse session freshness, keyed identity
+fingerprint, fixed evaluated scope, decision/reason, and bounded unmanaged
+action-empty counts. Unexpected or additional fields fail closed. This read
+does not authorize or perform an activation, policy grant, session renewal,
+reconciliation, secret mutation, or direct database access.
 
 Configuration and error states are distinct:
 
@@ -390,6 +416,10 @@ provider dictionary pass-through:
   timestamp.
 - `change-impact-policy-read` may emit only shadow/enforcement status, history
   count, and the same bounded current-policy metadata.
+- `authz-activation-preflight-read` may emit only active policy identity,
+  coarse session freshness, keyed identity fingerprint, the fixed
+  `authz_policy_grant.write` scope, evaluation decision/reason, and bounded
+  unmanaged action-empty counts.
 
 The projections recognize the current service envelopes, including idempotent
 replay metadata, nested merge-train candidate/landing/stack summaries, the

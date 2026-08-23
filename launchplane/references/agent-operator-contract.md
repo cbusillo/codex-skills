@@ -5,8 +5,8 @@ by this skill. Its current identity is:
 
 - schema version: `1`
 - normalization version: `1`
-- semantic digest: `5ca368e08c9d1d094eba3ed5cf47a789b144bb81e6ff8722138440ebaff23b64`
-- non-gating source provenance: `3f8e22ff1762be0b81d5eeb19f237a14b6a8bd4f`
+- semantic digest: `cd3ebae5f104042b4a8238a0ee4183c1bc01e8a60a764e44d1de734bde502da0`
+- non-gating source provenance: `49be01bb5479a846c480a4c3a016aae9c806215a`
 
 Run the offline conformance gate with:
 
@@ -50,7 +50,7 @@ block ordinary Launchplane helper reads.
 
 The generic-web deploy-recovery dry-run and apply routes are currently bounded
 local extensions because they are consumed by `launchplane-write-action.py` but
-are not present in the upstream 12-operation projection. The validator keeps
+are not present in the upstream 13-operation projection. The validator keeps
 them explicit and fails if an upstream artifact later projects the same routes,
 forcing a deliberate migration instead of silently maintaining two sources of
 truth.

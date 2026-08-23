@@ -68,6 +68,14 @@ EXPECTED_OPERATION_CONTRACTS = {
         "idempotency": "none",
         "reviewed_evidence": [],
     },
+    "read_authz_activation_preflight": {
+        "method": "POST",
+        "purpose": "Read bounded authorization activation preflight evidence for one GitHub human.",
+        "supported_surfaces": ["agent_helper", "operator_cli", "read_only_service"],
+        "modes": ["read"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
     "evaluate_agent_write_intent": {
         "method": "POST",
         "purpose": "Evaluate a bounded agent write intent before mutation.",
@@ -160,6 +168,10 @@ EXPECTED_OPERATION_CONTRACTS = {
 
 PROJECTED_HELPER_COMMANDS = {
     "agent-context": ("read_agent_context", ("read",)),
+    "authz-activation-preflight-read": (
+        "read_authz_activation_preflight",
+        ("read",),
+    ),
     "product-config-preflight": (
         "evaluate_agent_write_intent",
         ("preflight",),

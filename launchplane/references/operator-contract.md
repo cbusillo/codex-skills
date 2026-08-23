@@ -74,6 +74,9 @@ Environment variable names:
   private JSON `service_url`.
 - `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`: operator bearer token. Never print or
   copy this value.
+- `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`: distinct local-admin bearer token used only
+  by helper commands whose service contract requires local-admin identity. It
+  never falls back to the local-operator token.
 - `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`: optional operator subject header value.
 - `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`: optional operator token-label header
   value.
@@ -83,6 +86,12 @@ service URL example only. Real token values stay in the operator's private
 environment or secret manager. Missing private config is a normal unavailable
 state for terminal execution; explicit write actions must fail closed instead of
 falling back to direct provider mutation or read-only context credentials.
+
+The read-only authorization activation preflight is the narrow exception to
+the write-oriented helper description. It uses the same validated operator URL
+but requires `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`, accepts only a positive immutable
+`github_id`, and calls the service-native read route. It does not accept a token
+on argv, browser cookies, caller-supplied human claims, or direct DB access.
 
 Run `scripts/launchplane-write-action.py operator-config-diagnostic` before
 declaring terminal operator access unavailable. The diagnostic reports only
