@@ -99,9 +99,9 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     artifact = contract_artifact()
     summary = contract.validate_contract(artifact)
     assert summary["semantic_digest_sha256"] == (
-        "5ca368e08c9d1d094eba3ed5cf47a789b144bb81e6ff8722138440ebaff23b64"
+        "f4cdc0e0546831c78eb05e0194b59aa1ae0fad650af25a78b36b255e7ee469d8"
     )
-    assert summary["operation_count"] == 12
+    assert summary["operation_count"] == 13
     assert summary["protected_workflow_count"] == 4
     assert summary["local_extension_count"] == 2
     assert summary["hermetic_only"] is True
@@ -823,6 +823,165 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
     )
     assert empty_payload["result"]["current_policy"] is None
     assert empty_payload["result"]["policy_history_count"] == 0
+
+
+def _activation_preflight_payload() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_activation_preflight",
+        "policy": {
+            "record_id": "authz-policy-17",
+            "revision": 17,
+            "policy_sha256": "a" * 64,
+            "schema_version": 2,
+        },
+        "session": {
+            "session_count": 1,
+            "claims_current": True,
+            "claims_age_bucket_hours": 2,
+            "expiry_bucket_hours": 4,
+            "identity_fingerprint": f"identity_{'b' * 64}",
+        },
+        "scope": {
+            "action": "authz_policy_grant.write",
+            "product": "launchplane",
+            "context": "launchplane",
+            "target_scope": "context",
+        },
+        "evaluation": {"decision": "allowed", "reason_code": "allowed"},
+        "unmanaged_action_empty_rules": {
+            "total": 1,
+            "github_actions": 0,
+            "github_humans": 1,
+            "terminal_agents": 0,
+            "local_operators": 0,
+            "local_admins": 0,
+        },
+    }
+
+
+def test_authz_activation_preflight_projection_is_bounded() -> None:
+    payload = write_action.summarize_authz_activation_preflight_read(
+        request={"github_id": 123, "payload_source": "operator_argument"},
+        provider_payload=_activation_preflight_payload(),
+    )
+    assert payload["status"] == "ok"
+    assert payload["summary"]["decision"] == "allowed"
+    assert payload["result"]["scope"] == {
+        "action": "authz_policy_grant.write",
+        "product": "launchplane",
+        "context": "launchplane",
+        "target_scope": "context",
+    }
+    assert "github_id" not in json.dumps(payload["result"])
+
+    malformed = _activation_preflight_payload()
+    malformed_session = malformed["session"]
+    assert isinstance(malformed_session, dict)
+    malformed["session"] = {**malformed_session, "login": "must-not-pass"}
+    try:
+        write_action.summarize_authz_activation_preflight_read(
+            request={"github_id": 123}, provider_payload=malformed
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected extra activation-preflight field to fail closed")
+
+    inconsistent = _activation_preflight_payload()
+    inconsistent["evaluation"] = {
+        "decision": "allowed",
+        "reason_code": "no_matching_grant",
+    }
+    try:
+        write_action.summarize_authz_activation_preflight_read(
+            request={"github_id": 123}, provider_payload=inconsistent
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("expected inconsistent decision to fail closed")
+
+
+def test_authz_activation_preflight_uses_admin_token_and_exact_route() -> None:
+    try:
+        write_action.positive_int(str(2**63))
+    except argparse.ArgumentTypeError:
+        pass
+    else:
+        raise AssertionError("expected oversized GitHub ID to fail closed")
+
+    args = argparse.Namespace(
+        config=None,
+        env_config=None,
+        url=None,
+        timeout=3,
+        github_id=123,
+    )
+    with temporary_attribute(write_action, "load_config", lambda _path: {}):
+        with temporary_attribute(write_action, "load_operator_env", lambda _path=None: {}):
+            with patch.dict(
+                write_action.os.environ,
+                {
+                    "LAUNCHPLANE_OPERATOR_URL": "https://launchplane.example.invalid",
+                    "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "operator-token-must-not-be-used",
+                },
+                clear=True,
+            ):
+                settings = write_action.resolve_admin_settings(args)
+    assert settings["token"] == ""
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        return _activation_preflight_payload()
+
+    output = io.StringIO()
+    with temporary_attribute(
+        write_action,
+        "resolve_admin_settings",
+        lambda _args: {
+            "service_url": "https://launchplane.example.invalid",
+            "token": "admin-token",
+            "subject": "",
+            "token_label": "",
+            "public_url_hint_sources": "",
+        },
+    ):
+        with temporary_attribute(write_action, "request_launchplane", fake_request):
+            with redirect_stdout(output):
+                status = write_action.main(
+                    ["authz-activation-preflight-read", "--github-id", "123"]
+                )
+    assert status == 0
+    assert calls[0]["path"] == "/v1/authz-diagnostics/activation-preflight/read"
+    assert calls[0]["body"] == {"github_id": 123}
+    assert "idempotency_key" not in calls[0]
+    assert json.loads(output.getvalue())["summary"]["decision"] == "allowed"
+
+
+def test_authz_activation_preflight_errors_are_read_only() -> None:
+    http_error = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/authz-diagnostics/activation-preflight/read",
+        403,
+        "Forbidden",
+        hdrs=Message(),
+        fp=io.BytesIO(
+            json.dumps(
+                {
+                    "trace_id": "launchplane_req_activation_denied",
+                    "error": {"code": "authorization_denied"},
+                }
+            ).encode()
+        ),
+    )
+    payload = write_action.summarize_http_error(
+        operation="authz-activation-preflight-read", request={"github_id": 123}, exc=http_error
+    )
+    message = payload["warnings"][0]["message"]
+    assert "read was rejected" in message
+    assert "write action" not in message
 
 
 def test_change_impact_apply_success_projection_failure_is_unverified() -> None:
@@ -1908,6 +2067,9 @@ def main() -> int:
         test_change_impact_policy_projection_fails_closed_on_extra_fields,
         test_change_impact_policy_cli_dispatches_exact_route_and_modes,
         test_change_impact_policy_read_projection_is_bounded,
+        test_authz_activation_preflight_projection_is_bounded,
+        test_authz_activation_preflight_uses_admin_token_and_exact_route,
+        test_authz_activation_preflight_errors_are_read_only,
         test_change_impact_apply_success_projection_failure_is_unverified,
         test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,

@@ -138,6 +138,19 @@ commands:
         "operator-config-diagnostic",
       ]
     purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
+  - name: launchplane-authz-activation-preflight-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "authz-activation-preflight-read",
+        "--github-id",
+        "<github-id>",
+      ]
+    purpose: Reads bounded service-native authorization activation evidence for one existing GitHub-human session.
   - name: launchplane-preview-feedback-remediation
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -744,7 +757,8 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
-  change-impact policy dry-run/apply/read-back, and merge-train controller calls.
+  change-impact policy dry-run/apply/read-back, authorization activation
+  preflight reads, and merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -760,6 +774,10 @@ verification.
   digest and be followed by bounded read-back.
 - `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
   revision and digest verification.
+- `POST /v1/authz-diagnostics/activation-preflight/read`: Bearer-only,
+  local-admin read for bounded server-resolved GitHub-human session and exact
+  `authz_policy_grant.write` access evidence. Supply only immutable `github_id`;
+  never substitute browser cookies, caller-authored claims, or direct DB reads.
 - `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
   deploy-recovery dry-run path; always run before apply and capture the
   `recovery_digest` from the redacted result.
