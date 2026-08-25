@@ -407,9 +407,11 @@ policy. The helper reads `.github/github.json` when present:
 Mixed-language repositories may replace the single
 `qualityGate.inspection.ide` with ordered `qualityGate.inspection.lanes`. Each
 lane names a unique `id`, an `ide`, whether it is `required`, repository-relative
-`include` globs, and optional `exclude` globs. The helper resolves the selected
-scope once, validates every path against the exact worktree, assigns files by
-first matching lane, and records unmatched and explicitly excluded files. It
+`include` globs, optional `exclude` globs, and an optional repository-relative
+`projectPath` directory when that IDE must open a nested project. The helper
+resolves the selected scope once, validates every file and lane project path
+against the exact worktree, assigns files by first matching lane, and records
+unmatched and explicitly excluded files. It
 does not open an IDE for an empty lane. Exclusions apply to ordinary changed-file,
 directory, and whole-project readiness; an explicit `files` scope records an
 override and still runs the selected fixture in its lane. Non-empty lanes run

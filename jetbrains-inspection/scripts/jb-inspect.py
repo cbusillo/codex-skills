@@ -379,15 +379,19 @@ class InspectionLane:
     required: bool
     include: tuple[str, ...]
     exclude: tuple[str, ...]
+    project_path: str | None
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.lane_id,
             "ide": self.ide,
             "required": self.required,
             "include": list(self.include),
             "exclude": list(self.exclude),
         }
+        if self.project_path is not None:
+            payload["projectPath"] = self.project_path
+        return payload
 
 
 IDE_PRODUCTS = {
@@ -770,6 +774,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     quality = config.get("qualityGate", {}) if isinstance(config.get("qualityGate"), dict) else {}
     inspection = quality.get("inspection", {}) if isinstance(quality.get("inspection"), dict) else {}
     inspection_lanes = parse_inspection_lanes(inspection)
+    validate_inspection_lane_project_paths(inspection_lanes, worktree_root)
     repository_preparation = parse_repository_preparation(inspection)
 
     main_config = jetbrains.get("mainWorktreePath") or jetbrains.get("main_worktree_path")
@@ -1328,7 +1333,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         return preparation
 
     if state.get("kind") == "python" and (
-        shutil.which(argv[0]) is None or len(argv) < 3 or not Path(argv[2]).is_file()
+        shutil.which(str(argv[0])) is None or len(argv) < 3 or not Path(argv[2]).is_file()
     ):
         preparation["execution_state"] = "blocked"
         preparation["failure_reason"] = "repository_preparation_runtime_unavailable"
@@ -1345,7 +1350,6 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     environment = os.environ.copy()
     environment[REPOSITORY_PREPARATION_ACTIVE_ENV] = "1"
     started = monotonic_ms()
-    completed: subprocess.CompletedProcess[bytes] | None = None
     timed_out = False
     try:
         process = subprocess.Popen(
@@ -1382,7 +1386,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     mutation = summarize_worktree_mutations(before, after)
     index_changed = before.get("index_sha256") != after.get("index_sha256")
     duration_ms = max(0, monotonic_ms() - started)
-    exit_status = None if timed_out or completed is None else completed.returncode
+    exit_status = None if timed_out else completed.returncode
     reason = None
     if timed_out:
         reason = "repository_preparation_timeout"
@@ -1484,7 +1488,8 @@ def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, 
             raise inspection_lane_config_error(f"Inspection lane {lane_id} required must be true or false.")
         include = parse_inspection_lane_patterns(raw_lane.get("include"), lane_id, "include", required=True)
         exclude = parse_inspection_lane_patterns(raw_lane.get("exclude", []), lane_id, "exclude", required=False)
-        unsupported = sorted(set(raw_lane) - {"id", "ide", "required", "include", "exclude"})
+        project_path = parse_inspection_lane_project_path(raw_lane.get("projectPath"), lane_id)
+        unsupported = sorted(set(raw_lane) - {"id", "ide", "required", "include", "exclude", "projectPath"})
         if unsupported:
             raise inspection_lane_config_error(
                 f"Inspection lane {lane_id} has unsupported fields: {', '.join(unsupported)}"
@@ -1496,9 +1501,51 @@ def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, 
                 required=required,
                 include=include,
                 exclude=exclude,
+                project_path=project_path,
             )
         )
     return tuple(lanes)
+
+
+def parse_inspection_lane_project_path(value: Any, lane_id: str) -> str | None:
+    if value is None:
+        return None
+    project_path = clean_optional(value) if isinstance(value, str) else None
+    if project_path is None:
+        raise inspection_lane_config_error(f"Inspection lane {lane_id} projectPath must be a non-empty string.")
+    normalized = project_path.replace("\\", "/")
+    segments = normalized.split("/")
+    drive_path = re.match(r"^[A-Za-z]:/", normalized) is not None
+    if (
+        project_path != normalized
+        or len(normalized) > 1024
+        or normalized.startswith(("/", "~/"))
+        or drive_path
+        or "." in segments
+        or ".." in segments
+        or "" in segments
+        or "\x00" in normalized
+        or any(character in normalized for character in "*?[]")
+    ):
+        raise inspection_lane_config_error(
+            f"Inspection lane {lane_id} projectPath must be a safe repository-relative POSIX directory: {project_path}"
+        )
+    return normalized
+
+
+def validate_inspection_lane_project_paths(lanes: tuple[InspectionLane, ...], worktree_root: Path) -> None:
+    for lane in lanes:
+        if lane.project_path is None:
+            continue
+        resolved = (worktree_root / lane.project_path).resolve()
+        if resolved != worktree_root and not resolved.is_relative_to(worktree_root):
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath resolves outside the exact worktree: {lane.project_path}"
+            )
+        if not resolved.is_dir():
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath must resolve to an existing directory: {lane.project_path}"
+            )
 
 
 def parse_inspection_lane_patterns(
@@ -2318,6 +2365,17 @@ def inspection_lane_context(
         }
     )
     worktree_root = Path(str(lane_context["worktree_root"])).expanduser().resolve()
+    if lane.project_path is not None:
+        project_path = (worktree_root / lane.project_path).resolve()
+        lane_args.project_path = str(project_path)
+        lane_context.update(
+            {
+                "repo_path": str(project_path),
+                "project_path": str(project_path),
+                "exact_route_path": str(project_path),
+                "lifecycle_target_path": str(project_path),
+            }
+        )
     scope_descriptor = canonical_scope_descriptor(lane_args, lane_context, worktree_root)
     lane_context["scope_descriptor"] = scope_descriptor
     lane_context["scope_descriptor_sha256"] = canonical_json_sha256(scope_descriptor)

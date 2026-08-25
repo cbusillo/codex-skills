@@ -1171,6 +1171,7 @@ class InspectionLaneConfigTest(unittest.TestCase):
                         "required": True,
                         "include": ["**/*.kt", "**/*.gradle.kts"],
                         "exclude": ["test-fixtures/red-lane/**"],
+                        "projectPath": "services/jvm",
                     },
                     {
                         "id": "python",
@@ -1187,6 +1188,9 @@ class InspectionLaneConfigTest(unittest.TestCase):
         self.assertTrue(lanes[0].required)
         self.assertFalse(lanes[1].required)
         self.assertEqual(lanes[0].exclude, ("test-fixtures/red-lane/**",))
+        self.assertEqual(lanes[0].project_path, "services/jvm")
+        self.assertEqual(lanes[0].public()["projectPath"], "services/jvm")
+        self.assertNotIn("projectPath", lanes[1].public())
 
     def test_rejects_duplicate_ids_invalid_patterns_and_unknown_fields(self):
         cases = [
@@ -1199,6 +1203,10 @@ class InspectionLaneConfigTest(unittest.TestCase):
             {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["../**/*.py"]}]},
             {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/[abc.py"]}]},
             {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "profile": "strict"}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "../python"}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "/tmp/python"}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "python/*"}]},
+            {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "."}]},
             {"lanes": [{"id": 1, "ide": "PyCharm", "include": ["**/*.py"]}]},
             {"lanes": [{"id": "python", "ide": "PyCharm", "include": [42]}]},
         ]
@@ -1233,6 +1241,39 @@ class InspectionLaneConfigTest(unittest.TestCase):
         self.assertIsNone(context["ide"])
         self.assertEqual([lane["id"] for lane in context["inspection_lanes"]], ["jvm", "python"])
         self.assertEqual([lane.lane_id for lane in context["_inspection_lanes"]], ["jvm", "python"])
+
+    def test_build_context_rejects_lane_project_path_outside_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "repo"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "linked").symlink_to(outside, target_is_directory=True)
+            (root / ".github").mkdir()
+            write_json(
+                root / ".github" / "github.json",
+                {
+                    "qualityGate": {
+                        "inspection": {
+                            "lanes": [
+                                {
+                                    "id": "frontend",
+                                    "ide": "WebStorm",
+                                    "include": ["frontend/**/*.ts"],
+                                    "projectPath": "linked",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.build_context(Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile=""))
+
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_config_invalid")
 
     def test_lane_preparation_aggregation_preserves_execution_evidence(self):
         context = {
@@ -1428,6 +1469,53 @@ class InspectionLaneSelectionTest(unittest.TestCase):
 
 
 class InspectionLaneExecutionTest(unittest.TestCase):
+    def test_lane_context_uses_lane_project_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            frontend = root / "frontend"
+            frontend.mkdir()
+            source = frontend / "app.ts"
+            source.write_text("fixture\n", encoding="utf-8")
+            lane = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {
+                            "id": "frontend",
+                            "ide": "WebStorm",
+                            "include": ["frontend/**/*.ts"],
+                            "projectPath": "frontend",
+                        }
+                    ]
+                }
+            )[0]
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+            }
+            args = helper_args(scope="files", files=[str(source)], max_files=None, profile="")
+            lane_args = jb_inspect.inspection_lane_args(
+                args,
+                lane,
+                [{"file": "frontend/app.ts", "absolute_path": str(source)}],
+            )
+
+            lane_context = jb_inspect.inspection_lane_context(
+                context,
+                lane_args,
+                lane,
+                [{"file": "frontend/app.ts", "absolute_path": str(source)}],
+            )
+
+        self.assertEqual(lane_args.project_path, str(frontend))
+        self.assertEqual(lane_context["repo_path"], str(frontend))
+        self.assertEqual(lane_context["project_path"], str(frontend))
+        self.assertEqual(lane_context["exact_route_path"], str(frontend))
+        self.assertEqual(lane_context["lifecycle_target_path"], str(frontend))
+
     def test_runs_non_empty_lanes_sequentially_with_exact_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
