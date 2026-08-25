@@ -92,6 +92,11 @@ the write-oriented helper description. It uses the same validated operator URL
 but requires `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`, accepts only a positive immutable
 `github_id`, and calls the service-native read route. It does not accept a token
 on argv, browser cookies, caller-supplied human claims, or direct DB access.
+This is a compatibility route for an already-sanctioned credential, not a
+credential-provisioning workflow. If the documented private sources do not
+already expose that token, treat the result as an authorization-architecture
+gap: do not search broader secret stores, extract GitHub secrets, substitute the
+operator token, mint a replacement, or stop unrelated work.
 
 Run `scripts/launchplane-write-action.py operator-config-diagnostic` before
 declaring terminal operator access unavailable. The diagnostic reports only

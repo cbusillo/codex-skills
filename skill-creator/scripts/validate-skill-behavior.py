@@ -809,8 +809,10 @@ def test_launchplane_write_action_helper_contract() -> None:
     require(
         "authority-scope" in denied_recommendation
         and "authorization-architecture issue" in denied_recommendation
+        and "block only the affected work" in denied_recommendation
+        and "continue independent safe work" in denied_recommendation
         and "do not probe routes manually" in denied_recommendation,
-        "Write-action denied recommendation must stop and escalate instead of borrowing CI authority",
+        "Write-action denied recommendation must isolate the blocked work, continue safely, and avoid borrowing CI authority",
     )
     rendered_denied = json.dumps(denied_payload)
     require(

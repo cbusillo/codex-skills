@@ -1667,9 +1667,10 @@ def http_error_recommendation(status: str) -> str:
         "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
         "denied": (
             "Credential was accepted but this action was denied; this is an authority-scope "
-            "result. Report the trace ID and stop. Escalate a missing capability to the owning "
-            "authorization-architecture issue. Do not probe routes manually or route this call "
-            "through a GitHub workflow, Actions secret, or OIDC role."
+            "result. Report the trace ID, block only the affected work, and continue independent "
+            "safe work when available. Escalate a missing capability to the owning authorization-"
+            "architecture issue. Do not probe routes manually or route this call through a GitHub "
+            "workflow, Actions secret, or OIDC role."
         ),
         "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
         "invalid_request": "Fix the private request payload before retrying this write action.",
@@ -2247,7 +2248,12 @@ def execute_authz_activation_preflight_read(
         if settings["service_url"]:
             code = "missing_local_admin_token"
             message = "Launchplane local-admin token is missing."
-            recommendation = "Configure LAUNCHPLANE_LOCAL_ADMIN_TOKEN before retrying this read."
+            recommendation = (
+                "Treat this as an authorization-architecture gap unless an already-sanctioned "
+                "private token source is documented. Do not provision, discover, extract, or "
+                "substitute a credential; block only the affected work and continue independent "
+                "safe work when available."
+            )
         elif settings["token"] and settings["public_url_hint_sources"]:
             code = "ambiguous_service_url"
             message = (
@@ -2262,7 +2268,9 @@ def execute_authz_activation_preflight_read(
             code = "missing_local_admin_config"
             message = "Launchplane operator URL and local-admin token are required for this read."
             recommendation = (
-                "Configure LAUNCHPLANE_OPERATOR_URL and LAUNCHPLANE_LOCAL_ADMIN_TOKEN before retrying."
+                "Configure only a documented operator URL. Treat missing local-admin credential "
+                "custody as an authorization-architecture gap; do not create or substitute a token "
+                "to satisfy this compatibility read."
             )
         emit(
             no_context_payload(
