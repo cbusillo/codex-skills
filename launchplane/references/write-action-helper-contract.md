@@ -127,31 +127,37 @@ reconciliation, secret mutation, or direct database access.
 
 Configuration and error states are distinct:
 
-- `ready`: operator URL and token sources are present. This is not proof that a
-  token is authorized for every action.
 - `ambiguous_service_url`: token exists and `LAUNCHPLANE_PUBLIC_URL` is present,
   but no operator URL source is configured. Obtain the correct operator URL and
   pass it with `--url` before the subcommand, or configure
   `LAUNCHPLANE_OPERATOR_URL`.
 - `missing_service_url`: token exists but no write-capable service URL source is
   configured. Fix local operator routing by configuring
-  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or supplying
-  a private JSON `service_url`, then rerun `operator-config-diagnostic`. This is
-  local operator setup, not PR readiness, merge-train admission, or scheduler
-  state.
-- `missing_operator_token`: service URL exists but the local operator token is
-  missing.
-- `missing_operator_config`: both service URL and token are absent.
+  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or
+  supplying a private JSON `service_url`. This is local routing, not evidence
+  that an administrator credential should exist.
+- `missing_local_admin_token`: service URL exists but no already-sanctioned
+  local-admin credential source is configured. Treat this as an architecture
+  gap, not a provisioning instruction.
+- `missing_local_admin_config`: neither the service URL nor an already-sanctioned
+  local-admin credential source is configured. Configure only a documented
+  operator URL; do not create or substitute a credential for this compatibility
+  helper.
 - `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
 - `denied`: Launchplane accepted the credential but denied the specific action,
   usually HTTP 403 or `authorization_denied`. This is an authority-scope result,
-  not a credential-selection result. Report it with the trace ID and stop.
-  Escalate a capability gap to the owning authorization-architecture issue. Do
-  not probe routes manually or route the call through a GitHub workflow, Actions
-  secret, or OIDC role.
+  not a credential-selection result. Report it with the trace ID, block only the
+  affected work, and continue independent safe work when available. Escalate a
+  capability gap to the owning authorization-architecture issue. Do not probe
+  routes manually or route the call through a GitHub workflow, Actions secret,
+  or OIDC role.
 - `stale`: retry requires refreshed dry-run or intent evidence.
 - `unavailable`: service/network/response failure; do not switch to provider
   mutation.
+
+`operator-config-diagnostic` reports ordinary local-operator readiness only. It
+may report `ready` while local-admin custody is absent, so it is not readiness
+evidence for this compatibility preflight.
 
 ## Product Config
 
@@ -217,8 +223,14 @@ endpoint records, provider targets, route records, or operator/workflow grants,
 do not widen the local helper and do not substitute GitHub CI authority. An
 already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
 unmodified when the operator initiates it for that record. Otherwise this is a
-capability gap: stop and escalate to the owning authorization-architecture issue
-with the denied operation, record type, and trace ID.
+capability gap: block and escalate the affected work to the owning
+authorization-architecture issue with the denied operation, record type, and
+trace ID, then continue independent work when possible.
+
+`missing_local_admin_token` and `missing_local_admin_config` on the activation
+preflight are architecture-gap results unless an already-sanctioned private
+credential source is documented. Do not provision, discover, extract, or
+substitute a credential merely to satisfy this compatibility helper.
 
 ## Change-Impact Policy
 

@@ -1377,9 +1377,47 @@ def test_denied_recommendation_escalates_without_borrowing_ci_authority() -> Non
     ) == "denied"
     assert "authority-scope" in recommendation
     assert "escalate" in recommendation
+    assert "block only the affected work" in recommendation
+    assert "continue independent safe work" in recommendation
     assert "do not probe routes manually" in recommendation
     assert "workflow" in recommendation
     assert "check the intended launchplane authz reconciliation" not in recommendation
+
+
+def test_missing_activation_token_is_an_architecture_gap_not_provisioning_advice() -> None:
+    args = argparse.Namespace(
+        config=None,
+        env_config=None,
+        url=None,
+        timeout=3,
+        github_id=123,
+    )
+    output = io.StringIO()
+    with temporary_attribute(
+        write_action,
+        "resolve_admin_settings",
+        lambda _args: {
+            "service_url": "https://launchplane.example.invalid",
+            "token": "",
+            "subject": "",
+            "token_label": "",
+            "public_url_hint_sources": "",
+        },
+    ):
+        with redirect_stdout(output):
+            status = write_action.execute_authz_activation_preflight_read(
+                args=args,
+                request={"github_id": 123},
+            )
+
+    payload = json.loads(output.getvalue())
+    recommendation = payload["summary"]["recommendation"].lower()
+    assert status == 2
+    assert payload["summary"]["configuration_state"] == "missing_local_admin_token"
+    assert "authorization-architecture gap" in recommendation
+    assert "do not provision" in recommendation
+    assert "continue independent safe work" in recommendation
+    assert "configure launchplane_local_admin_token" not in recommendation
 
 
 def test_context_projection_contract_and_secret_shape() -> None:
@@ -2079,6 +2117,7 @@ def main() -> int:
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,
         test_denied_recommendation_escalates_without_borrowing_ci_authority,
+        test_missing_activation_token_is_an_architecture_gap_not_provisioning_advice,
         test_context_projection_contract_and_secret_shape,
         test_current_agent_context_service_shape,
         test_request_helpers_use_shared_safe_urlopen,
