@@ -278,6 +278,55 @@ closed. If apply receives HTTP success but the response cannot be safely
 projected, the helper reports `accepted_unverified` and requires read-back before
 any retry.
 
+## Repository Inventory
+
+Repository inventory is an inert, append-only identity stream. Use the deployed
+service through the bounded helper; never substitute direct database writes,
+raw HTTP calls, checked-in catalogs, or workflow-owned authority. Write payloads
+must be explicit private JSON files outside the active repository or worktree.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-read \
+  --repository-id <repository-id>
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-dry-run \
+  --payload-file /private/path/repository-inventory.json \
+  > /private/path/repository-inventory-dry-run.json
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-apply \
+  --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
+  --reviewed-dry-run \
+  --expected-inventory-digest <inventory-digest-from-dry-run> \
+  --dry-run-evidence-file /private/path/repository-inventory-dry-run.json
+```
+
+The helper overrides only `mode`. The dry-run output includes a SHA-256
+`request.payload_digest` over the complete private envelope with `mode` removed,
+so apply can prove that the reviewed payload, including
+`expected_current_record_id`, is unchanged. Apply requires a stable idempotency
+key, explicit reviewed acknowledgement, the server-derived inventory digest,
+and the saved redacted dry-run output. Missing, malformed, stale, mismatched, or
+non-`would_apply` evidence fails locally before any service request. If the
+private record already embeds an inventory digest, it must match the reviewed
+digest exactly.
+
+Public-safe output omits repository name, owner ID, source, reason, raw payload,
+payload path, query ID, idempotency key, service URL, and authorization headers.
+It may emit the append-only record ID, inventory state/revision/digest,
+superseded record ID, timestamps, history count, and trace metadata required for
+the next exact revision. Unexpected response fields fail closed. If apply
+receives HTTP success but the response cannot be safely projected, the helper
+reports `accepted_unverified`; read back the current record and do not retry
+until the outcome is known.
+
+An `authorization_denied` response is an authority or capability gap. Preserve
+the trace and route the blocked work to the owning authorization redesign; do
+not add a grant, borrow workflow identity, or use a raw API fallback.
+
 ## Generic-Web Deploy Recovery
 
 Generic-web deploy recovery is a bounded admin operation for recovering a
@@ -428,6 +477,10 @@ provider dictionary pass-through:
   timestamp.
 - `change-impact-policy-read` may emit only shadow/enforcement status, history
   count, and the same bounded current-policy metadata.
+- `repository-inventory-read`, `repository-inventory-dry-run`, and
+  `repository-inventory-apply` may emit only bounded append status, record IDs,
+  state/revision/digest metadata, timestamps, history count, request digest,
+  and trace metadata.
 - `authz-activation-preflight-read` may emit only active policy identity,
   coarse session freshness, keyed identity fingerprint, the fixed
   `authz_policy_grant.write` scope, evaluation decision/reason, and bounded
