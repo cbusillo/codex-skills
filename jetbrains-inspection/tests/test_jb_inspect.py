@@ -11437,6 +11437,31 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["attribution_class"], "configuration_blocked")
         self.assertIn("language SDK", payload["verdict_next_action"])
 
+    def test_language_sdk_missing_retries_after_prepared_venv(self):
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "language_sdk_missing",
+            "total_problems": 0,
+            "problems": [],
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "generated_state_snapshot": {
+                    "all_present": True,
+                    "paths": [{"path": ".venv", "exists": True, "kind": "directory"}],
+                },
+            },
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "capture_not_ready")
+        self.assertTrue(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["retry_policy"]["max_attempts"], 3)
+        self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
+
     def test_configuration_blockers_name_repository_preparation_when_configured(self):
         preparation = {
             "configured": True,

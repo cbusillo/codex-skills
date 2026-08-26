@@ -3164,6 +3164,9 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
     if cancellation is not None:
         summary["cancellation"] = cancellation
     summary["status"] = classify_run_status(wait, problems)
+    repository_preparation = context.get("repository_preparation")
+    if isinstance(repository_preparation, dict):
+        summary["repository_preparation"] = repository_preparation
     apply_verdict(summary)
     return summary
 
@@ -5999,6 +6002,8 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "open_schedule_failed",
     }:
         return "tool_caused"
+    if normalized == "language_sdk_missing" and prepared_python_sdk_discovery_pending(payload):
+        return "legitimate_fail_closed"
     if normalized in {
         "timeout",
         "inspection_api_timeout",
@@ -6329,6 +6334,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
+    if normalized == "language_sdk_missing" and prepared_python_sdk_discovery_pending(payload):
+        return "capture_not_ready"
     if normalized == "plugin_deployment_mismatch":
         return "environment_blocked"
     if normalized == "execution_not_proven":
@@ -6417,7 +6424,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
 
 def retry_policy_for(verdict: str, bucket: str, reason: str = "") -> dict[str, Any]:
     retry = verdict == "UNKNOWN" and bucket in UNKNOWN_RETRY_BUCKETS
-    max_attempts = 3 if retry and reason == "project_analysis_not_ready" else 1 if retry else 0
+    max_attempts = 3 if retry and reason in {"project_analysis_not_ready", "language_sdk_missing"} else 1 if retry else 0
     return {
         "retry": retry,
         "max_attempts": max_attempts,
@@ -8772,6 +8779,28 @@ def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any
             return bounded_repository_preparation(state, target_worktree=target if isinstance(target, str) else None)
     target = context.get("lifecycle_target_path") or context.get("project_path") or context.get("worktree_root")
     return bounded_repository_preparation({}, target_worktree=target if isinstance(target, str) else None)
+
+
+def prepared_python_sdk_discovery_pending(payload: dict[str, Any]) -> bool:
+    preparation = repository_preparation_for_payload(payload)
+    if preparation.get("execution_state") not in {
+        REPOSITORY_PREPARATION_SUCCEEDED,
+        REPOSITORY_PREPARATION_REUSED,
+    }:
+        return False
+    generated = preparation.get("generated_state_snapshot")
+    if not isinstance(generated, dict) or generated.get("all_present") is not True:
+        return False
+    paths = generated.get("paths")
+    if not isinstance(paths, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("exists") is True
+        and item.get("kind") == "directory"
+        and item.get("path") == ".venv"
+        for item in paths
+    )
 
 
 def durable_repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:

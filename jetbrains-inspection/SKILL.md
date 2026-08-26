@@ -664,6 +664,11 @@ side of the boundary they occupy.
   the preferred IDE, or report the blocker. Before a new helper invocation,
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
+- A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
+  while the IDE registers the generated `.venv`. When repository preparation
+  succeeded and proved that `.venv` exists, the helper waits for SDK readiness
+  and performs its bounded internal retry. Without that preparation evidence,
+  the same reason remains a terminal configuration blocker.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
