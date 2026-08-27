@@ -1832,6 +1832,63 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(result["lane_results"][1]["verdict"], "GREEN")
         self.assertEqual(result["verdict"], "UNKNOWN")
 
+    def test_lane_context_failure_preserves_completed_lane_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            kotlin = root / "Example.kt"
+            python = root / "check.py"
+            nested_python = root / "services" / "python"
+            nested_python.mkdir(parents=True)
+            kotlin.write_text("fixture\n", encoding="utf-8")
+            python.write_text("fixture\n", encoding="utf-8")
+            lanes = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                        {
+                            "id": "python",
+                            "ide": "PyCharm",
+                            "include": ["**/*.py"],
+                            "projectPath": "services/python",
+                        },
+                    ]
+                }
+            )
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+                "_inspection_lanes": lanes,
+            }
+            args = helper_args(scope="files", files=[str(kotlin), str(python)], max_files=None, profile="")
+
+            with patch.object(
+                jb_inspect,
+                "run_prepared_inspection",
+                return_value={
+                    "status": "clean",
+                    "total_problems": 0,
+                    "problems": [],
+                    "cleanup": {"status": "closed"},
+                },
+            ) as run:
+                result = jb_inspect.run_configured_inspection_lanes(args, context)
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(len(result["lane_results"]), 2)
+        self.assertEqual(result["lane_results"][0]["verdict"], "GREEN")
+        self.assertEqual(
+            result["lane_results"][1]["bucket"],
+            "policy_required",
+            result["lane_results"][1],
+        )
+        self.assertEqual(result["lane_results"][1]["verdict"], "UNKNOWN")
+        self.assertEqual(result["lane_results"][1]["blocker_stage"], "configuration")
+        self.assertEqual(result["verdict"], "UNKNOWN")
+
     def test_aggregate_precedence_and_optional_failures(self):
         def lane(lane_id, verdict, required=True):
             return {
@@ -11703,6 +11760,36 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(result["internal_retry_count"], 1)
         self.assertEqual(result["internal_retry_reason"], "language_sdk_missing")
         self.assertEqual(result["internal_retry_readiness"], retry_readiness)
+        self.assertEqual(result["prepared_internal_retry_count"], 1)
+        self.assertEqual(result["prepared_internal_retry_reason"], "language_sdk_missing")
+        self.assertEqual(result["prepared_internal_retry_readiness"], retry_readiness)
+
+    def test_prepared_retry_evidence_does_not_overwrite_inspection_retry_evidence(self):
+        inspection_readiness = {"status": "timeout", "ready": False}
+        prepared_readiness = {"status": "ready", "ready": True}
+        result = {
+            "internal_retry_count": 2,
+            "internal_retry_reason": "inspection_unknown",
+            "internal_retry_readiness": inspection_readiness,
+            "internal_retry_skipped": True,
+        }
+        prepared = {
+            "readiness_barrier": {
+                "internal_retry_count": 1,
+                "internal_retry_reason": "language_sdk_missing",
+                "internal_retry_readiness": prepared_readiness,
+            }
+        }
+
+        jb_inspect.apply_prepared_retry_evidence(result, prepared)
+
+        self.assertEqual(result["internal_retry_count"], 2)
+        self.assertEqual(result["internal_retry_reason"], "inspection_unknown")
+        self.assertEqual(result["internal_retry_readiness"], inspection_readiness)
+        self.assertTrue(result["internal_retry_skipped"])
+        self.assertEqual(result["prepared_internal_retry_count"], 1)
+        self.assertEqual(result["prepared_internal_retry_reason"], "language_sdk_missing")
+        self.assertEqual(result["prepared_internal_retry_readiness"], prepared_readiness)
 
     def test_prepared_sdk_retry_does_not_use_root_venv_for_nested_project(self):
         error = jb_inspect.InspectError(

@@ -2278,8 +2278,9 @@ def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str,
             lane_results.append(noop_inspection_lane_result(lane, execution_order, context))
             continue
         lane_args = inspection_lane_args(args, lane, selected)
-        lane_context = inspection_lane_context(context, lane_args, lane, selected)
+        lane_context = dict(context)
         try:
+            lane_context = inspection_lane_context(context, lane_args, lane, selected)
             lane_payload = run_prepared_inspection(lane_args, lane_context)
         except InspectError as error:
             lane_payload = error_payload(error, lane_args)
@@ -2695,7 +2696,8 @@ def apply_prepared_retry_evidence(result: dict[str, Any], prepared: dict[str, An
         "internal_retry_readiness",
     ):
         if key in readiness:
-            result[key] = readiness[key]
+            result.setdefault(key, readiness[key])
+            result[f"prepared_{key}"] = readiness[key]
 
 
 def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
@@ -6094,6 +6096,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
         "language_sdk_missing",
         "profile_resolution_error",
+        "inspection_lane_config_invalid",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
         *REPOSITORY_PREPARATION_TERMINAL_REASONS,
@@ -6158,6 +6161,8 @@ def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, An
     normalized = normalize_reason(code)
     if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
         return "selection"
+    if normalized == "inspection_lane_config_invalid":
+        return "configuration"
     if normalized in {
         "ide_not_ready_timeout",
         "project_open_blocked",
@@ -6967,9 +6972,13 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
         "internal_retry_count": public.get("internal_retry_count"),
+        "internal_retry_reason": public.get("internal_retry_reason"),
         "internal_retry_skipped": public.get("internal_retry_skipped"),
         "internal_retry_skip_reason": public.get("internal_retry_skip_reason"),
         "internal_retry_readiness": public.get("internal_retry_readiness"),
+        "prepared_internal_retry_count": public.get("prepared_internal_retry_count"),
+        "prepared_internal_retry_reason": public.get("prepared_internal_retry_reason"),
+        "prepared_internal_retry_readiness": public.get("prepared_internal_retry_readiness"),
         "unknown_diagnosis": public.get("unknown_diagnosis"),
         "deployment_mismatch": public.get("deployment_mismatch"),
         "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
@@ -8128,7 +8137,10 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
             "failure_phase": payload.get("failure_phase"),
             "unknown_diagnosis": payload.get("unknown_diagnosis"),
             "internal_retry_count": payload.get("internal_retry_count"),
+            "internal_retry_reason": payload.get("internal_retry_reason"),
             "internal_retry_skipped": payload.get("internal_retry_skipped"),
+            "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
+            "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
             "unknown_log_path": payload.get("unknown_log_path"),
             "unknown_log_error": payload.get("unknown_log_error"),
             "outcome_log_path": payload.get("outcome_log_path"),

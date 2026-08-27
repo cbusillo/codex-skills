@@ -36,7 +36,7 @@ Repo-local values override workspace defaults.
           "ide": "PyCharm",
           "required": true,
           "projectPath": "services/python",
-          "include": ["**/*.py"],
+          "include": ["services/python/**/*.py"],
           "exclude": ["test-fixtures/inspection-red-lane-*/**"]
         }
       ]
