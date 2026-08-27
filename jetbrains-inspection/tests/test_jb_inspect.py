@@ -1516,6 +1516,73 @@ class InspectionLaneExecutionTest(unittest.TestCase):
         self.assertEqual(lane_context["exact_route_path"], str(frontend))
         self.assertEqual(lane_context["lifecycle_target_path"], str(frontend))
 
+    def test_lane_context_rejects_selected_files_outside_lane_project_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            frontend = root / "frontend"
+            frontend.mkdir()
+            source = root / "tools" / "check.ts"
+            source.parent.mkdir()
+            source.write_text("fixture\n", encoding="utf-8")
+            lane = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {
+                            "id": "frontend",
+                            "ide": "WebStorm",
+                            "include": ["**/*.ts"],
+                            "projectPath": "frontend",
+                        }
+                    ]
+                }
+            )[0]
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+            }
+            selected = [{"file": "tools/check.ts", "absolute_path": str(source)}]
+            args = helper_args(scope="files", files=[str(source)], max_files=None, profile="")
+            lane_args = jb_inspect.inspection_lane_args(args, lane, selected)
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.inspection_lane_context(context, lane_args, lane, selected)
+
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_config_invalid")
+        self.assertIn("outside projectPath", str(raised.exception))
+
+    def test_lane_project_path_may_be_created_by_repository_preparation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".github").mkdir()
+            write_json(
+                root / ".github" / "github.json",
+                {
+                    "qualityGate": {
+                        "inspection": {
+                            "lanes": [
+                                {
+                                    "id": "frontend",
+                                    "ide": "WebStorm",
+                                    "include": ["frontend/**/*.ts"],
+                                    "projectPath": "frontend",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+
+            context = jb_inspect.build_context(
+                Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
+            )
+
+        self.assertEqual(context["inspection_lanes"][0]["projectPath"], "frontend")
+
     def test_runs_non_empty_lanes_sequentially_with_exact_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -11437,7 +11504,7 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["attribution_class"], "configuration_blocked")
         self.assertIn("language SDK", payload["verdict_next_action"])
 
-    def test_language_sdk_missing_retries_after_prepared_venv(self):
+    def test_language_sdk_missing_remains_terminal_after_internal_retry_exhaustion(self):
         payload = {
             "status": "capture_incomplete",
             "capture_incomplete": True,
@@ -11457,10 +11524,118 @@ class Issue458RegressionTest(unittest.TestCase):
         jb_inspect.apply_verdict(payload)
 
         self.assertEqual(payload["verdict"], "UNKNOWN")
-        self.assertEqual(payload["bucket"], "capture_not_ready")
-        self.assertTrue(payload["retry_policy"]["retry"])
-        self.assertEqual(payload["retry_policy"]["max_attempts"], 3)
-        self.assertEqual(payload["attribution_class"], "legitimate_fail_closed")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertEqual(payload["attribution_class"], "configuration_blocked")
+
+    def test_prepared_sdk_retry_requires_venv_inside_active_lane_project(self):
+        payload = {
+            "context": {
+                "worktree_root": "/tmp/repo",
+                "project_path": "/tmp/repo/services/api",
+                "repository_preparation": {
+                    "configured": True,
+                    "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                    "target_worktree": "/tmp/repo",
+                    "generated_state_snapshot": {
+                        "all_present": True,
+                        "paths": [
+                            {"path": ".venv", "exists": True, "kind": "directory"},
+                            {"path": "services/api/.venv", "exists": True, "kind": "directory"},
+                        ],
+                    },
+                },
+            }
+        }
+
+        self.assertTrue(jb_inspect.prepared_python_sdk_discovery_pending(payload))
+        payload["context"]["repository_preparation"]["generated_state_snapshot"]["paths"] = [
+            {"path": ".venv", "exists": True, "kind": "directory"}
+        ]
+        self.assertFalse(jb_inspect.prepared_python_sdk_discovery_pending(payload))
+
+    def test_prepared_sdk_retry_waits_and_rechecks_route_once(self):
+        error = jb_inspect.InspectError(
+            "SDK missing",
+            3,
+            {"error_reason": "language_sdk_missing"},
+        )
+        context = {
+            "worktree_root": "/tmp/repo",
+            "project_path": "/tmp/repo/services/api",
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "target_worktree": "/tmp/repo",
+                "generated_state_snapshot": {
+                    "all_present": True,
+                    "paths": [
+                        {"path": "services/api/.venv", "exists": True, "kind": "directory"}
+                    ],
+                },
+            },
+        }
+        final_readiness = {"status": "ready", "ready": True}
+        retry_readiness = {"status": "ready", "ready": True}
+
+        with (
+            patch.object(
+                jb_inspect,
+                "wait_until_route_ready",
+                side_effect=[error, final_readiness],
+            ) as wait_route,
+            patch.object(
+                jb_inspect,
+                "wait_for_internal_retry_readiness",
+                return_value=retry_readiness,
+            ) as wait_retry,
+        ):
+            result = jb_inspect.wait_until_route_ready_with_prepared_sdk_retry(
+                helper_args(),
+                context,
+                {"port": 63343},
+                1000,
+            )
+
+        self.assertEqual(wait_route.call_count, 2)
+        wait_retry.assert_called_once()
+        self.assertEqual(result["internal_retry_count"], 1)
+        self.assertEqual(result["internal_retry_reason"], "language_sdk_missing")
+        self.assertFalse(result["retry_exhausted"])
+
+    def test_prepared_sdk_retry_does_not_use_root_venv_for_nested_project(self):
+        error = jb_inspect.InspectError(
+            "SDK missing",
+            3,
+            {"error_reason": "language_sdk_missing"},
+        )
+        context = {
+            "worktree_root": "/tmp/repo",
+            "project_path": "/tmp/repo/services/api",
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "target_worktree": "/tmp/repo",
+                "generated_state_snapshot": {
+                    "all_present": True,
+                    "paths": [{"path": ".venv", "exists": True, "kind": "directory"}],
+                },
+            },
+        }
+
+        with (
+            patch.object(jb_inspect, "wait_until_route_ready", side_effect=error),
+            patch.object(jb_inspect, "wait_for_internal_retry_readiness") as wait_retry,
+        ):
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.wait_until_route_ready_with_prepared_sdk_retry(
+                    helper_args(),
+                    context,
+                    {"port": 63343},
+                    1000,
+                )
+
+        wait_retry.assert_not_called()
 
     def test_configuration_blockers_name_repository_preparation_when_configured(self):
         preparation = {

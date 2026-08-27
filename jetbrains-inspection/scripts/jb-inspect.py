@@ -1542,10 +1542,6 @@ def validate_inspection_lane_project_paths(lanes: tuple[InspectionLane, ...], wo
             raise inspection_lane_config_error(
                 f"Inspection lane {lane.lane_id} projectPath resolves outside the exact worktree: {lane.project_path}"
             )
-        if not resolved.is_dir():
-            raise inspection_lane_config_error(
-                f"Inspection lane {lane.lane_id} projectPath must resolve to an existing directory: {lane.project_path}"
-            )
 
 
 def parse_inspection_lane_patterns(
@@ -2367,6 +2363,20 @@ def inspection_lane_context(
     worktree_root = Path(str(lane_context["worktree_root"])).expanduser().resolve()
     if lane.project_path is not None:
         project_path = (worktree_root / lane.project_path).resolve()
+        if not project_path.is_dir():
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath must resolve to an existing directory after repository preparation: {lane.project_path}"
+            )
+        outside_project = [
+            item["file"]
+            for item in selected
+            if not Path(item["absolute_path"]).expanduser().resolve().is_relative_to(project_path)
+        ]
+        if outside_project:
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} selected files outside projectPath {lane.project_path}: "
+                + ", ".join(outside_project[:5])
+            )
         lane_args.project_path = str(project_path)
         lane_context.update(
             {
@@ -3540,7 +3550,12 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             claim_metadata=claim_metadata,
         )
         preparation_stage = "readiness_wait"
-        readiness = wait_until_route_ready(args, context, validated_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+        readiness = wait_until_route_ready_with_prepared_sdk_retry(
+            args,
+            context,
+            validated_route,
+            getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS),
+        )
         persist_preparation_lease(
             lease,
             state="prepared",
@@ -4219,6 +4234,58 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
         }
         | route_diagnostic_payload(args, context),
     )
+
+
+def wait_until_route_ready_with_prepared_sdk_retry(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    timeout_ms: int,
+) -> dict[str, Any]:
+    try:
+        return wait_until_route_ready(args, context, route, timeout_ms)
+    except InspectError as error:
+        retry_payload = dict(error.payload)
+        retry_payload.setdefault("context", public_context(context))
+        if (
+            infer_error_reason(error, retry_payload) != "language_sdk_missing"
+            or not prepared_python_sdk_discovery_pending(retry_payload)
+        ):
+            raise
+
+        retry_trigger = {
+            "bucket": "capture_not_ready",
+            "verdict_reason": "language_sdk_missing",
+            "retry_policy": {
+                "retry": True,
+                "max_attempts": 1,
+                "wait_ms": UNKNOWN_RETRY_WAIT_MS,
+            },
+        }
+        retry_readiness = wait_for_internal_retry_readiness(
+            args,
+            context,
+            route,
+            retry_trigger,
+        )
+        if retry_readiness.get("ready") is not True:
+            error.payload["internal_retry_count"] = 0
+            error.payload["internal_retry_readiness"] = retry_readiness
+            error.payload["retry_exhausted"] = True
+            raise
+
+        try:
+            readiness = wait_until_route_ready(args, context, route, timeout_ms)
+        except InspectError as retry_error:
+            retry_error.payload["internal_retry_count"] = 1
+            retry_error.payload["internal_retry_readiness"] = retry_readiness
+            retry_error.payload["retry_exhausted"] = True
+            raise
+        readiness["internal_retry_count"] = 1
+        readiness["internal_retry_reason"] = "language_sdk_missing"
+        readiness["internal_retry_readiness"] = retry_readiness
+        readiness["retry_exhausted"] = False
+        return readiness
 
 
 def route_status_ready(body: dict[str, Any]) -> bool:
@@ -6002,8 +6069,6 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "open_schedule_failed",
     }:
         return "tool_caused"
-    if normalized == "language_sdk_missing" and prepared_python_sdk_discovery_pending(payload):
-        return "legitimate_fail_closed"
     if normalized in {
         "timeout",
         "inspection_api_timeout",
@@ -6334,8 +6399,6 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if verdict == "RED":
         return "actionable_findings"
     normalized = normalize_reason(reason)
-    if normalized == "language_sdk_missing" and prepared_python_sdk_discovery_pending(payload):
-        return "capture_not_ready"
     if normalized == "plugin_deployment_mismatch":
         return "environment_blocked"
     if normalized == "execution_not_proven":
@@ -8794,11 +8857,26 @@ def prepared_python_sdk_discovery_pending(payload: dict[str, Any]) -> bool:
     paths = generated.get("paths")
     if not isinstance(paths, list):
         return False
+    target_worktree = preparation.get("target_worktree")
+    if not isinstance(target_worktree, str) or not target_worktree.strip():
+        return False
+    target = Path(target_worktree).expanduser().resolve()
+    project = target
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    for candidate in (payload, context):
+        project_value = candidate.get("project_path") or candidate.get("lifecycle_target_path")
+        if isinstance(project_value, str) and project_value.strip():
+            project = Path(project_value).expanduser().resolve()
+            break
+    if project != target and not project.is_relative_to(target):
+        return False
     return any(
         isinstance(item, dict)
         and item.get("exists") is True
         and item.get("kind") == "directory"
-        and item.get("path") == ".venv"
+        and isinstance(item.get("path"), str)
+        and (target / item["path"]).resolve().name == ".venv"
+        and (target / item["path"]).resolve().parent == project
         for item in paths
     )
 

@@ -411,7 +411,8 @@ lane names a unique `id`, an `ide`, whether it is `required`, repository-relativ
 `projectPath` directory when that IDE must open a nested project. The helper
 resolves the selected scope once, validates every file and lane project path
 against the exact worktree, assigns files by first matching lane, and records
-unmatched and explicitly excluded files. It
+unmatched and explicitly excluded files. Files assigned to a lane with
+`projectPath` must resolve inside that project directory. It
 does not open an IDE for an empty lane. Exclusions apply to ordinary changed-file,
 directory, and whole-project readiness; an explicit `files` scope records an
 override and still runs the selected fixture in its lane. Non-empty lanes run
@@ -666,9 +667,11 @@ side of the boundary they occupy.
   Do not invent retry loops.
 - A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
   while the IDE registers the generated `.venv`. When repository preparation
-  succeeded and proved that `.venv` exists, the helper waits for SDK readiness
-  and performs its bounded internal retry. Without that preparation evidence,
-  the same reason remains a terminal configuration blocker.
+  succeeded and proved that the active lane project contains its generated
+  `.venv`, the helper performs exactly one route-readiness retry after a bounded,
+  route-pinned quiet wait. A surfaced `language_sdk_missing` means that internal
+  retry was unavailable or exhausted and remains a terminal configuration
+  blocker; agents must not add another retry loop.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
