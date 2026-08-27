@@ -212,7 +212,14 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
             },
         }
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
-        dry_run_args = argparse.Namespace(payload_file=str(payload_path))
+        idempotency_key = "repository-inventory-example-1"
+        idempotency_key_fingerprint = (
+            write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+        )
+        dry_run_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key=idempotency_key,
+        )
         dry_run_body = write_action.repository_inventory_payload_body(
             dry_run_args, mode="dry_run"
         )
@@ -228,6 +235,7 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
                         "mode": "dry_run",
                         "payload_source": "private_file",
                         "payload_digest": payload_digest,
+                        "idempotency_key_fingerprint": idempotency_key_fingerprint,
                     },
                     "result": {
                         "status": "would_apply",
@@ -244,7 +252,7 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
         )
         apply_args = argparse.Namespace(
             payload_file=str(payload_path),
-            idempotency_key="repository-inventory-example-1",
+            idempotency_key=idempotency_key,
             reviewed_dry_run=True,
             expected_inventory_digest=inventory_digest,
             dry_run_evidence_file=str(evidence_path),
@@ -253,6 +261,15 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
             apply_args, mode="apply"
         )
         assert apply_body["mode"] == "apply"
+
+        apply_args.idempotency_key = "repository-inventory-example-2"
+        try:
+            write_action.repository_inventory_payload_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("changed idempotency key must invalidate dry-run evidence")
+        apply_args.idempotency_key = idempotency_key
 
         payload["expected_current_record_id"] = "repository-inventory-1001-r0"
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -302,6 +319,14 @@ def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
         "repository-inventory-1001-r1"
     )
 
+    idempotency_key = "repository-inventory-example-1"
+    idempotency_key_fingerprint = (
+        write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+    )
+    assert idempotency_key not in idempotency_key_fingerprint
+    assert idempotency_key_fingerprint.startswith("sha256:")
+    assert len(idempotency_key_fingerprint) == 71
+
     provider_payload = {
         "status": "ok",
         "trace_id": "launchplane_req_inventory_apply",
@@ -319,10 +344,17 @@ def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
     }
     apply_payload = write_action.summarize_success(
         operation="repository-inventory-apply",
-        request={"mode": "apply", "payload_source": "private_file"},
+        request={
+            "mode": "apply",
+            "payload_source": "private_file",
+            "idempotency_key_fingerprint": idempotency_key_fingerprint,
+        },
         provider_payload=provider_payload,
     )
     assert "repository_id" not in apply_payload["result"]
+    assert apply_payload["request"]["idempotency_key_fingerprint"] == (
+        idempotency_key_fingerprint
+    )
     provider_payload["result"]["repository"] = "example/repository"
     try:
         write_action.summarize_success(

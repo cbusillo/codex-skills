@@ -293,6 +293,7 @@ uv run launchplane/scripts/launchplane-write-action.py \
 uv run launchplane/scripts/launchplane-write-action.py \
   repository-inventory-dry-run \
   --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
   > /private/path/repository-inventory-dry-run.json
 
 uv run launchplane/scripts/launchplane-write-action.py \
@@ -307,16 +308,18 @@ uv run launchplane/scripts/launchplane-write-action.py \
 The helper overrides only `mode`. The dry-run output includes a SHA-256
 `request.payload_digest` over the complete private envelope with `mode` removed,
 so apply can prove that the reviewed payload, including
-`expected_current_record_id`, is unchanged. Apply requires a stable idempotency
-key, explicit reviewed acknowledgement, the server-derived inventory digest,
-and the saved redacted dry-run output. Missing, malformed, stale, mismatched, or
-non-`would_apply` evidence fails locally before any service request. If the
-private record already embeds an inventory digest, it must match the reviewed
-digest exactly.
+`expected_current_record_id`, is unchanged. Dry-run and apply require the same
+stable idempotency key. Both evidence envelopes include only its
+`sha256:` fingerprint, and apply rejects reviewed dry-run evidence whose
+fingerprint does not match the apply key. Apply also requires explicit reviewed
+acknowledgement, the server-derived inventory digest, and the saved redacted
+dry-run output. Missing, malformed, stale, mismatched, or non-`would_apply`
+evidence fails locally before any service request. If the private record already
+embeds an inventory digest, it must match the reviewed digest exactly.
 
 Public-safe output omits repository name, owner ID, source, reason, raw payload,
-payload path, query ID, idempotency key, service URL, and authorization headers.
-It may emit the append-only record ID, inventory state/revision/digest,
+payload path, query ID, raw idempotency key, service URL, and authorization
+headers. It may emit the redacted idempotency-key fingerprint, append-only record ID, inventory state/revision/digest,
 superseded record ID, timestamps, history count, and trace metadata required for
 the next exact revision. Unexpected response fields fail closed. If apply
 receives HTTP success but the response cannot be safely projected, the helper

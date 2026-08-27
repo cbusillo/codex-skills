@@ -89,6 +89,8 @@ commands:
         "repository-inventory-dry-run",
         "--payload-file",
         "<private-file>",
+        "--idempotency-key",
+        "<stable-key>",
       ]
     purpose: Dry-runs an exact private repository inventory revision and emits review-bound redacted evidence.
   - name: launchplane-repository-inventory-apply
@@ -335,6 +337,8 @@ policy:
               "repository-inventory-dry-run",
               "--payload-file",
               "<private-file>",
+              "--idempotency-key",
+              "<stable-key>",
             ]
           purpose: Dry-runs exact private inventory input through the bounded helper.
         - kind: script

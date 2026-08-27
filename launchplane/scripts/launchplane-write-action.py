@@ -2007,12 +2007,20 @@ def repository_inventory_review_digest(body: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def repository_inventory_idempotency_key_fingerprint(idempotency_key: str) -> str:
+    normalized = idempotency_key.strip()
+    if not normalized:
+        raise ValueError("idempotency_key_required")
+    return f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}"
+
+
 def _require_apply_eligible_repository_inventory_dry_run(
     args: argparse.Namespace,
     *,
     expected_inventory_digest: str,
     expected_payload_digest: str,
     expected_inventory_revision: int,
+    expected_idempotency_key_fingerprint: str,
 ) -> None:
     evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
     if not evidence_path:
@@ -2031,6 +2039,8 @@ def _require_apply_eligible_repository_inventory_dry_run(
         or request.get("mode") != "dry_run"
         or request.get("payload_source") != "private_file"
         or request.get("payload_digest") != expected_payload_digest
+        or request.get("idempotency_key_fingerprint")
+        != expected_idempotency_key_fingerprint
         or result.get("status") != "would_apply"
         or result.get("mode") != "dry_run"
         or result.get("inventory_digest") != expected_inventory_digest
@@ -2093,6 +2103,9 @@ def repository_inventory_payload_body(
             expected_inventory_digest=expected_inventory_digest,
             expected_payload_digest=payload_digest,
             expected_inventory_revision=inventory_revision,
+            expected_idempotency_key_fingerprint=(
+                repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+            ),
         )
     body["mode"] = mode
     return body
@@ -2716,7 +2729,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     repository_inventory_dry_run.add_argument(
         "--payload-file", required=True, help="Private local JSON payload file."
     )
-    repository_inventory_dry_run.add_argument("--idempotency-key", default="")
+    repository_inventory_dry_run.add_argument("--idempotency-key", required=True)
 
     repository_inventory_apply = subparsers.add_parser(
         "repository-inventory-apply",
@@ -2882,11 +2895,15 @@ def main(argv: list[str]) -> int:
             }
             return execute_repository_inventory_read(args=args, request=request)
         if args.command == "repository-inventory-dry-run":
+            _require_idempotency(args)
             body = repository_inventory_payload_body(args, mode="dry_run")
             request = {
                 "mode": "dry_run",
                 "payload_source": "private_file",
                 "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
             }
             return execute_post(
                 args=args,
@@ -2901,6 +2918,9 @@ def main(argv: list[str]) -> int:
                 "mode": "apply",
                 "payload_source": "private_file",
                 "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
             }
             return execute_post(
                 args=args,
