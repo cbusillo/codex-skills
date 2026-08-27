@@ -2363,6 +2363,10 @@ def inspection_lane_context(
     worktree_root = Path(str(lane_context["worktree_root"])).expanduser().resolve()
     if lane.project_path is not None:
         project_path = (worktree_root / lane.project_path).resolve()
+        if project_path != worktree_root and not project_path.is_relative_to(worktree_root):
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath resolves outside the exact worktree after repository preparation: {lane.project_path}"
+            )
         if not project_path.is_dir():
             raise inspection_lane_config_error(
                 f"Inspection lane {lane.lane_id} projectPath must resolve to an existing directory after repository preparation: {lane.project_path}"
@@ -2647,6 +2651,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 )
                 apply_worktree_mutation_blocker(result)
         result["prepared"] = public_payload(prepared)
+        apply_prepared_retry_evidence(result, prepared)
         result["cleanup"] = cleanup
         if cleanup.get("status") == "deferred":
             result["cleanup_deferred"] = True
@@ -2678,6 +2683,19 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 },
             ) from inspection_error
     return result
+
+
+def apply_prepared_retry_evidence(result: dict[str, Any], prepared: dict[str, Any]) -> None:
+    readiness = prepared.get("readiness_barrier")
+    if not isinstance(readiness, dict):
+        return
+    for key in (
+        "internal_retry_count",
+        "internal_retry_reason",
+        "internal_retry_readiness",
+    ):
+        if key in readiness:
+            result[key] = readiness[key]
 
 
 def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
@@ -3174,9 +3192,6 @@ def run_inspection_on_route(args: argparse.Namespace, context: dict[str, Any], r
     if cancellation is not None:
         summary["cancellation"] = cancellation
     summary["status"] = classify_run_status(wait, problems)
-    repository_preparation = context.get("repository_preparation")
-    if isinstance(repository_preparation, dict):
-        summary["repository_preparation"] = repository_preparation
     apply_verdict(summary)
     return summary
 
@@ -4271,20 +4286,12 @@ def wait_until_route_ready_with_prepared_sdk_retry(
         if retry_readiness.get("ready") is not True:
             error.payload["internal_retry_count"] = 0
             error.payload["internal_retry_readiness"] = retry_readiness
-            error.payload["retry_exhausted"] = True
             raise
 
-        try:
-            readiness = wait_until_route_ready(args, context, route, timeout_ms)
-        except InspectError as retry_error:
-            retry_error.payload["internal_retry_count"] = 1
-            retry_error.payload["internal_retry_readiness"] = retry_readiness
-            retry_error.payload["retry_exhausted"] = True
-            raise
+        readiness = dict(retry_readiness)
         readiness["internal_retry_count"] = 1
         readiness["internal_retry_reason"] = "language_sdk_missing"
         readiness["internal_retry_readiness"] = retry_readiness
-        readiness["retry_exhausted"] = False
         return readiness
 
 
@@ -6487,7 +6494,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
 
 def retry_policy_for(verdict: str, bucket: str, reason: str = "") -> dict[str, Any]:
     retry = verdict == "UNKNOWN" and bucket in UNKNOWN_RETRY_BUCKETS
-    max_attempts = 3 if retry and reason in {"project_analysis_not_ready", "language_sdk_missing"} else 1 if retry else 0
+    max_attempts = 3 if retry and reason == "project_analysis_not_ready" else 1 if retry else 0
     return {
         "retry": retry,
         "max_attempts": max_attempts,

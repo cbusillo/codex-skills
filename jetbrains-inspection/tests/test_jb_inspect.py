@@ -1583,6 +1583,48 @@ class InspectionLaneExecutionTest(unittest.TestCase):
 
         self.assertEqual(context["inspection_lanes"][0]["projectPath"], "frontend")
 
+    def test_lane_context_rechecks_project_path_containment_after_preparation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root = base / "repo"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            source = root / "services" / "api" / "app.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("fixture\n", encoding="utf-8")
+            lane = jb_inspect.parse_inspection_lanes(
+                {
+                    "lanes": [
+                        {
+                            "id": "python",
+                            "ide": "PyCharm",
+                            "include": ["services/api/**/*.py"],
+                            "projectPath": "generated-project",
+                        }
+                    ]
+                }
+            )[0]
+            jb_inspect.validate_inspection_lane_project_paths((lane,), root)
+            (root / "generated-project").symlink_to(outside, target_is_directory=True)
+            context = {
+                "repo_path": str(root),
+                "worktree_root": str(root),
+                "project_path": str(root),
+                "exact_route_path": str(root),
+                "lifecycle_target_path": str(root),
+                "scope": "files",
+            }
+            selected = [{"file": "services/api/app.py", "absolute_path": str(source)}]
+            args = helper_args(scope="files", files=[str(source)], max_files=None, profile="")
+            lane_args = jb_inspect.inspection_lane_args(args, lane, selected)
+
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.inspection_lane_context(context, lane_args, lane, selected)
+
+        self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_config_invalid")
+        self.assertIn("after repository preparation", str(raised.exception))
+
     def test_runs_non_empty_lanes_sequentially_with_exact_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -11554,7 +11596,7 @@ class Issue458RegressionTest(unittest.TestCase):
         ]
         self.assertFalse(jb_inspect.prepared_python_sdk_discovery_pending(payload))
 
-    def test_prepared_sdk_retry_waits_and_rechecks_route_once(self):
+    def test_prepared_sdk_retry_waits_for_route_readiness_once(self):
         error = jb_inspect.InspectError(
             "SDK missing",
             3,
@@ -11575,14 +11617,13 @@ class Issue458RegressionTest(unittest.TestCase):
                 },
             },
         }
-        final_readiness = {"status": "ready", "ready": True}
         retry_readiness = {"status": "ready", "ready": True}
 
         with (
             patch.object(
                 jb_inspect,
                 "wait_until_route_ready",
-                side_effect=[error, final_readiness],
+                side_effect=error,
             ) as wait_route,
             patch.object(
                 jb_inspect,
@@ -11597,11 +11638,71 @@ class Issue458RegressionTest(unittest.TestCase):
                 1000,
             )
 
-        self.assertEqual(wait_route.call_count, 2)
+        self.assertEqual(wait_route.call_count, 1)
         wait_retry.assert_called_once()
         self.assertEqual(result["internal_retry_count"], 1)
         self.assertEqual(result["internal_retry_reason"], "language_sdk_missing")
-        self.assertFalse(result["retry_exhausted"])
+
+    def test_prepared_sdk_retry_failure_preserves_sdk_configuration_guidance(self):
+        error = jb_inspect.InspectError(
+            "SDK missing",
+            3,
+            {"error_reason": "language_sdk_missing"},
+        )
+        context = {
+            "worktree_root": "/tmp/repo",
+            "project_path": "/tmp/repo/services/api",
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                "target_worktree": "/tmp/repo",
+                "generated_state_snapshot": {
+                    "all_present": True,
+                    "paths": [
+                        {"path": "services/api/.venv", "exists": True, "kind": "directory"}
+                    ],
+                },
+            },
+        }
+
+        with (
+            patch.object(jb_inspect, "wait_until_route_ready", side_effect=error),
+            patch.object(
+                jb_inspect,
+                "wait_for_internal_retry_readiness",
+                return_value={"status": "timeout", "ready": False},
+            ),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.wait_until_route_ready_with_prepared_sdk_retry(
+                    helper_args(),
+                    context,
+                    {"port": 63343},
+                    1000,
+                )
+
+        payload = jb_inspect.error_payload(raised.exception, helper_args())
+        jb_inspect.apply_verdict(payload)
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("Configure the selected files' language SDK", payload["verdict_next_action"])
+        self.assertEqual(payload["internal_retry_count"], 0)
+
+    def test_prepared_retry_evidence_is_promoted_to_top_level_result(self):
+        result = {}
+        retry_readiness = {"status": "ready", "ready": True}
+        prepared = {
+            "readiness_barrier": {
+                "internal_retry_count": 1,
+                "internal_retry_reason": "language_sdk_missing",
+                "internal_retry_readiness": retry_readiness,
+            }
+        }
+
+        jb_inspect.apply_prepared_retry_evidence(result, prepared)
+
+        self.assertEqual(result["internal_retry_count"], 1)
+        self.assertEqual(result["internal_retry_reason"], "language_sdk_missing")
+        self.assertEqual(result["internal_retry_readiness"], retry_readiness)
 
     def test_prepared_sdk_retry_does_not_use_root_venv_for_nested_project(self):
         error = jb_inspect.InspectError(
