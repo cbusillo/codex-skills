@@ -68,14 +68,6 @@ EXPECTED_OPERATION_CONTRACTS = {
         "idempotency": "none",
         "reviewed_evidence": [],
     },
-    "read_authz_activation_preflight": {
-        "method": "POST",
-        "purpose": "Read bounded authorization activation preflight evidence for one GitHub human.",
-        "supported_surfaces": ["agent_helper", "operator_cli", "read_only_service"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
     "evaluate_agent_write_intent": {
         "method": "POST",
         "purpose": "Evaluate a bounded agent write intent before mutation.",
@@ -168,10 +160,6 @@ EXPECTED_OPERATION_CONTRACTS = {
 
 PROJECTED_HELPER_COMMANDS = {
     "agent-context": ("read_agent_context", ("read",)),
-    "authz-activation-preflight-read": (
-        "read_authz_activation_preflight",
-        ("read",),
-    ),
     "product-config-preflight": (
         "evaluate_agent_write_intent",
         ("preflight",),
@@ -195,6 +183,16 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "merge-train-policy-import-dry-run": {
+        "method": "POST",
+        "path": "/v1/merge-train/policies/import",
+        "mode": "dry-run",
+    },
+    "merge-train-policy-import-apply": {
+        "method": "POST",
+        "path": "/v1/merge-train/policies/import",
+        "mode": "apply",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",
@@ -204,6 +202,13 @@ LOCAL_EXTENSION_ROUTES = {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/apply",
         "mode": "apply",
+    },
+}
+
+INTERNAL_HELPER_ROUTES = {
+    "merge-train-policy-targets-read": {
+        "method": "GET",
+        "path": "/v1/work-graph/merge-train/policy-targets",
     },
 }
 
@@ -407,6 +412,10 @@ def _validate_helper_bindings(
         route = (extension["method"], extension["path"])
         if route in projected_routes:
             raise ContractError("local_extension_now_projected")
+    for internal_route in INTERNAL_HELPER_ROUTES.values():
+        route = (internal_route["method"], internal_route["path"])
+        if route in projected_routes:
+            raise ContractError("internal_helper_route_now_projected")
 
 
 def _protected_workflow_map(
@@ -553,6 +562,7 @@ def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
         **summary,
         "projected_helper_command_count": len(PROJECTED_HELPER_COMMANDS),
         "local_extension_count": len(LOCAL_EXTENSION_ROUTES),
+        "internal_helper_route_count": len(INTERNAL_HELPER_ROUTES),
         "hermetic_only": True,
         "upstream_freshness_proven": False,
     }
@@ -591,3 +601,10 @@ def helper_command_path(command: str) -> str:
     if extension is not None:
         return extension["path"]
     raise ContractError("unknown_helper_command")
+
+
+def internal_helper_path(name: str) -> str:
+    try:
+        return INTERNAL_HELPER_ROUTES[name]["path"]
+    except KeyError:
+        raise ContractError("unknown_internal_helper_route") from None
