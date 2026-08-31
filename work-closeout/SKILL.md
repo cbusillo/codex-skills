@@ -72,22 +72,50 @@ preserved, or intentionally left in place.
    current, but it does not reclassify or retry the confirmed merge.
 
    For a checkout that is not runtime-bound, if the active branch is clean and
-   behind its configured upstream, run `git pull --ff-only` before final
-   closeout and re-check status. Do this only for clean fast-forwardable
-   branches. If the branch is dirty, ahead, diverged, lacks an upstream, or the
-   fast-forward fails, do not pull further; report the state and next safe action.
+   behind its configured upstream, fetch and resolve the fetched upstream to an
+   immutable `upstream_sha`. Fail closed on an active Git operation, prove the
+   branch is strictly behind that commit without divergence, and fast-forward
+   with `git -c core.hooksPath=/dev/null merge --ff-only --no-autostash
+   --no-overwrite-ignore "$upstream_sha"`. Re-check that `HEAD` equals the pinned
+   commit and status remains clean. If the branch is dirty, ahead, diverged,
+   lacks an upstream, or any proof or fast-forward fails, do not mutate it;
+   report the state and next safe action.
+
+   Do not broaden automatic closeout mutation for a dirty checkout. When the
+   user explicitly requests this specific fast-forward, a non-runtime default
+   checkout that is dirty only because of untracked, non-ignored files may use a
+   bounded exception. First fetch and resolve the fetched upstream to an
+   immutable `upstream_sha`. Prove the tracked index and worktree are clean and
+   fail closed if `git status` reports an operation or if any path returned by
+   `git rev-parse --git-path` for `MERGE_HEAD`, `CHERRY_PICK_HEAD`,
+   `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`,
+   `BISECT_LOG`, or `BISECT_START` exists. Confirm the branch is strictly behind
+   `upstream_sha` without divergence; for post-merge reconciliation, also prove
+   the final landing SHA is on its first-parent history. Enumerate every
+   untracked path and snapshot each path's file type and content hash. Use that
+   same `upstream_sha` for ancestry, the incoming-diff collision check, and the
+   merge; never merge the moving `@{upstream}` ref. Refuse any exact, ancestor,
+   or descendant path collision. Then fast-forward with hooks and autostash
+   disabled using `git -c core.hooksPath=/dev/null merge --ff-only
+   --no-autostash --no-overwrite-ignore "$upstream_sha"`. Re-check that `HEAD`
+   equals `upstream_sha`, status still has no tracked changes, and every
+   untracked fingerprint matches its preflight value. Any tracked change,
+   ambiguous path, changed fingerprint, runtime binding, or failed proof
+   remains report-only.
 
    After merged work performed from a task branch, also inspect the repository's
    unique local default-branch worktree as a closeout backstop. If it is
    runtime-bound, route it through the landed runtime reconciler. Otherwise,
    fast-forward it only when it is clean, still on the default branch, shares the
    merged worktree's Git common directory and expected GitHub identity, and is
-   strictly behind its configured upstream. Require the confirmed final landing
-   SHA on the fetched upstream's first-parent history, fast-forward with hooks and
-   autostash disabled, then verify `HEAD` equals the upstream and contains that
-   landing SHA. Leave unsafe, ambiguous, or unverified state untouched and
-   report: `Local default checkout remains stale; fast-forward it before
-   default-branch work or audits.` The active task worktree remains the
+   strictly behind its configured upstream. Fetch and resolve the fetched
+   upstream to an immutable `upstream_sha`; use that same commit for the ancestry
+   check, the confirmed final landing SHA first-parent proof, and `git -C <path>
+   -c core.hooksPath=/dev/null merge --ff-only --no-autostash
+   --no-overwrite-ignore "$upstream_sha"`. Verify `HEAD` equals `upstream_sha` and
+   contains that landing SHA. Leave unsafe, ambiguous, or unverified state
+   untouched and report: `Local default checkout remains stale; fast-forward it
+   before default-branch work or audits.` The active task worktree remains the
    authoritative agent source; do not replace it with the refreshed default
    checkout when handing off or resuming work. If the active checkout is already
    that unique default worktree, the preceding active branch check is sufficient;
@@ -361,11 +389,12 @@ handoff.
 - Do not run destructive git commands.
 - Do not force-delete branches or worktrees.
 - If `git status --short --branch` shows a clean non-runtime-bound branch behind
-  its upstream, fast-forward it with `git pull --ff-only` before saying the
+  its upstream, use the pinned fetched-upstream flow above before saying the
   checkout is tidy. Runtime-bound checkouts must use the landed repo-local
   reconciler instead. Treat dirty, ahead, diverged, missing-upstream, or failed
-  fast-forward states as report-only unless the user explicitly asks for a
-  specific git action.
+  fast-forward states as report-only by default. An explicit user request permits
+  only the bounded untracked-only exception above; it is not blanket approval to
+  overwrite, stash, clean, or include unrelated files.
 - When the user asks to delete or remove a worktree, first preserve or confirm
   disposal of any uncommitted changes. Removing a worktree is not approval to
   lose its branch or local edits.

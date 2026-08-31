@@ -750,15 +750,16 @@ invocation rules.
   repository's unique local default-branch worktree when one exists. If it is
   already the active checkout, assess it once rather than running a second refresh
   pass. If it is runtime-bound, use the landed runtime reconciler above.
-  Otherwise, fetch its configured upstream and fast-forward it only when it is
-  clean, still on the configured default branch, shares the merged worktree's Git
-  common directory and expected GitHub identity, and its current tip is an
-  ancestor of the fetched upstream. Before mutation, require the exact final
-  landing SHA to exist and appear on the fetched upstream's first-parent history.
-  Fast-forward with hooks and autostash disabled, for example
+  Otherwise, fetch its configured upstream, resolve the result to an immutable
+  `upstream_sha`, and fast-forward it only when it is clean, still on the
+  configured default branch, shares the merged worktree's Git common directory
+  and expected GitHub identity, and its current tip is an ancestor of that pinned
+  commit. Before mutation, require the exact final landing SHA to exist and appear
+  on `upstream_sha`'s first-parent history. Use the same commit for every proof and
+  the hook-disabled, no-autostash fast-forward:
   `git -C <path> -c core.hooksPath=/dev/null merge --ff-only --no-autostash
-  --no-overwrite-ignore @{upstream}`, rather than switching the active task
-  worktree or using a generic pull. Re-check that `HEAD` equals the upstream and
+  --no-overwrite-ignore "$upstream_sha"`, rather than switching the active task
+  worktree or using a generic pull. Re-check that `HEAD` equals `upstream_sha` and
   contains the landing SHA afterward. Never reset, stash, clean, or overwrite an
   unsafe checkout. If it is dirty, ahead, diverged, detached, ambiguous, lacks a
   usable upstream, or cannot prove the landing SHA, leave it untouched and report
@@ -766,6 +767,25 @@ invocation rules.
   before default-branch work or audits.` The active task worktree remains the
   authoritative agent source; this post-merge refresh must never silently replace
   it with the default branch or a remote ref.
+
+  A dirty checkout remains an automatic-refresh blocker. If the user explicitly
+  requests this specific fast-forward, a non-runtime default checkout that is
+  dirty only because of untracked, non-ignored files may use a bounded exception.
+  Fetch and resolve the fetched upstream to an immutable `upstream_sha`. Prove
+  the tracked index and worktree are clean and fail closed if `git status`
+  reports an operation or if any path returned by `git rev-parse --git-path` for
+  `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
+  `rebase-apply`, `sequencer`, `BISECT_LOG`, or `BISECT_START` exists. Prove the
+  branch is strictly behind `upstream_sha` without divergence and the exact
+  landing SHA is on its first-parent history. Enumerate the untracked paths and
+  snapshot each path's file type and content hash. Use that same `upstream_sha`
+  for ancestry, the incoming-diff collision check, and the merge; never merge
+  the moving `@{upstream}` ref. Refuse any exact, ancestor, or descendant path
+  collision. Run `git -C <path> -c core.hooksPath=/dev/null merge --ff-only
+  --no-autostash --no-overwrite-ignore "$upstream_sha"`, then prove `HEAD` equals
+  `upstream_sha`, status still has no tracked changes, and every untracked
+  fingerprint matches its preflight value. Any failed or ambiguous proof remains
+  report-only; never stash, clean, add, or overwrite the unrelated files.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
   releasable, or otherwise clean, check background auto-review evidence when it
   is available in the session context or repo tooling. First match each review

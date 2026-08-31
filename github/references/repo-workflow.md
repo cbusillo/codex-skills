@@ -495,18 +495,44 @@ rule for agents. The active task worktree remains the authoritative agent source
 - Otherwise, verify the checkout shares the source repository's Git common
   directory and expected GitHub identity, remains clean and on the default
   branch, has a configured upstream, and is behind without being ahead or
-  diverged. Fetch the configured upstream without switching worktrees. Require
-  the exact final landing SHA to exist and appear on the fetched upstream's
-  first-parent history before mutation. Then fast-forward with hooks and
-  autostash disabled, for example `git -C <path> -c core.hooksPath=/dev/null
-  merge --ff-only --no-autostash --no-overwrite-ignore @{upstream}`.
-- Re-check that the default checkout is clean, `HEAD` equals its upstream, and
+  diverged. Fetch the configured upstream without switching worktrees and resolve
+  it to an immutable `upstream_sha`. Require the exact final landing SHA to exist
+  and appear on that pinned commit's first-parent history before mutation. Use
+  the same commit for every proof and the hook-disabled, no-autostash
+  fast-forward: `git -C <path> -c core.hooksPath=/dev/null merge --ff-only
+  --no-autostash --no-overwrite-ignore "$upstream_sha"`.
+- Re-check that the default checkout is clean, `HEAD` equals `upstream_sha`, and
   the final `HEAD` contains the exact landing SHA. A fetch or fast-forward that
   does not prove those postconditions is not a successful refresh.
 - If no unique default checkout exists, or it is dirty, ahead, diverged,
   detached, ambiguous, missing its upstream, or cannot fast-forward, do not
   switch, reset, stash, clean, or overwrite it. Report: `Local default checkout
   remains stale; fast-forward it before default-branch work or audits.`
+
+A dirty checkout is never eligible for automatic refresh. If the user explicitly
+requests this specific fast-forward, a non-runtime default checkout that is dirty
+only because of untracked, non-ignored files may use a bounded exception:
+
+1. Fetch the configured upstream and resolve the fetched upstream to an immutable
+   `upstream_sha`. Prove the branch is strictly behind that commit without
+   divergence and the final landing SHA is on its first-parent history.
+2. Prove the tracked index and worktree are clean. Fail closed if `git status`
+   reports an operation or if any path returned by `git rev-parse --git-path` for
+   `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
+   `rebase-apply`, `sequencer`, `BISECT_LOG`, or `BISECT_START` exists.
+3. Enumerate every untracked path and snapshot its file type and content hash.
+4. Use that same `upstream_sha` for ancestry, the incoming-diff collision check,
+   and the merge; never merge the moving `@{upstream}` ref. Refuse any exact,
+   ancestor, or descendant path collision.
+5. Fast-forward with `git -C <path> -c core.hooksPath=/dev/null merge --ff-only
+   --no-autostash --no-overwrite-ignore "$upstream_sha"`.
+6. Prove `HEAD` equals `upstream_sha`, status still has no tracked changes, and
+   every untracked fingerprint matches its preflight value. Treat any changed or
+   ambiguous artifact as a failed local refresh without undoing the remote merge.
+
+The explicit request is not permission to stash, clean, stage, overwrite, or
+include unrelated files. Runtime-bound checkouts remain ineligible and must use
+their landed reconciler.
 
 Keep this local-default result separate from the confirmed GitHub merge receipt.
 A blocked local refresh does not undo or retry the merge, and it must never cause

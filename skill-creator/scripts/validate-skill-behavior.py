@@ -1266,16 +1266,19 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "GitHub must bind local default refresh to the merged repository",
     )
     require(
-        "require the exact final landing sha to exist and appear on the fetched upstream's first-parent history"
+        "require the exact final landing sha to exist and appear" in github_text
+        and "`upstream_sha`'s first-parent history" in github_text
+        and "re-check that `head` equals `upstream_sha` and contains the landing sha afterward"
         in github_text
-        and "re-check that `head` equals the upstream and contains the landing sha afterward"
-        in github_text
+        and "`head` equals `upstream_sha`" in repo_workflow_text
         and "the final `head` contains the exact landing sha" in repo_workflow_text,
         "Default-checkout refresh must prove the exact landing SHA before and after mutation",
     )
     require(
         "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
         in github_text
+        and "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
+        in closeout_text
         and "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
         in repo_workflow_text,
         "Default-checkout refresh must disable hooks and autostash while remaining ff-only",
@@ -1298,6 +1301,62 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     require(
         "the preceding active branch check is sufficient; do not pull it twice" in closeout_text,
         "work-closeout must avoid double-processing an active default checkout",
+    )
+    operation_markers = (
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+        "BISECT_LOG",
+        "BISECT_START",
+    )
+    for skill_name, text in (
+        ("github", github_text),
+        ("work-closeout", closeout_text),
+        ("repo-workflow", repo_workflow_text),
+    ):
+        require(
+            "explicitly requests this specific fast-forward" in text
+            and "dirty only because of untracked, non-ignored files" in text,
+            f"{skill_name} must limit dirty default-checkout refresh to explicit untracked-only requests",
+        )
+        require(
+            "exact, ancestor, or descendant path collision" in text,
+            f"{skill_name} must reject incoming path collisions with preserved untracked files",
+        )
+        require(
+            "file type and content hash" in text,
+            f"{skill_name} must fingerprint preserved untracked files before fast-forward",
+        )
+        require(
+            "resolve the fetched upstream to an immutable" in text
+            and "never merge the moving `@{upstream}` ref" in text,
+            f"{skill_name} must pin the fetched upstream before collision checks and merge",
+        )
+        require(
+            all(marker.lower() in text for marker in operation_markers),
+            f"{skill_name} must fail closed for active Git operation state",
+        )
+        require(
+            '"$upstream_sha"' in text
+            and "matches its preflight value" in text,
+            f"{skill_name} must merge the pinned commit and recheck preserved fingerprints",
+        )
+        require(
+            not any(
+                "merge" in snippet and "@{upstream}" in snippet
+                for snippet in re.findall(r"`([^`]+)`", text)
+            ),
+            f"{skill_name} must never use a moving upstream ref as a merge operand",
+        )
+    require(
+        "--ff-only --no-autostash --no-overwrite-ignore" in closeout_text
+        and "--ff-only --no-autostash --no-overwrite-ignore" in github_text
+        and "--ff-only --no-autostash --no-overwrite-ignore" in repo_workflow_text,
+        "Explicit untracked-only refresh must remain hook-safe, ff-only, and no-autostash",
     )
     require(
         "a missing or mismatched revision makes the installed-runtime claim `unknown`" in inspection_text,
