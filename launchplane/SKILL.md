@@ -65,6 +65,54 @@ commands:
     example_argv:
       ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
     purpose: Reads Launchplane context through the structural helper.
+  - name: launchplane-repository-inventory-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "repository-inventory-read",
+        "--repository-id",
+        "<repository-id>",
+      ]
+    purpose: Reads bounded current repository inventory metadata through the deployed service.
+  - name: launchplane-repository-inventory-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "repository-inventory-dry-run",
+        "--payload-file",
+        "<private-file>",
+        "--idempotency-key",
+        "<stable-key>",
+      ]
+    purpose: Dry-runs an exact private repository inventory revision and emits review-bound redacted evidence.
+  - name: launchplane-repository-inventory-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "repository-inventory-apply",
+        "--payload-file",
+        "<private-file>",
+        "--idempotency-key",
+        "<key>",
+        "--reviewed-dry-run",
+        "--expected-inventory-digest",
+        "<dry-run-digest>",
+        "--dry-run-evidence-file",
+        "<private-dry-run-output>",
+      ]
+    purpose: Applies only an exact reviewed repository inventory revision with payload, digest, and idempotency binding.
   - name: launchplane-product-config-preflight
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -305,6 +353,57 @@ policy:
               "<active-policy-digest>",
             ]
           purpose: Dry-runs explicit operator policy input after active-policy digest preflight.
+    - id: prefer-launchplane-helper-for-repository-inventory-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/repository-inventory(?:/apply)?\\b"
+      action: require_preferred
+      message: Raw Launchplane repository-inventory calls bypass helper-owned private-file, reviewed evidence, idempotency, redaction, and trace discipline. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "repository-inventory-read",
+              "--repository-id",
+              "<repository-id>",
+            ]
+          purpose: Reads bounded current repository inventory metadata through the deployed service.
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "repository-inventory-dry-run",
+              "--payload-file",
+              "<private-file>",
+              "--idempotency-key",
+              "<stable-key>",
+            ]
+          purpose: Dry-runs exact private inventory input through the bounded helper.
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "repository-inventory-apply",
+              "--payload-file",
+              "<private-file>",
+              "--idempotency-key",
+              "<key>",
+              "--reviewed-dry-run",
+              "--expected-inventory-digest",
+              "<dry-run-digest>",
+              "--dry-run-evidence-file",
+              "<private-dry-run-output>",
+            ]
+          purpose: Applies only the exact reviewed inventory payload through the bounded helper.
     - id: prefer-launchplane-write-helper-for-generic-web-deploy-recovery-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/admin/generic-web/deploy-recovery/(dry-run|apply)\\b"
@@ -824,7 +923,8 @@ verification.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
-  import, and merge-train controller calls.
+  import, repository inventory read/dry-run/apply, and merge-train controller
+  calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -848,6 +948,11 @@ verification.
 - `GET /v1/work-graph/merge-train/policy-targets`: Internal bounded preflight
   read used immediately before policy import to verify the expected active
   policy digest. It is not an independently exposed helper command.
+- `GET /v1/repository-inventory`: Bounded current repository inventory read for
+  exact immutable GitHub repository identity.
+- `POST /v1/repository-inventory/apply`: Repository inventory dry-run/apply
+  route. Use private payload files; apply requires reviewed helper evidence,
+  inventory digest binding, and a stable idempotency key.
 - `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
   deploy-recovery dry-run path; always run before apply and capture the
   `recovery_digest` from the redacted result.

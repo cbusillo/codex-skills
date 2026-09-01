@@ -99,11 +99,11 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     artifact = contract_artifact()
     summary = contract.validate_contract(artifact)
     assert summary["semantic_digest_sha256"] == (
-        "0e3ccd92254ec9ada21a9596231cb0f8c4403ef79dc65792c4af52e0d0195c24"
+        "9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5"
     )
     assert summary["operation_count"] == 12
     assert summary["protected_workflow_count"] == 4
-    assert summary["local_extension_count"] == 4
+    assert summary["local_extension_count"] == 7
     assert summary["internal_helper_route_count"] == 1
     assert summary["hermetic_only"] is True
     assert summary["upstream_freshness_proven"] is False
@@ -194,6 +194,186 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
         assert '"/v1/' not in helper_source
 
 
+def test_repository_inventory_review_evidence_binds_exact_private_payload() -> None:
+    inventory_digest = "a" * 64
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "repository-inventory.json"
+        evidence_path = Path(directory) / "repository-inventory-dry-run.json"
+        payload = {
+            "schema_version": 1,
+            "expected_current_record_id": "",
+            "record": {
+                "schema_version": 1,
+                "record_id": "repository-inventory-1001-r1",
+                "repository_id": "1001",
+                "repository_owner_id": "2001",
+                "repository": "example/repository",
+                "inventory_state": "tracked",
+                "inventory_revision": 1,
+                "recorded_at": "2026-08-26T00:00:00Z",
+                "source": "operator",
+                "reason": "issue-backed inventory",
+                "supersedes_record_id": None,
+                "inventory_digest": "",
+            },
+        }
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        idempotency_key = "repository-inventory-example-1"
+        idempotency_key_fingerprint = (
+            write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+        )
+        dry_run_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key=idempotency_key,
+        )
+        dry_run_body = write_action.repository_inventory_payload_body(
+            dry_run_args, mode="dry_run"
+        )
+        payload_digest = write_action.repository_inventory_review_digest(dry_run_body)
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "status": "ok",
+                    "provider": "launchplane",
+                    "operation": "repository-inventory-dry-run",
+                    "request": {
+                        "mode": "dry_run",
+                        "payload_source": "private_file",
+                        "payload_digest": payload_digest,
+                        "idempotency_key_fingerprint": idempotency_key_fingerprint,
+                    },
+                    "result": {
+                        "status": "would_apply",
+                        "mode": "dry_run",
+                        "inventory_revision": 1,
+                        "record_id": "repository-inventory-1001-r1",
+                        "inventory_digest": inventory_digest,
+                        "supersedes_record_id": None,
+                        "applied_at": "2026-08-26T00:00:01Z",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key=idempotency_key,
+            reviewed_dry_run=True,
+            expected_inventory_digest=inventory_digest,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        apply_body = write_action.repository_inventory_payload_body(
+            apply_args, mode="apply"
+        )
+        assert apply_body["mode"] == "apply"
+
+        apply_args.idempotency_key = "repository-inventory-example-2"
+        try:
+            write_action.repository_inventory_payload_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("changed idempotency key must invalidate dry-run evidence")
+        apply_args.idempotency_key = idempotency_key
+
+        payload["expected_current_record_id"] = "repository-inventory-1001-r0"
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            write_action.repository_inventory_payload_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("changed inventory payload must invalidate dry-run evidence")
+
+
+def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
+    record = {
+        "schema_version": 1,
+        "record_id": "repository-inventory-1001-r1",
+        "repository_id": "1001",
+        "repository_owner_id": "2001",
+        "repository": "example/repository",
+        "inventory_state": "tracked",
+        "inventory_revision": 1,
+        "recorded_at": "2026-08-26T00:00:00Z",
+        "source": "operator",
+        "reason": "issue-backed inventory",
+        "supersedes_record_id": None,
+        "inventory_digest": "a" * 64,
+    }
+    read_payload = write_action.summarize_repository_inventory_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "ok",
+            "trace_id": "launchplane_req_inventory_read",
+            "read_model": {
+                "schema_version": 1,
+                "status": "available",
+                "repository_id": "1001",
+                "current_record": record,
+                "history_count": 1,
+                "generated_at": "2026-08-26T00:00:01Z",
+            },
+        },
+    )
+    rendered = json.dumps(read_payload)
+    assert "example/repository" not in rendered
+    assert "repository_owner_id" not in rendered
+    assert "issue-backed inventory" not in rendered
+    assert read_payload["result"]["current_record"]["record_id"] == (
+        "repository-inventory-1001-r1"
+    )
+
+    idempotency_key = "repository-inventory-example-1"
+    idempotency_key_fingerprint = (
+        write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+    )
+    assert idempotency_key not in idempotency_key_fingerprint
+    assert idempotency_key_fingerprint.startswith("sha256:")
+    assert len(idempotency_key_fingerprint) == 71
+
+    provider_payload = {
+        "status": "ok",
+        "trace_id": "launchplane_req_inventory_apply",
+        "result": {
+            "schema_version": 1,
+            "status": "applied",
+            "mode": "apply",
+            "repository_id": "1001",
+            "inventory_revision": 1,
+            "record_id": "repository-inventory-1001-r1",
+            "inventory_digest": "a" * 64,
+            "supersedes_record_id": None,
+            "applied_at": "2026-08-26T00:00:01Z",
+        },
+    }
+    apply_payload = write_action.summarize_success(
+        operation="repository-inventory-apply",
+        request={
+            "mode": "apply",
+            "payload_source": "private_file",
+            "idempotency_key_fingerprint": idempotency_key_fingerprint,
+        },
+        provider_payload=provider_payload,
+    )
+    assert "repository_id" not in apply_payload["result"]
+    assert apply_payload["request"]["idempotency_key_fingerprint"] == (
+        idempotency_key_fingerprint
+    )
+    provider_payload["result"]["repository"] = "example/repository"
+    try:
+        write_action.summarize_success(
+            operation="repository-inventory-apply",
+            request={"mode": "apply", "payload_source": "private_file"},
+            provider_payload=provider_payload,
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("unexpected inventory response fields must fail closed")
+
+
 def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
     result = run_helper("check-agent-operator-contract.py", [])
     assert result["returncode"] == 0
@@ -268,6 +448,18 @@ def _merge_train_policy_targets_payload(
     }
 
 
+def _merge_train_policy_targets_projection(
+    *, policy_sha256: str = "a" * 64
+) -> dict[str, object]:
+    return {
+        "record_id": f"merge-train-policy-current-{policy_sha256[:12]}",
+        "updated_at": "2026-08-29T20:00:00Z",
+        "policy_sha256": policy_sha256,
+        "target_count": 1,
+        "trace_id": "launchplane_req_policy_targets",
+    }
+
+
 def _merge_train_policy_import_response(
     *,
     mode: str = "dry_run",
@@ -306,9 +498,6 @@ def _merge_train_policy_import_response(
 
 
 def _merge_train_policy_dry_run_evidence() -> dict[str, object]:
-    current_policy = write_action._project_merge_train_policy_targets(
-        _merge_train_policy_targets_payload()
-    )
     return write_action.summarize_merge_train_policy_import_success(
         operation="merge-train-policy-import-dry-run",
         request={
@@ -317,7 +506,7 @@ def _merge_train_policy_dry_run_evidence() -> dict[str, object]:
             "expected_current_policy_sha256": "a" * 64,
             "candidate_policy_sha256": "c" * 64,
         },
-        current_policy=current_policy,
+        current_policy=_merge_train_policy_targets_projection(),
         provider_payload=_merge_train_policy_import_response(),
         expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
         expected_policy_sha256="c" * 64,
@@ -345,8 +534,14 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
     assert candidate_digest == "c" * 64
 
     evidence = _merge_train_policy_dry_run_evidence()
-    assert evidence["result"]["current_policy"]["target_count"] == 1
-    assert evidence["result"]["candidate"]["target_count"] == 1
+    evidence_result = evidence["result"]
+    assert isinstance(evidence_result, dict)
+    current_policy = evidence_result["current_policy"]
+    candidate = evidence_result["candidate"]
+    assert isinstance(current_policy, dict)
+    assert isinstance(candidate, dict)
+    assert current_policy["target_count"] == 1
+    assert candidate["target_count"] == 1
     rendered = json.dumps(evidence)
     for private_value in (
         "private-owner/private-repository",
@@ -367,9 +562,7 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
         write_action.summarize_merge_train_policy_import_success(
             operation="merge-train-policy-import-dry-run",
             request={"mode": "dry_run"},
-            current_policy=write_action._project_merge_train_policy_targets(
-                _merge_train_policy_targets_payload()
-            ),
+            current_policy=_merge_train_policy_targets_projection(),
             provider_payload=malformed,
             expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
             expected_policy_sha256="c" * 64,
@@ -427,7 +620,11 @@ def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
                 raise AssertionError(f"expected {expected_code}")
 
         mismatched_evidence = _merge_train_policy_dry_run_evidence()
-        mismatched_evidence["result"]["current_policy"]["policy_sha256"] = "b" * 64
+        mismatched_result = mismatched_evidence["result"]
+        assert isinstance(mismatched_result, dict)
+        mismatched_current_policy = mismatched_result["current_policy"]
+        assert isinstance(mismatched_current_policy, dict)
+        mismatched_current_policy["policy_sha256"] = "b" * 64
         evidence_path.write_text(json.dumps(mismatched_evidence), encoding="utf-8")
         try:
             write_action.merge_train_policy_import_body(args, mode="apply")
@@ -2339,6 +2536,8 @@ def main() -> int:
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,
+        test_repository_inventory_review_evidence_binds_exact_private_payload,
+        test_repository_inventory_projection_is_bounded_and_fail_closed,
         test_agent_operator_contract_cli_is_public_safe_and_hermetic,
         test_merge_train_policy_import_body_projection_and_redaction,
         test_merge_train_policy_import_apply_requires_bound_evidence,

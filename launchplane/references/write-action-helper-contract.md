@@ -13,10 +13,11 @@ public-safety, operation semantics, protected workflows, invariant coverage, and
 helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
-Merge-train policy import and generic-web deploy recovery are intentionally
-listed as bounded local extensions because their routes are not in the current
-upstream projection. The conformance gate fails if those routes later appear
-upstream so migration cannot leave duplicate route authorities behind.
+Merge-train policy import, repository inventory, and generic-web deploy
+recovery are intentionally listed as bounded local extensions because their
+routes are not in the current upstream projection. The conformance gate fails
+if those routes later appear upstream so migration cannot leave duplicate route
+authorities behind.
 
 The helper lives at `scripts/launchplane-write-action.py`.
 
@@ -269,6 +270,57 @@ trace metadata. Unexpected response fields fail closed. An unreadable or unsafe
 successful apply response is `accepted_unverified`; transport failure after the
 apply POST begins is `outcome_unknown`. Both require active-policy read-back
 before any retry.
+## Repository Inventory
+
+Repository inventory is an inert, append-only identity stream. Use the deployed
+service through the bounded helper; never substitute direct database writes,
+raw HTTP calls, checked-in catalogs, or workflow-owned authority. Write payloads
+must be explicit private JSON files outside the active repository or worktree.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-read \
+  --repository-id <repository-id>
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-dry-run \
+  --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
+  > /private/path/repository-inventory-dry-run.json
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-apply \
+  --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
+  --reviewed-dry-run \
+  --expected-inventory-digest <inventory-digest-from-dry-run> \
+  --dry-run-evidence-file /private/path/repository-inventory-dry-run.json
+```
+
+The helper overrides only `mode`. The dry-run output includes a SHA-256
+`request.payload_digest` over the complete private envelope with `mode` removed,
+so apply can prove that the reviewed payload, including
+`expected_current_record_id`, is unchanged. Dry-run and apply require the same
+stable idempotency key. Both evidence envelopes include only its
+`sha256:` fingerprint, and apply rejects reviewed dry-run evidence whose
+fingerprint does not match the apply key. Apply also requires explicit reviewed
+acknowledgement, the server-derived inventory digest, and the saved redacted
+dry-run output. Missing, malformed, stale, mismatched, or non-`would_apply`
+evidence fails locally before any service request. If the private record already
+embeds an inventory digest, it must match the reviewed digest exactly.
+
+Public-safe output omits repository name, owner ID, source, reason, raw payload,
+payload path, query ID, raw idempotency key, service URL, and authorization
+headers. It may emit the redacted idempotency-key fingerprint, append-only record ID, inventory state/revision/digest,
+superseded record ID, timestamps, history count, and trace metadata required for
+the next exact revision. Unexpected response fields fail closed. If apply
+receives HTTP success but the response cannot be safely projected, the helper
+reports `accepted_unverified`; read back the current record and do not retry
+until the outcome is known.
+
+An `authorization_denied` response is an authority or capability gap. Preserve
+the trace and route the blocked work to the owning authorization redesign; do
+not add a grant, borrow workflow identity, or use a raw API fallback.
 
 ## Generic-Web Deploy Recovery
 
@@ -423,6 +475,10 @@ provider dictionary pass-through:
 - `merge-train-policy-import-dry-run` and
   `merge-train-policy-import-apply` may emit only active-policy identity and
   digest, candidate record identity, digest, status, target count, replay state,
+  and trace metadata.
+- `repository-inventory-read`, `repository-inventory-dry-run`, and
+  `repository-inventory-apply` may emit only bounded append status, record IDs,
+  state/revision/digest metadata, timestamps, history count, request digest,
   and trace metadata.
 
 The projections recognize the current service envelopes, including idempotent

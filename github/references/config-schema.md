@@ -35,7 +35,8 @@ Repo-local values override workspace defaults.
           "id": "python",
           "ide": "PyCharm",
           "required": true,
-          "include": ["**/*.py"],
+          "projectPath": "services/python",
+          "include": ["services/python/**/*.py"],
           "exclude": ["test-fixtures/inspection-red-lane-*/**"]
         }
       ]
@@ -274,7 +275,9 @@ Common top-level keys:
   the command manually, and `--force-preparation` to refresh a valid receipt.
   For mixed-language repositories, use ordered `lanes` instead of `ide`.
   Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;
-  `required` defaults to `true`, and `exclude` defaults to an empty array.
+  `required` defaults to `true`, `exclude` defaults to an empty array, and an
+  optional repository-relative `projectPath` routes the lane to a nested IDE
+  project. Selected files must remain inside that project directory.
   Patterns are repository-relative POSIX globs. The first lane whose `include`
   matches owns the file; a matching `exclude` removes that file from ordinary
   changed-file, directory, or whole-project readiness instead of allowing it to

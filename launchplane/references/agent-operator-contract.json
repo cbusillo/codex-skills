@@ -311,7 +311,7 @@
       {
         "idempotency": "apply",
         "identity_dependencies": [
-          "read_bearer_identity"
+          "read_identity"
         ],
         "method": "POST",
         "modes": [
@@ -332,7 +332,7 @@
         "reviewed_evidence": [
           "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "e514cae0e2697f860a1133c65beadfd06d24957e09095ced96089951b5482846",
+        "schema_fingerprint_sha256": "cceb3475fadd7ffc8a9075a1a770b665cc347f06da5c56cb7533067d797cf6b2",
         "supported_surfaces": [
           "protected_workflow",
           "operator_ui",
@@ -423,8 +423,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "ee702a5991e76ba5eacd8c7f34655c72a59d8051"
+    "source_commit_sha": "2494668205388a7d70f1a9e74bd4af300854fd20"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "0e3ccd92254ec9ada21a9596231cb0f8c4403ef79dc65792c4af52e0d0195c24"
+  "semantic_digest_sha256": "9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5"
 }
