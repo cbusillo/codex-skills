@@ -138,6 +138,19 @@ commands:
         "operator-config-diagnostic",
       ]
     purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
+  - name: launchplane-authz-activation-preflight-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "authz-activation-preflight-read",
+        "--github-id",
+        "<github-id>",
+      ]
+    purpose: Reads bounded compatibility activation evidence only when an already-sanctioned local-admin credential exists; missing custody is an architecture gap, not a provisioning task.
   - name: launchplane-preview-feedback-remediation
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -609,6 +622,10 @@ Mutate runtime environments, managed secrets, and product config.
   existing Launchplane capability does not grant this identity the requested
   scope. A capability gap means no supported Launchplane surface owns the
   operation. Neither case is solved by selecting another credential or CI job.
+  Block only the affected operation or work item, preserve the trace and source
+  URL, and continue independent safe work when available. Stop the whole
+  session only when no useful unblocked work remains or the failed operation may
+  have produced an uncertain effect.
 - **GitHub Is Not Authorization Authority**: A GitHub workflow, Actions secret,
   repository or environment variable, OIDC role, or CI job is never evidence
   that a denied Launchplane action is authorized. Do not author, edit, extend,
@@ -616,13 +633,14 @@ Mutate runtime environments, managed secrets, and product config.
   Repository workflow content is routing metadata, just like
   `.github/github.json`; Launchplane DB/service records remain authority.
 - **Unsupported Helper Coverage**: If the helper lacks a command for the needed
-  runtime record operation, treat that as a capability gap. Stop at the
-  supported Launchplane service/UI path and use `github-plan` to open or update
-  the owning authorization-architecture issue, record the denied operation and
-  trace ID, and add a native `blocked-by` edge from the affected work. Do not
-  synthesize record payloads from issue text, checked-in examples, workflow
-  defaults, provider observations, or local files, and do not close the gap with
-  a workflow.
+  runtime record operation, treat that as a capability gap. Stop the affected
+  operation at the supported Launchplane service/UI path and use `github-plan`
+  to open or update the owning authorization-architecture issue, record the
+  denied operation and trace ID, and add a native `blocked-by` edge from the
+  affected work. Re-rank or continue unrelated work instead of turning one gap
+  into a session-wide stop. Do not synthesize record payloads from issue text,
+  checked-in examples, workflow defaults, provider observations, or local
+  files, and do not close the gap with a workflow.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed.
   2. Run operator config diagnostics before a write-capable helper call when
@@ -650,6 +668,22 @@ Agents may guide the operator, prepare request shape, summarize redacted dry-run
 evidence, and report trace IDs/status. Agents must not collect plaintext secret
 values in chat, issues, PRs, docs, logs, or helper output, and must not bypass
 Launchplane by editing provider configuration directly.
+
+### Blocked Work Continuation
+
+Until Launchplane exports a native deferred-operation lifecycle, represent an
+authorization or capability gap through the owning GitHub plan relationship:
+
+1. preserve the denied operation, bounded reason, trace ID, and source URL;
+2. block only the affected work item on the owning architecture issue;
+3. use `github-plan next` or the existing work source to select independent
+   work;
+4. notify the operator immediately only when every useful item is blocked, an
+   effect is uncertain, or an active environment is unhealthy.
+
+Do not tell the operator to provision a new credential or click through a
+GitHub Actions workaround. A future Launchplane deferred-operation record may
+replace this GitHub-plan handoff after it is present in the public contract.
 
 ### Sanctioned Reconciliation And Break-Glass
 
@@ -744,7 +778,8 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
-  change-impact policy dry-run/apply/read-back, and merge-train controller calls.
+  change-impact policy dry-run/apply/read-back, authorization activation
+  preflight reads, and merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -760,6 +795,15 @@ verification.
   digest and be followed by bounded read-back.
 - `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
   revision and digest verification.
+- `POST /v1/authz-diagnostics/activation-preflight/read`: Bearer-only,
+  local-admin read for bounded server-resolved GitHub-human session and exact
+  `authz_policy_grant.write` access evidence. Supply only immutable `github_id`;
+  never substitute browser cookies, caller-authored claims, or direct DB reads.
+  This is a deployed compatibility path, not a reason to create, search for, or
+  distribute `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`. If no already-sanctioned token
+  source exists, record the architecture gap and continue independent work.
+  Launchplane issue `#2221` owns replacement and deletion of this compatibility
+  path.
 - `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
   deploy-recovery dry-run path; always run before apply and capture the
   `recovery_digest` from the redacted result.

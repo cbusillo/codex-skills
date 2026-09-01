@@ -1,9 +1,10 @@
 # Launchplane Write-Action Helper Contract
 
-This contract defines the public-safe wrapper for bounded Launchplane write
+This contract defines the public-safe wrapper for bounded Launchplane operator
 actions. It is separate from `launchplane-context.py`: read-only context remains
-optional and soft-failing, while explicit write actions fail closed when
-operator configuration or authorization is missing.
+optional and soft-failing, explicit write actions fail closed, and bounded
+operator reads also fail closed when required configuration or authorization is
+missing.
 
 Projected operation paths are resolved from the vendored
 `agent-operator-contract.json` through `launchplane_contract.py`. Run
@@ -41,6 +42,7 @@ The committed example is fake and public-safe:
 ```json
 {
   "service_url": "https://launchplane.example.invalid",
+  "admin_token_env": "LAUNCHPLANE_LOCAL_ADMIN_TOKEN",
   "operator_token_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
   "operator_subject_env": "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
   "operator_token_label_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
@@ -68,7 +70,9 @@ subject, and label values. When no explicit JSON config is supplied, the helper
 may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
-`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`. The helper may also notice
+`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`, plus the distinct
+`LAUNCHPLANE_LOCAL_ADMIN_TOKEN` used by the activation-preflight read. The
+local-admin read never falls back to the operator token. The helper may also notice
 `LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the operator URL is
 missing, but it does not use that variable as write authority.
 
@@ -97,35 +101,63 @@ with `status: "incomplete"` may still have a local token source; read the
 
 Missing Launchplane config is still non-fatal for skills that only need context;
 it is a fail-closed result for this helper because every command is an explicit
-write-capable operation.
+operator operation.
+
+## Authorization Activation Preflight
+
+The supported service-native preflight resolves an existing GitHub-human
+session server-side and evaluates its exact `authz_policy_grant.write` access:
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  authz-activation-preflight-read \
+  --github-id <bounded-positive-github-id>
+```
+
+The helper reads the service URL from the normal operator URL sources and the
+bearer credential only from `LAUNCHPLANE_LOCAL_ADMIN_TOKEN` or an explicitly
+configured `admin_token_env`. It accepts no token argument and sends exactly
+`{"github_id": <signed-64-bit positive integer>}` to
+`POST /v1/authz-diagnostics/activation-preflight/read`. It projects only the
+trace, active policy identity, coarse session freshness, keyed identity
+fingerprint, fixed evaluated scope, decision/reason, and bounded unmanaged
+action-empty counts. Unexpected or additional fields fail closed. This read
+does not authorize or perform an activation, policy grant, session renewal,
+reconciliation, secret mutation, or direct database access.
 
 Configuration and error states are distinct:
 
-- `ready`: operator URL and token sources are present. This is not proof that a
-  token is authorized for every action.
 - `ambiguous_service_url`: token exists and `LAUNCHPLANE_PUBLIC_URL` is present,
   but no operator URL source is configured. Obtain the correct operator URL and
   pass it with `--url` before the subcommand, or configure
   `LAUNCHPLANE_OPERATOR_URL`.
 - `missing_service_url`: token exists but no write-capable service URL source is
   configured. Fix local operator routing by configuring
-  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or supplying
-  a private JSON `service_url`, then rerun `operator-config-diagnostic`. This is
-  local operator setup, not PR readiness, merge-train admission, or scheduler
-  state.
-- `missing_operator_token`: service URL exists but the local operator token is
-  missing.
-- `missing_operator_config`: both service URL and token are absent.
+  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or
+  supplying a private JSON `service_url`. This is local routing, not evidence
+  that an administrator credential should exist.
+- `missing_local_admin_token`: service URL exists but no already-sanctioned
+  local-admin credential source is configured. Treat this as an architecture
+  gap, not a provisioning instruction.
+- `missing_local_admin_config`: neither the service URL nor an already-sanctioned
+  local-admin credential source is configured. Configure only a documented
+  operator URL; do not create or substitute a credential for this compatibility
+  helper.
 - `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
 - `denied`: Launchplane accepted the credential but denied the specific action,
   usually HTTP 403 or `authorization_denied`. This is an authority-scope result,
-  not a credential-selection result. Report it with the trace ID and stop.
-  Escalate a capability gap to the owning authorization-architecture issue. Do
-  not probe routes manually or route the call through a GitHub workflow, Actions
-  secret, or OIDC role.
+  not a credential-selection result. Report it with the trace ID, block only the
+  affected work, and continue independent safe work when available. Escalate a
+  capability gap to the owning authorization-architecture issue. Do not probe
+  routes manually or route the call through a GitHub workflow, Actions secret,
+  or OIDC role.
 - `stale`: retry requires refreshed dry-run or intent evidence.
 - `unavailable`: service/network/response failure; do not switch to provider
   mutation.
+
+`operator-config-diagnostic` reports ordinary local-operator readiness only. It
+may report `ready` while local-admin custody is absent, so it is not readiness
+evidence for this compatibility preflight.
 
 ## Product Config
 
@@ -191,8 +223,14 @@ endpoint records, provider targets, route records, or operator/workflow grants,
 do not widen the local helper and do not substitute GitHub CI authority. An
 already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
 unmodified when the operator initiates it for that record. Otherwise this is a
-capability gap: stop and escalate to the owning authorization-architecture issue
-with the denied operation, record type, and trace ID.
+capability gap: block and escalate the affected work to the owning
+authorization-architecture issue with the denied operation, record type, and
+trace ID, then continue independent work when possible.
+
+`missing_local_admin_token` and `missing_local_admin_config` on the activation
+preflight are architecture-gap results unless an already-sanctioned private
+credential source is documented. Do not provision, discover, extract, or
+substitute a credential merely to satisfy this compatibility helper.
 
 ## Change-Impact Policy
 
@@ -390,6 +428,10 @@ provider dictionary pass-through:
   timestamp.
 - `change-impact-policy-read` may emit only shadow/enforcement status, history
   count, and the same bounded current-policy metadata.
+- `authz-activation-preflight-read` may emit only active policy identity,
+  coarse session freshness, keyed identity fingerprint, the fixed
+  `authz_policy_grant.write` scope, evaluation decision/reason, and bounded
+  unmanaged action-empty counts.
 
 The projections recognize the current service envelopes, including idempotent
 replay metadata, nested merge-train candidate/landing/stack summaries, the

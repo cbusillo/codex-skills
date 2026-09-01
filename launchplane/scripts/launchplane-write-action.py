@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Execute bounded Launchplane write actions with public-safe output."""
+"""Execute bounded Launchplane operator actions with public-safe output."""
 
 from __future__ import annotations
 
@@ -48,7 +48,58 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
     "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
+    "LAUNCHPLANE_LOCAL_ADMIN_TOKEN",
 }
+READ_ONLY_OPERATIONS = {
+    "authz-activation-preflight-read",
+    "change-impact-policy-read",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_TOP_LEVEL_FIELDS = {
+    "status",
+    "trace_id",
+    "policy",
+    "session",
+    "scope",
+    "evaluation",
+    "unmanaged_action_empty_rules",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_POLICY_FIELDS = {
+    "record_id",
+    "revision",
+    "policy_sha256",
+    "schema_version",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_SESSION_FIELDS = {
+    "session_count",
+    "claims_current",
+    "claims_age_bucket_hours",
+    "expiry_bucket_hours",
+    "identity_fingerprint",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_SCOPE_FIELDS = {
+    "action",
+    "product",
+    "context",
+    "target_scope",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_EVALUATION_FIELDS = {"decision", "reason_code"}
+AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS = {
+    "total",
+    "github_actions",
+    "github_humans",
+    "terminal_agents",
+    "local_operators",
+    "local_admins",
+}
+AUTHZ_DECISION_REASONS = {
+    "allowed",
+    "authz_policy_schema_incompatible",
+    "instance_scope_required",
+    "principal_role_restricted",
+    "principal_binding_invalid",
+    "no_matching_grant",
+}
+AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX = 2**63 - 1
 ATTENTION_CONTROLLER_ACTIONS = {
     "batch_landed",
     "candidate_failed",
@@ -376,6 +427,7 @@ def load_config(path: str | None) -> dict[str, str]:
         "operator_token_env",
         "operator_subject_env",
         "operator_token_label_env",
+        "admin_token_env",
     ):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
@@ -412,11 +464,24 @@ def load_operator_env(path: str | None = None) -> dict[str, str]:
     return loaded
 
 
-def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
+def load_operator_sources(
+    args: argparse.Namespace,
+) -> tuple[dict[str, str], dict[str, str], str]:
     config = load_config(args.config)
-    env_config = load_operator_env(args.env_config) if args.env_config else {} if args.config else load_operator_env()
+    env_config = (
+        load_operator_env(args.env_config)
+        if args.env_config
+        else {}
+        if args.config
+        else load_operator_env()
+    )
     if args.config:
-        service_url = (args.url or config.get("service_url") or os.environ.get("LAUNCHPLANE_OPERATOR_URL") or "").strip()
+        service_url = (
+            args.url
+            or config.get("service_url")
+            or os.environ.get("LAUNCHPLANE_OPERATOR_URL")
+            or ""
+        ).strip()
     else:
         service_url = (
             args.url
@@ -425,6 +490,11 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
             or config.get("service_url")
             or ""
         ).strip()
+    return config, env_config, service_url
+
+
+def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
+    config, env_config, service_url = load_operator_sources(args)
     token_env = (config.get("operator_token_env") or "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN").strip()
     subject_env = (
         config.get("operator_subject_env") or "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT"
@@ -437,6 +507,20 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
         "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
         "subject": (os.environ.get(subject_env) or env_config.get(subject_env) or "").strip(),
         "token_label": (os.environ.get(token_label_env) or env_config.get(token_label_env) or "").strip(),
+        "public_url_hint_sources": ",".join(public_url_hint_sources(env_config)),
+    }
+
+
+def resolve_admin_settings(args: argparse.Namespace) -> dict[str, str]:
+    config, env_config, service_url = load_operator_sources(args)
+    token_env = (
+        config.get("admin_token_env") or "LAUNCHPLANE_LOCAL_ADMIN_TOKEN"
+    ).strip()
+    return {
+        "service_url": service_url,
+        "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
+        "subject": "",
+        "token_label": "",
         "public_url_hint_sources": ",".join(public_url_hint_sources(env_config)),
     }
 
@@ -1413,6 +1497,141 @@ def summarize_change_impact_policy_read(
     return payload
 
 
+def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
+    source = _require_dict(value)
+    if set(map(str, source)) != fields:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return source
+
+
+def _project_int(value: object, *, minimum: int, maximum: int | None = None) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise LaunchplaneSafetyError("invalid_response")
+    if maximum is not None and value > maximum:
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def summarize_authz_activation_preflight_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    source = _require_exact_fields(
+        provider_payload, AUTHZ_ACTIVATION_PREFLIGHT_TOP_LEVEL_FIELDS
+    )
+    if public_code(source.get("status")) != "ok":
+        raise LaunchplaneSafetyError("invalid_response")
+
+    policy = _require_exact_fields(
+        source.get("policy"), AUTHZ_ACTIVATION_PREFLIGHT_POLICY_FIELDS
+    )
+    schema_version = _project_int(policy.get("schema_version"), minimum=1, maximum=2)
+    projected_policy = {
+        "record_id": public_identifier(policy.get("record_id")),
+        "revision": _project_int(policy.get("revision"), minimum=1),
+        "policy_sha256": _project_sha256(policy.get("policy_sha256")),
+        "schema_version": schema_version,
+    }
+
+    session = _require_exact_fields(
+        source.get("session"), AUTHZ_ACTIVATION_PREFLIGHT_SESSION_FIELDS
+    )
+    claims_current = session.get("claims_current")
+    if not isinstance(claims_current, bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    identity_fingerprint = public_identifier(session.get("identity_fingerprint"))
+    if (
+        not identity_fingerprint.startswith("identity_")
+        or len(identity_fingerprint) != 73
+        or any(
+            character not in "0123456789abcdef"
+            for character in identity_fingerprint.removeprefix("identity_")
+        )
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_session = {
+        "session_count": _project_int(
+            session.get("session_count"), minimum=1, maximum=8
+        ),
+        "claims_current": claims_current,
+        "claims_age_bucket_hours": _project_int(
+            session.get("claims_age_bucket_hours"), minimum=0
+        ),
+        "expiry_bucket_hours": _project_int(
+            session.get("expiry_bucket_hours"), minimum=0
+        ),
+        "identity_fingerprint": identity_fingerprint,
+    }
+
+    scope = _require_exact_fields(
+        source.get("scope"), AUTHZ_ACTIVATION_PREFLIGHT_SCOPE_FIELDS
+    )
+    projected_scope = {
+        "action": public_identifier(scope.get("action")),
+        "product": public_code(scope.get("product")),
+        "context": public_code(scope.get("context")),
+        "target_scope": public_code(scope.get("target_scope")),
+    }
+    if projected_scope != {
+        "action": "authz_policy_grant.write",
+        "product": "launchplane",
+        "context": "launchplane",
+        "target_scope": "context",
+    }:
+        raise LaunchplaneSafetyError("invalid_response")
+
+    evaluation = _require_exact_fields(
+        source.get("evaluation"), AUTHZ_ACTIVATION_PREFLIGHT_EVALUATION_FIELDS
+    )
+    decision = public_code(evaluation.get("decision"))
+    reason_code = public_code(evaluation.get("reason_code"))
+    if decision not in {"allowed", "denied"} or reason_code not in AUTHZ_DECISION_REASONS:
+        raise LaunchplaneSafetyError("invalid_response")
+    if (decision == "allowed") != (reason_code == "allowed"):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_evaluation = {"decision": decision, "reason_code": reason_code}
+
+    action_empty = _require_exact_fields(
+        source.get("unmanaged_action_empty_rules"),
+        AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS,
+    )
+    projected_action_empty = {
+        key: _project_int(action_empty.get(key), minimum=0)
+        for key in AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS
+    }
+    if projected_action_empty["total"] != sum(
+        projected_action_empty[key]
+        for key in AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS
+        if key != "total"
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+
+    result = {
+        "policy": projected_policy,
+        "session": projected_session,
+        "scope": projected_scope,
+        "evaluation": projected_evaluation,
+        "unmanaged_action_empty_rules": projected_action_empty,
+    }
+    payload = base_payload(
+        status="ok", operation="authz-activation-preflight-read", request=request
+    )
+    payload["result"] = result
+    payload["summary"] = {
+        "launchplane_status": "ok",
+        "trace_id": public_trace_id(source.get("trace_id")),
+        "decision": decision,
+        "reason_code": reason_code,
+        "recommendation": (
+            "Retain this read-only evidence for the separately approved activation decision."
+            if decision == "allowed"
+            else "Stop: the existing GitHub-human session does not have the required authority."
+        ),
+    }
+    assert_public_safe_shape(result)
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
     try:
         raw = exc.read().decode()
@@ -1448,9 +1667,10 @@ def http_error_recommendation(status: str) -> str:
         "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
         "denied": (
             "Credential was accepted but this action was denied; this is an authority-scope "
-            "result. Report the trace ID and stop. Escalate a missing capability to the owning "
-            "authorization-architecture issue. Do not probe routes manually or route this call "
-            "through a GitHub workflow, Actions secret, or OIDC role."
+            "result. Report the trace ID, block only the affected work, and continue independent "
+            "safe work when available. Escalate a missing capability to the owning authorization-"
+            "architecture issue. Do not probe routes manually or route this call through a GitHub "
+            "workflow, Actions secret, or OIDC role."
         ),
         "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
         "invalid_request": "Fix the private request payload before retrying this write action.",
@@ -1532,13 +1752,67 @@ def summarize_http_error(
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
-    payload["warnings"] = [
-        warning(
-            str(error.get("code") or status),
-            "Launchplane write action was rejected; inspect the trace in an approved operator surface.",
-        )
-    ]
+    message = (
+        "Launchplane read was rejected; inspect the trace in an approved operator surface."
+        if operation in READ_ONLY_OPERATIONS
+        else "Launchplane write action was rejected; inspect the trace in an approved operator surface."
+    )
+    payload["warnings"] = [warning(str(error.get("code") or status), message)]
     return payload
+
+
+def emit_http_error_payload(
+    *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError
+) -> None:
+    try:
+        emit(summarize_http_error(operation=operation, request=request, exc=exc))
+    except LaunchplaneSafetyError:
+        emit_invalid_response(operation=operation, request=request)
+
+
+def emit_safety_error_payload(
+    *, operation: str, request: dict[str, object], exc: LaunchplaneSafetyError
+) -> None:
+    unsafe_redirect = exc.code == "unsafe_redirect"
+    emit(
+        unavailable_payload(
+            operation=operation,
+            request=request,
+            status="unavailable" if unsafe_redirect else "invalid",
+            code=exc.code if unsafe_redirect else "invalid_response",
+            message=(
+                "Launchplane redirected to an unsafe destination."
+                if unsafe_redirect
+                else "Launchplane returned an invalid response."
+            ),
+        )
+    )
+
+
+def emit_provider_unavailable(
+    *, operation: str, request: dict[str, object]
+) -> None:
+    emit(
+        unavailable_payload(
+            operation=operation,
+            request=request,
+            status="unavailable",
+            code="provider_unavailable",
+            message="Launchplane service is unavailable.",
+        )
+    )
+
+
+def emit_invalid_response(*, operation: str, request: dict[str, object]) -> None:
+    emit(
+        unavailable_payload(
+            operation=operation,
+            request=request,
+            status="invalid",
+            code="invalid_response",
+            message="Launchplane returned an invalid response.",
+        )
+    )
 
 
 def read_payload_file(path: str) -> dict[str, object]:
@@ -1767,14 +2041,12 @@ def preview_feedback_remediation_body(args: argparse.Namespace) -> dict[str, obj
     }
 
 
-def execute_post(
+def prepare_operator_settings(
     *,
     args: argparse.Namespace,
     operation: str,
-    path: str,
     request: dict[str, object],
-    body: dict[str, object],
-) -> int:
+) -> dict[str, str] | None:
     try:
         settings = resolve_settings(args)
     except ValueError:
@@ -1787,7 +2059,7 @@ def execute_post(
                 message="Launchplane operator config is invalid.",
             )
         )
-        return 2
+        return None
     if settings["service_url"]:
         try:
             validate_service_url(settings["service_url"])
@@ -1801,7 +2073,7 @@ def execute_post(
                     message=operator_config_message(exc.code),
                 )
             )
-            return 2
+            return None
     if not settings["service_url"] or not settings["token"]:
         classification = classify_operator_config(
             service_url_present=bool(settings["service_url"]),
@@ -1817,6 +2089,22 @@ def execute_post(
                 recommendation=operator_config_recommendation(classification),
             )
         )
+        return None
+    return settings
+
+
+def execute_post(
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    path: str,
+    request: dict[str, object],
+    body: dict[str, object],
+) -> int:
+    settings = prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
+    if settings is None:
         return 2
     try:
         provider_payload = request_launchplane(
@@ -1879,74 +2167,66 @@ def execute_post(
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
-        try:
-            emit(summarize_http_error(operation=operation, request=request, exc=exc))
-        except LaunchplaneSafetyError:
-            emit(
-                unavailable_payload(
-                    operation=operation,
-                    request=request,
-                    status="invalid",
-                    code="invalid_response",
-                    message="Launchplane returned an invalid response.",
-                )
-            )
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        status = "unavailable" if exc.code == "unsafe_redirect" else "invalid"
-        code = exc.code if exc.code == "unsafe_redirect" else "invalid_response"
-        message = (
-            "Launchplane redirected to an unsafe destination."
-            if exc.code == "unsafe_redirect"
-            else "Launchplane returned an invalid response."
-        )
-        emit(
-            unavailable_payload(
-                operation=operation,
-                request=request,
-                status=status,
-                code=code,
-                message=message,
-            )
-        )
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError):
-        emit(
-            unavailable_payload(
-                operation=operation,
-                request=request,
-                status="unavailable",
-                code="provider_unavailable",
-                message="Launchplane service is unavailable.",
-            )
-        )
+        emit_provider_unavailable(operation=operation, request=request)
         return 1
     except (ValueError, json.JSONDecodeError):
-        emit(
-            unavailable_payload(
-                operation=operation,
-                request=request,
-                status="invalid",
-                code="invalid_response",
-                message="Launchplane returned an invalid response.",
-            )
-        )
+        emit_invalid_response(operation=operation, request=request)
         return 1
 
 
 def execute_change_impact_policy_read(
     *, args: argparse.Namespace, request: dict[str, object]
 ) -> int:
+    operation = "change-impact-policy-read"
+    settings = prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
+    if settings is None:
+        return 2
     try:
-        settings = resolve_settings(args)
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            query={"repository_id": args.repository_id},
+            timeout=args.timeout,
+        )
+        emit(summarize_change_impact_policy_read(request=request, provider_payload=provider_payload))
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
+def execute_authz_activation_preflight_read(
+    *, args: argparse.Namespace, request: dict[str, object]
+) -> int:
+    operation = "authz-activation-preflight-read"
+    try:
+        settings = resolve_admin_settings(args)
     except ValueError:
         emit(
             unavailable_payload(
-                operation="change-impact-policy-read",
+                operation=operation,
                 request=request,
                 status="invalid",
                 code="invalid_config",
-                message="Launchplane operator config is invalid.",
+                message="Launchplane local-admin config is invalid.",
             )
         )
         return 2
@@ -1956,95 +2236,92 @@ def execute_change_impact_policy_read(
         except LaunchplaneSafetyError as exc:
             emit(
                 unavailable_payload(
-                    operation="change-impact-policy-read",
+                    operation=operation,
                     request=request,
                     status="invalid",
                     code=exc.code,
-                    message=operator_config_message(exc.code),
+                    message="Launchplane local-admin service URL is invalid.",
                 )
             )
             return 2
     if not settings["service_url"] or not settings["token"]:
-        classification = classify_operator_config(
-            service_url_present=bool(settings["service_url"]),
-            token_present=bool(settings["token"]),
-            public_url_hint_present=bool(settings["public_url_hint_sources"]),
-        )
+        if settings["service_url"]:
+            code = "missing_local_admin_token"
+            message = "Launchplane local-admin token is missing."
+            recommendation = (
+                "Treat this as an authorization-architecture gap unless an already-sanctioned "
+                "private token source is documented. Do not provision, discover, extract, or "
+                "substitute a credential; block only the affected work and continue independent "
+                "safe work when available."
+            )
+        elif settings["token"] and settings["public_url_hint_sources"]:
+            code = "ambiguous_service_url"
+            message = (
+                "A public Launchplane URL source is present, but no operator URL source is configured."
+            )
+            recommendation = operator_config_recommendation(code)
+        elif settings["token"]:
+            code = "missing_service_url"
+            message = "Launchplane operator service URL is missing."
+            recommendation = operator_config_recommendation(code)
+        else:
+            code = "missing_local_admin_config"
+            message = "Launchplane operator URL and local-admin token are required for this read."
+            recommendation = (
+                "Configure only a documented operator URL. Treat missing local-admin credential "
+                "custody as an authorization-architecture gap; do not create or substitute a token "
+                "to satisfy this compatibility read."
+            )
         emit(
             no_context_payload(
-                operation="change-impact-policy-read",
+                operation=operation,
                 request=request,
-                code=classification,
-                message=operator_config_message(classification),
-                recommendation=operator_config_recommendation(classification),
+                code=code,
+                message=message,
+                recommendation=recommendation,
             )
         )
         return 2
     try:
-        provider_payload = request_launchplane_read(
+        provider_payload = request_launchplane(
             service_url=settings["service_url"],
-            path=helper_command_path("change-impact-policy-read"),
+            path=helper_command_path(operation),
             settings=settings,
-            query={"repository_id": args.repository_id},
+            body={"github_id": args.github_id},
             timeout=args.timeout,
         )
-        emit(summarize_change_impact_policy_read(request=request, provider_payload=provider_payload))
+        emit(
+            summarize_authz_activation_preflight_read(
+                request=request, provider_payload=provider_payload
+            )
+        )
         return 0
     except urllib.error.HTTPError as exc:
-        try:
-            emit(
-                summarize_http_error(
-                    operation="change-impact-policy-read", request=request, exc=exc
-                )
-            )
-        except LaunchplaneSafetyError:
-            emit(
-                unavailable_payload(
-                    operation="change-impact-policy-read",
-                    request=request,
-                    status="invalid",
-                    code="invalid_response",
-                    message="Launchplane returned an invalid response.",
-                )
-            )
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except LaunchplaneSafetyError:
-        emit(
-            unavailable_payload(
-                operation="change-impact-policy-read",
-                request=request,
-                status="invalid",
-                code="invalid_response",
-                message="Launchplane returned an invalid response.",
-            )
-        )
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError):
-        emit(
-            unavailable_payload(
-                operation="change-impact-policy-read",
-                request=request,
-                status="unavailable",
-                code="provider_unavailable",
-                message="Launchplane service is unavailable.",
-            )
-        )
+        emit_provider_unavailable(operation=operation, request=request)
         return 1
     except (ValueError, json.JSONDecodeError):
-        emit(
-            unavailable_payload(
-                operation="change-impact-policy-read",
-                request=request,
-                status="invalid",
-                code="invalid_response",
-                message="Launchplane returned an invalid response.",
-            )
-        )
+        emit_invalid_response(operation=operation, request=request)
         return 1
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed < 1 or parsed > AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX:
+        raise argparse.ArgumentTypeError("must be a bounded positive integer")
+    return parsed
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Execute bounded Launchplane write actions.")
+    parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
     parser.add_argument("--env-config", help="Optional private operator .env config path.")
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
@@ -2107,6 +2384,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Read bounded active change-impact policy metadata.",
     )
     change_impact_read.add_argument("--repository-id", required=True)
+
+    activation_preflight_read = subparsers.add_parser(
+        "authz-activation-preflight-read",
+        help="Read bounded activation evidence for one existing GitHub-human session.",
+    )
+    activation_preflight_read.add_argument("--github-id", required=True, type=positive_int)
 
     recovery_dry_run = subparsers.add_parser(
         "generic-web-deploy-recovery-dry-run",
@@ -2244,6 +2527,12 @@ def main(argv: list[str]) -> int:
                 "payload_source": "operator_argument",
             }
             return execute_change_impact_policy_read(args=args, request=request)
+        if args.command == "authz-activation-preflight-read":
+            request = {
+                "github_id": args.github_id,
+                "payload_source": "operator_argument",
+            }
+            return execute_authz_activation_preflight_read(args=args, request=request)
         if args.command == "merge-train-controller-run-once":
             request = {
                 "repository": args.repo,
