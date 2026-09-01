@@ -1092,82 +1092,15 @@ def test_wrapper_runtime_drift_fails() -> None:
         )
 
 
-TESTS = [
-    test_valid_policy_passes,
-    test_valid_helper_pytest_entrypoint_passes,
-    test_missing_main_guard_fails,
-    test_main_guard_without_pytest_main_fails,
-    test_bare_pytest_main_call_fails,
-    test_system_exit_with_leading_argument_fails,
-    test_system_exit_with_trailing_argument_fails,
-    test_system_exit_with_keyword_argument_fails,
-    test_system_exit_with_wrapped_pytest_call_fails,
-    test_pytest_main_selecting_other_file_fails,
-    test_pytest_main_without_helper_file_fails,
-    test_pytest_main_with_additional_selector_fails,
-    test_pytest_main_with_keyword_arguments_fails,
-    test_declared_pytest_dependency_catches_aliased_dynamic_import,
-    test_dynamic_pytest_import_without_dependency_requires_entrypoint,
-    test_bare_import_module_pytest_requires_entrypoint,
-    test_dunder_import_pytest_requires_entrypoint,
-    test_keyword_dynamic_pytest_import_requires_entrypoint,
-    test_dynamic_pytest_submodule_requires_entrypoint,
-    test_static_pytest_submodule_requires_entrypoint,
-    test_dynamic_pytest_import_with_entrypoint_passes,
-    test_pytest_string_without_import_passes,
-    test_find_spec_pytest_probe_passes,
-    test_non_pytest_dynamic_import_passes,
-    test_pytest_plugin_import_without_pytest_passes,
-    test_relative_pytest_import_passes,
-    test_pytest_dependency_without_import_requires_entrypoint,
-    test_pytest_import_without_dependency_requires_entrypoint,
-    test_early_exit_before_pytest_entrypoint_fails,
-    test_dead_code_pytest_entrypoint_fails,
-    test_later_duplicate_pytest_guard_does_not_bypass_early_exit,
-    test_module_level_system_exit_call_before_guard_fails,
-    test_module_level_bare_system_exit_before_guard_fails,
-    test_module_level_sys_exit_before_guard_fails,
-    test_module_level_os_exit_before_guard_fails,
-    test_assigned_sys_exit_alias_before_guard_fails,
-    test_assigned_os_exit_alias_before_guard_fails,
-    test_assigned_system_exit_alias_before_guard_fails,
-    test_chained_exit_alias_before_guard_fails,
-    test_aliased_sys_module_exit_before_guard_fails,
-    test_imported_exit_alias_before_guard_fails,
-    test_imported_system_exit_alias_before_guard_fails,
-    test_dotted_os_import_preserves_direct_exit_detection,
-    test_bare_builtins_system_exit_before_guard_fails,
-    test_relative_import_does_not_create_exit_alias,
-    test_rebound_exit_alias_before_guard_passes,
-    test_nested_exit_before_guard_does_not_fail,
-    test_docstring_and_import_before_pytest_entrypoint_passes,
-    test_import_without_docstring_before_pytest_entrypoint_passes,
-    test_string_after_import_before_pytest_entrypoint_fails,
-    test_second_leading_string_before_pytest_entrypoint_fails,
-    test_string_only_guard_body_fails,
-    test_nested_main_guard_fails,
-    test_observed_value_format_handles_unknown_types,
-    test_missing_helper_tests_array_fails,
-    test_empty_helper_tests_array_fails,
-    test_unterminated_helper_tests_array_fails,
-    test_syntax_invalid_helper_fails,
-    test_missing_declared_helper_fails,
-    test_skiplisted_pytest_cli_is_not_validated,
-    test_validate_skills_manifest_classifies_explicit_validators,
-    test_missing_explicit_helper_validator_fails,
-    test_helper_manifest_categories_must_be_disjoint,
-    test_dependabot_drift_fails,
-    test_runner_and_python_drift_fail,
-    test_version_and_pep_metadata_drift_fail,
-    test_routing_evidence_drift_fails,
-    test_wrapper_runtime_drift_fails,
-]
-
-
 def main() -> int:
-    for test in TESTS:
+    tests = [
+        candidate
+        for name, candidate in globals().items()
+        if name.startswith("test_") and callable(candidate)
+    ]
+    for test in tests:
         test()
-    print(f"execution-environment tests passed ({len(TESTS)} tests)")
+    print(f"execution-environment tests passed ({len(tests)} tests)")
     return 0
 
 
