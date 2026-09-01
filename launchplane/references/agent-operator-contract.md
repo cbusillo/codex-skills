@@ -5,8 +5,14 @@ by this skill. Its current identity is:
 
 - schema version: `1`
 - normalization version: `1`
-- semantic digest: `f4cdc0e0546831c78eb05e0194b59aa1ae0fad650af25a78b36b255e7ee469d8`
-- non-gating source provenance: `71926f3e9e66389b0fdebd8f6fe4b7c47f815ce4`
+- semantic digest: `9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5`
+- non-gating source provenance: `2494668205388a7d70f1a9e74bd4af300854fd20`
+- operation count: `12`
+
+This refresh also carries the upstream identity dependency change for
+`reconcile_managed_authz_policy` from browser mutation identity to bearer
+identity. The vendored artifact remains byte-identical to the published
+Launchplane contract; this skill does not reinterpret or widen that operation.
 
 Run the offline conformance gate with:
 
@@ -48,9 +54,14 @@ creates a drift issue. The workflow is advisory maintenance evidence only: it
 does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
-The generic-web deploy-recovery dry-run and apply routes are currently bounded
-local extensions because they are consumed by `launchplane-write-action.py` but
-are not present in the upstream 13-operation projection. The validator keeps
-them explicit and fails if an upstream artifact later projects the same routes,
-forcing a deliberate migration instead of silently maintaining two sources of
-truth.
+The merge-train policy import dry-run/apply commands and generic-web
+deploy-recovery dry-run/apply commands are currently bounded local extensions
+because they are consumed by `launchplane-write-action.py` but are not present
+in the upstream 12-operation projection. The validator keeps all four explicit
+and fails if an upstream artifact later projects the same routes, forcing a
+deliberate migration instead of silently maintaining two sources of truth.
+
+The helper also tracks one internal read-before-write route,
+`GET /v1/work-graph/merge-train/policy-targets`, outside the projected command
+count. Contract validation checks that this route remains absent from the
+upstream projection so any future adoption requires an explicit migration.

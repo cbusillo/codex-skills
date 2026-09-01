@@ -16,10 +16,11 @@ prove that the vendored artifact is current upstream. A source-provenance-only
 change is non-gating when schema version, normalization version, semantic digest,
 and contract content are unchanged.
 
-The generic-web deploy-recovery routes remain bounded local extensions until
-the upstream public projection includes them. Their private-file, dry-run,
-review, digest-binding, idempotency, redaction, and trace requirements remain
-fully enforced, but they must not be reported as contract-backed.
+The merge-train policy import and generic-web deploy-recovery routes remain
+bounded local extensions until the upstream public projection includes them.
+Their private-file, dry-run, review, digest-binding, idempotency, redaction, and
+trace requirements remain fully enforced, but they must not be reported as
+contract-backed.
 
 ## Execution Rules
 
@@ -74,9 +75,6 @@ Environment variable names:
   private JSON `service_url`.
 - `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`: operator bearer token. Never print or
   copy this value.
-- `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`: distinct local-admin bearer token used only
-  by helper commands whose service contract requires local-admin identity. It
-  never falls back to the local-operator token.
 - `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`: optional operator subject header value.
 - `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`: optional operator token-label header
   value.
@@ -86,17 +84,6 @@ service URL example only. Real token values stay in the operator's private
 environment or secret manager. Missing private config is a normal unavailable
 state for terminal execution; explicit write actions must fail closed instead of
 falling back to direct provider mutation or read-only context credentials.
-
-The read-only authorization activation preflight is the narrow exception to
-the write-oriented helper description. It uses the same validated operator URL
-but requires `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`, accepts only a positive immutable
-`github_id`, and calls the service-native read route. It does not accept a token
-on argv, browser cookies, caller-supplied human claims, or direct DB access.
-This is a compatibility route for an already-sanctioned credential, not a
-credential-provisioning workflow. If the documented private sources do not
-already expose that token, treat the result as an authorization-architecture
-gap: do not search broader secret stores, extract GitHub secrets, substitute the
-operator token, mint a replacement, or stop unrelated work.
 
 Run `scripts/launchplane-write-action.py operator-config-diagnostic` before
 declaring terminal operator access unavailable. The diagnostic reports only

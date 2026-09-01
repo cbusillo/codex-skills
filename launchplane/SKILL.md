@@ -186,19 +186,6 @@ commands:
         "operator-config-diagnostic",
       ]
     purpose: Reports redacted operator URL/token source presence before write-capable helper calls.
-  - name: launchplane-authz-activation-preflight-read
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "authz-activation-preflight-read",
-        "--github-id",
-        "<github-id>",
-      ]
-    purpose: Reads bounded compatibility activation evidence only when an already-sanctioned local-admin credential exists; missing custody is an architecture gap, not a provisioning task.
   - name: launchplane-preview-feedback-remediation
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -272,6 +259,43 @@ commands:
         "<repository-id>",
       ]
     purpose: Reads bounded active change-impact policy metadata for verification.
+  - name: launchplane-merge-train-policy-import-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "merge-train-policy-import-dry-run",
+        "--payload-file",
+        "<private-file>",
+        "--expected-current-policy-digest",
+        "<active-policy-digest>",
+      ]
+    purpose: Dry-runs an explicit private merge-train policy import after active-policy digest preflight.
+  - name: launchplane-merge-train-policy-import-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "merge-train-policy-import-apply",
+        "--payload-file",
+        "<private-file>",
+        "--expected-current-policy-digest",
+        "<active-policy-digest>",
+        "--expected-new-policy-digest",
+        "<candidate-policy-digest>",
+        "--reviewed-dry-run",
+        "--dry-run-evidence-file",
+        "<private-dry-run-output>",
+        "--idempotency-key",
+        "<key>",
+      ]
+    purpose: Applies only reviewed merge-train policy import evidence after active-policy digest preflight.
   - name: launchplane-generic-web-deploy-recovery-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -309,6 +333,26 @@ commands:
     purpose: Applies only apply-eligible reviewed generic-web deploy-recovery evidence with redacted output.
 policy:
   command_policies:
+    - id: prefer-launchplane-write-helper-for-merge-train-policy-import-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/merge-train/policies/import\\b"
+      action: require_preferred
+      message: Raw Launchplane merge-train policy imports bypass helper-owned private-file, active-digest preflight, reviewed evidence, idempotency, redaction, and ambiguity handling. Use the write-action helper.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv:
+            [
+              "uv",
+              "run",
+              "scripts/launchplane-write-action.py",
+              "merge-train-policy-import-dry-run",
+              "--payload-file",
+              "<private-file>",
+              "--expected-current-policy-digest",
+              "<active-policy-digest>",
+            ]
+          purpose: Dry-runs explicit operator policy input after active-policy digest preflight.
     - id: prefer-launchplane-helper-for-repository-inventory-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/repository-inventory(?:/apply)?\\b"
@@ -576,11 +620,12 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The generic-web deploy-recovery dry-run and apply routes are explicit bounded
-local extensions because the current upstream 12-operation projection does not
-contain them. Do not describe them as contract-backed. If a later artifact adds
-those routes, migrate them deliberately and remove the local-extension entries
-instead of retaining parallel sources of truth.
+The merge-train policy import dry-run/apply commands and generic-web
+deploy-recovery dry-run/apply commands are explicit bounded local extensions
+because the current upstream 12-operation projection does not contain their
+routes. Do not describe them as contract-backed. If a later artifact adds those
+routes, migrate them deliberately and remove the local-extension entries instead
+of retaining parallel sources of truth.
 
 ### Contract-Backed Lifecycle And Repair Routing
 
@@ -877,9 +922,9 @@ verification.
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
-  change-impact policy dry-run/apply/read-back, repository inventory
-  read/dry-run/apply, authorization activation preflight reads, and merge-train
-  controller calls.
+  change-impact policy dry-run/apply/read-back, guarded merge-train policy
+  import, repository inventory read/dry-run/apply, and merge-train controller
+  calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -895,20 +940,19 @@ verification.
   digest and be followed by bounded read-back.
 - `GET /v1/change-impact/policy`: Bounded active policy read-back for exact
   revision and digest verification.
+- `POST /v1/merge-train/policies/import`: Bounded local-extension path for
+  private merge-train policy dry-run/apply. Require active-policy digest
+  preflight, exact saved dry-run evidence, reviewed acknowledgement,
+  idempotency, and post-apply read-back. The helper-side digest check is not
+  server-enforced compare-and-swap.
+- `GET /v1/work-graph/merge-train/policy-targets`: Internal bounded preflight
+  read used immediately before policy import to verify the expected active
+  policy digest. It is not an independently exposed helper command.
 - `GET /v1/repository-inventory`: Bounded current repository inventory read for
   exact immutable GitHub repository identity.
 - `POST /v1/repository-inventory/apply`: Repository inventory dry-run/apply
   route. Use private payload files; apply requires reviewed helper evidence,
   inventory digest binding, and a stable idempotency key.
-- `POST /v1/authz-diagnostics/activation-preflight/read`: Bearer-only,
-  local-admin read for bounded server-resolved GitHub-human session and exact
-  `authz_policy_grant.write` access evidence. Supply only immutable `github_id`;
-  never substitute browser cookies, caller-authored claims, or direct DB reads.
-  This is a deployed compatibility path, not a reason to create, search for, or
-  distribute `LAUNCHPLANE_LOCAL_ADMIN_TOKEN`. If no already-sanctioned token
-  source exists, record the architecture gap and continue independent work.
-  Launchplane issue `#2221` owns replacement and deletion of this compatibility
-  path.
 - `POST /v1/admin/generic-web/deploy-recovery/dry-run`: Generic-web
   deploy-recovery dry-run path; always run before apply and capture the
   `recovery_digest` from the redacted result.
