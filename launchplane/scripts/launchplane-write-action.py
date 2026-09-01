@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -53,6 +54,7 @@ LOCAL_OPERATOR_ENV_KEYS = {
 READ_ONLY_OPERATIONS = {
     "authz-activation-preflight-read",
     "change-impact-policy-read",
+    "repository-inventory-read",
 }
 AUTHZ_ACTIVATION_PREFLIGHT_TOP_LEVEL_FIELDS = {
     "status",
@@ -118,6 +120,39 @@ SUCCESS_TOP_LEVEL_KEYS = {
     "result",
     "replayed",
     "original_trace_id",
+}
+REPOSITORY_INVENTORY_RECORD_FIELDS = {
+    "schema_version",
+    "record_id",
+    "repository_id",
+    "repository_owner_id",
+    "repository",
+    "inventory_state",
+    "inventory_revision",
+    "recorded_at",
+    "source",
+    "reason",
+    "supersedes_record_id",
+    "inventory_digest",
+}
+REPOSITORY_INVENTORY_READ_FIELDS = {
+    "schema_version",
+    "status",
+    "repository_id",
+    "current_record",
+    "history_count",
+    "generated_at",
+}
+REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS = {
+    "schema_version",
+    "status",
+    "mode",
+    "repository_id",
+    "inventory_revision",
+    "record_id",
+    "inventory_digest",
+    "supersedes_record_id",
+    "applied_at",
 }
 MERGE_TRAIN_RESULT_FIELDS = {
     "active_action",
@@ -1382,6 +1417,95 @@ def _project_generic_web_deploy_recovery_result(
     return projected
 
 
+def _project_repository_inventory_record(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_RECORD_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    inventory_state = public_code(source.get("inventory_state"))
+    if inventory_state not in {"tracked", "retired"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    inventory_revision = source.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    supersedes_record_id = source.get("supersedes_record_id")
+    if supersedes_record_id is not None:
+        supersedes_record_id = public_identifier(supersedes_record_id)
+    projected = {
+        "record_id": public_identifier(source.get("record_id")),
+        "inventory_state": inventory_state,
+        "inventory_revision": inventory_revision,
+        "recorded_at": public_timestamp(source.get("recorded_at")),
+        "supersedes_record_id": supersedes_record_id,
+        "inventory_digest": _project_sha256(source.get("inventory_digest")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_repository_inventory_read_model(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_READ_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(source.get("status"))
+    if status not in {"available", "missing", "ambiguous"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    history_count = source.get("history_count")
+    if not isinstance(history_count, int) or isinstance(history_count, bool) or history_count < 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    current_record = source.get("current_record")
+    if (status == "available") != (current_record is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": status,
+        "history_count": history_count,
+        "generated_at": public_timestamp(source.get("generated_at")),
+        "current_record": None,
+    }
+    if current_record is not None:
+        projected["current_record"] = _project_repository_inventory_record(current_record)
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_repository_inventory_apply_result(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(source.get("status"))
+    if status not in {"would_apply", "applied"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    mode = public_code(source.get("mode"))
+    if mode not in {"dry_run", "apply"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    if (status, mode) not in {("would_apply", "dry_run"), ("applied", "apply")}:
+        raise LaunchplaneSafetyError("invalid_response")
+    inventory_revision = source.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    supersedes_record_id = source.get("supersedes_record_id")
+    if supersedes_record_id is not None:
+        supersedes_record_id = public_identifier(supersedes_record_id)
+    projected = {
+        "status": status,
+        "mode": mode,
+        "inventory_revision": inventory_revision,
+        "record_id": public_identifier(source.get("record_id")),
+        "inventory_digest": _project_sha256(source.get("inventory_digest")),
+        "supersedes_record_id": supersedes_record_id,
+        "applied_at": public_timestamp(source.get("applied_at")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_change_impact_policy_read_model(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in CHANGE_IMPACT_POLICY_READ_FIELDS for key in source):
@@ -1472,6 +1596,11 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         return records, _project_change_impact_policy_result(
             provider_payload.get("result")
         )
+    if operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_repository_inventory_apply_result(
+            provider_payload.get("result")
+        )
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -1491,6 +1620,30 @@ def summarize_change_impact_policy_read(
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": "Use the active record metadata to verify the intended policy revision and digest.",
+    }
+    assert_public_safe_shape(payload["result"])
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
+def summarize_repository_inventory_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(
+        status=status, operation="repository-inventory-read", request=request
+    )
+    payload["result"] = _project_repository_inventory_read_model(
+        provider_payload.get("read_model")
+    )
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Use the bounded current record metadata to prepare the next exact inventory revision."
+        ),
     }
     assert_public_safe_shape(payload["result"])
     assert_public_safe_shape(payload["summary"])
@@ -1717,6 +1870,14 @@ def summarize_success(
                 if operation == "change-impact-policy-dry-run"
                 else "Read back the active change-impact policy before relying on it."
             )
+        elif operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
+            summary["inventory_apply_status"] = result.get("status")
+            summary["inventory_digest"] = result.get("inventory_digest")
+            summary["recommendation"] = (
+                "Save and review this redacted dry-run evidence before applying the exact same private payload."
+                if operation == "repository-inventory-dry-run"
+                else "Read back the current repository inventory record before relying on the mutation."
+            )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
             "generic-web-deploy-recovery-apply",
@@ -1836,6 +1997,118 @@ def read_payload_file(path: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError("invalid_payload")
     return raw
+
+
+def repository_inventory_review_digest(body: dict[str, object]) -> str:
+    review_subject = dict(body)
+    review_subject.pop("mode", None)
+    return hashlib.sha256(
+        json.dumps(review_subject, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def repository_inventory_idempotency_key_fingerprint(idempotency_key: str) -> str:
+    normalized = idempotency_key.strip()
+    if not normalized:
+        raise ValueError("idempotency_key_required")
+    return f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}"
+
+
+def _require_apply_eligible_repository_inventory_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_inventory_digest: str,
+    expected_payload_digest: str,
+    expected_inventory_revision: int,
+    expected_idempotency_key_fingerprint: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    request = evidence.get("request")
+    result = evidence.get("result")
+    if not isinstance(request, dict) or not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if (
+        evidence.get("operation") != "repository-inventory-dry-run"
+        or evidence.get("status") != "ok"
+        or request.get("mode") != "dry_run"
+        or request.get("payload_source") != "private_file"
+        or request.get("payload_digest") != expected_payload_digest
+        or request.get("idempotency_key_fingerprint")
+        != expected_idempotency_key_fingerprint
+        or result.get("status") != "would_apply"
+        or result.get("mode") != "dry_run"
+        or result.get("inventory_digest") != expected_inventory_digest
+        or result.get("inventory_revision") != expected_inventory_revision
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def repository_inventory_payload_body(
+    args: argparse.Namespace, *, mode: str
+) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    record = body.get("record")
+    if not isinstance(record, dict):
+        raise ValueError("record_required")
+    repository_id = record.get("repository_id")
+    if (
+        not isinstance(repository_id, str)
+        or not repository_id.isdecimal()
+        or int(repository_id) < 1
+    ):
+        raise ValueError("repository_id_required")
+    inventory_revision = record.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise ValueError("inventory_revision_required")
+    reason = record.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reason_required")
+    expected_current_record_id = body.get("expected_current_record_id")
+    if not isinstance(expected_current_record_id, str):
+        raise ValueError("invalid_expected_current_record_id")
+    payload_digest = repository_inventory_review_digest(body)
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_inventory_digest = args.expected_inventory_digest.strip().lower()
+        if len(expected_inventory_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_inventory_digest
+        ):
+            raise ValueError("invalid_expected_inventory_digest")
+        raw_inventory_digest = record.get("inventory_digest")
+        if raw_inventory_digest is not None and not isinstance(raw_inventory_digest, str):
+            raise ValueError("invalid_inventory_digest")
+        embedded_inventory_digest = (
+            raw_inventory_digest.strip().lower()
+            if isinstance(raw_inventory_digest, str)
+            else ""
+        )
+        if embedded_inventory_digest and embedded_inventory_digest != expected_inventory_digest:
+            raise ValueError("inventory_digest_mismatch")
+        _require_apply_eligible_repository_inventory_dry_run(
+            args,
+            expected_inventory_digest=expected_inventory_digest,
+            expected_payload_digest=payload_digest,
+            expected_inventory_revision=inventory_revision,
+            expected_idempotency_key_fingerprint=(
+                repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+            ),
+        )
+    body["mode"] = mode
+    return body
 
 
 def _require_idempotency(args: argparse.Namespace) -> None:
@@ -2127,6 +2400,7 @@ def execute_post(
             if operation not in {
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
+                "repository-inventory-apply",
             }:
                 raise
             try:
@@ -2137,6 +2411,7 @@ def execute_post(
                 status="accepted_unverified", operation=operation, request=request
             )
             recovery_apply = operation == "generic-web-deploy-recovery-apply"
+            inventory_apply = operation == "repository-inventory-apply"
             payload["summary"] = {
                 "trace_id": trace_id,
                 "recommendation": (
@@ -2145,8 +2420,13 @@ def execute_post(
                     "evidence before retrying."
                     if recovery_apply
                     else (
-                        "Launchplane accepted the apply request, but the response could not be "
-                        "verified locally. Read back the active policy before retrying."
+                        "Launchplane accepted the inventory apply, but the response could not be "
+                        "verified locally. Read back the current inventory record before retrying."
+                        if inventory_apply
+                        else (
+                            "Launchplane accepted the apply request, but the response could not be "
+                            "verified locally. Read back the active policy before retrying."
+                        )
                     )
                 ),
             }
@@ -2158,8 +2438,13 @@ def execute_post(
                         "reservation verification."
                         if recovery_apply
                         else (
-                            "The apply response was not safe to project; do not retry before "
-                            "read-back."
+                            "The inventory apply response was not safe to project; do not retry "
+                            "before read-back."
+                            if inventory_apply
+                            else (
+                                "The apply response was not safe to project; do not retry before "
+                                "read-back."
+                            )
                         )
                     ),
                 )
@@ -2198,6 +2483,43 @@ def execute_change_impact_policy_read(
             timeout=args.timeout,
         )
         emit(summarize_change_impact_policy_read(request=request, provider_payload=provider_payload))
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
+def execute_repository_inventory_read(
+    *, args: argparse.Namespace, request: dict[str, object]
+) -> int:
+    operation = "repository-inventory-read"
+    settings = prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            query={"repository_id": args.repository_id},
+            timeout=args.timeout,
+        )
+        emit(
+            summarize_repository_inventory_read(
+                request=request, provider_payload=provider_payload
+            )
+        )
         return 0
     except urllib.error.HTTPError as exc:
         emit_http_error_payload(operation=operation, request=request, exc=exc)
@@ -2320,6 +2642,13 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def positive_decimal_id(value: str) -> str:
+    normalized = value.strip()
+    if not normalized.isdecimal() or int(normalized) < 1:
+        raise argparse.ArgumentTypeError("must be a positive decimal ID")
+    return normalized
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -2384,6 +2713,39 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Read bounded active change-impact policy metadata.",
     )
     change_impact_read.add_argument("--repository-id", required=True)
+
+    repository_inventory_read = subparsers.add_parser(
+        "repository-inventory-read",
+        help="Read bounded current repository inventory metadata.",
+    )
+    repository_inventory_read.add_argument(
+        "--repository-id", required=True, type=positive_decimal_id
+    )
+
+    repository_inventory_dry_run = subparsers.add_parser(
+        "repository-inventory-dry-run",
+        help="Submit a private repository inventory dry-run payload.",
+    )
+    repository_inventory_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    repository_inventory_dry_run.add_argument("--idempotency-key", required=True)
+
+    repository_inventory_apply = subparsers.add_parser(
+        "repository-inventory-apply",
+        help="Submit a reviewed private repository inventory apply payload.",
+    )
+    repository_inventory_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    repository_inventory_apply.add_argument("--idempotency-key", required=True)
+    repository_inventory_apply.add_argument("--reviewed-dry-run", action="store_true")
+    repository_inventory_apply.add_argument("--expected-inventory-digest", required=True)
+    repository_inventory_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed inventory dry-run.",
+    )
 
     activation_preflight_read = subparsers.add_parser(
         "authz-activation-preflight-read",
@@ -2527,6 +2889,46 @@ def main(argv: list[str]) -> int:
                 "payload_source": "operator_argument",
             }
             return execute_change_impact_policy_read(args=args, request=request)
+        if args.command == "repository-inventory-read":
+            request = {
+                "payload_source": "operator_argument",
+            }
+            return execute_repository_inventory_read(args=args, request=request)
+        if args.command == "repository-inventory-dry-run":
+            _require_idempotency(args)
+            body = repository_inventory_payload_body(args, mode="dry_run")
+            request = {
+                "mode": "dry_run",
+                "payload_source": "private_file",
+                "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == "repository-inventory-apply":
+            body = repository_inventory_payload_body(args, mode="apply")
+            request = {
+                "mode": "apply",
+                "payload_source": "private_file",
+                "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
         if args.command == "authz-activation-preflight-read":
             request = {
                 "github_id": args.github_id,
