@@ -483,6 +483,26 @@ def authorize_lifecycle_write(
         raise OpsError("private NPMplus write evidence is incomplete for the selected ref")
 
 
+def summarize_lifecycle_apply_readiness(
+    context: NpmplusContext, ref: dict[str, Any], command_name: str
+) -> dict[str, bool]:
+    if context.schema_version != SCHEMA_VERSION:
+        return {"apply_authorized": False, "apply_ready": False}
+
+    apply_authorized = command_name in ref["allowed_apply_actions"]
+    evidence = ref.get("write_evidence")
+    apply_ready = (
+        apply_authorized
+        and bool(ref.get("identity"))
+        and isinstance(evidence, dict)
+        and all(evidence.get(field) is True for field in REQUIRED_WRITE_EVIDENCE)
+    )
+    return {
+        "apply_authorized": apply_authorized,
+        "apply_ready": apply_ready,
+    }
+
+
 class NpmplusClient:
     def __init__(self, config: ApiConfig) -> None:
         self.config = config
@@ -697,6 +717,7 @@ def cmd_lifecycle(args: argparse.Namespace) -> None:
         print_json(
             {
                 "apply": False,
+                **summarize_lifecycle_apply_readiness(context, ref, command_name),
                 "planned_operation": args.lifecycle_action,
                 "target": summarize_proxy_host(preflight_host, target_ref=args.host_ref),
             }

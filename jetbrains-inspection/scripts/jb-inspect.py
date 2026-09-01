@@ -379,15 +379,19 @@ class InspectionLane:
     required: bool
     include: tuple[str, ...]
     exclude: tuple[str, ...]
+    project_path: str | None
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.lane_id,
             "ide": self.ide,
             "required": self.required,
             "include": list(self.include),
             "exclude": list(self.exclude),
         }
+        if self.project_path is not None:
+            payload["projectPath"] = self.project_path
+        return payload
 
 
 IDE_PRODUCTS = {
@@ -770,6 +774,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
     quality = config.get("qualityGate", {}) if isinstance(config.get("qualityGate"), dict) else {}
     inspection = quality.get("inspection", {}) if isinstance(quality.get("inspection"), dict) else {}
     inspection_lanes = parse_inspection_lanes(inspection)
+    validate_inspection_lane_project_paths(inspection_lanes, worktree_root)
     repository_preparation = parse_repository_preparation(inspection)
 
     main_config = jetbrains.get("mainWorktreePath") or jetbrains.get("main_worktree_path")
@@ -1328,7 +1333,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         return preparation
 
     if state.get("kind") == "python" and (
-        shutil.which(argv[0]) is None or len(argv) < 3 or not Path(argv[2]).is_file()
+        shutil.which(str(argv[0])) is None or len(argv) < 3 or not Path(argv[2]).is_file()
     ):
         preparation["execution_state"] = "blocked"
         preparation["failure_reason"] = "repository_preparation_runtime_unavailable"
@@ -1345,7 +1350,6 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     environment = os.environ.copy()
     environment[REPOSITORY_PREPARATION_ACTIVE_ENV] = "1"
     started = monotonic_ms()
-    completed: subprocess.CompletedProcess[bytes] | None = None
     timed_out = False
     try:
         process = subprocess.Popen(
@@ -1382,7 +1386,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     mutation = summarize_worktree_mutations(before, after)
     index_changed = before.get("index_sha256") != after.get("index_sha256")
     duration_ms = max(0, monotonic_ms() - started)
-    exit_status = None if timed_out or completed is None else completed.returncode
+    exit_status = None if timed_out else completed.returncode
     reason = None
     if timed_out:
         reason = "repository_preparation_timeout"
@@ -1484,7 +1488,8 @@ def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, 
             raise inspection_lane_config_error(f"Inspection lane {lane_id} required must be true or false.")
         include = parse_inspection_lane_patterns(raw_lane.get("include"), lane_id, "include", required=True)
         exclude = parse_inspection_lane_patterns(raw_lane.get("exclude", []), lane_id, "exclude", required=False)
-        unsupported = sorted(set(raw_lane) - {"id", "ide", "required", "include", "exclude"})
+        project_path = parse_inspection_lane_project_path(raw_lane.get("projectPath"), lane_id)
+        unsupported = sorted(set(raw_lane) - {"id", "ide", "required", "include", "exclude", "projectPath"})
         if unsupported:
             raise inspection_lane_config_error(
                 f"Inspection lane {lane_id} has unsupported fields: {', '.join(unsupported)}"
@@ -1496,9 +1501,47 @@ def parse_inspection_lanes(inspection: dict[str, Any]) -> tuple[InspectionLane, 
                 required=required,
                 include=include,
                 exclude=exclude,
+                project_path=project_path,
             )
         )
     return tuple(lanes)
+
+
+def parse_inspection_lane_project_path(value: Any, lane_id: str) -> str | None:
+    if value is None:
+        return None
+    project_path = clean_optional(value) if isinstance(value, str) else None
+    if project_path is None:
+        raise inspection_lane_config_error(f"Inspection lane {lane_id} projectPath must be a non-empty string.")
+    normalized = project_path.replace("\\", "/")
+    segments = normalized.split("/")
+    drive_path = re.match(r"^[A-Za-z]:/", normalized) is not None
+    if (
+        project_path != normalized
+        or len(normalized) > 1024
+        or normalized.startswith(("/", "~/"))
+        or drive_path
+        or "." in segments
+        or ".." in segments
+        or "" in segments
+        or "\x00" in normalized
+        or any(character in normalized for character in "*?[]")
+    ):
+        raise inspection_lane_config_error(
+            f"Inspection lane {lane_id} projectPath must be a safe repository-relative POSIX directory: {project_path}"
+        )
+    return normalized
+
+
+def validate_inspection_lane_project_paths(lanes: tuple[InspectionLane, ...], worktree_root: Path) -> None:
+    for lane in lanes:
+        if lane.project_path is None:
+            continue
+        resolved = (worktree_root / lane.project_path).resolve()
+        if resolved != worktree_root and not resolved.is_relative_to(worktree_root):
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath resolves outside the exact worktree: {lane.project_path}"
+            )
 
 
 def parse_inspection_lane_patterns(
@@ -2235,8 +2278,9 @@ def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str,
             lane_results.append(noop_inspection_lane_result(lane, execution_order, context))
             continue
         lane_args = inspection_lane_args(args, lane, selected)
-        lane_context = inspection_lane_context(context, lane_args, lane, selected)
+        lane_context = dict(context)
         try:
+            lane_context = inspection_lane_context(context, lane_args, lane, selected)
             lane_payload = run_prepared_inspection(lane_args, lane_context)
         except InspectError as error:
             lane_payload = error_payload(error, lane_args)
@@ -2318,6 +2362,35 @@ def inspection_lane_context(
         }
     )
     worktree_root = Path(str(lane_context["worktree_root"])).expanduser().resolve()
+    if lane.project_path is not None:
+        project_path = (worktree_root / lane.project_path).resolve()
+        if project_path != worktree_root and not project_path.is_relative_to(worktree_root):
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath resolves outside the exact worktree after repository preparation: {lane.project_path}"
+            )
+        if not project_path.is_dir():
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} projectPath must resolve to an existing directory after repository preparation: {lane.project_path}"
+            )
+        outside_project = [
+            item["file"]
+            for item in selected
+            if not Path(item["absolute_path"]).expanduser().resolve().is_relative_to(project_path)
+        ]
+        if outside_project:
+            raise inspection_lane_config_error(
+                f"Inspection lane {lane.lane_id} selected files outside projectPath {lane.project_path}: "
+                + ", ".join(outside_project[:5])
+            )
+        lane_args.project_path = str(project_path)
+        lane_context.update(
+            {
+                "repo_path": str(project_path),
+                "project_path": str(project_path),
+                "exact_route_path": str(project_path),
+                "lifecycle_target_path": str(project_path),
+            }
+        )
     scope_descriptor = canonical_scope_descriptor(lane_args, lane_context, worktree_root)
     lane_context["scope_descriptor"] = scope_descriptor
     lane_context["scope_descriptor_sha256"] = canonical_json_sha256(scope_descriptor)
@@ -2579,6 +2652,7 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 )
                 apply_worktree_mutation_blocker(result)
         result["prepared"] = public_payload(prepared)
+        apply_prepared_retry_evidence(result, prepared)
         result["cleanup"] = cleanup
         if cleanup.get("status") == "deferred":
             result["cleanup_deferred"] = True
@@ -2610,6 +2684,20 @@ def run_prepared_inspection(args: argparse.Namespace, context: dict[str, Any]) -
                 },
             ) from inspection_error
     return result
+
+
+def apply_prepared_retry_evidence(result: dict[str, Any], prepared: dict[str, Any]) -> None:
+    readiness = prepared.get("readiness_barrier")
+    if not isinstance(readiness, dict):
+        return
+    for key in (
+        "internal_retry_count",
+        "internal_retry_reason",
+        "internal_retry_readiness",
+    ):
+        if key in readiness:
+            result.setdefault(key, readiness[key])
+            result[f"prepared_{key}"] = readiness[key]
 
 
 def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
@@ -3479,7 +3567,12 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             claim_metadata=claim_metadata,
         )
         preparation_stage = "readiness_wait"
-        readiness = wait_until_route_ready(args, context, validated_route, getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS))
+        readiness = wait_until_route_ready_with_prepared_sdk_retry(
+            args,
+            context,
+            validated_route,
+            getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS),
+        )
         persist_preparation_lease(
             lease,
             state="prepared",
@@ -4158,6 +4251,50 @@ def wait_until_route_ready(args: argparse.Namespace, context: dict[str, Any], ro
         }
         | route_diagnostic_payload(args, context),
     )
+
+
+def wait_until_route_ready_with_prepared_sdk_retry(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    timeout_ms: int,
+) -> dict[str, Any]:
+    try:
+        return wait_until_route_ready(args, context, route, timeout_ms)
+    except InspectError as error:
+        retry_payload = dict(error.payload)
+        retry_payload.setdefault("context", public_context(context))
+        if (
+            infer_error_reason(error, retry_payload) != "language_sdk_missing"
+            or not prepared_python_sdk_discovery_pending(retry_payload)
+        ):
+            raise
+
+        retry_trigger = {
+            "bucket": "capture_not_ready",
+            "verdict_reason": "language_sdk_missing",
+            "retry_policy": {
+                "retry": True,
+                "max_attempts": 1,
+                "wait_ms": UNKNOWN_RETRY_WAIT_MS,
+            },
+        }
+        retry_readiness = wait_for_internal_retry_readiness(
+            args,
+            context,
+            route,
+            retry_trigger,
+        )
+        if retry_readiness.get("ready") is not True:
+            error.payload["internal_retry_count"] = 0
+            error.payload["internal_retry_readiness"] = retry_readiness
+            raise
+
+        readiness = dict(retry_readiness)
+        readiness["internal_retry_count"] = 1
+        readiness["internal_retry_reason"] = "language_sdk_missing"
+        readiness["internal_retry_readiness"] = retry_readiness
+        return readiness
 
 
 def route_status_ready(body: dict[str, Any]) -> bool:
@@ -5959,6 +6096,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         PROJECT_CONTENT_ROOTS_MISSING_REASON,
         "language_sdk_missing",
         "profile_resolution_error",
+        "inspection_lane_config_invalid",
         SEMANTIC_COVERAGE_MISSING_REASON,
         "untrusted_auto_open_root",
         *REPOSITORY_PREPARATION_TERMINAL_REASONS,
@@ -6023,6 +6161,8 @@ def attribution_failure_phase(payload: dict[str, Any], attribution: dict[str, An
     normalized = normalize_reason(code)
     if normalized in {"ide_selection_required", "ide_config_ambiguous", "ide_config_missing", "implicit_eap_selection"}:
         return "selection"
+    if normalized == "inspection_lane_config_invalid":
+        return "configuration"
     if normalized in {
         "ide_not_ready_timeout",
         "project_open_blocked",
@@ -6832,9 +6972,13 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
         "internal_retry_count": public.get("internal_retry_count"),
+        "internal_retry_reason": public.get("internal_retry_reason"),
         "internal_retry_skipped": public.get("internal_retry_skipped"),
         "internal_retry_skip_reason": public.get("internal_retry_skip_reason"),
         "internal_retry_readiness": public.get("internal_retry_readiness"),
+        "prepared_internal_retry_count": public.get("prepared_internal_retry_count"),
+        "prepared_internal_retry_reason": public.get("prepared_internal_retry_reason"),
+        "prepared_internal_retry_readiness": public.get("prepared_internal_retry_readiness"),
         "unknown_diagnosis": public.get("unknown_diagnosis"),
         "deployment_mismatch": public.get("deployment_mismatch"),
         "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
@@ -7993,7 +8137,10 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
             "failure_phase": payload.get("failure_phase"),
             "unknown_diagnosis": payload.get("unknown_diagnosis"),
             "internal_retry_count": payload.get("internal_retry_count"),
+            "internal_retry_reason": payload.get("internal_retry_reason"),
             "internal_retry_skipped": payload.get("internal_retry_skipped"),
+            "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
+            "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
             "unknown_log_path": payload.get("unknown_log_path"),
             "unknown_log_error": payload.get("unknown_log_error"),
             "outcome_log_path": payload.get("outcome_log_path"),
@@ -8714,6 +8861,43 @@ def repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any
             return bounded_repository_preparation(state, target_worktree=target if isinstance(target, str) else None)
     target = context.get("lifecycle_target_path") or context.get("project_path") or context.get("worktree_root")
     return bounded_repository_preparation({}, target_worktree=target if isinstance(target, str) else None)
+
+
+def prepared_python_sdk_discovery_pending(payload: dict[str, Any]) -> bool:
+    preparation = repository_preparation_for_payload(payload)
+    if preparation.get("execution_state") not in {
+        REPOSITORY_PREPARATION_SUCCEEDED,
+        REPOSITORY_PREPARATION_REUSED,
+    }:
+        return False
+    generated = preparation.get("generated_state_snapshot")
+    if not isinstance(generated, dict) or generated.get("all_present") is not True:
+        return False
+    paths = generated.get("paths")
+    if not isinstance(paths, list):
+        return False
+    target_worktree = preparation.get("target_worktree")
+    if not isinstance(target_worktree, str) or not target_worktree.strip():
+        return False
+    target = Path(target_worktree).expanduser().resolve()
+    project = target
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    for candidate in (payload, context):
+        project_value = candidate.get("project_path") or candidate.get("lifecycle_target_path")
+        if isinstance(project_value, str) and project_value.strip():
+            project = Path(project_value).expanduser().resolve()
+            break
+    if project != target and not project.is_relative_to(target):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("exists") is True
+        and item.get("kind") == "directory"
+        and isinstance(item.get("path"), str)
+        and (target / item["path"]).resolve().name == ".venv"
+        and (target / item["path"]).resolve().parent == project
+        for item in paths
+    )
 
 
 def durable_repository_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any]:

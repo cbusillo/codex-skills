@@ -407,9 +407,12 @@ policy. The helper reads `.github/github.json` when present:
 Mixed-language repositories may replace the single
 `qualityGate.inspection.ide` with ordered `qualityGate.inspection.lanes`. Each
 lane names a unique `id`, an `ide`, whether it is `required`, repository-relative
-`include` globs, and optional `exclude` globs. The helper resolves the selected
-scope once, validates every path against the exact worktree, assigns files by
-first matching lane, and records unmatched and explicitly excluded files. It
+`include` globs, optional `exclude` globs, and an optional repository-relative
+`projectPath` directory when that IDE must open a nested project. The helper
+resolves the selected scope once, validates every file and lane project path
+against the exact worktree, assigns files by first matching lane, and records
+unmatched and explicitly excluded files. Files assigned to a lane with
+`projectPath` must resolve inside that project directory. It
 does not open an IDE for an empty lane. Exclusions apply to ordinary changed-file,
 directory, and whole-project readiness; an explicit `files` scope records an
 override and still runs the selected fixture in its lane. Non-empty lanes run
@@ -662,6 +665,15 @@ side of the boundary they occupy.
   the preferred IDE, or report the blocker. Before a new helper invocation,
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
+- A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
+  after the initial readiness wait while the IDE registers the generated
+  `.venv`. When repository preparation
+  succeeded and proved that the active lane project contains its generated
+  `.venv`, the helper performs exactly one additional route-readiness wait,
+  bounded by the internal retry timeout and gated by route-pinned status. A
+  surfaced `language_sdk_missing` means that internal
+  retry was unavailable or exhausted and remains a terminal configuration
+  blocker; agents must not add another retry loop.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
