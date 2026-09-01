@@ -195,6 +195,21 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "repository-inventory-read": {
+        "method": "GET",
+        "path": "/v1/repository-inventory",
+        "mode": "read",
+    },
+    "repository-inventory-dry-run": {
+        "method": "POST",
+        "path": "/v1/repository-inventory/apply",
+        "mode": "dry-run",
+    },
+    "repository-inventory-apply": {
+        "method": "POST",
+        "path": "/v1/repository-inventory/apply",
+        "mode": "apply",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",
