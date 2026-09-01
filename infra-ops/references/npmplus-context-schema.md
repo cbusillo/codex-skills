@@ -127,6 +127,11 @@ Public output may include:
 - configured/not-configured status
 - generic operation names
 
+Lifecycle dry-runs include `apply_authorized` and `apply_ready` booleans.
+`apply_authorized` reports whether the v2 context allows the selected action;
+`apply_ready` additionally requires target identity assertions and all private
+write-evidence gates. These fields are advisory and never make a dry-run fail.
+
 Public output must not include:
 
 - raw domains

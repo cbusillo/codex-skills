@@ -15,6 +15,7 @@ import subprocess
 import sys
 from http.cookiejar import Cookie
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -634,6 +635,93 @@ def test_authorize_lifecycle_write_is_per_ref_and_requires_evidence(
         npmplus_ops.authorize_lifecycle_write(
             context, ref, "proxy-host-enable"
         )
+
+
+def test_summarize_lifecycle_apply_readiness_reports_v2_state(
+    tmp_path: Path,
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, context_payload()), "default"
+    )
+    ref = context.refs["canary"]
+
+    assert npmplus_ops.summarize_lifecycle_apply_readiness(
+        context, ref, "proxy-host-enable"
+    ) == {"apply_authorized": True, "apply_ready": True}
+
+    ref["write_evidence"]["rollback_ready"] = False
+    assert npmplus_ops.summarize_lifecycle_apply_readiness(
+        context, ref, "proxy-host-enable"
+    ) == {"apply_authorized": True, "apply_ready": False}
+    assert npmplus_ops.summarize_lifecycle_apply_readiness(
+        context, ref, "proxy-host-unsupported"
+    ) == {"apply_authorized": False, "apply_ready": False}
+
+
+def test_summarize_lifecycle_apply_readiness_reports_v1_unavailable(
+    tmp_path: Path,
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    payload = context_payload()
+    payload["schema_version"] = "npmplus.ops.v1"
+    api = payload["api"]
+    assert isinstance(api, dict)
+    api.pop("expected_base_url")
+    api.pop("expected_principal")
+    refs = payload["refs"]
+    assert isinstance(refs, dict)
+    ref_payload = refs["canary"]
+    assert isinstance(ref_payload, dict)
+    ref_payload.pop("allowed_apply_actions")
+    ref_payload.pop("identity")
+    ref_payload.pop("write_evidence")
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, payload), "default"
+    )
+
+    assert npmplus_ops.summarize_lifecycle_apply_readiness(
+        context, context.refs["canary"], "proxy-host-enable"
+    ) == {"apply_authorized": False, "apply_ready": False}
+
+
+def test_cmd_lifecycle_dry_run_includes_apply_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_repo = make_private_repo(tmp_path)
+    context = npmplus_ops.load_context(
+        private_repo, write_provider(private_repo, context_payload()), "default"
+    )
+    host = {
+        "id": 123,
+        "domain_names": ["private.example.invalid"],
+        "enabled": True,
+        "locations": [],
+        "certificate_id": 4,
+        "access_list_id": 0,
+        "npmplus_auth_request": "none",
+    }
+    client = SimpleNamespace(get_proxy_host=lambda host_id: host)
+    monkeypatch.setattr(npmplus_ops, "build_context", lambda args: context)
+    monkeypatch.setattr(npmplus_ops, "build_client", lambda args, value: client)
+
+    npmplus_ops.cmd_lifecycle(
+        argparse.Namespace(
+            apply=False,
+            host_ref="canary",
+            lifecycle_action="enable",
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["apply"] is False
+    assert payload["apply_authorized"] is True
+    assert payload["apply_ready"] is True
+    assert payload["planned_operation"] == "enable"
+    output = json.dumps(payload)
+    assert all(private_literal not in output for private_literal in PRIVATE_LITERALS)
 
 
 def test_cmd_lifecycle_rejects_unauthorized_ref_before_client_build(
