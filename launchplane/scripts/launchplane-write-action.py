@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import helper_command_path  # noqa: E402
+from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -48,58 +50,48 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
     "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
-    "LAUNCHPLANE_LOCAL_ADMIN_TOKEN",
 }
 READ_ONLY_OPERATIONS = {
-    "authz-activation-preflight-read",
     "change-impact-policy-read",
+    "repository-inventory-read",
 }
-AUTHZ_ACTIVATION_PREFLIGHT_TOP_LEVEL_FIELDS = {
-    "status",
-    "trace_id",
-    "policy",
-    "session",
-    "scope",
-    "evaluation",
-    "unmanaged_action_empty_rules",
-}
-AUTHZ_ACTIVATION_PREFLIGHT_POLICY_FIELDS = {
-    "record_id",
-    "revision",
-    "policy_sha256",
+MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
-}
-AUTHZ_ACTIVATION_PREFLIGHT_SESSION_FIELDS = {
-    "session_count",
-    "claims_current",
-    "claims_age_bucket_hours",
-    "expiry_bucket_hours",
-    "identity_fingerprint",
-}
-AUTHZ_ACTIVATION_PREFLIGHT_SCOPE_FIELDS = {
-    "action",
     "product",
-    "context",
-    "target_scope",
+    "mode",
+    "reason",
+    "record",
 }
-AUTHZ_ACTIVATION_PREFLIGHT_EVALUATION_FIELDS = {"decision", "reason_code"}
-AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS = {
-    "total",
-    "github_actions",
-    "github_humans",
-    "terminal_agents",
-    "local_operators",
-    "local_admins",
+MERGE_TRAIN_POLICY_RECORD_FIELDS = {
+    "schema_version",
+    "record_id",
+    "status",
+    "source",
+    "updated_at",
+    "policy_sha256",
+    "policy",
 }
-AUTHZ_DECISION_REASONS = {
-    "allowed",
-    "authz_policy_schema_incompatible",
-    "instance_scope_required",
-    "principal_role_restricted",
-    "principal_binding_invalid",
-    "no_matching_grant",
+MERGE_TRAIN_POLICY_TARGETS_FIELDS = {"status", "trace_id", "policy", "targets"}
+MERGE_TRAIN_POLICY_SUMMARY_FIELDS = {"record_id", "updated_at", "policy_sha256"}
+MERGE_TRAIN_POLICY_TARGET_FIELDS = {
+    "repository",
+    "base_branch",
+    "policy_key",
+    "scheduler",
+    "service_authz",
 }
-AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX = 2**63 - 1
+MERGE_TRAIN_SCHEDULER_FIELDS = {"enabled", "runner_mode", "mutate"}
+MERGE_TRAIN_SERVICE_AUTHZ_FIELDS = {"action", "product", "context"}
+MERGE_TRAIN_POLICY_IMPORT_RESULT_FIELDS = {"mode", "record"}
+MERGE_TRAIN_POLICY_IMPORT_RECORD_FIELDS = {
+    "record_id",
+    "status",
+    "source",
+    "updated_at",
+    "policy_sha256",
+    "repository_count",
+    "policy_keys",
+}
 ATTENTION_CONTROLLER_ACTIONS = {
     "batch_landed",
     "candidate_failed",
@@ -118,6 +110,39 @@ SUCCESS_TOP_LEVEL_KEYS = {
     "result",
     "replayed",
     "original_trace_id",
+}
+REPOSITORY_INVENTORY_RECORD_FIELDS = {
+    "schema_version",
+    "record_id",
+    "repository_id",
+    "repository_owner_id",
+    "repository",
+    "inventory_state",
+    "inventory_revision",
+    "recorded_at",
+    "source",
+    "reason",
+    "supersedes_record_id",
+    "inventory_digest",
+}
+REPOSITORY_INVENTORY_READ_FIELDS = {
+    "schema_version",
+    "status",
+    "repository_id",
+    "current_record",
+    "history_count",
+    "generated_at",
+}
+REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS = {
+    "schema_version",
+    "status",
+    "mode",
+    "repository_id",
+    "inventory_revision",
+    "record_id",
+    "inventory_digest",
+    "supersedes_record_id",
+    "applied_at",
 }
 MERGE_TRAIN_RESULT_FIELDS = {
     "active_action",
@@ -427,7 +452,6 @@ def load_config(path: str | None) -> dict[str, str]:
         "operator_token_env",
         "operator_subject_env",
         "operator_token_label_env",
-        "admin_token_env",
     ):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
@@ -507,20 +531,6 @@ def resolve_settings(args: argparse.Namespace) -> dict[str, str]:
         "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
         "subject": (os.environ.get(subject_env) or env_config.get(subject_env) or "").strip(),
         "token_label": (os.environ.get(token_label_env) or env_config.get(token_label_env) or "").strip(),
-        "public_url_hint_sources": ",".join(public_url_hint_sources(env_config)),
-    }
-
-
-def resolve_admin_settings(args: argparse.Namespace) -> dict[str, str]:
-    config, env_config, service_url = load_operator_sources(args)
-    token_env = (
-        config.get("admin_token_env") or "LAUNCHPLANE_LOCAL_ADMIN_TOKEN"
-    ).strip()
-    return {
-        "service_url": service_url,
-        "token": (os.environ.get(token_env) or env_config.get(token_env) or "").strip(),
-        "subject": "",
-        "token_label": "",
         "public_url_hint_sources": ",".join(public_url_hint_sources(env_config)),
     }
 
@@ -1308,6 +1318,148 @@ def _project_sha256(value: object) -> str:
     return digest
 
 
+def _project_merge_train_policy_summary(value: object) -> dict[str, object]:
+    source = _require_exact_fields(value, MERGE_TRAIN_POLICY_SUMMARY_FIELDS)
+    projected = {
+        "record_id": public_identifier(source.get("record_id")),
+        "updated_at": public_timestamp(source.get("updated_at")),
+        "policy_sha256": _project_sha256(source.get("policy_sha256")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_merge_train_policy_targets(value: object) -> dict[str, object]:
+    source = _require_exact_fields(value, MERGE_TRAIN_POLICY_TARGETS_FIELDS)
+    if public_code(source.get("status")) != "ok":
+        raise LaunchplaneSafetyError("invalid_response")
+    targets = source.get("targets")
+    if not isinstance(targets, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    for target_value in targets:
+        target = _require_exact_fields(target_value, MERGE_TRAIN_POLICY_TARGET_FIELDS)
+        public_identifier(target.get("repository"))
+        public_identifier(target.get("base_branch"))
+        public_identifier(target.get("policy_key"))
+        scheduler = _require_exact_fields(
+            target.get("scheduler"), MERGE_TRAIN_SCHEDULER_FIELDS
+        )
+        if not isinstance(scheduler.get("enabled"), bool) or not isinstance(
+            scheduler.get("mutate"), bool
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        public_code(scheduler.get("runner_mode"))
+        service_authz = _require_exact_fields(
+            target.get("service_authz"), MERGE_TRAIN_SERVICE_AUTHZ_FIELDS
+        )
+        public_identifier(service_authz.get("action"))
+        public_identifier(service_authz.get("product"))
+        public_identifier(service_authz.get("context"))
+    projected = {
+        **_project_merge_train_policy_summary(source.get("policy")),
+        "target_count": len(targets),
+        "trace_id": public_trace_id(source.get("trace_id")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_merge_train_policy_import_response(
+    provider_payload: dict[str, Any], *, operation: str
+) -> dict[str, object]:
+    if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if public_code(provider_payload.get("status")) != "accepted":
+        raise LaunchplaneSafetyError("invalid_response")
+    _project_records(provider_payload.get("records"), set())
+    replayed = provider_payload.get("replayed")
+    if replayed is not None and not isinstance(replayed, bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    if provider_payload.get("original_trace_id"):
+        public_trace_id(provider_payload.get("original_trace_id"))
+    result = _require_exact_fields(
+        provider_payload.get("result"), MERGE_TRAIN_POLICY_IMPORT_RESULT_FIELDS
+    )
+    expected_mode = (
+        "dry_run" if operation == "merge-train-policy-import-dry-run" else "apply"
+    )
+    if public_code(result.get("mode")) != expected_mode:
+        raise LaunchplaneSafetyError("invalid_response")
+    record = _require_exact_fields(
+        result.get("record"), MERGE_TRAIN_POLICY_IMPORT_RECORD_FIELDS
+    )
+    status = public_code(record.get("status"))
+    if status not in {"active", "superseded"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    repository_count = record.get("repository_count")
+    policy_keys = record.get("policy_keys")
+    if (
+        not isinstance(repository_count, int)
+        or isinstance(repository_count, bool)
+        or repository_count < 1
+        or not isinstance(policy_keys, list)
+        or len(policy_keys) != repository_count
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    for policy_key in policy_keys:
+        public_identifier(policy_key)
+    public_identifier(record.get("source"))
+    projected = {
+        "record_id": public_identifier(record.get("record_id")),
+        "status": status,
+        "updated_at": public_timestamp(record.get("updated_at")),
+        "policy_sha256": _project_sha256(record.get("policy_sha256")),
+        "target_count": repository_count,
+    }
+    if replayed is not None:
+        projected["replayed"] = replayed
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def summarize_merge_train_policy_import_success(
+    *,
+    operation: str,
+    request: dict[str, object],
+    current_policy: dict[str, object],
+    provider_payload: dict[str, Any],
+    expected_record_id: str,
+    expected_policy_sha256: str,
+) -> dict[str, object]:
+    candidate = _project_merge_train_policy_import_response(
+        provider_payload, operation=operation
+    )
+    if (
+        candidate["record_id"] != expected_record_id
+        or candidate["policy_sha256"] != expected_policy_sha256
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    payload = base_payload(
+        status="accepted", operation=operation, request=request
+    )
+    payload["result"] = {
+        "mode": "dry_run"
+        if operation == "merge-train-policy-import-dry-run"
+        else "apply",
+        "current_policy": current_policy,
+        "candidate": candidate,
+    }
+    payload["summary"] = {
+        "launchplane_status": "accepted",
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "current_policy_sha256": current_policy["policy_sha256"],
+        "candidate_policy_sha256": candidate["policy_sha256"],
+        "recommendation": (
+            "Review and retain this redacted evidence before applying the exact private payload."
+            if operation == "merge-train-policy-import-dry-run"
+            else "Read back the active merge-train policy before relying on this mutation."
+        ),
+    }
+    assert_public_safe_shape(payload["result"])
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 def _project_generic_web_deploy_recovery_result(
     result: object, *, operation: str
 ) -> dict[str, object]:
@@ -1378,6 +1530,95 @@ def _project_generic_web_deploy_recovery_result(
     else:
         projected["trace_id"] = public_trace_id(source.get("trace_id"))
         projected["recovery_action"] = public_code(source.get("recovery_action"))
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_repository_inventory_record(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_RECORD_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    inventory_state = public_code(source.get("inventory_state"))
+    if inventory_state not in {"tracked", "retired"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    inventory_revision = source.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    supersedes_record_id = source.get("supersedes_record_id")
+    if supersedes_record_id is not None:
+        supersedes_record_id = public_identifier(supersedes_record_id)
+    projected = {
+        "record_id": public_identifier(source.get("record_id")),
+        "inventory_state": inventory_state,
+        "inventory_revision": inventory_revision,
+        "recorded_at": public_timestamp(source.get("recorded_at")),
+        "supersedes_record_id": supersedes_record_id,
+        "inventory_digest": _project_sha256(source.get("inventory_digest")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_repository_inventory_read_model(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_READ_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(source.get("status"))
+    if status not in {"available", "missing", "ambiguous"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    history_count = source.get("history_count")
+    if not isinstance(history_count, int) or isinstance(history_count, bool) or history_count < 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    current_record = source.get("current_record")
+    if (status == "available") != (current_record is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": status,
+        "history_count": history_count,
+        "generated_at": public_timestamp(source.get("generated_at")),
+        "current_record": None,
+    }
+    if current_record is not None:
+        projected["current_record"] = _project_repository_inventory_record(current_record)
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_repository_inventory_apply_result(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(source.get("status"))
+    if status not in {"would_apply", "applied"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    mode = public_code(source.get("mode"))
+    if mode not in {"dry_run", "apply"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    if (status, mode) not in {("would_apply", "dry_run"), ("applied", "apply")}:
+        raise LaunchplaneSafetyError("invalid_response")
+    inventory_revision = source.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    supersedes_record_id = source.get("supersedes_record_id")
+    if supersedes_record_id is not None:
+        supersedes_record_id = public_identifier(supersedes_record_id)
+    projected = {
+        "status": status,
+        "mode": mode,
+        "inventory_revision": inventory_revision,
+        "record_id": public_identifier(source.get("record_id")),
+        "inventory_digest": _project_sha256(source.get("inventory_digest")),
+        "supersedes_record_id": supersedes_record_id,
+        "applied_at": public_timestamp(source.get("applied_at")),
+    }
     assert_public_safe_shape(projected)
     return projected
 
@@ -1472,6 +1713,11 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         return records, _project_change_impact_policy_result(
             provider_payload.get("result")
         )
+    if operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_repository_inventory_apply_result(
+            provider_payload.get("result")
+        )
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -1497,139 +1743,35 @@ def summarize_change_impact_policy_read(
     return payload
 
 
+def summarize_repository_inventory_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(
+        status=status, operation="repository-inventory-read", request=request
+    )
+    payload["result"] = _project_repository_inventory_read_model(
+        provider_payload.get("read_model")
+    )
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Use the bounded current record metadata to prepare the next exact inventory revision."
+        ),
+    }
+    assert_public_safe_shape(payload["result"])
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
     source = _require_dict(value)
     if set(map(str, source)) != fields:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     return source
-
-
-def _project_int(value: object, *, minimum: int, maximum: int | None = None) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
-        raise LaunchplaneSafetyError("invalid_response")
-    if maximum is not None and value > maximum:
-        raise LaunchplaneSafetyError("invalid_response")
-    return value
-
-
-def summarize_authz_activation_preflight_read(
-    *, request: dict[str, object], provider_payload: dict[str, Any]
-) -> dict[str, object]:
-    source = _require_exact_fields(
-        provider_payload, AUTHZ_ACTIVATION_PREFLIGHT_TOP_LEVEL_FIELDS
-    )
-    if public_code(source.get("status")) != "ok":
-        raise LaunchplaneSafetyError("invalid_response")
-
-    policy = _require_exact_fields(
-        source.get("policy"), AUTHZ_ACTIVATION_PREFLIGHT_POLICY_FIELDS
-    )
-    schema_version = _project_int(policy.get("schema_version"), minimum=1, maximum=2)
-    projected_policy = {
-        "record_id": public_identifier(policy.get("record_id")),
-        "revision": _project_int(policy.get("revision"), minimum=1),
-        "policy_sha256": _project_sha256(policy.get("policy_sha256")),
-        "schema_version": schema_version,
-    }
-
-    session = _require_exact_fields(
-        source.get("session"), AUTHZ_ACTIVATION_PREFLIGHT_SESSION_FIELDS
-    )
-    claims_current = session.get("claims_current")
-    if not isinstance(claims_current, bool):
-        raise LaunchplaneSafetyError("invalid_response")
-    identity_fingerprint = public_identifier(session.get("identity_fingerprint"))
-    if (
-        not identity_fingerprint.startswith("identity_")
-        or len(identity_fingerprint) != 73
-        or any(
-            character not in "0123456789abcdef"
-            for character in identity_fingerprint.removeprefix("identity_")
-        )
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected_session = {
-        "session_count": _project_int(
-            session.get("session_count"), minimum=1, maximum=8
-        ),
-        "claims_current": claims_current,
-        "claims_age_bucket_hours": _project_int(
-            session.get("claims_age_bucket_hours"), minimum=0
-        ),
-        "expiry_bucket_hours": _project_int(
-            session.get("expiry_bucket_hours"), minimum=0
-        ),
-        "identity_fingerprint": identity_fingerprint,
-    }
-
-    scope = _require_exact_fields(
-        source.get("scope"), AUTHZ_ACTIVATION_PREFLIGHT_SCOPE_FIELDS
-    )
-    projected_scope = {
-        "action": public_identifier(scope.get("action")),
-        "product": public_code(scope.get("product")),
-        "context": public_code(scope.get("context")),
-        "target_scope": public_code(scope.get("target_scope")),
-    }
-    if projected_scope != {
-        "action": "authz_policy_grant.write",
-        "product": "launchplane",
-        "context": "launchplane",
-        "target_scope": "context",
-    }:
-        raise LaunchplaneSafetyError("invalid_response")
-
-    evaluation = _require_exact_fields(
-        source.get("evaluation"), AUTHZ_ACTIVATION_PREFLIGHT_EVALUATION_FIELDS
-    )
-    decision = public_code(evaluation.get("decision"))
-    reason_code = public_code(evaluation.get("reason_code"))
-    if decision not in {"allowed", "denied"} or reason_code not in AUTHZ_DECISION_REASONS:
-        raise LaunchplaneSafetyError("invalid_response")
-    if (decision == "allowed") != (reason_code == "allowed"):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected_evaluation = {"decision": decision, "reason_code": reason_code}
-
-    action_empty = _require_exact_fields(
-        source.get("unmanaged_action_empty_rules"),
-        AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS,
-    )
-    projected_action_empty = {
-        key: _project_int(action_empty.get(key), minimum=0)
-        for key in AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS
-    }
-    if projected_action_empty["total"] != sum(
-        projected_action_empty[key]
-        for key in AUTHZ_ACTIVATION_PREFLIGHT_ACTION_EMPTY_FIELDS
-        if key != "total"
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-
-    result = {
-        "policy": projected_policy,
-        "session": projected_session,
-        "scope": projected_scope,
-        "evaluation": projected_evaluation,
-        "unmanaged_action_empty_rules": projected_action_empty,
-    }
-    payload = base_payload(
-        status="ok", operation="authz-activation-preflight-read", request=request
-    )
-    payload["result"] = result
-    payload["summary"] = {
-        "launchplane_status": "ok",
-        "trace_id": public_trace_id(source.get("trace_id")),
-        "decision": decision,
-        "reason_code": reason_code,
-        "recommendation": (
-            "Retain this read-only evidence for the separately approved activation decision."
-            if decision == "allowed"
-            else "Stop: the existing GitHub-human session does not have the required authority."
-        ),
-    }
-    assert_public_safe_shape(result)
-    assert_public_safe_shape(payload["summary"])
-    return payload
 
 
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
@@ -1716,6 +1858,14 @@ def summarize_success(
                 "Review the redacted dry-run result before applying the exact same private payload."
                 if operation == "change-impact-policy-dry-run"
                 else "Read back the active change-impact policy before relying on it."
+            )
+        elif operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
+            summary["inventory_apply_status"] = result.get("status")
+            summary["inventory_digest"] = result.get("inventory_digest")
+            summary["recommendation"] = (
+                "Save and review this redacted dry-run evidence before applying the exact same private payload."
+                if operation == "repository-inventory-dry-run"
+                else "Read back the current repository inventory record before relying on the mutation."
             )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
@@ -1836,6 +1986,118 @@ def read_payload_file(path: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError("invalid_payload")
     return raw
+
+
+def repository_inventory_review_digest(body: dict[str, object]) -> str:
+    review_subject = dict(body)
+    review_subject.pop("mode", None)
+    return hashlib.sha256(
+        json.dumps(review_subject, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def repository_inventory_idempotency_key_fingerprint(idempotency_key: str) -> str:
+    normalized = idempotency_key.strip()
+    if not normalized:
+        raise ValueError("idempotency_key_required")
+    return f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}"
+
+
+def _require_apply_eligible_repository_inventory_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_inventory_digest: str,
+    expected_payload_digest: str,
+    expected_inventory_revision: int,
+    expected_idempotency_key_fingerprint: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    request = evidence.get("request")
+    result = evidence.get("result")
+    if not isinstance(request, dict) or not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if (
+        evidence.get("operation") != "repository-inventory-dry-run"
+        or evidence.get("status") != "ok"
+        or request.get("mode") != "dry_run"
+        or request.get("payload_source") != "private_file"
+        or request.get("payload_digest") != expected_payload_digest
+        or request.get("idempotency_key_fingerprint")
+        != expected_idempotency_key_fingerprint
+        or result.get("status") != "would_apply"
+        or result.get("mode") != "dry_run"
+        or result.get("inventory_digest") != expected_inventory_digest
+        or result.get("inventory_revision") != expected_inventory_revision
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def repository_inventory_payload_body(
+    args: argparse.Namespace, *, mode: str
+) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    record = body.get("record")
+    if not isinstance(record, dict):
+        raise ValueError("record_required")
+    repository_id = record.get("repository_id")
+    if (
+        not isinstance(repository_id, str)
+        or not repository_id.isdecimal()
+        or int(repository_id) < 1
+    ):
+        raise ValueError("repository_id_required")
+    inventory_revision = record.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise ValueError("inventory_revision_required")
+    reason = record.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reason_required")
+    expected_current_record_id = body.get("expected_current_record_id")
+    if not isinstance(expected_current_record_id, str):
+        raise ValueError("invalid_expected_current_record_id")
+    payload_digest = repository_inventory_review_digest(body)
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_inventory_digest = args.expected_inventory_digest.strip().lower()
+        if len(expected_inventory_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_inventory_digest
+        ):
+            raise ValueError("invalid_expected_inventory_digest")
+        raw_inventory_digest = record.get("inventory_digest")
+        if raw_inventory_digest is not None and not isinstance(raw_inventory_digest, str):
+            raise ValueError("invalid_inventory_digest")
+        embedded_inventory_digest = (
+            raw_inventory_digest.strip().lower()
+            if isinstance(raw_inventory_digest, str)
+            else ""
+        )
+        if embedded_inventory_digest and embedded_inventory_digest != expected_inventory_digest:
+            raise ValueError("inventory_digest_mismatch")
+        _require_apply_eligible_repository_inventory_dry_run(
+            args,
+            expected_inventory_digest=expected_inventory_digest,
+            expected_payload_digest=payload_digest,
+            expected_inventory_revision=inventory_revision,
+            expected_idempotency_key_fingerprint=(
+                repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+            ),
+        )
+    body["mode"] = mode
+    return body
 
 
 def _require_idempotency(args: argparse.Namespace) -> None:
@@ -2005,6 +2267,173 @@ def change_impact_policy_payload_body(
     return body
 
 
+def _required_lower_sha256(value: object, *, code: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(code)
+    normalized = str(value)
+    if normalized != normalized.strip().lower():
+        raise ValueError(code)
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(code)
+    return normalized
+
+
+def _require_merge_train_policy_dry_run_evidence(
+    args: argparse.Namespace,
+    *,
+    expected_current_policy_digest: str,
+    expected_new_policy_digest: str,
+    expected_record_id: str,
+    expected_record_status: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    expected_top_level = {
+        "schema_version",
+        "status",
+        "provider",
+        "operation",
+        "generated_at",
+        "request",
+        "summary",
+        "records",
+        "result",
+        "warnings",
+    }
+    result = evidence.get("result")
+    evidence_request = evidence.get("request")
+    if (
+        set(map(str, evidence)) != expected_top_level
+        or evidence.get("schema_version") != SCHEMA_VERSION
+        or evidence.get("status") != "accepted"
+        or evidence.get("provider") != PROVIDER
+        or evidence.get("operation") != "merge-train-policy-import-dry-run"
+        or evidence.get("warnings") != []
+        or evidence.get("records") != {}
+        or not isinstance(evidence.get("summary"), dict)
+        or not isinstance(evidence_request, dict)
+        or set(map(str, evidence_request))
+        != {
+            "mode",
+            "payload_source",
+            "expected_current_policy_sha256",
+            "candidate_policy_sha256",
+        }
+        or evidence_request.get("mode") != "dry_run"
+        or evidence_request.get("payload_source") != "private_file"
+        or evidence_request.get("expected_current_policy_sha256")
+        != expected_current_policy_digest
+        or evidence_request.get("candidate_policy_sha256")
+        != expected_new_policy_digest
+        or not isinstance(result, dict)
+        or set(map(str, result)) != {"mode", "current_policy", "candidate"}
+        or result.get("mode") != "dry_run"
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    current_policy = result.get("current_policy")
+    candidate = result.get("candidate")
+    candidate_keys = set(map(str, candidate)) if isinstance(candidate, dict) else set()
+    if (
+        not isinstance(current_policy, dict)
+        or not isinstance(candidate, dict)
+        or set(map(str, current_policy))
+        != {"record_id", "updated_at", "policy_sha256", "target_count", "trace_id"}
+        or candidate_keys
+        not in (
+            {"record_id", "status", "updated_at", "policy_sha256", "target_count"},
+            {
+                "record_id",
+                "status",
+                "updated_at",
+                "policy_sha256",
+                "target_count",
+                "replayed",
+            },
+        )
+        or ("replayed" in candidate and not isinstance(candidate.get("replayed"), bool))
+        or current_policy.get("policy_sha256") != expected_current_policy_digest
+        or candidate.get("policy_sha256") != expected_new_policy_digest
+        or candidate.get("record_id") != expected_record_id
+        or candidate.get("status") != expected_record_status
+        or not isinstance(current_policy.get("target_count"), int)
+        or isinstance(current_policy.get("target_count"), bool)
+        or current_policy.get("target_count", -1) < 0
+        or not isinstance(candidate.get("target_count"), int)
+        or isinstance(candidate.get("target_count"), bool)
+        or candidate.get("target_count", 0) < 1
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def merge_train_policy_import_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], str, str]:
+    body = read_payload_file(args.payload_file)
+    if set(map(str, body)) != MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS:
+        raise ValueError("invalid_payload_shape")
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    if body.get("product") != "launchplane":
+        raise ValueError("invalid_product")
+    if body.get("mode") != mode:
+        raise ValueError("mode_mismatch")
+    reason = body.get("reason")
+    if not isinstance(reason, str):
+        raise ValueError("reason_required")
+    record = body.get("record")
+    if not isinstance(record, dict) or set(map(str, record)) != MERGE_TRAIN_POLICY_RECORD_FIELDS:
+        raise ValueError("invalid_record_shape")
+    if record.get("schema_version") != 1 or not isinstance(record.get("policy"), dict):
+        raise ValueError("invalid_record")
+    record_id = record.get("record_id")
+    source = record.get("source")
+    updated_at = record.get("updated_at")
+    if not isinstance(record_id, str) or not record_id.strip():
+        raise ValueError("record_id_required")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("source_required")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        raise ValueError("updated_at_required")
+    if record.get("status") not in {"active", "superseded"}:
+        raise ValueError("invalid_record_status")
+    candidate_digest = _required_lower_sha256(
+        record.get("policy_sha256"), code="invalid_policy_digest"
+    )
+    if not record_id.endswith(f"-{candidate_digest[:12]}"):
+        raise ValueError("record_id_digest_mismatch")
+    expected_current_digest = _required_lower_sha256(
+        args.expected_current_policy_digest,
+        code="invalid_expected_current_policy_digest",
+    )
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        if not reason.strip():
+            raise ValueError("reason_required")
+        expected_new_digest = _required_lower_sha256(
+            args.expected_new_policy_digest,
+            code="invalid_expected_new_policy_digest",
+        )
+        if expected_new_digest != candidate_digest:
+            raise ValueError("new_policy_digest_mismatch")
+        _require_merge_train_policy_dry_run_evidence(
+            args,
+            expected_current_policy_digest=expected_current_digest,
+            expected_new_policy_digest=expected_new_digest,
+            expected_record_id=record_id,
+            expected_record_status=str(record["status"]),
+        )
+    return body, expected_current_digest, candidate_digest
+
+
 def merge_train_controller_body(args: argparse.Namespace) -> dict[str, object]:
     if args.mutate:
         _require_idempotency(args)
@@ -2127,6 +2556,7 @@ def execute_post(
             if operation not in {
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
+                "repository-inventory-apply",
             }:
                 raise
             try:
@@ -2137,6 +2567,7 @@ def execute_post(
                 status="accepted_unverified", operation=operation, request=request
             )
             recovery_apply = operation == "generic-web-deploy-recovery-apply"
+            inventory_apply = operation == "repository-inventory-apply"
             payload["summary"] = {
                 "trace_id": trace_id,
                 "recommendation": (
@@ -2145,8 +2576,13 @@ def execute_post(
                     "evidence before retrying."
                     if recovery_apply
                     else (
-                        "Launchplane accepted the apply request, but the response could not be "
-                        "verified locally. Read back the active policy before retrying."
+                        "Launchplane accepted the inventory apply, but the response could not be "
+                        "verified locally. Read back the current inventory record before retrying."
+                        if inventory_apply
+                        else (
+                            "Launchplane accepted the apply request, but the response could not be "
+                            "verified locally. Read back the active policy before retrying."
+                        )
                     )
                 ),
             }
@@ -2158,8 +2594,13 @@ def execute_post(
                         "reservation verification."
                         if recovery_apply
                         else (
-                            "The apply response was not safe to project; do not retry before "
-                            "read-back."
+                            "The inventory apply response was not safe to project; do not retry "
+                            "before read-back."
+                            if inventory_apply
+                            else (
+                                "The apply response was not safe to project; do not retry before "
+                                "read-back."
+                            )
                         )
                     ),
                 )
@@ -2176,6 +2617,154 @@ def execute_post(
         emit_provider_unavailable(operation=operation, request=request)
         return 1
     except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+        return 1
+
+
+def execute_merge_train_policy_import(
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    request: dict[str, object],
+    body: dict[str, object],
+    expected_current_policy_digest: str,
+    expected_candidate_policy_digest: str,
+) -> int:
+    settings = prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
+    if settings is None:
+        return 2
+    record = body["record"]
+    if not isinstance(record, dict):
+        raise AssertionError("validated merge-train policy record is missing")
+    post_attempted = False
+    try:
+        policy_targets_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=internal_helper_path("merge-train-policy-targets-read"),
+            settings=settings,
+            query={},
+            timeout=args.timeout,
+        )
+        current_policy = _project_merge_train_policy_targets(policy_targets_payload)
+        if current_policy["policy_sha256"] != expected_current_policy_digest:
+            payload = base_payload(
+                status="stale", operation=operation, request=request
+            )
+            payload["result"] = {"current_policy": current_policy}
+            payload["summary"] = {
+                "error_code": "current_policy_digest_mismatch",
+                "expected_current_policy_sha256": expected_current_policy_digest,
+                "observed_current_policy_sha256": current_policy["policy_sha256"],
+                "recommendation": "Stop before import and rebuild reviewed evidence from the current active policy.",
+            }
+            assert_public_safe_shape(payload["result"])
+            assert_public_safe_shape(payload["summary"])
+            emit(payload)
+            return 1
+        post_attempted = True
+        provider_payload = request_launchplane(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            body=body,
+            timeout=args.timeout,
+            idempotency_key=args.idempotency_key,
+        )
+        try:
+            emit(
+                summarize_merge_train_policy_import_success(
+                    operation=operation,
+                    request=request,
+                    current_policy=current_policy,
+                    provider_payload=provider_payload,
+                    expected_record_id=str(record["record_id"]),
+                    expected_policy_sha256=expected_candidate_policy_digest,
+                )
+            )
+        except LaunchplaneSafetyError:
+            if operation != "merge-train-policy-import-apply":
+                raise
+            try:
+                trace_id = public_trace_id(provider_payload.get("trace_id"))
+            except LaunchplaneSafetyError:
+                trace_id = ""
+            payload = base_payload(
+                status="accepted_unverified", operation=operation, request=request
+            )
+            payload["result"] = {"current_policy": current_policy}
+            payload["summary"] = {
+                "trace_id": trace_id,
+                "recommendation": "Launchplane accepted the import apply, but its response could not be verified locally. Read back the active merge-train policy before retrying.",
+            }
+            payload["warnings"] = [
+                warning(
+                    "apply_response_unverified",
+                    "The merge-train policy apply response was not safe to project; do not retry before read-back.",
+                )
+            ]
+            emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        if (
+            operation == "merge-train-policy-import-apply"
+            and post_attempted
+            and exc.code == "unsafe_redirect"
+        ):
+            payload = base_payload(
+                status="outcome_unknown", operation=operation, request=request
+            )
+            payload["summary"] = {
+                "recommendation": "The apply request outcome is unknown because Launchplane redirected after POST began. Read back the active merge-train policy before any retry.",
+            }
+            payload["warnings"] = [
+                warning(
+                    "apply_outcome_unknown",
+                    "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
+                )
+            ]
+            emit(payload)
+            return 1
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        if operation == "merge-train-policy-import-apply" and post_attempted:
+            payload = base_payload(
+                status="outcome_unknown", operation=operation, request=request
+            )
+            payload["summary"] = {
+                "recommendation": "The apply request outcome is unknown because transport failed after POST began. Read back the active merge-train policy before any retry.",
+            }
+            payload["warnings"] = [
+                warning(
+                    "apply_outcome_unknown",
+                    "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
+                )
+            ]
+            emit(payload)
+            return 1
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+    except (ValueError, json.JSONDecodeError):
+        if operation == "merge-train-policy-import-apply" and post_attempted:
+            payload = base_payload(
+                status="accepted_unverified", operation=operation, request=request
+            )
+            payload["summary"] = {
+                "recommendation": "Launchplane returned an unreadable apply response after accepting the HTTP exchange. Read back the active merge-train policy before retrying.",
+            }
+            payload["warnings"] = [
+                warning(
+                    "apply_response_unverified",
+                    "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
+                )
+            ]
+            emit(payload)
+            return 0
         emit_invalid_response(operation=operation, request=request)
         return 1
 
@@ -2213,85 +2802,25 @@ def execute_change_impact_policy_read(
         return 1
 
 
-def execute_authz_activation_preflight_read(
+def execute_repository_inventory_read(
     *, args: argparse.Namespace, request: dict[str, object]
 ) -> int:
-    operation = "authz-activation-preflight-read"
-    try:
-        settings = resolve_admin_settings(args)
-    except ValueError:
-        emit(
-            unavailable_payload(
-                operation=operation,
-                request=request,
-                status="invalid",
-                code="invalid_config",
-                message="Launchplane local-admin config is invalid.",
-            )
-        )
-        return 2
-    if settings["service_url"]:
-        try:
-            validate_service_url(settings["service_url"])
-        except LaunchplaneSafetyError as exc:
-            emit(
-                unavailable_payload(
-                    operation=operation,
-                    request=request,
-                    status="invalid",
-                    code=exc.code,
-                    message="Launchplane local-admin service URL is invalid.",
-                )
-            )
-            return 2
-    if not settings["service_url"] or not settings["token"]:
-        if settings["service_url"]:
-            code = "missing_local_admin_token"
-            message = "Launchplane local-admin token is missing."
-            recommendation = (
-                "Treat this as an authorization-architecture gap unless an already-sanctioned "
-                "private token source is documented. Do not provision, discover, extract, or "
-                "substitute a credential; block only the affected work and continue independent "
-                "safe work when available."
-            )
-        elif settings["token"] and settings["public_url_hint_sources"]:
-            code = "ambiguous_service_url"
-            message = (
-                "A public Launchplane URL source is present, but no operator URL source is configured."
-            )
-            recommendation = operator_config_recommendation(code)
-        elif settings["token"]:
-            code = "missing_service_url"
-            message = "Launchplane operator service URL is missing."
-            recommendation = operator_config_recommendation(code)
-        else:
-            code = "missing_local_admin_config"
-            message = "Launchplane operator URL and local-admin token are required for this read."
-            recommendation = (
-                "Configure only a documented operator URL. Treat missing local-admin credential "
-                "custody as an authorization-architecture gap; do not create or substitute a token "
-                "to satisfy this compatibility read."
-            )
-        emit(
-            no_context_payload(
-                operation=operation,
-                request=request,
-                code=code,
-                message=message,
-                recommendation=recommendation,
-            )
-        )
+    operation = "repository-inventory-read"
+    settings = prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
+    if settings is None:
         return 2
     try:
-        provider_payload = request_launchplane(
+        provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
             path=helper_command_path(operation),
             settings=settings,
-            body={"github_id": args.github_id},
+            query={"repository_id": args.repository_id},
             timeout=args.timeout,
         )
         emit(
-            summarize_authz_activation_preflight_read(
+            summarize_repository_inventory_read(
                 request=request, provider_payload=provider_payload
             )
         )
@@ -2310,14 +2839,11 @@ def execute_authz_activation_preflight_read(
         return 1
 
 
-def positive_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError("must be a positive integer") from None
-    if parsed < 1 or parsed > AUTHZ_ACTIVATION_PREFLIGHT_GITHUB_ID_MAX:
-        raise argparse.ArgumentTypeError("must be a bounded positive integer")
-    return parsed
+def positive_decimal_id(value: str) -> str:
+    normalized = value.strip()
+    if not normalized.isdecimal() or int(normalized) < 1:
+        raise argparse.ArgumentTypeError("must be a positive decimal ID")
+    return normalized
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -2385,11 +2911,71 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     change_impact_read.add_argument("--repository-id", required=True)
 
-    activation_preflight_read = subparsers.add_parser(
-        "authz-activation-preflight-read",
-        help="Read bounded activation evidence for one existing GitHub-human session.",
+    merge_train_policy_dry_run = subparsers.add_parser(
+        "merge-train-policy-import-dry-run",
+        help="Dry-run one private merge-train policy import after active-policy preflight.",
     )
-    activation_preflight_read.add_argument("--github-id", required=True, type=positive_int)
+    merge_train_policy_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    merge_train_policy_dry_run.add_argument(
+        "--expected-current-policy-digest", required=True
+    )
+    merge_train_policy_dry_run.add_argument("--idempotency-key", default="")
+
+    merge_train_policy_apply = subparsers.add_parser(
+        "merge-train-policy-import-apply",
+        help="Apply one reviewed private merge-train policy import after active-policy preflight.",
+    )
+    merge_train_policy_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    merge_train_policy_apply.add_argument(
+        "--expected-current-policy-digest", required=True
+    )
+    merge_train_policy_apply.add_argument(
+        "--expected-new-policy-digest", required=True
+    )
+    merge_train_policy_apply.add_argument("--idempotency-key", required=True)
+    merge_train_policy_apply.add_argument("--reviewed-dry-run", action="store_true")
+    merge_train_policy_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed merge-train policy dry-run.",
+    )
+
+    repository_inventory_read = subparsers.add_parser(
+        "repository-inventory-read",
+        help="Read bounded current repository inventory metadata.",
+    )
+    repository_inventory_read.add_argument(
+        "--repository-id", required=True, type=positive_decimal_id
+    )
+
+    repository_inventory_dry_run = subparsers.add_parser(
+        "repository-inventory-dry-run",
+        help="Submit a private repository inventory dry-run payload.",
+    )
+    repository_inventory_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    repository_inventory_dry_run.add_argument("--idempotency-key", required=True)
+
+    repository_inventory_apply = subparsers.add_parser(
+        "repository-inventory-apply",
+        help="Submit a reviewed private repository inventory apply payload.",
+    )
+    repository_inventory_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    repository_inventory_apply.add_argument("--idempotency-key", required=True)
+    repository_inventory_apply.add_argument("--reviewed-dry-run", action="store_true")
+    repository_inventory_apply.add_argument("--expected-inventory-digest", required=True)
+    repository_inventory_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed inventory dry-run.",
+    )
 
     recovery_dry_run = subparsers.add_parser(
         "generic-web-deploy-recovery-dry-run",
@@ -2527,12 +3113,72 @@ def main(argv: list[str]) -> int:
                 "payload_source": "operator_argument",
             }
             return execute_change_impact_policy_read(args=args, request=request)
-        if args.command == "authz-activation-preflight-read":
+        if args.command in {
+            "merge-train-policy-import-dry-run",
+            "merge-train-policy-import-apply",
+        }:
+            mode = (
+                "dry_run"
+                if args.command == "merge-train-policy-import-dry-run"
+                else "apply"
+            )
+            body, expected_current_digest, candidate_digest = (
+                merge_train_policy_import_body(args, mode=mode)
+            )
             request = {
-                "github_id": args.github_id,
+                "mode": mode,
+                "payload_source": "private_file",
+                "expected_current_policy_sha256": expected_current_digest,
+                "candidate_policy_sha256": candidate_digest,
+            }
+            return execute_merge_train_policy_import(
+                args=args,
+                operation=args.command,
+                request=request,
+                body=body,
+                expected_current_policy_digest=expected_current_digest,
+                expected_candidate_policy_digest=candidate_digest,
+            )
+        if args.command == "repository-inventory-read":
+            request = {
                 "payload_source": "operator_argument",
             }
-            return execute_authz_activation_preflight_read(args=args, request=request)
+            return execute_repository_inventory_read(args=args, request=request)
+        if args.command == "repository-inventory-dry-run":
+            _require_idempotency(args)
+            body = repository_inventory_payload_body(args, mode="dry_run")
+            request = {
+                "mode": "dry_run",
+                "payload_source": "private_file",
+                "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == "repository-inventory-apply":
+            body = repository_inventory_payload_body(args, mode="apply")
+            request = {
+                "mode": "apply",
+                "payload_source": "private_file",
+                "payload_digest": repository_inventory_review_digest(body),
+                "idempotency_key_fingerprint": (
+                    repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+                ),
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
         if args.command == "merge-train-controller-run-once":
             request = {
                 "repository": args.repo,

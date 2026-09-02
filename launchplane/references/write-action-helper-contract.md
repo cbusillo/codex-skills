@@ -13,10 +13,11 @@ public-safety, operation semantics, protected workflows, invariant coverage, and
 helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
-Generic-web deploy recovery is intentionally listed as a bounded local
-extension because its two routes are not in the current upstream projection.
-The conformance gate fails if those routes later appear upstream so migration
-cannot leave duplicate route authorities behind.
+Merge-train policy import, repository inventory, and generic-web deploy
+recovery are intentionally listed as bounded local extensions because their
+routes are not in the current upstream projection. The conformance gate fails
+if those routes later appear upstream so migration cannot leave duplicate route
+authorities behind.
 
 The helper lives at `scripts/launchplane-write-action.py`.
 
@@ -42,7 +43,6 @@ The committed example is fake and public-safe:
 ```json
 {
   "service_url": "https://launchplane.example.invalid",
-  "admin_token_env": "LAUNCHPLANE_LOCAL_ADMIN_TOKEN",
   "operator_token_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN",
   "operator_subject_env": "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
   "operator_token_label_env": "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL"
@@ -70,9 +70,7 @@ subject, and label values. When no explicit JSON config is supplied, the helper
 may load `~/.config/launchplane/local-operator.env` for these keys only:
 `LAUNCHPLANE_OPERATOR_URL`, `LAUNCHPLANE_LOCAL_OPERATOR_TOKEN`,
 `LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT`, and
-`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`, plus the distinct
-`LAUNCHPLANE_LOCAL_ADMIN_TOKEN` used by the activation-preflight read. The
-local-admin read never falls back to the operator token. The helper may also notice
+`LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL`. The helper may also notice
 `LAUNCHPLANE_PUBLIC_URL` as a diagnostic near-miss when the operator URL is
 missing, but it does not use that variable as write authority.
 
@@ -95,69 +93,14 @@ with `status: "incomplete"` may still have a local token source; read the
   summary. For `status: "accepted_unverified"`, the write may have committed;
   read back the active record before any retry.
 - `1`: Launchplane was reached but rejected the request, or the service was
-  unavailable/invalid.
+  unavailable/invalid. For `status: "outcome_unknown"`, transport failed after
+  an apply POST began; read back the active record before any retry.
 - `2`: The requested write action could not be attempted because local operator
   config was missing/invalid or the helper request was malformed.
 
 Missing Launchplane config is still non-fatal for skills that only need context;
 it is a fail-closed result for this helper because every command is an explicit
 operator operation.
-
-## Authorization Activation Preflight
-
-The supported service-native preflight resolves an existing GitHub-human
-session server-side and evaluates its exact `authz_policy_grant.write` access:
-
-```sh
-uv run launchplane/scripts/launchplane-write-action.py \
-  authz-activation-preflight-read \
-  --github-id <bounded-positive-github-id>
-```
-
-The helper reads the service URL from the normal operator URL sources and the
-bearer credential only from `LAUNCHPLANE_LOCAL_ADMIN_TOKEN` or an explicitly
-configured `admin_token_env`. It accepts no token argument and sends exactly
-`{"github_id": <signed-64-bit positive integer>}` to
-`POST /v1/authz-diagnostics/activation-preflight/read`. It projects only the
-trace, active policy identity, coarse session freshness, keyed identity
-fingerprint, fixed evaluated scope, decision/reason, and bounded unmanaged
-action-empty counts. Unexpected or additional fields fail closed. This read
-does not authorize or perform an activation, policy grant, session renewal,
-reconciliation, secret mutation, or direct database access.
-
-Configuration and error states are distinct:
-
-- `ambiguous_service_url`: token exists and `LAUNCHPLANE_PUBLIC_URL` is present,
-  but no operator URL source is configured. Obtain the correct operator URL and
-  pass it with `--url` before the subcommand, or configure
-  `LAUNCHPLANE_OPERATOR_URL`.
-- `missing_service_url`: token exists but no write-capable service URL source is
-  configured. Fix local operator routing by configuring
-  `LAUNCHPLANE_OPERATOR_URL`, passing `--url` before the subcommand, or
-  supplying a private JSON `service_url`. This is local routing, not evidence
-  that an administrator credential should exist.
-- `missing_local_admin_token`: service URL exists but no already-sanctioned
-  local-admin credential source is configured. Treat this as an architecture
-  gap, not a provisioning instruction.
-- `missing_local_admin_config`: neither the service URL nor an already-sanctioned
-  local-admin credential source is configured. Configure only a documented
-  operator URL; do not create or substitute a credential for this compatibility
-  helper.
-- `unauthorized`: Launchplane rejected the credential, usually HTTP 401.
-- `denied`: Launchplane accepted the credential but denied the specific action,
-  usually HTTP 403 or `authorization_denied`. This is an authority-scope result,
-  not a credential-selection result. Report it with the trace ID, block only the
-  affected work, and continue independent safe work when available. Escalate a
-  capability gap to the owning authorization-architecture issue. Do not probe
-  routes manually or route the call through a GitHub workflow, Actions secret,
-  or OIDC role.
-- `stale`: retry requires refreshed dry-run or intent evidence.
-- `unavailable`: service/network/response failure; do not switch to provider
-  mutation.
-
-`operator-config-diagnostic` reports ordinary local-operator readiness only. It
-may report `ready` while local-admin custody is absent, so it is not readiness
-evidence for this compatibility preflight.
 
 ## Product Config
 
@@ -227,11 +170,6 @@ capability gap: block and escalate the affected work to the owning
 authorization-architecture issue with the denied operation, record type, and
 trace ID, then continue independent work when possible.
 
-`missing_local_admin_token` and `missing_local_admin_config` on the activation
-preflight are architecture-gap results unless an already-sanctioned private
-credential source is documented. Do not provision, discover, extract, or
-substitute a credential merely to satisfy this compatibility helper.
-
 ## Change-Impact Policy
 
 Change-impact policy is runtime authority. Supply it only as explicit private
@@ -277,6 +215,112 @@ successor policy revisions must reference it. Unexpected response fields fail
 closed. If apply receives HTTP success but the response cannot be safely
 projected, the helper reports `accepted_unverified` and requires read-back before
 any retry.
+
+## Merge-Train Policy Import
+
+Merge-train policy records are runtime authority. Supply the exact service
+envelope only through a private JSON file outside the active repository or
+worktree. The top-level fields must be exactly `schema_version`, `product`,
+`mode`, `reason`, and `record`; the helper does not rewrite the requested mode.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  merge-train-policy-import-dry-run \
+  --payload-file /private/path/merge-train-policy-dry-run.json \
+  --expected-current-policy-digest <active-policy-digest>
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  merge-train-policy-import-apply \
+  --payload-file /private/path/merge-train-policy-apply.json \
+  --expected-current-policy-digest <active-policy-digest> \
+  --expected-new-policy-digest <candidate-policy-digest> \
+  --reviewed-dry-run \
+  --dry-run-evidence-file /private/path/merge-train-policy-dry-run-output.json \
+  --idempotency-key <stable-import-key>
+```
+
+Immediately before either POST, the helper reads
+`GET /v1/work-graph/merge-train/policy-targets` and refuses the import unless
+the active policy digest exactly matches `--expected-current-policy-digest`.
+This is a bounded read-before-write guard, not server-enforced compare-and-swap;
+the active policy can still change between the read and the POST. Operators must
+therefore serialize reviewed imports and always perform active-policy read-back
+after apply.
+
+The candidate digest must be 64 lowercase hexadecimal characters, and the
+record id must end with the first 12 digest characters. Apply additionally
+requires a non-empty reason, a stable idempotency key, explicit review
+acknowledgement, the exact candidate digest, and saved successful dry-run helper
+output. That evidence binds the observed current digest plus candidate record
+id, digest, status, and target count. Mismatch or malformed evidence fails
+before any service request.
+
+Saved evidence is intentionally version-strict: the helper requires the exact
+standard output envelope, exact bounded request/result keys, empty records and
+warnings, and the exact current/candidate projections produced by the matching
+dry-run command. A helper output-shape change invalidates older evidence and
+requires a fresh dry-run instead of silently accepting a partially understood
+artifact.
+
+The public result omits the policy body, repositories, branches, labels, token
+source, service authorization, trusted automation ids, source, reason, private
+file paths, service URL, and authorization headers. It emits only current and
+candidate record metadata, digests, status, target counts, replay state, and
+trace metadata. Unexpected response fields fail closed. An unreadable or unsafe
+successful apply response is `accepted_unverified`; transport failure after the
+apply POST begins is `outcome_unknown`. Both require active-policy read-back
+before any retry.
+## Repository Inventory
+
+Repository inventory is an inert, append-only identity stream. Use the deployed
+service through the bounded helper; never substitute direct database writes,
+raw HTTP calls, checked-in catalogs, or workflow-owned authority. Write payloads
+must be explicit private JSON files outside the active repository or worktree.
+
+```sh
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-read \
+  --repository-id <repository-id>
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-dry-run \
+  --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
+  > /private/path/repository-inventory-dry-run.json
+
+uv run launchplane/scripts/launchplane-write-action.py \
+  repository-inventory-apply \
+  --payload-file /private/path/repository-inventory.json \
+  --idempotency-key <stable-key> \
+  --reviewed-dry-run \
+  --expected-inventory-digest <inventory-digest-from-dry-run> \
+  --dry-run-evidence-file /private/path/repository-inventory-dry-run.json
+```
+
+The helper overrides only `mode`. The dry-run output includes a SHA-256
+`request.payload_digest` over the complete private envelope with `mode` removed,
+so apply can prove that the reviewed payload, including
+`expected_current_record_id`, is unchanged. Dry-run and apply require the same
+stable idempotency key. Both evidence envelopes include only its
+`sha256:` fingerprint, and apply rejects reviewed dry-run evidence whose
+fingerprint does not match the apply key. Apply also requires explicit reviewed
+acknowledgement, the server-derived inventory digest, and the saved redacted
+dry-run output. Missing, malformed, stale, mismatched, or non-`would_apply`
+evidence fails locally before any service request. If the private record already
+embeds an inventory digest, it must match the reviewed digest exactly.
+
+Public-safe output omits repository name, owner ID, source, reason, raw payload,
+payload path, query ID, raw idempotency key, service URL, and authorization
+headers. It may emit the redacted idempotency-key fingerprint, append-only record ID, inventory state/revision/digest,
+superseded record ID, timestamps, history count, and trace metadata required for
+the next exact revision. Unexpected response fields fail closed. If apply
+receives HTTP success but the response cannot be safely projected, the helper
+reports `accepted_unverified`; read back the current record and do not retry
+until the outcome is known.
+
+An `authorization_denied` response is an authority or capability gap. Preserve
+the trace and route the blocked work to the owning authorization redesign; do
+not add a grant, borrow workflow identity, or use a raw API fallback.
 
 ## Generic-Web Deploy Recovery
 
@@ -428,10 +472,14 @@ provider dictionary pass-through:
   timestamp.
 - `change-impact-policy-read` may emit only shadow/enforcement status, history
   count, and the same bounded current-policy metadata.
-- `authz-activation-preflight-read` may emit only active policy identity,
-  coarse session freshness, keyed identity fingerprint, the fixed
-  `authz_policy_grant.write` scope, evaluation decision/reason, and bounded
-  unmanaged action-empty counts.
+- `merge-train-policy-import-dry-run` and
+  `merge-train-policy-import-apply` may emit only active-policy identity and
+  digest, candidate record identity, digest, status, target count, replay state,
+  and trace metadata.
+- `repository-inventory-read`, `repository-inventory-dry-run`, and
+  `repository-inventory-apply` may emit only bounded append status, record IDs,
+  state/revision/digest metadata, timestamps, history count, request digest,
+  and trace metadata.
 
 The projections recognize the current service envelopes, including idempotent
 replay metadata, nested merge-train candidate/landing/stack summaries, the

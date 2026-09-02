@@ -99,11 +99,12 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     artifact = contract_artifact()
     summary = contract.validate_contract(artifact)
     assert summary["semantic_digest_sha256"] == (
-        "f4cdc0e0546831c78eb05e0194b59aa1ae0fad650af25a78b36b255e7ee469d8"
+        "9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5"
     )
-    assert summary["operation_count"] == 13
+    assert summary["operation_count"] == 12
     assert summary["protected_workflow_count"] == 4
-    assert summary["local_extension_count"] == 2
+    assert summary["local_extension_count"] == 7
+    assert summary["internal_helper_route_count"] == 1
     assert summary["hermetic_only"] is True
     assert summary["upstream_freshness_proven"] is False
 
@@ -171,6 +172,11 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
     for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():
         assert contract.helper_command_path(command) == extension["path"]
         assert extension["path"] not in operation_paths.values()
+    assert contract.internal_helper_path("merge-train-policy-targets-read") == (
+        "/v1/work-graph/merge-train/policy-targets"
+    )
+    assert "authz-activation-preflight-read" not in contract.PROJECTED_HELPER_COMMANDS
+    assert not hasattr(write_action, "execute_authz_activation_preflight_read")
     context_args = argparse.Namespace(
         repo="example/repo", branch=None, issue=None, pr=None
     )
@@ -188,6 +194,186 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
         assert '"/v1/' not in helper_source
 
 
+def test_repository_inventory_review_evidence_binds_exact_private_payload() -> None:
+    inventory_digest = "a" * 64
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "repository-inventory.json"
+        evidence_path = Path(directory) / "repository-inventory-dry-run.json"
+        payload = {
+            "schema_version": 1,
+            "expected_current_record_id": "",
+            "record": {
+                "schema_version": 1,
+                "record_id": "repository-inventory-1001-r1",
+                "repository_id": "1001",
+                "repository_owner_id": "2001",
+                "repository": "example/repository",
+                "inventory_state": "tracked",
+                "inventory_revision": 1,
+                "recorded_at": "2026-08-26T00:00:00Z",
+                "source": "operator",
+                "reason": "issue-backed inventory",
+                "supersedes_record_id": None,
+                "inventory_digest": "",
+            },
+        }
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        idempotency_key = "repository-inventory-example-1"
+        idempotency_key_fingerprint = (
+            write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+        )
+        dry_run_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key=idempotency_key,
+        )
+        dry_run_body = write_action.repository_inventory_payload_body(
+            dry_run_args, mode="dry_run"
+        )
+        payload_digest = write_action.repository_inventory_review_digest(dry_run_body)
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "status": "ok",
+                    "provider": "launchplane",
+                    "operation": "repository-inventory-dry-run",
+                    "request": {
+                        "mode": "dry_run",
+                        "payload_source": "private_file",
+                        "payload_digest": payload_digest,
+                        "idempotency_key_fingerprint": idempotency_key_fingerprint,
+                    },
+                    "result": {
+                        "status": "would_apply",
+                        "mode": "dry_run",
+                        "inventory_revision": 1,
+                        "record_id": "repository-inventory-1001-r1",
+                        "inventory_digest": inventory_digest,
+                        "supersedes_record_id": None,
+                        "applied_at": "2026-08-26T00:00:01Z",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key=idempotency_key,
+            reviewed_dry_run=True,
+            expected_inventory_digest=inventory_digest,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        apply_body = write_action.repository_inventory_payload_body(
+            apply_args, mode="apply"
+        )
+        assert apply_body["mode"] == "apply"
+
+        apply_args.idempotency_key = "repository-inventory-example-2"
+        try:
+            write_action.repository_inventory_payload_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("changed idempotency key must invalidate dry-run evidence")
+        apply_args.idempotency_key = idempotency_key
+
+        payload["expected_current_record_id"] = "repository-inventory-1001-r0"
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            write_action.repository_inventory_payload_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("changed inventory payload must invalidate dry-run evidence")
+
+
+def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
+    record = {
+        "schema_version": 1,
+        "record_id": "repository-inventory-1001-r1",
+        "repository_id": "1001",
+        "repository_owner_id": "2001",
+        "repository": "example/repository",
+        "inventory_state": "tracked",
+        "inventory_revision": 1,
+        "recorded_at": "2026-08-26T00:00:00Z",
+        "source": "operator",
+        "reason": "issue-backed inventory",
+        "supersedes_record_id": None,
+        "inventory_digest": "a" * 64,
+    }
+    read_payload = write_action.summarize_repository_inventory_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "ok",
+            "trace_id": "launchplane_req_inventory_read",
+            "read_model": {
+                "schema_version": 1,
+                "status": "available",
+                "repository_id": "1001",
+                "current_record": record,
+                "history_count": 1,
+                "generated_at": "2026-08-26T00:00:01Z",
+            },
+        },
+    )
+    rendered = json.dumps(read_payload)
+    assert "example/repository" not in rendered
+    assert "repository_owner_id" not in rendered
+    assert "issue-backed inventory" not in rendered
+    assert read_payload["result"]["current_record"]["record_id"] == (
+        "repository-inventory-1001-r1"
+    )
+
+    idempotency_key = "repository-inventory-example-1"
+    idempotency_key_fingerprint = (
+        write_action.repository_inventory_idempotency_key_fingerprint(idempotency_key)
+    )
+    assert idempotency_key not in idempotency_key_fingerprint
+    assert idempotency_key_fingerprint.startswith("sha256:")
+    assert len(idempotency_key_fingerprint) == 71
+
+    provider_payload = {
+        "status": "ok",
+        "trace_id": "launchplane_req_inventory_apply",
+        "result": {
+            "schema_version": 1,
+            "status": "applied",
+            "mode": "apply",
+            "repository_id": "1001",
+            "inventory_revision": 1,
+            "record_id": "repository-inventory-1001-r1",
+            "inventory_digest": "a" * 64,
+            "supersedes_record_id": None,
+            "applied_at": "2026-08-26T00:00:01Z",
+        },
+    }
+    apply_payload = write_action.summarize_success(
+        operation="repository-inventory-apply",
+        request={
+            "mode": "apply",
+            "payload_source": "private_file",
+            "idempotency_key_fingerprint": idempotency_key_fingerprint,
+        },
+        provider_payload=provider_payload,
+    )
+    assert "repository_id" not in apply_payload["result"]
+    assert apply_payload["request"]["idempotency_key_fingerprint"] == (
+        idempotency_key_fingerprint
+    )
+    provider_payload["result"]["repository"] = "example/repository"
+    try:
+        write_action.summarize_success(
+            operation="repository-inventory-apply",
+            request={"mode": "apply", "payload_source": "private_file"},
+            provider_payload=provider_payload,
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("unexpected inventory response fields must fail closed")
+
+
 def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
     result = run_helper("check-agent-operator-contract.py", [])
     assert result["returncode"] == 0
@@ -196,6 +382,442 @@ def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
     assert payload["summary"]["hermetic_only"] is True
     assert payload["summary"]["upstream_freshness_proven"] is False
     assert "url" not in json.dumps(payload).lower()
+
+
+def _merge_train_policy_import_payload(
+    *,
+    mode: str = "dry_run",
+    reason: str = "",
+    status: str = "active",
+    policy_sha256: str = "c" * 64,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "product": "launchplane",
+        "mode": mode,
+        "reason": reason,
+        "record": {
+            "schema_version": 1,
+            "record_id": f"merge-train-policy-20260829T203000Z-{policy_sha256[:12]}",
+            "status": status,
+            "source": "operator:private-policy-source",
+            "updated_at": "2026-08-29T20:30:00Z",
+            "policy_sha256": policy_sha256,
+            "policy": {
+                "schema_version": 1,
+                "policies": [
+                    {
+                        "repository": "private-owner/private-repository",
+                        "base_branch": "main",
+                        "github_token": {"env_var": "PRIVATE_GITHUB_TOKEN"},
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _merge_train_policy_targets_payload(
+    *, policy_sha256: str = "a" * 64
+) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_policy_targets",
+        "policy": {
+            "record_id": f"merge-train-policy-current-{policy_sha256[:12]}",
+            "updated_at": "2026-08-29T20:00:00Z",
+            "policy_sha256": policy_sha256,
+        },
+        "targets": [
+            {
+                "repository": "private-owner/current-repository",
+                "base_branch": "main",
+                "policy_key": "private-owner/current-repository:main",
+                "scheduler": {
+                    "enabled": False,
+                    "runner_mode": "controller",
+                    "mutate": False,
+                },
+                "service_authz": {
+                    "action": "merge_train.run_once",
+                    "product": "launchplane",
+                    "context": "launchplane",
+                },
+            }
+        ],
+    }
+
+
+def _merge_train_policy_targets_projection(
+    *, policy_sha256: str = "a" * 64
+) -> dict[str, object]:
+    return {
+        "record_id": f"merge-train-policy-current-{policy_sha256[:12]}",
+        "updated_at": "2026-08-29T20:00:00Z",
+        "policy_sha256": policy_sha256,
+        "target_count": 1,
+        "trace_id": "launchplane_req_policy_targets",
+    }
+
+
+def _merge_train_policy_import_response(
+    *,
+    mode: str = "dry_run",
+    status: str = "active",
+    policy_sha256: str = "c" * 64,
+    replayed: bool | None = None,
+) -> dict[str, object]:
+    request_payload = _merge_train_policy_import_payload(
+        mode=mode,
+        reason="Approved policy import." if mode == "apply" else "",
+        status=status,
+        policy_sha256=policy_sha256,
+    )
+    record = request_payload["record"]
+    assert isinstance(record, dict)
+    response: dict[str, object] = {
+        "status": "accepted",
+        "trace_id": "launchplane_req_policy_import",
+        "records": {},
+        "result": {
+            "mode": mode,
+            "record": {
+                "record_id": record["record_id"],
+                "status": status,
+                "source": record["source"],
+                "updated_at": record["updated_at"],
+                "policy_sha256": policy_sha256,
+                "repository_count": 1,
+                "policy_keys": ["private-owner/private-repository:main"],
+            },
+        },
+    }
+    if replayed is not None:
+        response["replayed"] = replayed
+    return response
+
+
+def _merge_train_policy_dry_run_evidence() -> dict[str, object]:
+    return write_action.summarize_merge_train_policy_import_success(
+        operation="merge-train-policy-import-dry-run",
+        request={
+            "mode": "dry_run",
+            "payload_source": "private_file",
+            "expected_current_policy_sha256": "a" * 64,
+            "candidate_policy_sha256": "c" * 64,
+        },
+        current_policy=_merge_train_policy_targets_projection(),
+        provider_payload=_merge_train_policy_import_response(),
+        expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
+        expected_policy_sha256="c" * 64,
+    )
+
+
+def test_merge_train_policy_import_body_projection_and_redaction() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "private-merge-train-policy.json"
+        payload_path.write_text(
+            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
+        )
+        body, current_digest, candidate_digest = (
+            write_action.merge_train_policy_import_body(
+                argparse.Namespace(
+                    payload_file=str(payload_path),
+                    expected_current_policy_digest="a" * 64,
+                    idempotency_key="",
+                ),
+                mode="dry_run",
+            )
+        )
+    assert body["mode"] == "dry_run"
+    assert current_digest == "a" * 64
+    assert candidate_digest == "c" * 64
+
+    evidence = _merge_train_policy_dry_run_evidence()
+    evidence_result = evidence["result"]
+    assert isinstance(evidence_result, dict)
+    current_policy = evidence_result["current_policy"]
+    candidate = evidence_result["candidate"]
+    assert isinstance(current_policy, dict)
+    assert isinstance(candidate, dict)
+    assert current_policy["target_count"] == 1
+    assert candidate["target_count"] == 1
+    rendered = json.dumps(evidence)
+    for private_value in (
+        "private-owner/private-repository",
+        "private-owner/current-repository",
+        "operator:private-policy-source",
+        "PRIVATE_GITHUB_TOKEN",
+        str(payload_path),
+    ):
+        assert private_value not in rendered
+
+    malformed = _merge_train_policy_import_response()
+    malformed_result = malformed["result"]
+    assert isinstance(malformed_result, dict)
+    malformed_record = malformed_result["record"]
+    assert isinstance(malformed_record, dict)
+    malformed_record["unexpected"] = "must-not-pass"
+    try:
+        write_action.summarize_merge_train_policy_import_success(
+            operation="merge-train-policy-import-dry-run",
+            request={"mode": "dry_run"},
+            current_policy=_merge_train_policy_targets_projection(),
+            provider_payload=malformed,
+            expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
+            expected_policy_sha256="c" * 64,
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected extra merge-train import response field to fail closed")
+
+
+def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "private-merge-train-policy-apply.json"
+        evidence_path = Path(directory) / "private-merge-train-policy-dry-run.json"
+        payload_path.write_text(
+            json.dumps(
+                _merge_train_policy_import_payload(
+                    mode="apply", reason="Approved policy import."
+                )
+            ),
+            encoding="utf-8",
+        )
+        evidence_path.write_text(
+            json.dumps(_merge_train_policy_dry_run_evidence()), encoding="utf-8"
+        )
+        args = argparse.Namespace(
+            payload_file=str(payload_path),
+            expected_current_policy_digest="a" * 64,
+            expected_new_policy_digest="c" * 64,
+            idempotency_key="merge-train-policy-import-example",
+            reviewed_dry_run=True,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        body, current_digest, candidate_digest = (
+            write_action.merge_train_policy_import_body(args, mode="apply")
+        )
+        assert body["mode"] == "apply"
+        assert current_digest == "a" * 64
+        assert candidate_digest == "c" * 64
+
+        for attribute, value, expected_code in (
+            ("idempotency_key", "", "idempotency_key_required"),
+            ("reviewed_dry_run", False, "reviewed_dry_run_required"),
+            ("expected_new_policy_digest", "d" * 64, "new_policy_digest_mismatch"),
+        ):
+            invalid_args = copy.copy(args)
+            setattr(invalid_args, attribute, value)
+            try:
+                write_action.merge_train_policy_import_body(
+                    invalid_args, mode="apply"
+                )
+            except ValueError as exc:
+                assert str(exc) == expected_code
+            else:
+                raise AssertionError(f"expected {expected_code}")
+
+        mismatched_evidence = _merge_train_policy_dry_run_evidence()
+        mismatched_result = mismatched_evidence["result"]
+        assert isinstance(mismatched_result, dict)
+        mismatched_current_policy = mismatched_result["current_policy"]
+        assert isinstance(mismatched_current_policy, dict)
+        mismatched_current_policy["policy_sha256"] = "b" * 64
+        evidence_path.write_text(json.dumps(mismatched_evidence), encoding="utf-8")
+        try:
+            write_action.merge_train_policy_import_body(args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("expected mismatched policy evidence to fail closed")
+
+
+def test_merge_train_policy_import_preflight_blocks_stale_policy_before_post() -> None:
+    calls: list[str] = []
+    output = io.StringIO()
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "private-merge-train-policy.json"
+        payload_path.write_text(
+            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
+        )
+
+        def fake_read(**kwargs: Any) -> dict[str, object]:
+            calls.append(str(kwargs["path"]))
+            return _merge_train_policy_targets_payload(policy_sha256="b" * 64)
+
+        def fail_post(**_kwargs: Any) -> dict[str, object]:
+            raise AssertionError("policy import POST must not run after stale preflight")
+
+        with temporary_attribute(
+            write_action,
+            "resolve_settings",
+            lambda _args: {
+                "service_url": "https://launchplane.example.invalid",
+                "token": "operator-token",
+                "public_url_hint_sources": "",
+            },
+        ):
+            with temporary_attribute(write_action, "request_launchplane_read", fake_read):
+                with temporary_attribute(write_action, "request_launchplane", fail_post):
+                    with redirect_stdout(output):
+                        status = write_action.main(
+                            [
+                                "merge-train-policy-import-dry-run",
+                                "--payload-file",
+                                str(payload_path),
+                                "--expected-current-policy-digest",
+                                "a" * 64,
+                            ]
+                        )
+    assert status == 1
+    assert calls == ["/v1/work-graph/merge-train/policy-targets"]
+    result = json.loads(output.getvalue())
+    assert result["status"] == "stale"
+    assert result["summary"]["error_code"] == "current_policy_digest_mismatch"
+
+
+def test_merge_train_policy_import_uses_exact_read_and_write_routes() -> None:
+    calls: list[tuple[str, str]] = []
+    output = io.StringIO()
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "private-merge-train-policy.json"
+        payload_path.write_text(
+            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
+        )
+
+        def fake_read(**kwargs: Any) -> dict[str, object]:
+            calls.append(("GET", str(kwargs["path"])))
+            return _merge_train_policy_targets_payload()
+
+        def fake_post(**kwargs: Any) -> dict[str, object]:
+            calls.append(("POST", str(kwargs["path"])))
+            assert kwargs["idempotency_key"] == ""
+            return _merge_train_policy_import_response(replayed=False)
+
+        with temporary_attribute(
+            write_action,
+            "resolve_settings",
+            lambda _args: {
+                "service_url": "https://launchplane.example.invalid",
+                "token": "operator-token",
+                "public_url_hint_sources": "",
+            },
+        ):
+            with temporary_attribute(write_action, "request_launchplane_read", fake_read):
+                with temporary_attribute(write_action, "request_launchplane", fake_post):
+                    with redirect_stdout(output):
+                        status = write_action.main(
+                            [
+                                "merge-train-policy-import-dry-run",
+                                "--payload-file",
+                                str(payload_path),
+                                "--expected-current-policy-digest",
+                                "a" * 64,
+                            ]
+                        )
+        evidence_path = Path(directory) / "private-merge-train-policy-evidence.json"
+        evidence_path.write_text(output.getvalue(), encoding="utf-8")
+        payload_path.write_text(
+            json.dumps(
+                _merge_train_policy_import_payload(
+                    mode="apply", reason="Approved policy import."
+                )
+            ),
+            encoding="utf-8",
+        )
+        apply_body, apply_current_digest, apply_candidate_digest = (
+            write_action.merge_train_policy_import_body(
+                argparse.Namespace(
+                    payload_file=str(payload_path),
+                    expected_current_policy_digest="a" * 64,
+                    expected_new_policy_digest="c" * 64,
+                    idempotency_key="merge-train-policy-import-example",
+                    reviewed_dry_run=True,
+                    dry_run_evidence_file=str(evidence_path),
+                ),
+                mode="apply",
+            )
+        )
+    assert status == 0
+    assert calls == [
+        ("GET", "/v1/work-graph/merge-train/policy-targets"),
+        ("POST", "/v1/merge-train/policies/import"),
+    ]
+    result = json.loads(output.getvalue())
+    assert result["status"] == "accepted"
+    assert result["result"]["candidate"]["policy_sha256"] == "c" * 64
+    assert result["result"]["candidate"]["replayed"] is False
+    assert apply_body["mode"] == "apply"
+    assert apply_current_digest == "a" * 64
+    assert apply_candidate_digest == "c" * 64
+
+
+def test_merge_train_policy_import_apply_handles_ambiguous_success_and_transport() -> None:
+    body = _merge_train_policy_import_payload(
+        mode="apply", reason="Approved policy import."
+    )
+    args = argparse.Namespace(timeout=3, idempotency_key="policy-import-example")
+    request = {
+        "mode": "apply",
+        "payload_source": "private_file",
+        "expected_current_policy_sha256": "a" * 64,
+        "candidate_policy_sha256": "c" * 64,
+    }
+    settings = {
+        "service_url": "https://launchplane.example.invalid",
+        "token": "operator-token",
+        "public_url_hint_sources": "",
+    }
+
+    for provider_result, expected_status, expected_code, expected_returncode in (
+        (
+            {"status": "accepted", "trace_id": "launchplane_req_unverified"},
+            "accepted_unverified",
+            "apply_response_unverified",
+            0,
+        ),
+        (
+            urllib.error.URLError("connection reset"),
+            "outcome_unknown",
+            "apply_outcome_unknown",
+            1,
+        ),
+        (
+            safety.LaunchplaneSafetyError("unsafe_redirect"),
+            "outcome_unknown",
+            "apply_outcome_unknown",
+            1,
+        ),
+    ):
+        output = io.StringIO()
+
+        def fake_post(**_kwargs: Any) -> dict[str, object]:
+            if isinstance(provider_result, Exception):
+                raise provider_result
+            return provider_result
+
+        with temporary_attribute(write_action, "resolve_settings", lambda _args: settings):
+            with temporary_attribute(
+                write_action,
+                "request_launchplane_read",
+                lambda **_kwargs: _merge_train_policy_targets_payload(),
+            ):
+                with temporary_attribute(write_action, "request_launchplane", fake_post):
+                    with redirect_stdout(output):
+                        status = write_action.execute_merge_train_policy_import(
+                            args=args,
+                            operation="merge-train-policy-import-apply",
+                            request=request,
+                            body=body,
+                            expected_current_policy_digest="a" * 64,
+                            expected_candidate_policy_digest="c" * 64,
+                        )
+        payload = json.loads(output.getvalue())
+        assert status == expected_returncode
+        assert payload["status"] == expected_status
+        assert payload["warnings"][0]["code"] == expected_code
 
 
 def test_endpoint_validation_policy() -> None:
@@ -755,6 +1377,23 @@ def test_change_impact_policy_cli_dispatches_exact_route_and_modes() -> None:
         "payload_source": "private_file",
     }
 
+    read_calls: list[dict[str, Any]] = []
+
+    def fake_execute_read(**kwargs: Any) -> int:
+        read_calls.append(kwargs)
+        return 0
+
+    with temporary_attribute(
+        write_action, "execute_change_impact_policy_read", fake_execute_read
+    ):
+        assert (
+            write_action.main(
+                ["change-impact-policy-read", "--repository-id", "123"]
+            )
+            == 0
+        )
+    assert read_calls[0]["request"] == {"payload_source": "operator_argument"}
+
 
 def test_change_impact_policy_read_projection_is_bounded() -> None:
     record = {
@@ -823,165 +1462,6 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
     )
     assert empty_payload["result"]["current_policy"] is None
     assert empty_payload["result"]["policy_history_count"] == 0
-
-
-def _activation_preflight_payload() -> dict[str, object]:
-    return {
-        "status": "ok",
-        "trace_id": "launchplane_req_activation_preflight",
-        "policy": {
-            "record_id": "authz-policy-17",
-            "revision": 17,
-            "policy_sha256": "a" * 64,
-            "schema_version": 2,
-        },
-        "session": {
-            "session_count": 1,
-            "claims_current": True,
-            "claims_age_bucket_hours": 2,
-            "expiry_bucket_hours": 4,
-            "identity_fingerprint": f"identity_{'b' * 64}",
-        },
-        "scope": {
-            "action": "authz_policy_grant.write",
-            "product": "launchplane",
-            "context": "launchplane",
-            "target_scope": "context",
-        },
-        "evaluation": {"decision": "allowed", "reason_code": "allowed"},
-        "unmanaged_action_empty_rules": {
-            "total": 1,
-            "github_actions": 0,
-            "github_humans": 1,
-            "terminal_agents": 0,
-            "local_operators": 0,
-            "local_admins": 0,
-        },
-    }
-
-
-def test_authz_activation_preflight_projection_is_bounded() -> None:
-    payload = write_action.summarize_authz_activation_preflight_read(
-        request={"github_id": 123, "payload_source": "operator_argument"},
-        provider_payload=_activation_preflight_payload(),
-    )
-    assert payload["status"] == "ok"
-    assert payload["summary"]["decision"] == "allowed"
-    assert payload["result"]["scope"] == {
-        "action": "authz_policy_grant.write",
-        "product": "launchplane",
-        "context": "launchplane",
-        "target_scope": "context",
-    }
-    assert "github_id" not in json.dumps(payload["result"])
-
-    malformed = _activation_preflight_payload()
-    malformed_session = malformed["session"]
-    assert isinstance(malformed_session, dict)
-    malformed["session"] = {**malformed_session, "login": "must-not-pass"}
-    try:
-        write_action.summarize_authz_activation_preflight_read(
-            request={"github_id": 123}, provider_payload=malformed
-        )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected extra activation-preflight field to fail closed")
-
-    inconsistent = _activation_preflight_payload()
-    inconsistent["evaluation"] = {
-        "decision": "allowed",
-        "reason_code": "no_matching_grant",
-    }
-    try:
-        write_action.summarize_authz_activation_preflight_read(
-            request={"github_id": 123}, provider_payload=inconsistent
-        )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_response"
-    else:
-        raise AssertionError("expected inconsistent decision to fail closed")
-
-
-def test_authz_activation_preflight_uses_admin_token_and_exact_route() -> None:
-    try:
-        write_action.positive_int(str(2**63))
-    except argparse.ArgumentTypeError:
-        pass
-    else:
-        raise AssertionError("expected oversized GitHub ID to fail closed")
-
-    args = argparse.Namespace(
-        config=None,
-        env_config=None,
-        url=None,
-        timeout=3,
-        github_id=123,
-    )
-    with temporary_attribute(write_action, "load_config", lambda _path: {}):
-        with temporary_attribute(write_action, "load_operator_env", lambda _path=None: {}):
-            with patch.dict(
-                write_action.os.environ,
-                {
-                    "LAUNCHPLANE_OPERATOR_URL": "https://launchplane.example.invalid",
-                    "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": "operator-token-must-not-be-used",
-                },
-                clear=True,
-            ):
-                settings = write_action.resolve_admin_settings(args)
-    assert settings["token"] == ""
-
-    calls: list[dict[str, Any]] = []
-
-    def fake_request(**kwargs: Any) -> dict[str, object]:
-        calls.append(kwargs)
-        return _activation_preflight_payload()
-
-    output = io.StringIO()
-    with temporary_attribute(
-        write_action,
-        "resolve_admin_settings",
-        lambda _args: {
-            "service_url": "https://launchplane.example.invalid",
-            "token": "admin-token",
-            "subject": "",
-            "token_label": "",
-            "public_url_hint_sources": "",
-        },
-    ):
-        with temporary_attribute(write_action, "request_launchplane", fake_request):
-            with redirect_stdout(output):
-                status = write_action.main(
-                    ["authz-activation-preflight-read", "--github-id", "123"]
-                )
-    assert status == 0
-    assert calls[0]["path"] == "/v1/authz-diagnostics/activation-preflight/read"
-    assert calls[0]["body"] == {"github_id": 123}
-    assert "idempotency_key" not in calls[0]
-    assert json.loads(output.getvalue())["summary"]["decision"] == "allowed"
-
-
-def test_authz_activation_preflight_errors_are_read_only() -> None:
-    http_error = urllib.error.HTTPError(
-        "https://launchplane.example.invalid/v1/authz-diagnostics/activation-preflight/read",
-        403,
-        "Forbidden",
-        hdrs=Message(),
-        fp=io.BytesIO(
-            json.dumps(
-                {
-                    "trace_id": "launchplane_req_activation_denied",
-                    "error": {"code": "authorization_denied"},
-                }
-            ).encode()
-        ),
-    )
-    payload = write_action.summarize_http_error(
-        operation="authz-activation-preflight-read", request={"github_id": 123}, exc=http_error
-    )
-    message = payload["warnings"][0]["message"]
-    assert "read was rejected" in message
-    assert "write action" not in message
 
 
 def test_change_impact_apply_success_projection_failure_is_unverified() -> None:
@@ -1382,42 +1862,6 @@ def test_denied_recommendation_escalates_without_borrowing_ci_authority() -> Non
     assert "do not probe routes manually" in recommendation
     assert "workflow" in recommendation
     assert "check the intended launchplane authz reconciliation" not in recommendation
-
-
-def test_missing_activation_token_is_an_architecture_gap_not_provisioning_advice() -> None:
-    args = argparse.Namespace(
-        config=None,
-        env_config=None,
-        url=None,
-        timeout=3,
-        github_id=123,
-    )
-    output = io.StringIO()
-    with temporary_attribute(
-        write_action,
-        "resolve_admin_settings",
-        lambda _args: {
-            "service_url": "https://launchplane.example.invalid",
-            "token": "",
-            "subject": "",
-            "token_label": "",
-            "public_url_hint_sources": "",
-        },
-    ):
-        with redirect_stdout(output):
-            status = write_action.execute_authz_activation_preflight_read(
-                args=args,
-                request={"github_id": 123},
-            )
-
-    payload = json.loads(output.getvalue())
-    recommendation = payload["summary"]["recommendation"].lower()
-    assert status == 2
-    assert payload["summary"]["configuration_state"] == "missing_local_admin_token"
-    assert "authorization-architecture gap" in recommendation
-    assert "do not provision" in recommendation
-    assert "continue independent safe work" in recommendation
-    assert "configure launchplane_local_admin_token" not in recommendation
 
 
 def test_context_projection_contract_and_secret_shape() -> None:
@@ -2092,7 +2536,14 @@ def main() -> int:
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,
+        test_repository_inventory_review_evidence_binds_exact_private_payload,
+        test_repository_inventory_projection_is_bounded_and_fail_closed,
         test_agent_operator_contract_cli_is_public_safe_and_hermetic,
+        test_merge_train_policy_import_body_projection_and_redaction,
+        test_merge_train_policy_import_apply_requires_bound_evidence,
+        test_merge_train_policy_import_preflight_blocks_stale_policy_before_post,
+        test_merge_train_policy_import_uses_exact_read_and_write_routes,
+        test_merge_train_policy_import_apply_handles_ambiguous_success_and_transport,
         test_endpoint_validation_policy,
         test_build_url_and_redirect_policy,
         test_write_helper_validates_cli_env_and_json_url_sources,
@@ -2105,9 +2556,6 @@ def main() -> int:
         test_change_impact_policy_projection_fails_closed_on_extra_fields,
         test_change_impact_policy_cli_dispatches_exact_route_and_modes,
         test_change_impact_policy_read_projection_is_bounded,
-        test_authz_activation_preflight_projection_is_bounded,
-        test_authz_activation_preflight_uses_admin_token_and_exact_route,
-        test_authz_activation_preflight_errors_are_read_only,
         test_change_impact_apply_success_projection_failure_is_unverified,
         test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
@@ -2117,7 +2565,6 @@ def main() -> int:
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,
         test_denied_recommendation_escalates_without_borrowing_ci_authority,
-        test_missing_activation_token_is_an_architecture_gap_not_provisioning_advice,
         test_context_projection_contract_and_secret_shape,
         test_current_agent_context_service_shape,
         test_request_helpers_use_shared_safe_urlopen,
