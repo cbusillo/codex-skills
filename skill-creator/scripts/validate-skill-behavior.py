@@ -37,6 +37,38 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def normalize_spacing(text: str) -> str:
+    return " ".join(text.split())
+
+
+def normalize_text(text: str) -> str:
+    return normalize_spacing(text).lower()
+
+
+def bounded_raw_text(text: str, start: str, end: str) -> str:
+    lowered = text.lower()
+    start_index = lowered.find(start.lower())
+    require(start_index >= 0, f"Missing bounded-text start marker: {start}")
+    end_index = lowered.find(end.lower(), start_index + len(start))
+    require(end_index >= 0, f"Missing bounded-text end marker: {end}")
+    return text[start_index:end_index]
+
+
+def bounded_text(text: str, start: str, end: str) -> str:
+    return normalize_text(bounded_raw_text(text, start, end))
+
+
+def uses_only_pinned_fast_forward_commands(text: str) -> bool:
+    normalized = normalize_text(text)
+    if "pull --ff-only" in normalized:
+        return False
+    merge_count = normalized.count("merge --ff-only")
+    pinned_count = normalized.count(
+        'merge --ff-only --no-autostash --no-overwrite-ignore "$upstream_sha"'
+    )
+    return merge_count > 0 and merge_count == pinned_count
+
+
 def load_yaml(text: str) -> Any:
     yaml_module = importlib.import_module("yaml")
     try:
@@ -1196,15 +1228,53 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
     )
 
 
+def test_bounded_text_is_fail_closed() -> None:
+    sample = "before\nSTART\ninside requirement\nEND\nafter\n"
+    require(
+        bounded_text(sample, "START", "END") == "start inside requirement",
+        "Bounded text must return only the requested section",
+    )
+    for start, end in (("MISSING", "END"), ("START", "MISSING")):
+        try:
+            bounded_text(sample, start, end)
+        except AssertionError:
+            continue
+        raise AssertionError("Bounded text must fail closed on missing markers")
+    require(
+        not uses_only_pinned_fast_forward_commands(
+            "```sh\ngit merge --ff-only @{upstream}\n```"
+        ),
+        "Pinned-command validation must remain immune to Markdown fences",
+    )
+    require(
+        not uses_only_pinned_fast_forward_commands("git merge --ff-only origin/main"),
+        "Pinned-command validation must reject remote-tracking merge operands",
+    )
+    require(
+        not uses_only_pinned_fast_forward_commands(
+            'git merge --ff-only --no-autostash --no-overwrite-ignore "$upstream_sha"\n'
+            "git pull --ff-only"
+        ),
+        "Pinned-command validation must reject pull-based fast-forward commands",
+    )
+    require(
+        uses_only_pinned_fast_forward_commands(
+            'git merge --ff-only --no-autostash --no-overwrite-ignore "$upstream_sha"'
+        ),
+        "Pinned upstream commands must remain accepted",
+    )
+
+
 def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
-    github_text = " ".join((ROOT / "github" / "SKILL.md").read_text().lower().split())
+    github_raw = (ROOT / "github" / "SKILL.md").read_text()
+    github_text = normalize_text(github_raw)
     babysit_text = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
     launchplane_text = " ".join((ROOT / "launchplane" / "SKILL.md").read_text().lower().split())
-    closeout_text = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
+    closeout_raw = (ROOT / "work-closeout" / "SKILL.md").read_text()
+    closeout_text = normalize_text(closeout_raw)
     inspection_text = " ".join((ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower().split())
-    repo_workflow_text = " ".join(
-        (ROOT / "github" / "references" / "repo-workflow.md").read_text().lower().split()
-    )
+    repo_workflow_raw = (ROOT / "github" / "references" / "repo-workflow.md").read_text()
+    repo_workflow_text = normalize_text(repo_workflow_raw)
     watcher_text = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text().lower()
 
     require(
@@ -1302,6 +1372,19 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "the preceding active branch check is sufficient; do not pull it twice" in closeout_text,
         "work-closeout must avoid double-processing an active default checkout",
     )
+    for skill_name, text in (
+        ("github", github_text),
+        ("work-closeout", closeout_text),
+        ("repo-workflow", repo_workflow_text),
+    ):
+        require(
+            "apply refresh gates in this order" in text
+            and "runtime-bound checkout uses only the landed reconciler and stops" in text
+            and "tracked dirt or active git operation is report-only and stops" in text
+            and "only then may the explicitly requested untracked-only exception be considered"
+            in text,
+            f"{skill_name} must state refresh safety precedence compactly",
+        )
     operation_markers = (
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -1313,50 +1396,167 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "BISECT_LOG",
         "BISECT_START",
     )
-    for skill_name, text in (
-        ("github", github_text),
-        ("work-closeout", closeout_text),
-        ("repo-workflow", repo_workflow_text),
-    ):
+    clean_sections = (
+        (
+            "github-clean",
+            github_raw,
+            "- **Local Default-Branch Freshness**",
+            "A dirty checkout remains an automatic-refresh blocker.",
+        ),
+        (
+            "work-closeout-active-clean",
+            closeout_raw,
+            "For a checkout that is not runtime-bound",
+            "Do not broaden automatic closeout mutation for a dirty checkout.",
+        ),
+        (
+            "work-closeout-post-merge-clean",
+            closeout_raw,
+            "After merged work performed from a task branch",
+            "If the shared Launchplane context helper is present and configured",
+        ),
+        (
+            "repo-workflow-clean",
+            repo_workflow_raw,
+            "Otherwise, verify the checkout shares",
+            "A dirty checkout is never eligible for automatic refresh.",
+        ),
+    )
+    for section_name, raw_text, start, end in clean_sections:
+        raw_section = bounded_raw_text(raw_text, start, end)
+        case_sensitive_text = normalize_spacing(raw_section)
+        text = normalize_text(raw_section)
+        require(
+            "record the current tip as `head_sha`" in text
+            and "immediately before the merge" in text
+            and "no git operation is active" in text
+            and "`head_sha` remains an ancestor of `upstream_sha`" in text,
+            f"{section_name} must re-pin HEAD immediately before fast-forward",
+        )
+        require(
+            "never pass a moving upstream-tracking ref directly as the merge operand" in text,
+            f"{section_name} must prohibit moving-ref merge operands",
+        )
+        require(
+            uses_only_pinned_fast_forward_commands(text),
+            f"{section_name} must use only the pinned-SHA fast-forward command",
+        )
+        if section_name != "work-closeout-active-clean":
+            require(
+                "git -C <path> -c core.hooksPath=/dev/null merge --ff-only"
+                in case_sensitive_text,
+                f"{section_name} must bind the fast-forward command to the target checkout",
+            )
+    exception_sections = (
+        (
+            "github",
+            github_raw,
+            "A dirty checkout remains an automatic-refresh blocker.",
+            "- **Auto-Review Signals**",
+        ),
+        (
+            "work-closeout",
+            closeout_raw,
+            "Do not broaden automatic closeout mutation for a dirty checkout.",
+            "After merged work performed from a task branch",
+        ),
+        (
+            "repo-workflow",
+            repo_workflow_raw,
+            "A dirty checkout is never eligible for automatic refresh.",
+            "Keep this local-default result separate from the confirmed GitHub merge receipt.",
+        ),
+    )
+    for skill_name, raw_text, start, end in exception_sections:
+        raw_section = bounded_raw_text(raw_text, start, end)
+        case_sensitive_text = normalize_spacing(raw_section)
+        text = normalize_text(raw_section)
         require(
             "explicitly requests this specific fast-forward" in text
             and "dirty only because of untracked, non-ignored files" in text,
             f"{skill_name} must limit dirty default-checkout refresh to explicit untracked-only requests",
         )
         require(
-            "exact, ancestor, or descendant path collision" in text,
-            f"{skill_name} must reject incoming path collisions with preserved untracked files",
+            "git common directory and expected github identity" in text
+            and "must not be runtime-bound" in text,
+            f"{skill_name} must preserve repository identity and runtime boundaries",
         )
         require(
-            "file type and content hash" in text,
-            f"{skill_name} must fingerprint preserved untracked files before fast-forward",
+            "evaluate runtime binding before this exception and treat it as absolute" in text
+            and "never make a runtime-bound checkout eligible" in text,
+            f"{skill_name} must make runtime-bound refusal take precedence",
         )
         require(
-            "resolve the fetched upstream to an immutable" in text
-            and "never merge the moving `@{upstream}` ref" in text,
-            f"{skill_name} must pin the fetched upstream before collision checks and merge",
+            "ls-files --others --exclude-standard -z" in text
+            and "nul-separated output" in text
+            and "file type and content or symlink-target hash" in text,
+            f"{skill_name} must enumerate and fingerprint every preserved untracked file",
+        )
+        require(
+            "entry ending in `/`" in text
+            and "without descending into another repository" in text
+            and "must abort report-only" in text,
+            f"{skill_name} must fail closed for nested repositories and ambiguous entries",
+        )
+        require(
+            "immutable `upstream_sha`" in text and "record the current tip as `head_sha`" in text,
+            f"{skill_name} must pin the fetched upstream and preflight HEAD",
         )
         require(
             all(marker.lower() in text for marker in operation_markers),
             f"{skill_name} must fail closed for active Git operation state",
         )
         require(
-            '"$upstream_sha"' in text
-            and "matches its preflight value" in text,
-            f"{skill_name} must merge the pinned commit and recheck preserved fingerprints",
+            "git -C <path> rev-parse --git-path" in case_sensitive_text,
+            f"{skill_name} must resolve operation sentinels in the target checkout",
         )
         require(
-            not any(
-                "merge" in snippet and "@{upstream}" in snippet
-                for snippet in re.findall(r"`([^`]+)`", text)
-            ),
-            f"{skill_name} must never use a moving upstream ref as a merge operand",
+            "git -C <path> status" in case_sensitive_text,
+            f"{skill_name} must inspect tracked and operation state in the target checkout",
+        )
+        require(
+            '"$upstream_sha"' in text
+            and "immediately before the merge" in text
+            and "`head_sha` remains an ancestor of `upstream_sha`" in text
+            and "every untracked fingerprint matches its preflight value" in text,
+            f"{skill_name} must re-pin HEAD, merge the pinned commit, and verify fingerprints",
+        )
+        require(
+            "do not implement a separate path-collision predictor" in text
+            and "git's merge checks plus `--no-overwrite-ignore`" in text,
+            f"{skill_name} must rely on Git's native no-overwrite checks",
+        )
+        require(
+            "never pass a moving upstream-tracking ref directly as the merge operand" in text,
+            f"{skill_name} must explicitly prohibit moving-ref merge operands",
+        )
+        require(
+            uses_only_pinned_fast_forward_commands(text),
+            f"{skill_name} exception must use only the pinned-SHA fast-forward command",
+        )
+        require(
+            "git -C <path> -c core.hooksPath=/dev/null merge --ff-only"
+            in case_sensitive_text,
+            f"{skill_name} exception must bind the fast-forward command to the target checkout",
         )
     require(
-        "--ff-only --no-autostash --no-overwrite-ignore" in closeout_text
-        and "--ff-only --no-autostash --no-overwrite-ignore" in github_text
-        and "--ff-only --no-autostash --no-overwrite-ignore" in repo_workflow_text,
-        "Explicit untracked-only refresh must remain hook-safe, ff-only, and no-autostash",
+        "because this is a post-merge refresh" in bounded_text(
+            github_raw,
+            "A dirty checkout remains an automatic-refresh blocker.",
+            "- **Auto-Review Signals**",
+        )
+        and "because this is a post-merge refresh" in bounded_text(
+            repo_workflow_raw,
+            "A dirty checkout is never eligible for automatic refresh.",
+            "Keep this local-default result separate from the confirmed GitHub merge receipt.",
+        )
+        and "the general closeout refresh has no landing sha to prove and must not invent one"
+        in bounded_text(
+            closeout_raw,
+            "Do not broaden automatic closeout mutation for a dirty checkout.",
+            "After merged work performed from a task branch",
+        ),
+        "Landing-SHA requirements must match post-merge versus general closeout scope",
     )
     require(
         "a missing or mismatched revision makes the installed-runtime claim `unknown`" in inspection_text,
@@ -2419,6 +2619,7 @@ def main() -> None:
         test_github_cross_repo_pr_create_is_explicit,
         test_github_merges_land_through_prs,
         test_github_unanswered_comment_gate_is_shared,
+        test_bounded_text_is_fail_closed,
         test_runtime_checkout_reconciliation_is_safe_and_delegated,
         test_repo_readiness_and_work_closeout_share_handoff_contract,
         test_safe_exit_requires_love_gate_closeout,
