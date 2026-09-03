@@ -1178,8 +1178,11 @@ def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in MERGE_TRAIN_BLOCKING_REASON_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    code = source.get("code")
+    if not isinstance(code, str):
+        raise LaunchplaneSafetyError("invalid_response")
     return {
-        "code": public_code(source.get("code")),
+        "code": public_code(code),
         "message": public_summary_string(source.get("message")),
     }
 

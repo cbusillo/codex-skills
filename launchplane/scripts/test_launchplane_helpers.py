@@ -1693,6 +1693,35 @@ def test_current_launchplane_service_response_shapes() -> None:
         else:
             raise AssertionError(f"expected invalid {field} value to fail closed")
 
+    try:
+        write_action.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={
+                "repository": "example/repo",
+                "base_branch": "main",
+                "mutate": True,
+            },
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_blocked_merge",
+                "records": {},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "block",
+                    "blocking_reason": {
+                        "code": {"unexpected": "shape"},
+                        "message": "Merge readiness is not ready.",
+                    },
+                    "merge_readiness": None,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("expected invalid blocking reason code to fail closed")
+
     preflight = write_action.summarize_success(
         operation="product-config-preflight",
         request={"product": "example-product", "context": "testing"},
