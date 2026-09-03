@@ -408,6 +408,13 @@ reports the redacted `controller_action`, durable record ids, trace id, and
 compact evidence. Repeated calls should read the action before deciding whether
 to run again.
 
+When the controller returns `controller_action: block`, the helper preserves a
+public-safe `blocking_reason` code and message plus the bounded merge-readiness
+facets (`state`, reason codes, owner states, technical checks, engineering
+review, policy, candidate, and fence). Unexpected nested fields or secret-like
+messages remain fail-closed; messages are emitted only when they satisfy the
+public-summary validation contract.
+
 Stop and report on terminal or attention actions:
 
 - `batch_landed`

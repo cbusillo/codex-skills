@@ -151,6 +151,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "active_record_id",
     "base_branch",
     "batch_id",
+    "blocking_reason",
     "candidate",
     "candidate_record_id",
     "candidate_ref",
@@ -183,6 +184,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "lease_acquired_at",
     "lease_expires_at",
     "lease_owner",
+    "merge_readiness",
     "merge_train_batch_candidate_record_id",
     "merge_train_batch_landing_plan_record_id",
     "merge_train_stack_collapse_plan_record_id",
@@ -209,6 +211,17 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "trace_id",
     "updated_at",
     "workflow_run_url",
+}
+MERGE_TRAIN_BLOCKING_REASON_FIELDS = {"code", "message"}
+MERGE_TRAIN_READINESS_FIELDS = {
+    "state",
+    "reason_codes",
+    "owner_states",
+    "technical_checks_state",
+    "engineering_review_state",
+    "policy_state",
+    "candidate_state",
+    "fence_state",
 }
 PRODUCT_CONFIG_INTENT_FIELDS = {
     "schema_version",
@@ -743,6 +756,14 @@ def _public_string_list(value: object) -> list[str]:
     return [public_identifier(item) for item in value]
 
 
+def _public_code_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return [public_code(item) for item in value]
+
+
 def _nonnegative_int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise LaunchplaneSafetyError("invalid_response")
@@ -1148,6 +1169,39 @@ def _project_merge_component(value: object) -> dict[str, object]:
     return projected
 
 
+def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in MERGE_TRAIN_BLOCKING_REASON_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return {
+        "code": public_code(source.get("code")),
+        "message": public_summary_string(source.get("message")),
+    }
+
+
+def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _require_dict(value)
+    if any(str(key) not in MERGE_TRAIN_READINESS_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for key in (
+        "state",
+        "technical_checks_state",
+        "engineering_review_state",
+        "policy_state",
+        "candidate_state",
+        "fence_state",
+    ):
+        if key in source:
+            projected[key] = public_code(source[key])
+    for key in ("reason_codes", "owner_states"):
+        if key in source:
+            projected[key] = _public_code_list(source[key])
+    return projected
+
+
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     if any(str(key) not in MERGE_TRAIN_RESULT_FIELDS for key in source):
@@ -1175,6 +1229,14 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     if "candidate_ref_cleanup_github_status_code" in source:
         projected["candidate_ref_cleanup_github_status_code"] = _nonnegative_int(
             source["candidate_ref_cleanup_github_status_code"]
+        )
+    if "blocking_reason" in source:
+        projected["blocking_reason"] = _project_merge_train_blocking_reason(
+            source["blocking_reason"]
+        )
+    if "merge_readiness" in source:
+        projected["merge_readiness"] = _project_merge_train_readiness(
+            source["merge_readiness"]
         )
     for key in ("workflow_run_url", "source_of_truth_url"):
         if key in source:
