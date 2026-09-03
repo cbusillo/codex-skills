@@ -761,7 +761,12 @@ def _public_code_list(value: object) -> list[str]:
         return []
     if not isinstance(value, list):
         raise LaunchplaneSafetyError("invalid_response")
-    return [public_code(item) for item in value]
+    projected: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected.append(public_code(item))
+    return projected
 
 
 def _nonnegative_int(value: object) -> int:
@@ -1195,6 +1200,8 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
         "fence_state",
     ):
         if key in source:
+            if not isinstance(source[key], str):
+                raise LaunchplaneSafetyError("invalid_response")
             projected[key] = public_code(source[key])
     for key in ("reason_codes", "owner_states"):
         if key in source:
