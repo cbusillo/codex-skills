@@ -1,0 +1,23 @@
+{
+  "name": "local-llm-closeout-untracked-ff-success",
+  "model": "qwen3-coder-64b",
+  "prompt": "Use $work-closeout for this hypothetical advisory classification. The facts below are complete and authoritative; do not inspect the workspace, use tools, run commands, start agents, or edit files. A closeout user explicitly requests a fast-forward of the repository's unique local default checkout after a confirmed merge while preserving result.json. The checkout is non-runtime-bound, on the configured default branch, has a configured upstream, shares the source repository's Git common directory and expected GitHub identity, is strictly behind without divergence, has no active Git operation, has a clean tracked index and worktree, and is dirty only because result.json is untracked and non-ignored. The confirmed final landing SHA appears on the fetched upstream commit's first-parent history. Classify the independent safety decisions from the skill. Return final answer only as five key=value lines with no markdown or spaces around equals. Required keys: closeout_skill, generic_fast_forward, bounded_fast_forward, runtime_reconciler, untracked_exception. Allowed fast-forward values: allowed or refused. Allowed runtime_reconciler values: not-applicable or required. Allowed untracked_exception values: eligible or ineligible.",
+  "files": {
+    "README.md": "# Synthetic closeout fixture\n"
+  },
+  "skill_roots": ["../../.."],
+  "config_toml": "model_provider = \"lmstudio\"\nmodel_max_output_tokens = 1200\n\n[model_providers.lmstudio]\nname = \"LM Studio\"\nbase_url = \"http://127.0.0.1:1234/v1\"\nwire_api = \"chat\"\n",
+  "sandbox": "read-only",
+  "expect": {
+    "returncode": 0,
+    "assistant_contains": [
+      "closeout_skill=work-closeout",
+      "generic_fast_forward=refused",
+      "bounded_fast_forward=allowed",
+      "runtime_reconciler=not-applicable",
+      "untracked_exception=eligible"
+    ]
+  },
+  "max_seconds": 240,
+  "timeout_seconds": 300
+}
