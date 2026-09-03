@@ -1547,6 +1547,181 @@ def test_current_launchplane_service_response_shapes() -> None:
         "entries_count": 1,
     }
 
+    blocked_merge = write_action.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_blocked_merge",
+            "records": {
+                "merge_train_batch_landing_plan_record_id": "landing-plan-example",
+            },
+            "result": {
+                "repository": "example/repo",
+                "base_branch": "main",
+                "mode": "blocked",
+                "controller_action": "block",
+                "blocking_reason": {
+                    "code": "merge_readiness_not_ready",
+                    "message": "Merge readiness is not ready.",
+                },
+                "merge_readiness": {
+                    "state": "blocked_engineering_review",
+                    "reason_codes": ["engineering_review_pending"],
+                    "owner_states": ["ready"],
+                    "technical_checks_state": "ready",
+                    "engineering_review_state": "blocked_engineering_review",
+                    "policy_state": "ready",
+                    "candidate_state": "ready",
+                    "fence_state": "ready",
+                },
+                "landing_plan": {
+                    "status": "planned",
+                    "candidate_sha": "abc123",
+                    "entries": [{"pull_request_number": 42, "status": "planned"}],
+                },
+            },
+        },
+    )
+    assert blocked_merge["summary"]["controller_action"] == "block"
+    assert blocked_merge["summary"]["recommendation"] == (
+        "Stop and report this merge-train state."
+    )
+    assert blocked_merge["records"] == {
+        "merge_train_batch_landing_plan_record_id": "landing-plan-example"
+    }
+    assert blocked_merge["result"]["blocking_reason"] == {
+        "code": "merge_readiness_not_ready",
+        "message": "Merge readiness is not ready.",
+    }
+    assert blocked_merge["result"]["merge_readiness"] == {
+        "state": "blocked_engineering_review",
+        "reason_codes": ["engineering_review_pending"],
+        "owner_states": ["ready"],
+        "technical_checks_state": "ready",
+        "engineering_review_state": "blocked_engineering_review",
+        "policy_state": "ready",
+        "candidate_state": "ready",
+        "fence_state": "ready",
+    }
+    assert blocked_merge["result"]["landing_plan"] == {
+        "status": "planned",
+        "candidate_sha": "abc123",
+        "entries_count": 1,
+    }
+
+    for field, value in (
+        (
+            "blocking_reason",
+            {
+                "code": "merge_readiness_not_ready",
+                "message": "Merge readiness is not ready.",
+                "detail": "unexpected",
+            },
+        ),
+        (
+            "merge_readiness",
+            {
+                "state": "blocked_engineering_review",
+                "reason_codes": ["engineering_review_pending"],
+                "owner_states": ["ready"],
+                "unexpected": "value",
+            },
+        ),
+    ):
+        result = {
+            "repository": "example/repo",
+            "base_branch": "main",
+            "controller_action": "block",
+            "blocking_reason": {
+                "code": "merge_readiness_not_ready",
+                "message": "Merge readiness is not ready.",
+            },
+            "merge_readiness": None,
+            field: value,
+        }
+        try:
+            write_action.summarize_success(
+                operation="merge-train-controller-run-once",
+                request={
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "mutate": True,
+                },
+                provider_payload={
+                    "status": "accepted",
+                    "trace_id": "launchplane_req_blocked_merge",
+                    "records": {},
+                    "result": result,
+                },
+            )
+        except safety.LaunchplaneSafetyError as exc:
+            assert exc.code == "unsafe_response_shape"
+        else:
+            raise AssertionError(f"expected unexpected {field} field to fail closed")
+
+    for field, value in (
+        ("state", {}),
+        ("reason_codes", [{"unexpected": "shape"}]),
+    ):
+        try:
+            write_action.summarize_success(
+                operation="merge-train-controller-run-once",
+                request={
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "mutate": True,
+                },
+                provider_payload={
+                    "status": "accepted",
+                    "trace_id": "launchplane_req_blocked_merge",
+                    "records": {},
+                    "result": {
+                        "repository": "example/repo",
+                        "base_branch": "main",
+                        "controller_action": "block",
+                        "blocking_reason": {
+                            "code": "merge_readiness_not_ready",
+                            "message": "Merge readiness is not ready.",
+                        },
+                        "merge_readiness": {field: value},
+                    },
+                },
+            )
+        except safety.LaunchplaneSafetyError as exc:
+            assert exc.code == "invalid_response"
+        else:
+            raise AssertionError(f"expected invalid {field} value to fail closed")
+
+    try:
+        write_action.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={
+                "repository": "example/repo",
+                "base_branch": "main",
+                "mutate": True,
+            },
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_blocked_merge",
+                "records": {},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "block",
+                    "blocking_reason": {
+                        "code": {"unexpected": "shape"},
+                        "message": "Merge readiness is not ready.",
+                    },
+                    "merge_readiness": None,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("expected invalid blocking reason code to fail closed")
+
     preflight = write_action.summarize_success(
         operation="product-config-preflight",
         request={"product": "example-product", "context": "testing"},
@@ -1834,6 +2009,54 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
         assert exc.code == "invalid_response"
     else:
         raise AssertionError("expected unsafe next_action to fail closed")
+    try:
+        write_action.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_blocked_merge",
+                "records": {},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "block",
+                    "blocking_reason": {
+                        "code": "merge_readiness_not_ready",
+                        "message": "Use Bearer secret-token before retrying.",
+                    },
+                    "merge_readiness": None,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected unsafe merge blocking reason to fail closed")
+    try:
+        write_action.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_blocked_merge",
+                "records": {},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "block",
+                    "blocking_reason": {
+                        "code": "merge_readiness_not_ready",
+                        "message": "Operator credential is unavailable.",
+                    },
+                    "merge_readiness": None,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "invalid_response"
+    else:
+        raise AssertionError("expected denied merge blocking summary to fail closed")
     http_error = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/example",
         403,
