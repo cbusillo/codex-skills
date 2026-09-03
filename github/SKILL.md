@@ -749,23 +749,71 @@ invocation rules.
 - **Local Default-Branch Freshness**: After every confirmed merge, inspect the
   repository's unique local default-branch worktree when one exists. If it is
   already the active checkout, assess it once rather than running a second refresh
-  pass. If it is runtime-bound, use the landed runtime reconciler above.
-  Otherwise, fetch its configured upstream and fast-forward it only when it is
-  clean, still on the configured default branch, shares the merged worktree's Git
-  common directory and expected GitHub identity, and its current tip is an
-  ancestor of the fetched upstream. Before mutation, require the exact final
-  landing SHA to exist and appear on the fetched upstream's first-parent history.
-  Fast-forward with hooks and autostash disabled, for example
+  pass. Apply refresh gates in this order: a runtime-bound checkout uses only the
+  landed reconciler and stops; any tracked dirt or active Git operation is
+  report-only and stops; only then may the explicitly requested untracked-only
+  exception be considered. If it is runtime-bound, use the landed runtime
+  reconciler above.
+  Otherwise, fetch its configured upstream, resolve the result to an immutable
+  `upstream_sha`, and fast-forward it only when it is clean, still on the
+  configured default branch, shares the merged worktree's Git common directory
+  and expected GitHub identity, and its current tip is an ancestor of that pinned
+  commit. Record the current tip as `head_sha`. Before mutation, require the exact
+  final landing SHA to exist and appear on `upstream_sha`'s first-parent history.
+  Immediately before the merge, re-check that `HEAD` still equals `head_sha`, the
+  tracked checkout is still clean, no Git operation is active, and `head_sha`
+  remains an ancestor of `upstream_sha`. Use the same commit for every proof and
+  the hook-disabled, no-autostash fast-forward:
   `git -C <path> -c core.hooksPath=/dev/null merge --ff-only --no-autostash
-  --no-overwrite-ignore @{upstream}`, rather than switching the active task
-  worktree or using a generic pull. Re-check that `HEAD` equals the upstream and
-  contains the landing SHA afterward. Never reset, stash, clean, or overwrite an
-  unsafe checkout. If it is dirty, ahead, diverged, detached, ambiguous, lacks a
-  usable upstream, or cannot prove the landing SHA, leave it untouched and report
-  the explicit hint: `Local default checkout remains stale; fast-forward it
-  before default-branch work or audits.` The active task worktree remains the
-  authoritative agent source; this post-merge refresh must never silently replace
-  it with the default branch or a remote ref.
+  --no-overwrite-ignore "$upstream_sha"`, rather than switching the active task
+  worktree or using a generic pull. Never pass a moving upstream-tracking ref
+  directly as the merge operand; use only the pinned commit ID. Re-check that
+  `HEAD` equals `upstream_sha` and contains the landing SHA afterward. Never
+  reset, stash, clean, or overwrite an unsafe checkout. If it is dirty, ahead,
+  diverged, detached, ambiguous, lacks a usable upstream, or cannot prove the
+  landing SHA, leave it untouched and report the explicit hint: `Local default
+  checkout remains stale; fast-forward it before default-branch work or audits.`
+  The active task worktree remains the authoritative agent source; this
+  post-merge refresh must never silently replace it with the default branch or a
+  remote ref.
+
+  A dirty checkout remains an automatic-refresh blocker. If the user explicitly
+  requests this specific fast-forward, a non-runtime default checkout that is
+  dirty only because of untracked, non-ignored files may use a bounded exception.
+  The exception relaxes only untracked-file dirtiness. Every other surrounding
+  precondition still applies: the checkout must remain on the configured default
+  branch with a configured upstream, must share the source repository's Git
+  common directory and expected GitHub identity, and must not be runtime-bound.
+  Evaluate runtime binding before this exception and treat it as absolute:
+  explicit user intent and untracked-only dirt never make a runtime-bound
+  checkout eligible.
+  Fetch and resolve the fetched upstream to an immutable `upstream_sha`, record
+  the current tip as `head_sha`, and prove the branch is strictly behind without
+  divergence. Because this is a post-merge refresh, require the confirmed final
+  landing SHA on `upstream_sha`'s first-parent history. Prove the tracked index
+  and worktree are clean and fail closed if `git -C <path> status` reports an
+  operation or if any path returned by `git -C <path> rev-parse --git-path` for
+  `MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
+  `rebase-apply`, `sequencer`, `BISECT_LOG`, or `BISECT_START` exists. Enumerate
+  every untracked entry with `git -C <path> ls-files --others --exclude-standard
+  -z`, consume the NUL-separated output without shell globbing or pathspecs, and
+  snapshot each path's file type and content or symlink-target hash. An entry
+  ending in `/`, or any entry that cannot be fingerprinted as a regular file or
+  symlink without descending into another repository, is ambiguous and must
+  abort report-only. Never pass a moving upstream-tracking ref directly as the
+  merge operand; use only `upstream_sha`. Do not implement a separate
+  path-collision predictor; Git's merge checks plus `--no-overwrite-ignore` must
+  reject an incoming tracked path that would overwrite preserved work.
+  Immediately before the merge, re-resolve `HEAD`, repeat the tracked-clean and
+  operation-state checks, and abort report-only unless `HEAD` still equals
+  `head_sha` and `head_sha` remains an ancestor of `upstream_sha`. Run `git -C
+  <path> -c core.hooksPath=/dev/null merge --ff-only --no-autostash
+  --no-overwrite-ignore "$upstream_sha"`, then prove `HEAD` equals `upstream_sha`,
+  `git -C <path> status` still has no tracked changes, and every untracked
+  fingerprint matches its preflight value. Any nonzero merge, failed proof, or
+  ambiguous result remains report-only; never stash, clean, add, or overwrite
+  the unrelated files.
 - **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
   releasable, or otherwise clean, check background auto-review evidence when it
   is available in the session context or repo tooling. First match each review
