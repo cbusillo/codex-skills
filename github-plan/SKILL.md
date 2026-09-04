@@ -156,6 +156,9 @@ second planning backend.
   planning bot fail closed into this preservation mode. Do not retitle
   human-authored issues as part of plan expansion. A managed-provenance marker
   alone never transfers a human-authored body to automation ownership.
+- Allow `show` to read human-authored planning sections, but report their
+  contributor-owned, unmanaged provenance and keep content writes fail-closed.
+  Read permission never grants title or body ownership.
 - Treat generic GitHub operation comments such as
   `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
   they never establish ownership of an issue body. Association-based managed
@@ -426,7 +429,15 @@ workflow stalls.
 
 - Use `index` or `search` before creating.
 - Use `show` for selected sections; use `show --full` only when broad prose is
-  required.
+  required. Inspect the returned provenance before attempting a body update;
+  `section_updates_allowed: false` means the current body shape must remain
+  read-only. A plain contributor request without unmarked planning headings or
+  reserved ownership markers may still be wrapped in the preservation envelope
+  by `update-section`.
+- Treat `ownership` values as `automation_managed`, `contributor_envelope`, or
+  `contributor_unmanaged`. If ownership markers are malformed, `show --full`
+  still returns the raw body with `ownership: unknown`, while section parsing
+  and every body write remain fail-closed.
 - Use `update-section` instead of rewriting the whole body.
 - Use installed `github/scripts/gh-issue` and `github/scripts/gh-comment` for
   multiline Markdown bodies.
@@ -469,6 +480,10 @@ creating sub-issues or Project fields.
 
 Use native relationships first when the helper/API supports them. Body
 references are explanatory, not canonical.
+Native `blocked-by`, `blocks`, and `subissue` operations do not require
+ownership of either issue body because they update GitHub relationships without
+rewriting source text. `related` remains a markdown body update and therefore
+keeps the normal plan-body ownership checks.
 
 Completed closure requires every native `blocked-by` target and sub-issue to be
 closed. Issues that the plan itself blocks do not prevent closure. An unavailable

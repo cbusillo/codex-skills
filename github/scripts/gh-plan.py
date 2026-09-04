@@ -1590,6 +1590,43 @@ def issue_plan_sections(issue: dict[str, Any]) -> dict[str, str]:
     return section_map(managed_body)
 
 
+def read_plan_sections(issue: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    body = issue.get("body") or ""
+    author_login = issue_author_login(issue)
+    author_association = issue.get("author_association")
+    if issue_body_is_fully_managed(issue):
+        sections = section_map(body)
+        ownership = "automation_managed"
+        sections_source = "issue_body"
+        section_updates_allowed = True
+        unmarked_planning_headings: list[str] = []
+    else:
+        managed_body = contributor_plan_body(issue)
+        if managed_body is not None:
+            sections = section_map(managed_body)
+            ownership = "contributor_envelope"
+            sections_source = "managed_block"
+            section_updates_allowed = True
+            unmarked_planning_headings = []
+        else:
+            sections = section_map(body)
+            ownership = "contributor_unmanaged"
+            sections_source = "unmanaged_body"
+            unmarked_planning_headings = sorted(PLAN_SECTION_NAMES.intersection(sections))
+            original_request = body if body else str(issue.get("title") or "").strip()
+            has_reserved_markers = any(marker in original_request for marker in PLAN_RESERVED_MARKERS)
+            section_updates_allowed = not unmarked_planning_headings and not has_reserved_markers
+    provenance = {
+        "ownership": ownership,
+        "author": author_login,
+        "author_association": author_association,
+        "sections_source": sections_source,
+        "section_updates_allowed": section_updates_allowed,
+        "unmarked_planning_headings": unmarked_planning_headings,
+    }
+    return sections, provenance
+
+
 def template_body(title: str) -> str:
     return f"""{PLAN_MANAGED_PROVENANCE_MARKER}
 
@@ -1817,10 +1854,22 @@ def cmd_show(args: argparse.Namespace) -> None:
     result = compact_issue(issue)
     if args.full:
         result["body"] = body
+        try:
+            _, provenance = read_plan_sections(issue)
+        except PlanError:
+            provenance = {
+                "ownership": "unknown",
+                "author": issue_author_login(issue),
+                "author_association": issue.get("author_association"),
+                "sections_source": "malformed_ownership_markers",
+                "section_updates_allowed": False,
+                "unmarked_planning_headings": [],
+            }
     else:
         names = args.sections or config.get("default_sections") or []
-        sections = issue_plan_sections(issue)
+        sections, provenance = read_plan_sections(issue)
         result["sections"] = {name: sections.get(name, "") for name in names}
+    result["provenance"] = provenance
     emit({"ok": True, "actor": actor, "issue": result})
 
 
@@ -1965,7 +2014,6 @@ def cmd_link(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
-    issue_plan_sections(source)
 
     if rel == "blocked-by":
         actor, _ = api_json(
@@ -2012,7 +2060,6 @@ def cmd_unlink(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
-    issue_plan_sections(source)
     if rel == "blocked-by":
         actor, _ = api_json(
             "DELETE",
