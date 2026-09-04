@@ -42,7 +42,6 @@ uv run launchplane/scripts/check-agent-operator-contract.py
 uv run scripts/update_pep723_dependencies.py --check
 uv run skill-creator/scripts/quick_validate.py --self-test
 uv run skill-creator/scripts/validate-skill-repo.py
-uv run skill-creator/scripts/quick_validate.py chronicle
 
 helper_tests=(
 	babysit-pr/scripts/test_gh_pr_watch.py

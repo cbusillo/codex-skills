@@ -95,26 +95,6 @@ skills:
           notes: Metadata and references covered by repo validation.
     known_gaps:
       - No browser harness performance scenario yet.
-  chronicle:
-    status: active
-    risk_classes:
-      - local_context
-      - private_context
-    checks:
-      - check_id: behavior-validation
-        kind: static_validator
-        mode: ci
-        dimension: public_safety
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: >-
-            Chronicle availability and privacy posture covered by behavior
-            validation.
-    known_gaps:
-      - No exec-harness scenario yet for unavailable private context.
   design-collaboration:
     status: active
     risk_classes:
