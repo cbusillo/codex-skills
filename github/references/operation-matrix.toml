@@ -577,7 +577,7 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bu
 [[operations]]
 id = "github.plan.show"
 entrypoint = "github/scripts/gh-plan.py show"
-intent = "Read one planning issue and emit compact sections or the full body."
+intent = "Read one planning issue and emit compact sections or the full body with source-ownership provenance."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "GET /repos/{repo}/issues/{number}"
@@ -588,8 +588,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No retained GraphQL transport; REST issue reads include the body needed for section extraction."
-source_refs = ["github/scripts/gh-plan.py:cmd_show"]
-test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_show", "github/scripts/gh-plan.py:read_plan_sections"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_human_authored_plan_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reports_unmanaged_provenance", "github/scripts/validate-gh-plan.py:test_read_plan_sections_reports_contributor_wrap_eligibility", "github/scripts/validate-gh-plan.py:test_cmd_show_fails_closed_on_malformed_contributor_markers", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_only_managed_contributor_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_reports_automation_managed_provenance", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.create"
@@ -640,7 +640,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; native dependency and sub-issue REST endpoints plus body PATCH cover the relationship writes."
 source_refs = ["github/scripts/gh-plan.py:cmd_link"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_allow_unmarked_human_authored_bodies", "github/scripts/validate-gh-plan.py:test_related_link_and_unlink_stay_strict_on_unmarked_human_authored_body", "github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.unlink"
@@ -657,7 +657,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; relationship removal uses REST endpoints or deterministic markdown body replacement."
 source_refs = ["github/scripts/gh-plan.py:cmd_unlink"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_allow_unmarked_human_authored_bodies", "github/scripts/validate-gh-plan.py:test_related_link_and_unlink_stay_strict_on_unmarked_human_authored_body", "github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.deps"

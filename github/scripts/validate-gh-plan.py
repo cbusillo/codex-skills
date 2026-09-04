@@ -581,7 +581,7 @@ def test_contributor_relationship_unlink_noop_does_not_wrap_issue() -> None:
     assert updated == "Original request body", updated
 
 
-def test_unmarked_contributor_plan_read_and_unlink_fail_closed() -> None:
+def test_unmarked_contributor_plan_write_paths_fail_closed() -> None:
     plan = load_plan_module()
     issue = plan_issue(body="## Relationships\n\n- related: owner/repo#2 - https://github.com/owner/repo/issues/2\n")
     target = {
@@ -599,12 +599,84 @@ def test_unmarked_contributor_plan_read_and_unlink_fail_closed() -> None:
         except plan.PlanError as exc:
             assert "cannot safely distinguish" in str(exc), exc
         else:
-            raise AssertionError("unmarked contributor plan reads should fail closed")
+            raise AssertionError("unmarked contributor plan write paths should fail closed")
 
 
-def test_cmd_show_unmarked_contributor_plan_fails_closed() -> None:
+def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
     plan = load_plan_module()
-    issue = plan_issue(body="## Current Status\n\nState: Active\n")
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
+    for association in ("OWNER", "COLLABORATOR"):
+        issue = plan_issue(
+            body="## Current Status\n\nState: Active\n",
+            login=f"{association.casefold()}-user",
+            association=association,
+        )
+        plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+        output = StringIO()
+
+        with redirect_stdout(output):
+            plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
+
+        payload = json.loads(output.getvalue())
+        assert payload["issue"]["sections"] == {"Current Status": "State: Active"}, payload
+        provenance = payload["issue"]["provenance"]
+        assert provenance["ownership"] == "contributor_unmanaged", provenance
+        assert provenance["author_association"] == association, provenance
+        assert provenance["sections_source"] == "unmanaged_body", provenance
+        assert provenance["section_updates_allowed"] is False, provenance
+        assert provenance["unmarked_planning_headings"] == ["Current Status"], provenance
+
+
+def test_cmd_show_full_reports_unmanaged_provenance() -> None:
+    plan = load_plan_module()
+    body = "## Current Status\n\nState: Active\n"
+    issue = plan_issue(body=body, login="owner-user", association="OWNER")
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    output = StringIO()
+
+    with redirect_stdout(output):
+        plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=True, sections=None))
+
+    payload = json.loads(output.getvalue())
+    assert payload["issue"]["body"] == body, payload
+    assert payload["issue"]["provenance"]["ownership"] == "contributor_unmanaged", payload
+
+
+def test_read_plan_sections_reports_contributor_wrap_eligibility() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="Please preserve this request verbatim.", login="owner-user", association="OWNER")
+
+    sections, provenance = plan.read_plan_sections(issue)
+
+    assert sections == {}, sections
+    assert provenance["ownership"] == "contributor_unmanaged", provenance
+    assert provenance["section_updates_allowed"] is True, provenance
+    assert provenance["unmarked_planning_headings"] == [], provenance
+
+    issue["body"] = f"Please preserve this request.\n\n{plan.PLAN_MANAGED_PROVENANCE_MARKER}\n"
+    sections, provenance = plan.read_plan_sections(issue)
+
+    assert sections == {}, sections
+    assert provenance["ownership"] == "contributor_unmanaged", provenance
+    assert provenance["section_updates_allowed"] is False, provenance
+    assert provenance["unmarked_planning_headings"] == [], provenance
+
+    issue["body"] = ""
+    issue["title"] = f"Request containing {plan.PLAN_MANAGED_PROVENANCE_MARKER}"
+    sections, provenance = plan.read_plan_sections(issue)
+
+    assert sections == {}, sections
+    assert provenance["ownership"] == "contributor_unmanaged", provenance
+    assert provenance["section_updates_allowed"] is False, provenance
+    assert provenance["unmarked_planning_headings"] == [], provenance
+
+
+def test_cmd_show_fails_closed_on_malformed_contributor_markers() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body=f"{plan.PLAN_MANAGED_START}\n## Current Status\n\nState: Active\n")
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
     plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
@@ -612,30 +684,120 @@ def test_cmd_show_unmarked_contributor_plan_fails_closed() -> None:
     try:
         plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
     except plan.PlanError as exc:
-        assert "cannot safely distinguish" in str(exc), exc
+        assert "incomplete" in str(exc), exc
     else:
-        raise AssertionError("show should fail closed on unmarked contributor plans")
+        raise AssertionError("show should fail closed on malformed contributor ownership markers")
 
 
-def test_native_link_and_unlink_preflight_ambiguous_contributor_body() -> None:
+def test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance() -> None:
     plan = load_plan_module()
-    source = plan_issue(body="## Current Status\n\nState: Active\n")
+    body = f"{plan.PLAN_MANAGED_START}\n## Current Status\n\nState: Active\n"
+    issue = plan_issue(body=body)
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    output = StringIO()
+
+    with redirect_stdout(output):
+        plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=True, sections=None))
+
+    payload = json.loads(output.getvalue())
+    assert payload["issue"]["body"] == body, payload
+    provenance = payload["issue"]["provenance"]
+    assert provenance["ownership"] == "unknown", provenance
+    assert provenance["sections_source"] == "malformed_ownership_markers", provenance
+    assert provenance["section_updates_allowed"] is False, provenance
+
+
+def test_native_link_and_unlink_allow_unmarked_human_authored_bodies() -> None:
+    plan = load_plan_module()
     target = plan_issue(body="Target", title="Target", login="owner", association="OWNER")
     target["number"] = 2
     target["id"] = 1002
-    calls: list[tuple[Any, ...]] = []
+    calls: list[tuple[str, str, Any, dict[str, Any]]] = []
+    plan.default_repo = lambda _repo: "owner/repo"
+
+    def fail_strict_preflight(_issue: dict[str, Any]) -> dict[str, str]:
+        raise AssertionError("native relationships must not inspect plan-body ownership")
+
+    def fake_api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        calls.append((method, path, payload, kwargs))
+        return "automation-gh", {}
+
+    plan.issue_plan_sections = fail_strict_preflight
+    plan.api_json = fake_api_json
+    plan.rest_edit_issue = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("native relationships must not edit issue bodies")
+    )
+
+    for association in ("OWNER", "COLLABORATOR"):
+        source = plan_issue(
+            body="## Current Status\n\nState: Active\n",
+            login=f"{association.casefold()}-user",
+            association=association,
+        )
+        plan.get_issue = lambda ref, _repo: ("automation-gh", source if ref == "1" else target)
+        for relationship in ("blocked-by", "blocks", "subissue"):
+            with redirect_stdout(StringIO()):
+                plan.cmd_link(
+                    types.SimpleNamespace(repo="owner/repo", issue="1", relationship=relationship, target="2")
+                )
+                plan.cmd_unlink(
+                    types.SimpleNamespace(repo="owner/repo", issue="1", relationship=relationship, target="2")
+                )
+
+    assert len(calls) == 12, calls
+    assert {method for method, _path, _payload, _kwargs in calls} == {"POST", "DELETE"}, calls
+    assert all("dependencies" in path or "sub_issue" in path for _method, path, _payload, _kwargs in calls), calls
+
+
+def test_related_link_and_unlink_stay_strict_on_unmarked_human_authored_body() -> None:
+    plan = load_plan_module()
+    source = plan_issue(body="## Current Status\n\nState: Active\n", login="owner-user", association="OWNER")
+    target = plan_issue(body="Target", title="Target", login="owner", association="OWNER")
+    target["number"] = 2
+    target["id"] = 1002
     plan.default_repo = lambda _repo: "owner/repo"
     plan.get_issue = lambda ref, _repo: ("automation-gh", source if ref == "1" else target)
-    plan.api_json = lambda *args, **kwargs: calls.append((*args, kwargs))
+    plan.api_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("related-note ownership failure must happen before native API writes")
+    )
+    plan.rest_edit_issue = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("related-note ownership failure must happen before body PATCH")
+    )
 
     for command in (plan.cmd_link, plan.cmd_unlink):
         try:
-            command(types.SimpleNamespace(repo="owner/repo", issue="1", relationship="blocked-by", target="2"))
+            command(types.SimpleNamespace(repo="owner/repo", issue="1", relationship="related", target="2"))
         except plan.PlanError as exc:
             assert "cannot safely distinguish" in str(exc), exc
         else:
-            raise AssertionError("native relationship mutations should fail closed before writes")
-    assert calls == [], calls
+            raise AssertionError("related relationship body writes should remain fail-closed")
+
+
+def test_cmd_update_section_stays_strict_on_unmarked_human_authored_body() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(body="## Current Status\n\nState: Active\n", login="owner-user", association="OWNER")
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.rest_edit_issue = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("ownership failure must happen before body PATCH")
+    )
+
+    try:
+        plan.cmd_update_section(
+            types.SimpleNamespace(
+                repo="owner/repo",
+                issue="1",
+                section="Current Status",
+                body="State: Updated",
+                body_file=None,
+            )
+        )
+    except plan.PlanError as exc:
+        assert "cannot safely distinguish" in str(exc), exc
+    else:
+        raise AssertionError("update-section should remain fail-closed on unmarked human-authored bodies")
 
 
 def test_contributor_relationship_add_noop_preserves_body() -> None:
@@ -717,6 +879,33 @@ def test_cmd_show_reads_only_managed_contributor_sections() -> None:
 
     payload = json.loads(output.getvalue())
     assert payload["issue"]["sections"] == {"Current Status": "Managed status"}, payload
+    provenance = payload["issue"]["provenance"]
+    assert provenance["ownership"] == "contributor_envelope", provenance
+    assert provenance["sections_source"] == "managed_block", provenance
+    assert provenance["section_updates_allowed"] is True, provenance
+
+
+def test_cmd_show_reports_automation_managed_provenance() -> None:
+    plan = load_plan_module()
+    issue = plan_issue(
+        body="## Current Status\n\nState: Active\n",
+        login=plan.EXPECTED_ACTOR,
+        association="OWNER",
+    )
+    plan.default_repo = lambda _repo: "owner/repo"
+    plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    output = StringIO()
+
+    with redirect_stdout(output):
+        plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
+
+    payload = json.loads(output.getvalue())
+    assert payload["issue"]["sections"] == {"Current Status": "State: Active"}, payload
+    provenance = payload["issue"]["provenance"]
+    assert provenance["ownership"] == "automation_managed", provenance
+    assert provenance["sections_source"] == "issue_body", provenance
+    assert provenance["section_updates_allowed"] is True, provenance
 
 
 def test_issue_body_updates_use_rest_patch() -> None:
@@ -5749,13 +5938,20 @@ def main() -> None:
         test_contributor_envelope_allows_marker_line_whitespace,
         test_contributor_relationship_updates_stay_inside_managed_block,
         test_contributor_relationship_unlink_noop_does_not_wrap_issue,
-        test_unmarked_contributor_plan_read_and_unlink_fail_closed,
-        test_cmd_show_unmarked_contributor_plan_fails_closed,
-        test_native_link_and_unlink_preflight_ambiguous_contributor_body,
+        test_unmarked_contributor_plan_write_paths_fail_closed,
+        test_cmd_show_reads_unmarked_human_authored_plan_sections,
+        test_cmd_show_full_reports_unmanaged_provenance,
+        test_read_plan_sections_reports_contributor_wrap_eligibility,
+        test_cmd_show_fails_closed_on_malformed_contributor_markers,
+        test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance,
+        test_native_link_and_unlink_allow_unmarked_human_authored_bodies,
+        test_related_link_and_unlink_stay_strict_on_unmarked_human_authored_body,
+        test_cmd_update_section_stays_strict_on_unmarked_human_authored_body,
         test_contributor_relationship_add_noop_preserves_body,
         test_relationship_add_does_not_confuse_similar_issue_numbers,
         test_contributor_relationship_unlink_tolerates_line_whitespace,
         test_cmd_show_reads_only_managed_contributor_sections,
+        test_cmd_show_reports_automation_managed_provenance,
         test_issue_body_updates_use_rest_patch,
         test_plan_index_paginates_filters_prs_and_honors_limit,
         test_plan_search_uses_search_bucket_and_conditional_state,
