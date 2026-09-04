@@ -7,6 +7,9 @@ metadata:
 
 # Repo Readiness
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 Use this skill to answer whether a change, branch, PR, or workstream is ready.
 It is an orchestrator: follow repo-specific instructions first, then call the
 relevant focused skills or tools instead of duplicating their details.
@@ -95,9 +98,11 @@ inspection, browser, CI, deployment, or security gates.
    auto-review worktrees are not dirty active state; only matching review
    findings and lifecycle evidence matter.
 
-5. During implementation, choose the narrowest useful gate that matches the
-   change and risk. Before saying code is ready, broaden to the largest
-   practical gate for the repo and change.
+5. Run the required repo gates and the narrowest additional checks that cover
+   the change and risk. Before saying code is ready, confirm all required
+   evidence is current. Broaden or repeat checks only for changed behavior,
+   failures, unresolved concerns, or an explicit repo requirement; do not rerun
+   passing checks for an unchanged revision and environment merely for closeout.
 6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
    Use `github-plan` for planning issue indexes, Project state, blocker graphs,

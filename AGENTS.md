@@ -1,5 +1,21 @@
 # Codex Skills Repository
 
+## Instruction maintenance
+
+- Use [references/execution-scope.md](references/execution-scope.md) when
+  changing execution guidance. Preserve intentional approval, quality,
+  delegation, and output-format policies.
+- Maintain the top-level skill sources. The allowlisted system overrides are
+  documented in [README.md](README.md#system-skill-overrides); generated
+  `.system` caches and installed plugin caches are not development targets.
+- Keep activation rules, essential constraints, and the primary procedure in
+  `SKILL.md`. Move substantial mode-specific detail into linked references with
+  an explicit read condition. Preserve supported frontmatter and command-policy
+  metadata consumed by tooling when reorganizing prose.
+- Validate instruction-only changes with the existing skill structure, reference,
+  behavior, and command-policy validators. Do not add tests that merely duplicate
+  wording or run unrelated runtime suites without an affected behavior.
+
 ## Runtime Checkout Discipline
 
 - Resolve the active skills directory with `CODE_HOME`, then `CODEX_HOME`, then

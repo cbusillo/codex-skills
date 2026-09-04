@@ -120,6 +120,9 @@ policy:
 
 # GitHub Plan
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 ## Outcome
 
 Use GitHub issues as the durable planning database. Keep chat planning

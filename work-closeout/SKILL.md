@@ -7,6 +7,9 @@ metadata:
 
 # Work Closeout
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 Use this skill to leave a workstream tidy and understandable. It is about
 cleanup and handoff, not proving readiness; use `repo-readiness` when the main
 question is whether checks pass or a PR can ship.
@@ -46,8 +49,9 @@ preserved, or intentionally left in place.
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
    expectations, cleanup policy, and ownership boundaries. If metadata should
-   change, update it only with approval; otherwise record a concrete remaining
-   item before saying it is safe to exit.
+   change, update it only with approval, including approval already given for
+   that metadata change and scope; otherwise record a concrete remaining item
+   before saying it is safe to exit.
 
    Also read `cleanup`. During closeout, run or report repo-configured commands
    with `when: "routine"` as closeout evidence. Commands marked `explicit`,
@@ -336,46 +340,13 @@ config is blank or feels wrong, ask the user before changing durable policy or
 trusting a suspicious value; for a one-off local check, prefer the helper's safe
 inferred route with `changed_files` scope and report the assumption.
 
-## Parking Work
+## Parking Work and Handoff Surfaces
 
-Use one durable place as the primary owner for intentionally parked work, and
-link related artifacts when useful:
-
-- PR: current branch scope, verification state, review/CI/deploy status, and
-  remaining items that belong to this branch.
-- GitHub plan issue: durable planning, cross-session agent memory, multi-step
-  strategy, cross-repo coordination, blockers, and Project state.
-- Issue: durable repo work not tied to the current branch, including bugs,
-  security/quality findings, and cleanup tasks someone may pick up later.
-- Saved local plan: only explicit offline/private context not ready or
-  appropriate for GitHub.
-
-For conditional safe-to-exit, at least one durable place must hold the next
-step. Avoid duplicating every detail everywhere; link PRs, issues, and plans
-when that improves continuity.
-
-When configured Focus lanes are part of the durable planning surface, make sure
-the owning item's lane reflects the closeout state: `Now` for the active finish,
-`Waiting` for blocked work or work awaiting an external decision/event,
-or `Next`/`Later` for deferred work. For completed planning issues, use the
-`github-plan` close flow so done labels and Project focus are updated together.
-Do not leave the lane stale when parking or closing a workstream.
-
-## Handoff Surfaces
-
-For GitHub-backed repos, recovery-critical handoff content belongs in the
-owning GitHub issue or PR comment. Use local handoff files only as temporary
-scratch while drafting or when the user explicitly asks for an offline/private
-handoff.
-
-- If a handoff file names an active issue or PR, copy the actionable summary,
-  blockers, next action, validation state, and relevant point-in-time links to
-  that GitHub thread before relying on it.
-- If a handoff file is intentionally committed, make sure it describes durable
-  product or repo behavior, not session-only coordination.
-- Before declaring closeout complete, sweep temporary handoff files matching
-  configured globs and either delete them after migration or report why they are
-  intentionally left behind.
+Before parking unfinished work or migrating a local handoff, read
+[parking and handoff procedures](references/parking-and-handoff.md). Preserve
+one current durable owner with its blocker, next action, and verification state.
+For GitHub-backed work, use the owning issue or PR; local-only handoffs require
+explicit offline/private scope. Apply the plan hygiene checks below as relevant.
 
 ## Plan Hygiene
 
