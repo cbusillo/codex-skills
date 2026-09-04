@@ -90,9 +90,9 @@ approves another route.
 
 When distilling a legacy Chronicle archive:
 
-1. Confirm the archive path and whether Chronicle is current or historical. A
-   stopped Chronicle process can still leave useful historical archives, but the
-   archive is not fresh screen context.
+1. Confirm the archive path, provenance, and covered date range. Treat every
+   legacy Chronicle archive as historical evidence and evaluate only its
+   persisted contents.
 2. Use a local LLM only as a read-only scout over private source material. It may
    summarize, cluster, quote filenames, and point to candidate evidence, but it
    does not classify, route, promote, delete, or decide what should become

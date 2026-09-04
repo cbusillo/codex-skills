@@ -189,6 +189,14 @@ def test_legacy_chronicle_skill_stays_retired() -> None:
         "does not provide or require an active chronicle skill" in normalized,
         "Memory distillation must not imply that Chronicle remains an active skill",
     )
+    require(
+        "treat every legacy chronicle archive as historical evidence" in normalized
+        and "whether chronicle is current or historical" not in normalized
+        and "stopped chronicle process" not in normalized
+        and "fresh screen context" not in normalized
+        and "running process" not in normalized,
+        "Memory distillation must keep Chronicle guidance historical-only",
+    )
 
 
 def test_launchplane_product_config_uses_operator_api_first() -> None:
