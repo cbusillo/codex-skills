@@ -35,6 +35,16 @@ must keep passing the canonical gate. See
 [`github/references/execution-environment.md`](github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
 
+## Instruction scope
+
+Execution skills share [task scope and authorization](references/execution-scope.md).
+Existing authorization is reused within its scope; exact-action approvals and
+configured review, quality, delegation, and output requirements remain in force.
+Detailed lifecycle and handoff procedures load only through the relevant skill's
+reference links. Command-policy frontmatter remains in the owning entrypoint.
+Install the shared top-level `references/` directory with these skills; copying
+one skill folder alone does not preserve its cross-skill reference dependencies.
+
 ## Local Overrides
 
 This repository is intended to be safe for public sharing. Put personal,
@@ -50,7 +60,9 @@ repository as generated/vendor cache state, not as maintained source. Edit the
 top-level skill directories instead.
 
 Some top-level skills intentionally use the same names as bundled system skills
-so they win by normal Every Code skill precedence:
+as deliberate user-maintained overrides. Every Code selects them by its skill
+precedence; hosts that expose both copies should select the maintained top-level
+source by its full path rather than combine conflicting workflows:
 
 - `openai-docs`
 - `plan`

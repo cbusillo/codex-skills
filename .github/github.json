@@ -3,6 +3,7 @@
   "projectType": "codex-skills",
   "docs": {
     "index": "README.md",
+    "executionScope": "references/execution-scope.md",
     "githubSkill": "github/SKILL.md",
     "githubWorkflow": "github/references/repo-workflow.md",
     "backgroundReviewReporting": "references/background-review-reporting.md",

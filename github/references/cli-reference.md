@@ -32,6 +32,18 @@ Choose the interpreter from the helper's extension and shebang before running
 
 ## Shared API Contract
 
+Shared helper implementation lives in:
+
+- `scripts/github_identity.py`: portable automation identity and local-environment
+  resolution for Python helpers.
+- `scripts/github_comment.py`: actor-aware REST timeline-comment creation,
+  pagination, edit-last selection, and deletion-race handling.
+- `scripts/github_issue.py`: actor-aware REST issue creation, edits, state changes,
+  membership, milestones, and reconciliation.
+
+These paths are relative to the `github` skill directory. Use the public helper
+commands below for operations; consult these modules when changing helper code.
+
 `scripts/github_api.py` is the common body-safe REST and diagnostics layer.
 It invokes `gh api --include` through `scripts/gh-with-env-token` by default,
 sends mutation bodies as JSON on stdin, and emits one versioned JSON envelope

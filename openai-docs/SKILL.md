@@ -27,6 +27,9 @@ commands:
 
 # OpenAI Docs
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 Provide authoritative, current guidance from OpenAI developer docs. Use the
 developer-docs MCP tools first when they are available and useful; use official
 OpenAI-domain web search as the fallback. This skill owns OpenAI model
@@ -68,6 +71,13 @@ docs lookup.
   single value.
 
 ## Workflow
+
+For an instruction audit or prompt-only refactor, fetch the named model's
+current prompting guidance and inspect the active instruction sources. Preserve
+existing approval and quality policies unless changing them is explicitly in
+scope. Identify static conflicts separately from measured model behavior; a
+model switch or API evaluation is not a prerequisite for reviewing instruction
+files. The model-switch sequence below applies only to an actual model migration.
 
 1. Classify the request as general docs lookup, model selection, model
    migration, prompt migration, or broader API/provider implementation work.
@@ -118,4 +128,10 @@ Read only what you need:
 
 - Prefer MCP doc tools for OpenAI markdown docs when available, then use
   official-domain web search when MCP is unavailable or unhelpful.
-- When falling back to web search, restrict to official OpenAI domains (developers.openai.com, platform.openai.com) and cite sources.
+- When falling back to web search, restrict to official OpenAI domains
+  (`developers.openai.com`, `platform.openai.com`, `learn.chatgpt.com`) and cite
+  the fetched page that supports the claim.
+- Use API documentation for API contracts, parameters, and API pricing. Use
+  `learn.chatgpt.com` for the ChatGPT and Codex product/configuration guidance it
+  hosts; do not infer API capabilities or account-specific availability from
+  product tutorials.

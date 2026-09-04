@@ -51,6 +51,9 @@ workflow_defaults:
 
 # PR Babysitter
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 ## Objective
 
 Babysit a PR persistently until one of these terminal outcomes occurs:
@@ -230,15 +233,27 @@ If a code review comment/thread is already marked as resolved in GitHub, treat i
 
 ## Git Safety Rules
 
-- Work only on the PR head branch.
+- Work on the PR head branch, or an isolated task branch from its exact head
+  when that branch is already checked out elsewhere.
 - Before editing or pushing, verify the current branch, repo default branch, and
   PR head branch. If the PR head is the default branch, a shared/release branch,
   or otherwise protected, do not patch or push it directly; switch to a safe task
   branch and use the `github` workflow to update or replace the PR.
 - Avoid destructive git commands.
 - Do not switch branches unless necessary to recover context.
-- Before editing, check for unrelated uncommitted changes. If present, stop and
-  ask the user.
+- Before editing, inspect uncommitted changes and preserve unrelated work.
+  Use an isolated worktree for the PR head when the current checkout is dirty;
+  do not reset, stash, clean, or copy unrelated changes into the fix. If the head
+  branch is already checked out, prepare the fix on a focused task branch from
+  the exact PR head and recheck the remote head before updating that PR. Ask
+  only when edits overlap, ownership is unclear, or the PR cannot be updated
+  without overwriting concurrent work.
+- In an isolated task branch, pin the PR number and verified head repository,
+  remote, and branch. Push the fix explicitly to that PR head with a normal
+  fast-forward push; never rely on the task branch's default upstream. Never
+  force-push the PR head. If a concurrent update rejects the push, re-read the
+  head and integrate it only when safe; ask if edits conflict or ownership is
+  unclear. Restart the watcher with `--pr <number>`, not `--pr auto`.
 - After each successful fix, commit with `github/scripts/git-commit-as-bot` and
   push with `github/scripts/git-push-as-bot`, then re-run the watcher.
 - If you interrupted a live `--watch` session to make the fix, restart `--watch` immediately after the push in the same turn.

@@ -651,6 +651,9 @@ policy:
 
 # GitHub Expert
 
+Apply [task scope and authorization](../references/execution-scope.md) when
+using this workflow; it defines how existing approval and task boundaries apply.
+
 Use this skill to manage repository execution: branches, pull requests, Actions,
 reviews, merge/deploy state, issue comments, and safe cleanup.
 
@@ -943,36 +946,10 @@ invocation rules.
 
 ## Tools & Scripts
 
-Always prefer the bundled scripts for structured state, ergonomic workflows,
-consistent auth/retry behavior, and safe formatting:
-
-- `scripts/gh-plan.py`: Issue, milestone, Project, and dependency-aware
-  next-work management (see
-  `references/cli-reference.md`).
-- `scripts/github-repo-snapshot.sh`: Situational awareness.
-- `scripts/github-ci-diagnose.py`: CI log analysis.
-- `scripts/github_api.py`: Shared JSON-stdin REST transport, response-header
-  parsing, diagnostics envelope, legacy command classification, GraphQL
-  query/mutation context, redaction, bounded rate-limit probe, matrix-gated
-  reset-aware retries, inherited deadlines, and lock-safe shared cooldowns.
-- `scripts/github_identity.py`: Shared portable automation identity and
-  local-environment resolution for Python helpers.
-- `scripts/github_comment.py`: Shared actor-aware REST timeline-comment create,
-  pagination, edit-last selection, and deletion-race handling.
-- `scripts/github_issue.py`: Shared actor-aware REST issue create, edit,
-  close, reopen, membership, milestone, and reconciliation behavior.
-- `scripts/gh-pr.py`: REST-first PR view, list, checks, merge, and rate-limit
-  diagnostics. The helper owns quota-aware degraded behavior; GraphQL-only
-  fields remain nullable unless a future command explicitly opts into them.
-- `scripts/reconcile-runtime-checkout.py`: Runtime-binding reconciliation after
-  a confirmed landing, with structured fast-forward, blocked, retryable, and
-  not-applicable receipts.
-- `scripts/gh-issue`: Safe multiline REST issue create/edit/close/reopen flows
-  from stdin with one versioned terminal JSON envelope, including compound-step
-  and reconciliation evidence.
-- `scripts/gh-comment`: Safe multiline REST commenting with actor-aware
-  edit-last semantics, the same terminal JSON envelope, and stderr-only human
-  diagnostics.
+Use the bundled scripts and structured command metadata above for state,
+authentication, and writes. For an operation's arguments, transport, or response
+contract, read the relevant section of [CLI reference](references/cli-reference.md).
+Do not load unrelated command recipes or rebuild helper behavior in ad hoc code.
 
 Retry behavior is owned by `scripts/github_api.py` and
 `references/operation-matrix.toml`. Do not add ad hoc helper loops. A matrix
