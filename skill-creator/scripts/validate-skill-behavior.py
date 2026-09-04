@@ -178,28 +178,24 @@ def command_policy_by_id(skill_name: str, policy_id: str) -> dict[str, Any]:
     raise AssertionError(f"{skill_name} must define command policy {policy_id}")
 
 
-def test_chronicle_stays_quiet_when_unavailable() -> None:
-    text = (ROOT / "chronicle" / "SKILL.md").read_text()
-    lower = text.lower()
-    normalized = " ".join(lower.split())
-
+def test_legacy_chronicle_skill_stays_retired() -> None:
     require(
-        "do not use it for ordinary repo, github, filesystem, or memory-context questions" in normalized,
-        "Chronicle must not trigger for ordinary repo/GitHub/filesystem/memory questions",
+        not (ROOT / "chronicle" / "SKILL.md").exists(),
+        "The legacy Chronicle skill must stay retired",
+    )
+    text = (ROOT / "memory-distillation" / "SKILL.md").read_text()
+    normalized = " ".join(text.lower().split())
+    require(
+        "does not provide or require an active chronicle skill" in normalized,
+        "Memory distillation must not imply that Chronicle remains an active skill",
     )
     require(
-        "do not mention chronicle status unless the user explicitly asked" in normalized,
-        "Chronicle unavailable status should stay quiet unless the user asked for it",
-    )
-    require(
-        "this skill must be used whenever you need to resolve ambiguity" not in normalized,
-        "Chronicle must not regain broad mandatory ambiguity-trigger wording",
-    )
-    require(
-        "confirm the executable is `codex_chronicle`" in normalized
-        and "do not trust sandbox-limited process checks" in normalized
-        and "cannot be verified from the host" in normalized,
-        "Chronicle must require host-visible process identity verification before use",
+        "treat every legacy chronicle archive as historical evidence" in normalized
+        and "whether chronicle is current or historical" not in normalized
+        and "stopped chronicle process" not in normalized
+        and "fresh screen context" not in normalized
+        and "running process" not in normalized,
+        "Memory distillation must keep Chronicle guidance historical-only",
     )
 
 
@@ -2606,7 +2602,7 @@ def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
 
 def main() -> None:
     tests = [
-        test_chronicle_stays_quiet_when_unavailable,
+        test_legacy_chronicle_skill_stays_retired,
         test_launchplane_product_config_uses_operator_api_first,
         test_launchplane_operator_config_stays_private_and_optional,
         test_launchplane_write_action_helper_contract,
