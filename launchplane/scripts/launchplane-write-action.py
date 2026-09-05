@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -285,7 +286,7 @@ PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS = {
     "mutation_evidence",
     "companion_feedback_id",
 }
-CHANGE_IMPACT_POLICY_RESULT_FIELDS = {"schema_version", "status", "record"}
+CHANGE_IMPACT_POLICY_RESULT_FIELDS = {"schema_version", "status", "record", "audit", "attribution_status"}
 CHANGE_IMPACT_POLICY_RECORD_FIELDS = {
     "schema_version",
     "record_id",
@@ -301,6 +302,7 @@ CHANGE_IMPACT_POLICY_RECORD_FIELDS = {
     "reason",
     "supersedes_record_id",
     "policy_digest",
+    "classification_model",
 }
 CHANGE_IMPACT_COMPONENT_RULE_FIELDS = {
     "schema_version",
@@ -310,6 +312,9 @@ CHANGE_IMPACT_COMPONENT_RULE_FIELDS = {
     "affected_products",
     "review_tier",
     "production_affecting",
+    "product_impact",
+    "governance_impact",
+    "generated_by",
     "reason",
 }
 CHANGE_IMPACT_PRODUCT_SCOPE_FIELDS = {
@@ -327,6 +332,16 @@ CHANGE_IMPACT_POLICY_READ_FIELDS = {
     "repository_id",
     "current_policy",
     "policy_history_count",
+    "audit",
+    "attribution_status",
+}
+CHANGE_IMPACT_POLICY_AUDIT_FIELDS = {
+    "schema_version", "record_id", "policy_digest", "actor_kind", "actor_subject",
+    "workflow_identity", "trace_id", "recorded_at",
+}
+CHANGE_IMPACT_POLICY_WORKFLOW_FIELDS = {
+    "repository", "repository_id", "repository_owner_id", "workflow_ref",
+    "job_workflow_ref", "ref", "sha",
 }
 GENERIC_WEB_DEPLOY_RECOVERY_DRY_RUN_FIELDS = {
     "schema_version",
@@ -1328,6 +1343,8 @@ def _project_change_impact_policy_record(record_value: object) -> dict[str, obje
     record = _require_dict(record_value)
     if any(str(key) not in CHANGE_IMPACT_POLICY_RECORD_FIELDS for key in record):
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    if record.get("classification_model") not in (None, "v2"):
+        raise LaunchplaneSafetyError("invalid_response")
     component_rules = record.get("component_rules")
     if component_rules is not None:
         if not isinstance(component_rules, list):
@@ -1336,6 +1353,26 @@ def _project_change_impact_policy_record(record_value: object) -> dict[str, obje
             rule = _require_dict(rule_value)
             if any(str(key) not in CHANGE_IMPACT_COMPONENT_RULE_FIELDS for key in rule):
                 raise LaunchplaneSafetyError("unsafe_response_shape")
+            product_impact = rule.get("product_impact")
+            if product_impact is not None and product_impact != "declared_none":
+                raise LaunchplaneSafetyError("invalid_response")
+            _optional_bool(rule.get("governance_impact"))
+            generated_by = rule.get("generated_by")
+            if record.get("classification_model") != "v2" and any(
+                rule.get(field) is not None
+                for field in ("product_impact", "governance_impact", "generated_by")
+            ):
+                raise LaunchplaneSafetyError("invalid_response")
+            if generated_by is not None:
+                if (
+                    not isinstance(generated_by, list) or not 1 <= len(generated_by) <= 20
+                    or any(not isinstance(item, str) or not item.strip() for item in generated_by)
+                ):
+                    raise LaunchplaneSafetyError("invalid_response")
+                if len(set(generated_by)) != len(generated_by) or product_impact is not None or rule.get("affected_products"):
+                    raise LaunchplaneSafetyError("invalid_response")
+            if product_impact is not None and rule.get("affected_products"):
+                raise LaunchplaneSafetyError("invalid_response")
             path_prefixes = rule.get("path_prefixes")
             if path_prefixes is not None and not isinstance(path_prefixes, list):
                 raise LaunchplaneSafetyError("invalid_response")
@@ -1375,10 +1412,80 @@ def _project_change_impact_policy_result(result: object) -> dict[str, object]:
     apply_status = public_code(source.get("status"))
     if apply_status not in {"would_apply", "would_replay", "applied", "replayed"}:
         raise LaunchplaneSafetyError("invalid_response")
-    return {
+    projected: dict[str, object] = {
         "status": apply_status,
         "record": _project_change_impact_policy_record(source.get("record")),
     }
+    projected.update(_project_change_impact_attribution(source, projected["record"], apply_status=apply_status))
+    return projected
+
+
+def _validate_private_string(value: object, *, maximum: int, minimum: int = 0) -> None:
+    if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+        raise LaunchplaneSafetyError("invalid_response")
+
+
+def _project_change_impact_attribution(
+    source: dict[str, Any], policy: object, *, apply_status: str | None = None,
+) -> dict[str, object]:
+    if "audit" not in source and "attribution_status" not in source:
+        return {}
+    status = source.get("attribution_status")
+    audit_value = source.get("audit")
+    allowed = {"attributed", "legacy_unattributed", "attribution_unavailable"}
+    if apply_status in {"would_apply", "would_replay"}:
+        allowed = {"not_applied"}
+    elif apply_status is not None:
+        allowed = {"attributed", "legacy_unattributed"}
+    if not isinstance(status, str) or status not in allowed:
+        raise LaunchplaneSafetyError("invalid_response")
+    if (status == "attributed") != (audit_value is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    if policy is None and status != "attribution_unavailable":
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {"attribution_status": status, "audit": None}
+    if audit_value is None:
+        return projected
+    record = _require_dict(policy)
+    audit = _require_exact_fields(audit_value, CHANGE_IMPACT_POLICY_AUDIT_FIELDS)
+    if type(audit["schema_version"]) is not int or audit["schema_version"] != 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    if audit["record_id"] != record["record_id"] or audit["policy_digest"] != record["policy_digest"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    kind = audit["actor_kind"]
+    if not isinstance(kind, str) or kind not in {"local_admin", "local_operator", "github_actions"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    _validate_private_string(audit["actor_subject"], minimum=1, maximum=512)
+    if not audit["actor_subject"].strip():
+        raise LaunchplaneSafetyError("invalid_response")
+    _validate_private_string(audit["trace_id"], minimum=1, maximum=256)
+    workflow_value = audit["workflow_identity"]
+    if (kind == "github_actions") != (workflow_value is not None):
+        raise LaunchplaneSafetyError("invalid_response")
+    if workflow_value is not None:
+        workflow = _require_exact_fields(workflow_value, CHANGE_IMPACT_POLICY_WORKFLOW_FIELDS)
+        for field, minimum, maximum in (
+            ("repository", 1, 256), ("repository_id", 0, 64), ("repository_owner_id", 0, 64),
+            ("workflow_ref", 0, 512), ("job_workflow_ref", 0, 512), ("ref", 0, 512), ("sha", 1, 64),
+        ):
+            _validate_private_string(workflow[field], minimum=minimum, maximum=maximum)
+    recorded_at = audit["recorded_at"]
+    if not isinstance(recorded_at, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+        r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", recorded_at,
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    try:
+        recorded_display = datetime.fromisoformat(recorded_at).astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
+        raise LaunchplaneSafetyError("invalid_response") from exc
+    recorded_display_text = recorded_display.isoformat(timespec="seconds").replace("+00:00", "Z")
+    projected["audit"] = {
+        "record_id": record["record_id"], "policy_digest": record["policy_digest"],
+        "actor_kind": kind, "recorded_at": public_timestamp(recorded_display_text),
+    }
+    assert_public_safe_shape(projected)
+    return projected
 
 
 def _project_sha256(value: object) -> str:
@@ -1717,6 +1824,7 @@ def _project_change_impact_policy_read_model(value: object) -> dict[str, object]
         projected["authoritative"] = _optional_bool(source["authoritative"])
     if current_policy is not None:
         projected["current_policy"] = _project_change_impact_policy_record(current_policy)
+    projected.update(_project_change_impact_attribution(source, projected["current_policy"]))
     assert_public_safe_shape(projected)
     return projected
 

@@ -207,7 +207,18 @@ bounded read command and compare the active revision and digest before relying
 on the policy.
 
 The public result contains only the apply status, policy record id, digest,
-revision, policy status, effective timestamp, and trace metadata. It never emits
+revision, policy status, effective timestamp, and response trace metadata.
+Current read/apply responses also expose `attribution_status` and a nullable
+audit summary containing only `record_id`, `policy_digest`, `actor_kind`, and
+`recorded_at`. This display timestamp is normalized from the producer's aware
+ISO timestamp to whole-second UTC; fractional precision is omitted only in the
+public summary, without changing the immutable stored audit timestamp. Naive or
+malformed timestamps fail closed. Audit identity must match the accompanying
+policy. Actor subjects,
+the audit trace ID, and workflow identity fields are validated and omitted.
+Legacy responses without attribution fields retain their previous output shape.
+The declared optional v2 policy/rule fields are validated but not projected;
+they do not change the helper's apply authority. The helper never emits
 component rules, path prefixes, affected products, repository name, owner ID,
 source, reason, raw payloads, private paths, service URLs, or authorization
 headers. The record id intentionally embeds the numeric repository ID because
@@ -476,12 +487,15 @@ provider dictionary pass-through:
   codes, and product-config/intent record ids.
 - `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
   apply status, policy record id, digest, revision, policy status, and effective
-  timestamp.
+  timestamp, plus the bounded attribution status/audit summary described above.
 - `change-impact-policy-read` emits history count and bounded current-policy
   metadata. Legacy `mode`, `authoritative`, and `enforcement_effect` fields are
   validated and emitted only when supplied with non-null values; the current
   service read model omits them. Their absence does not imply authorization or
-  enforcement status. Policy bodies and path rules remain excluded.
+  enforcement status. Current attribution metadata follows the same bounded
+  read/apply projection. Policy bodies, path rules, and private writer identity
+  remain excluded. Unknown fields, including nested audit/workflow fields, fail
+  closed.
 - `merge-train-policy-import-dry-run` and
   `merge-train-policy-import-apply` may emit only active-policy identity and
   digest, candidate record identity, digest, status, target count, replay state,

@@ -1396,6 +1396,7 @@ def test_change_impact_policy_cli_dispatches_exact_route_and_modes() -> None:
 
 
 def current_change_impact_policy_read_response() -> dict[str, Any]:
+    """Pre-audit service shape retained to exercise legacy compatibility."""
     record = {
         "schema_version": 1,
         "record_id": "change-impact-policy-123-r1",
@@ -1466,6 +1467,132 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
     assert empty_payload["result"]["policy_history_count"] == 0
 
 
+def audited_policy_read_response(*, attributed: bool = True) -> dict[str, Any]:
+    response = current_change_impact_policy_read_response()
+    model = response["read_model"]
+    record = model["current_policy"]
+    record["classification_model"] = None
+    record["component_rules"][0].update(product_impact=None, governance_impact=None, generated_by=None)
+    model["attribution_status"] = "attributed" if attributed else "legacy_unattributed"
+    model["audit"] = None
+    if attributed:
+        model["audit"] = {
+            "schema_version": 1, "record_id": record["record_id"], "policy_digest": record["policy_digest"],
+            "actor_kind": "github_actions", "actor_subject": "private-audit-subject",
+            "workflow_identity": {
+                "repository": "private-owner/private-repo", "repository_id": "987", "repository_owner_id": "654",
+                "workflow_ref": "private-workflow-ref", "job_workflow_ref": "private-job-workflow-ref",
+                "ref": "private-git-ref", "sha": "b" * 40,
+            },
+            "trace_id": "launchplane_req_private_audit", "recorded_at": "2026-09-05T22:00:00.123456Z",
+        }
+    return response
+
+
+def test_change_impact_current_policy_responses_preserve_bounded_attribution() -> None:
+    response = audited_policy_read_response()
+    model = response["read_model"]
+    payload = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+    expected_audit = {
+        "record_id": model["audit"]["record_id"], "policy_digest": "a" * 64,
+        "actor_kind": "github_actions", "recorded_at": "2026-09-05T22:00:00Z",
+    }
+    assert payload["result"]["audit"] == expected_audit
+    assert payload["result"]["attribution_status"] == "attributed"
+    for timestamp in ("2026-09-05T22:00:00Z", "2026-09-05T18:00:00.123456-04:00", "2026-09-06T00:00:00.1+02:00"):
+        model["audit"]["recorded_at"] = timestamp
+        projected = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        assert projected["result"]["audit"] == expected_audit
+        assert model["audit"]["recorded_at"] == timestamp
+    rendered = json.dumps(payload)
+    for private in ("private-audit-subject", "launchplane_req_private_audit", "private-owner", "private-workflow-ref", "private-job-workflow-ref", "private-git-ref"):
+        assert private not in rendered
+    for kind in ("local_admin", "local_operator"):
+        model["audit"].update(actor_kind=kind, workflow_identity=None)
+        projected = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        assert projected["result"]["audit"] == {**expected_audit, "actor_kind": kind}
+    legacy = audited_policy_read_response(attributed=False)
+    projected = write_action.summarize_change_impact_policy_read(request={}, provider_payload=legacy)
+    assert projected["result"]["audit"] is None
+    assert projected["result"]["attribution_status"] == "legacy_unattributed"
+    legacy["read_model"].update(current_policy=None, policy_history_count=0, attribution_status="attribution_unavailable")
+    assert write_action.summarize_change_impact_policy_read(request={}, provider_payload=legacy)["result"] == {
+        "current_policy": None, "policy_history_count": 0, "attribution_status": "attribution_unavailable", "audit": None,
+    }
+    for status in ("would_apply", "would_replay", "applied", "replayed"):
+        result = {"schema_version": 1, "status": status, "record": model["current_policy"], "audit": model["audit"], "attribution_status": "attributed"}
+        if status.startswith("would_"):
+            result.update(audit=None, attribution_status="not_applied")
+        projected = write_action._project_change_impact_policy_result(result)
+        assert projected["attribution_status"] == result["attribution_status"]
+        assert (projected["audit"] is None) == status.startswith("would_")
+    result.update(status="replayed", audit=None, attribution_status="legacy_unattributed")
+    assert write_action._project_change_impact_policy_result(result)["audit"] is None
+
+
+def test_change_impact_current_policy_rejects_invalid_nested_metadata() -> None:
+    changes = [
+        (("attribution_status",), "unexpected"), (("attribution_status",), None),
+        (("audit",), None), (("current_policy",), None),
+        (("audit", "record_id"), "different-record"), (("audit", "policy_digest"), "c" * 64),
+        (("audit", "schema_version"), True), (("audit", "actor_kind"), "human"),
+        (("audit", "actor_subject"), {}), (("audit", "actor_subject"), " " * 10),
+        (("audit", "trace_id"), "x" * 257), (("audit", "recorded_at"), "not-a-date"),
+        (("audit", "recorded_at"), "2026-09-05T22:00:00.123456"),
+        (("audit", "recorded_at"), "2026-02-30T22:00:00Z"),
+        (("audit", "recorded_at"), "2026-09-05T22:00:00+00:60"),
+        (("audit", "recorded_at"), "2026-09-05T22:00:00+24:00"),
+        (("audit", "recorded_at"), None),
+        (("audit", "unknown_private_field"), "private-value"),
+        (("audit", "workflow_identity", "unknown_private_field"), "private-value"),
+        (("audit", "workflow_identity", "repository"), []),
+        (("audit", "workflow_identity"), None),
+        (("current_policy", "classification_model"), {}),
+        (("current_policy", "classification_model"), "v3"),
+    ]
+    for path, value in changes:
+        response = audited_policy_read_response()
+        target = response["read_model"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        try:
+            write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"expected rejection for {path}")
+
+
+def test_change_impact_policy_v2_response_fields_are_validated_and_redacted() -> None:
+    response = audited_policy_read_response(attributed=False)
+    record = response["read_model"]["current_policy"]
+    record["classification_model"] = "v2"
+    rule = record["component_rules"][0]
+    for additions in ({"product_impact": "declared_none"}, {"governance_impact": True}, {"generated_by": ["private-generator"]}):
+        rule.update(product_impact=None, governance_impact=None, generated_by=None)
+        rule.update(additions)
+        payload = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        assert set(payload["result"]["current_policy"]) == {"record_id", "policy_digest", "policy_revision", "status", "effective_at"}
+        assert "private-generator" not in json.dumps(payload)
+    for additions in ({"product_impact": "unknown"}, {"governance_impact": "yes"}, {"generated_by": []}, {"generated_by": ["same", "same"]}, {"generated_by": [{}]}, {"generated_by": ["generator"], "product_impact": "declared_none"}, {"unknown_field": None}):
+        invalid = copy.deepcopy(response)
+        invalid["read_model"]["current_policy"]["component_rules"][0].update(additions)
+        try:
+            write_action.summarize_change_impact_policy_read(request={}, provider_payload=invalid)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"expected rejection for {additions}")
+    record["classification_model"] = None
+    try:
+        write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+    except safety.LaunchplaneSafetyError:
+        pass
+    else:
+        raise AssertionError("v2 rule fields require a v2 policy")
+
+
 def test_change_impact_policy_read_optional_legacy_metadata() -> None:
     response = current_change_impact_policy_read_response()
     flags = {"mode": "shadow", "authoritative": False, "enforcement_effect": "none"}
@@ -1520,10 +1647,13 @@ def test_change_impact_policy_read_rejects_malformed_metadata() -> None:
 
 
 def test_change_impact_policy_read_execution_projects_current_service_response() -> None:
-    response = current_change_impact_policy_read_response()
+    response = audited_policy_read_response()
     for has_policy in (True, False):
         if not has_policy:
-            response["read_model"].update(current_policy=None, policy_history_count=0)
+            response["read_model"].update(
+                current_policy=None, policy_history_count=0,
+                audit=None, attribution_status="attribution_unavailable",
+            )
         output = io.StringIO()
         with patch.object(write_action, "prepare_operator_settings", return_value={
             "service_url": "https://launchplane.example.invalid", "token": "test-token",
@@ -1542,6 +1672,8 @@ def test_change_impact_policy_read_execution_projects_current_service_response()
         assert payload["status"] == "ok"
         assert (payload["result"]["current_policy"] is not None) == has_policy
         assert "private/path" not in output.getvalue()
+        assert "private-audit-subject" not in output.getvalue()
+        assert "launchplane_req_private_audit" not in output.getvalue()
 
 
 def test_change_impact_apply_success_projection_failure_is_unverified() -> None:
@@ -2862,6 +2994,9 @@ def main() -> int:
         test_change_impact_policy_read_optional_legacy_metadata,
         test_change_impact_policy_read_rejects_malformed_metadata,
         test_change_impact_policy_read_execution_projects_current_service_response,
+        test_change_impact_current_policy_responses_preserve_bounded_attribution,
+        test_change_impact_current_policy_rejects_invalid_nested_metadata,
+        test_change_impact_policy_v2_response_fields_are_validated_and_redacted,
         test_change_impact_apply_success_projection_failure_is_unverified,
         test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
