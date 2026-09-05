@@ -1395,7 +1395,7 @@ def test_change_impact_policy_cli_dispatches_exact_route_and_modes() -> None:
     assert read_calls[0]["request"] == {"payload_source": "operator_argument"}
 
 
-def test_change_impact_policy_read_projection_is_bounded() -> None:
+def current_change_impact_policy_read_response() -> dict[str, Any]:
     record = {
         "schema_version": 1,
         "record_id": "change-impact-policy-123-r1",
@@ -1423,25 +1423,30 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
         "supersedes_record_id": None,
         "policy_digest": "a" * 64,
     }
-    payload = write_action.summarize_change_impact_policy_read(
-        request={"payload_source": "operator_argument"},
-        provider_payload={
-            "status": "ok",
-            "trace_id": "launchplane_req_change_impact_read",
-            "read_model": {
-                "schema_version": 1,
-                "mode": "shadow",
-                "authoritative": False,
-                "enforcement_effect": "none",
-                "repository_id": "123",
-                "current_policy": record,
-                "policy_history_count": 1,
-            },
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_change_impact_read",
+        "read_model": {
+            "schema_version": 1,
+            "repository_id": "123",
+            "current_policy": record,
+            "policy_history_count": 1,
         },
+    }
+
+
+def test_change_impact_policy_read_projection_is_bounded() -> None:
+    response = current_change_impact_policy_read_response()
+    payload = write_action.summarize_change_impact_policy_read(
+        request={"payload_source": "operator_argument"}, provider_payload=response,
     )
+    assert set(payload["result"]) == {"policy_history_count", "current_policy"}
+    assert set(payload["result"]["current_policy"]) == {
+        "record_id", "policy_digest", "policy_revision", "status", "effective_at",
+    }
     assert payload["result"]["current_policy"]["policy_digest"] == "a" * 64
     rendered = json.dumps(payload)
-    for private_value in ("example/repo", "private-component", "private/path", "456"):
+    for private_value in ("repository_id", "example/repo", "private-component", "private/path", "456"):
         assert private_value not in rendered
 
     empty_payload = write_action.summarize_change_impact_policy_read(
@@ -1451,9 +1456,6 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
             "trace_id": "launchplane_req_change_impact_empty",
             "read_model": {
                 "schema_version": 1,
-                "mode": "shadow",
-                "authoritative": False,
-                "enforcement_effect": "none",
                 "repository_id": "123",
                 "current_policy": None,
                 "policy_history_count": 0,
@@ -1462,6 +1464,84 @@ def test_change_impact_policy_read_projection_is_bounded() -> None:
     )
     assert empty_payload["result"]["current_policy"] is None
     assert empty_payload["result"]["policy_history_count"] == 0
+
+
+def test_change_impact_policy_read_optional_legacy_metadata() -> None:
+    response = current_change_impact_policy_read_response()
+    flags = {"mode": "shadow", "authoritative": False, "enforcement_effect": "none"}
+    response["read_model"].update(flags)
+    payload = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+    for name, value in flags.items():
+        assert payload["result"][name] == value
+    response["read_model"].update({name: None for name in flags})
+    payload = write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+    assert set(payload["result"]) == {"policy_history_count", "current_policy"}
+
+
+def test_change_impact_policy_read_rejects_malformed_metadata() -> None:
+    invalid_values = [
+        ("policy_history_count", value) for value in (None, True, -1, "1")
+    ] + [
+        ("authoritative", value) for value in ("true", 1)
+    ] + [
+        ("mode", []), ("enforcement_effect", {}),
+        ("current_policy", []), ("unexpected_private_field", "private-value"),
+    ]
+    for field, value in invalid_values:
+        response = current_change_impact_policy_read_response()
+        response["read_model"][field] = value
+        try:
+            write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid policy read field: {field}")
+    for field, value in (
+        ("policy_digest", "a" * 63), ("policy_digest", "g" * 64),
+        ("status", "unknown"), ("policy_revision", 0), ("policy_revision", True),
+    ):
+        response = current_change_impact_policy_read_response()
+        response["read_model"]["current_policy"][field] = value
+        try:
+            write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid current policy field: {field}")
+    for response in ({"status": "ok"}, {"read_model": None}, {
+        **current_change_impact_policy_read_response(), "unexpected_private_field": "private-value",
+    }):
+        try:
+            write_action.summarize_change_impact_policy_read(request={}, provider_payload=response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError("accepted malformed policy response envelope")
+
+
+def test_change_impact_policy_read_execution_projects_current_service_response() -> None:
+    response = current_change_impact_policy_read_response()
+    for has_policy in (True, False):
+        if not has_policy:
+            response["read_model"].update(current_policy=None, policy_history_count=0)
+        output = io.StringIO()
+        with patch.object(write_action, "prepare_operator_settings", return_value={
+            "service_url": "https://launchplane.example.invalid", "token": "test-token",
+        }), patch.object(write_action, "request_launchplane_read", return_value=response) as read:
+            with redirect_stdout(output):
+                exit_code = write_action.execute_change_impact_policy_read(
+                    args=argparse.Namespace(repository_id="123", timeout=3), request={},
+                )
+        assert exit_code == 0
+        read.assert_called_once_with(
+            service_url="https://launchplane.example.invalid", path="/v1/change-impact/policy",
+            settings={"service_url": "https://launchplane.example.invalid", "token": "test-token"},
+            query={"repository_id": "123"}, timeout=3,
+        )
+        payload = json.loads(output.getvalue())
+        assert payload["status"] == "ok"
+        assert (payload["result"]["current_policy"] is not None) == has_policy
+        assert "private/path" not in output.getvalue()
 
 
 def test_change_impact_apply_success_projection_failure_is_unverified() -> None:
@@ -2779,6 +2859,9 @@ def main() -> int:
         test_change_impact_policy_projection_fails_closed_on_extra_fields,
         test_change_impact_policy_cli_dispatches_exact_route_and_modes,
         test_change_impact_policy_read_projection_is_bounded,
+        test_change_impact_policy_read_optional_legacy_metadata,
+        test_change_impact_policy_read_rejects_malformed_metadata,
+        test_change_impact_policy_read_execution_projects_current_service_response,
         test_change_impact_apply_success_projection_failure_is_unverified,
         test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,

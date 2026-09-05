@@ -1704,12 +1704,17 @@ def _project_change_impact_policy_read_model(value: object) -> dict[str, object]
         raise LaunchplaneSafetyError("invalid_response")
     current_policy = source.get("current_policy")
     projected: dict[str, object] = {
-        "mode": public_code(source.get("mode")),
-        "authoritative": _optional_bool(source.get("authoritative")),
-        "enforcement_effect": public_code(source.get("enforcement_effect")),
         "policy_history_count": history_count,
         "current_policy": None,
     }
+    # Older service responses may include these flags; current read models do not.
+    for field in ("mode", "enforcement_effect"):
+        if source.get(field) is not None:
+            if not isinstance(source[field], str):
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[field] = public_code(source[field])
+    if source.get("authoritative") is not None:
+        projected["authoritative"] = _optional_bool(source["authoritative"])
     if current_policy is not None:
         projected["current_policy"] = _project_change_impact_policy_record(current_policy)
     assert_public_safe_shape(projected)
