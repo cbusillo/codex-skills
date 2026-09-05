@@ -251,41 +251,8 @@ Before readiness, broaden when the changed behavior, findings, or an explicit
 repo requirement warrant it. Otherwise reuse a current clean result covering
 the affected surface. Complete every required repo gate; an ordered scope
 preference is not by itself a requirement to run each scope in succession.
-The helper reads `.github/github.json` when present:
-
-- `qualityGate.inspection.scopePreference`
-- `qualityGate.inspection.ide`
-- `qualityGate.inspection.lanes`
-- `qualityGate.inspection.profile`
-- `qualityGate.inspection.prepare` (command string or structured `python` object)
-- `qualityGate.inspection.requiredGeneratedState`
-- `jetbrains.ide`
-- `jetbrains.ideChannel` / `jetbrains.ide_channel`
-- `jetbrains.ideVersion` / `jetbrains.ide_version`
-- `jetbrains.ideApp` / `jetbrains.ide_app`
-- `jetbrains.openProjectPath`
-- `jetbrains.mainWorktreePath`
-- `jetbrains.worktreeStrategy`
-- `jetbrains.scopePreference`
-
-Mixed-language repositories may replace the single
-`qualityGate.inspection.ide` with ordered `qualityGate.inspection.lanes`. Each
-lane names a unique `id`, an `ide`, whether it is `required`, repository-relative
-`include` globs, optional `exclude` globs, and an optional repository-relative
-`projectPath` directory when that IDE must open a nested project. The helper
-resolves the selected scope once, validates every file and lane project path
-against the exact worktree, assigns files by first matching lane, and records
-unmatched and explicitly excluded files. Files assigned to a lane with
-`projectPath` must resolve inside that project directory. It
-does not open an IDE for an empty lane. Exclusions apply to ordinary changed-file,
-directory, and whole-project readiness; an explicit `files` scope records an
-override and still runs the selected fixture in its lane. Non-empty lanes run
-sequentially with an exact `files` scope and independent route, session, cleanup,
-mutation, IDE, and plugin provenance. Required lanes aggregate deterministically:
-any `RED` wins, otherwise any `UNKNOWN` wins, otherwise the result is `GREEN`.
-Optional-lane failures remain visible without changing the required-lane
-aggregate. When `lanes` is absent, the existing single-IDE path remains
-unchanged.
+Before defining or diagnosing lane routing, preparation configuration, receipts,
+or preparation override flags, read [inspection configuration](references/inspection-config.md).
 
 If config is absent, the helper infers from git and the current working tree. For
 a one-off inspection, a missing inspection config can use the safe default
@@ -296,26 +263,9 @@ wrong for the active worktree, ask the user before changing policy or treating
 the value as authoritative; otherwise report the mismatch as a not-clean
 readiness blocker.
 
-When `qualityGate.inspection.prepare` is configured, `agent-inspect`, `inspect`,
-and `inspect-closeout` run that exact repository command in the exact target
-worktree before IDE lifecycle open or claim. Automatic execution is allowed
-only below a configured trusted auto-open root; an untrusted root returns an
-actionable manual-preparation result and never runs repository-controlled argv.
-The helper uses `shlex`-validated argv with `shell=False`, a dedicated bounded
-`--repository-preparation-timeout-ms`, and a recursion guard. It snapshots Git
-status plus the worktree's index bytes before and after. Nonzero exit, timeout,
-tracked mutation, hidden index mutation, missing `requiredGeneratedState`, or
-recursive invocation is a terminal preparation result. Do not continue with an
-unprepared project model or substitute a different command.
-
-Successful preparation writes a bounded durable receipt under the helper cache.
-The receipt is reused only when the command/configuration hashes, exact worktree
-identity, post-preparation Git state, and required generated state still match.
-Use `--skip-preparation` or `--no-repository-preparation` only after manually
-running the configured command, and use `--force-preparation` or
-`--force-refresh-preparation` to refresh a valid receipt. Preparation is
-idempotent and may create ignored local environment state, but it must not leave
-tracked-file mutations or hidden index mutations before inspection begins.
+The helper owns preparation and receipt reuse. A preparation failure, tracked
+or hidden index mutation, or missing required generated state is terminal; do
+not bypass it or substitute another command.
 
 ## Worktree Safety
 
@@ -366,47 +316,8 @@ identify arbitrary writers or prove that ignored files are quiet.
   A bounded internal retry may extend to the stricter policy of a later UNKNOWN
   result, such as `stale_results` followed by `project_analysis_not_ready`; all
   attempts remain part of one terminal assessment and stop at the latest policy.
-  Every `GREEN`, `RED`, or `UNKNOWN` result and cleanup anomaly carries
-  `inspection_attribution` schema version 1 with a stable classification, code,
-  phase, endpoint, HTTP status, helper/plugin provenance, cleanup state, and
-  bounded evidence IDs. Preserve plugin attribution and prefer its IDE channel
-  over selector fallback. The helper supplies one `client_run_id` per invocation
-  and preserves plugin `request_id` values. `unattributed_unknown: true` is a
-  helper/tool failure, not a neutral unknown bucket.
-  Dirty plugin fingerprints remain provenance rather than presumed causation.
-  Qualification must use the exact intended fingerprint, but normal diagnostics
-  should report `plugin_build_dirty` without claiming it caused the verdict.
-  A concurrent `inspection_in_progress` response is adoptable only when it
-  includes an unambiguous positive run ID plus explicit scope/profile proof that
-  exactly matches the trigger request. For `changed_files`, it must also prove
-  the same unversioned-file policy and changed-files mode. Legacy, missing,
-  partial, mismatched, or contradictory conflict payloads fail closed as
-  `inspection_proof_failed` at the trigger phase and must not supply GREEN/RED
-  evidence. Adopted conflict runs remain foreign-owned and are never cancelled.
-  During `agent-inspect`, `inspect`, and `inspect-closeout`, problems retrieval reuses the trigger's
-  scope, unversioned-file policy, changed-files mode, profile, and targeted file
-  selectors rather than reconstructing a broader request.
-  If the reason is `ide_selection_required`, `ide_config_ambiguous`, or
-  `ide_config_missing`, say directly that the repo needs preferred JetBrains IDE
-  metadata in `.github/github.json`; do not frame that as merely optional when
-  the same repo will be inspected again.
-  The helper appends each `UNKNOWN` verdict to
-  `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/unknown-verdicts.jsonl`
-  so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
-  disable logging, set it to a path to override the log file, or set
-  `JB_INSPECT_ROLLOUT_FILE` to include the current rollout/session transcript in
-  the record. Set `JB_INSPECT_DEPLOYMENT_MANIFEST` to the immutable deployment or
-  runtime-reconciliation manifest used for qualification; its content SHA-256
-  takes precedence over rollout-file fallback. JSONL appends are locked,
-  complete short writes, and roll back failed writes; a malformed persisted row
-  still fails strict qualification. New outcome rows use schema version 2 with a unique event ID,
-  assessment/observation kind, assessment ID copied only from `client_run_id`,
-  millisecond timestamp, final evidence IDs, repo/worktree/project hashes, repo
-  HEAD, canonical scope descriptor/hash, full helper content SHA-256, exact
-  plugin version/fingerprint, authoritative IDE product/version/channel,
-  deployment-manifest content SHA-256, inspection-started state, cleanup, and
-  ordered internal-attempt summaries. Durable rows hash local paths and project
-  keys and redact token-like fields and path tokens in diagnostic prose.
+  Before diagnosing attribution, configuring outcome logs, or changing proof
+  contracts, read [outcome qualification](references/outcome-qualification.md).
   When inspection evidence is used to qualify changes to this helper or another
   installed runtime-bound skill, compare the recorded helper/source revision
   with the intended landed revision or a fresh runtime-reconciliation receipt.
@@ -415,89 +326,16 @@ identify arbitrary writers or prove that ignored files are quiet.
   valid branch evidence when its exact path and revision are recorded and match
   the source being evaluated.
 
-### Strict Outcome Qualification
+### Qualification and Coverage
 
-Use strict mode only with an explicit schema-v1 qualification file:
+Before `summarize-outcomes --qualification-file` or diagnosis of semantic
+coverage codes, read [outcome qualification](references/outcome-qualification.md).
+Strict qualification requires explicit artifact-pinned input; a normal outcome
+summary is not qualification evidence. Missing or truncated semantic coverage
+cannot prove GREEN; preserve actionable RED findings with their proof gaps.
+Use `--allow-text-only-coverage` only for an intentionally generic data/schema/text
+scope, never source code or a mixed scope containing source code.
 
-```json
-{
-  "schema_version": 1,
-  "boundary": {
-    "since": "2026-07-26T00:00:00.000Z",
-    "after_event_id": "optional-boundary-event-id"
-  },
-  "helper_revision": "sha256:<64 hex characters>",
-  "plugin_build_fingerprint": "<exact full-commit fingerprint>",
-  "deployment_manifest_sha256": "sha256:<64 hex characters>"
-}
-```
-
-Strict mode considers only schema-v2 `inspection_assessment` events after the
-boundary and groups them deterministically by assessment ID. The gate freezes
-at the first requested number of qualifying assessments so later log appends
-cannot rewrite that sample; post-sample failures remain separately visible. It
-records internal retry attempts inside their single terminal assessment event;
-distinct terminal events cannot reuse one assessment ID, and later invocations
-cannot rewrite a frozen sample. Event IDs seen before the boundary are retained
-for replay detection, so copied post-boundary rows are excluded rather than
-counted again. Helper-opened projects
-intentionally left open with `--keep-warm` record `cleanup=kept_warm` and cannot
-qualify as cleanup-clean evidence. It
-reports every post-boundary exclusion, exact duplicate, repeated repo/project
-concentration, ordered attempts, UNKNOWN-to-decisive recovery,
-verdict/classification/phase/cleanup rollups, decisive rate, and remaining
-sample count. A configuration-
-blocked event is a harmless exclusion only when `inspection_started=false` and
-the exact `ide_selection_required`, `ide_config_ambiguous`, or
-`ide_config_missing` code is recorded at phase `selection`. Missing provenance,
-artifact mismatch, attribution mismatch, unattributed UNKNOWN, non-clean
-cleanup, conflicting decisive outcomes, invalid configuration-blocked rows, or
-hidden terminal failures inside the frozen sample window fail the gate. `pass`
-requires the requested sample size, at least 95% decisive, and zero hard
-failures; otherwise the gate is `incomplete` or `fail`. If a log contains
-malformed rows, provide `boundary.after_event_id` so the helper can prove which
-side of the boundary they occupy.
-
-- `scope_semantic_coverage_missing` is `UNKNOWN`: one or more requested scoped
-  files resolved only as generic TextMate/PlainText PSI, were invalid, or were
-  outside project content. This overrides an otherwise clean or plugin-provided
-  `GREEN`, including mixed-language scopes where only some files have semantic
-  support. `in_source: false` alone is not a failure because language-aware PSI
-  can inspect valid project-content files outside a configured source root.
-  Valid in-content JetBrains project metadata identified by the authoritative
-  `IDEA_MODULE` file role is classified as `project_metadata`, even when the IDE
-  exposes it as `PsiPlainTextFile`; it does not require language-aware PSI. The
-  helper reports that classification with no-action guidance instead of
-  suggesting a language plugin. A recognized dependency lockfile may likewise
-  be classified as `excluded_dependency_lockfile`, but only when the plugin
-  reports `is_excluded: true` and the matching stable role. A basename without
-  explicit IDE exclusion, an unknown role, or a blanket `*.lock` pattern stays
-  fail-closed. When a file is outside project content, the
-  next action points to the intended module/content root rather than language
-  support. Otherwise, install or enable the needed language plugin, select a
-  compatible IDE, or update the repo's preferred IDE metadata before rerunning.
-  Use `--allow-text-only-coverage` only when generic text coverage is intentionally
-  sufficient; it does not allow invalid files or files outside project content.
-  Check the selected files before starting a readiness assessment. When every
-  target is intentionally generic data, schema, or text and semantic PSI is not
-  expected or required, include the override on the first assessment rather
-  than generating a post-start configuration failure and rerunning. Never use
-  the override for source code or a mixed scope containing source code.
-  For older plugin builds that left this settled state waiting until timeout,
-  the helper accepts the explicit override only when the same-run snapshot is
-  clean, complete, current, and blocked solely by `non_semantic_fallback`.
-  Generic, indexing, stale, incomplete, or contradictory timeouts remain
-  `UNKNOWN`.
-  The helper preserves actionable `RED` findings while attaching the semantic
-  coverage gap so real findings are not hidden.
-- `scope_semantic_coverage_truncated` is `UNKNOWN` for an otherwise clean result:
-  the plugin resolved more files than it proved through either detailed rows or
-  the aggregate semantic-coverage summary, so the helper cannot prove complete
-  scope coverage. Bounded detail rows alone are not truncation when the
-  aggregate summary proves every resolved file and preserves missing-coverage
-  counts/examples. Text-only allowance does not override genuinely unproven
-  files; update the plugin/helper proof path and rerun. Actionable current RED
-  findings remain visible with the coverage gap attached.
 - Red-lane proof requires current actionable findings in the helper response,
   such as `total_problems > 0`; a paginated current page may have an empty
   `problems` list even when matching findings exist.

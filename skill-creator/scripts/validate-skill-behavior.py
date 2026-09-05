@@ -304,7 +304,8 @@ def test_launchplane_product_config_uses_operator_api_first() -> None:
         "Launchplane guidance must name the merge-train controller route",
     )
     require(
-        "phase-specific merge-train endpoints as detail or recovery surfaces" in normalized,
+        "phase-specific merge-train endpoints as detail or recovery surfaces"
+        in " ".join((ROOT / "launchplane" / "references" / "merge-train.md").read_text().lower().split()),
         "Launchplane merge-train guidance must not make phase endpoints the default path",
     )
     require(
@@ -1269,8 +1270,8 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     closeout_raw = (ROOT / "work-closeout" / "SKILL.md").read_text()
     closeout_text = normalize_text(closeout_raw)
     inspection_text = " ".join((ROOT / "jetbrains-inspection" / "SKILL.md").read_text().lower().split())
-    repo_workflow_raw = (ROOT / "github" / "references" / "repo-workflow.md").read_text()
-    repo_workflow_text = normalize_text(repo_workflow_raw)
+    checkout_raw = (ROOT / "github" / "references" / "post-merge-checkouts.md").read_text()
+    checkout_text = normalize_text(checkout_raw)
     watcher_text = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text().lower()
 
     require(
@@ -1327,26 +1328,22 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "GitHub must inspect the local default checkout after confirmed merges",
     )
     require(
-        "shares the merged worktree's git common directory and expected github identity"
-        in github_text,
+        "shares the source repository's git common directory and expected github identity"
+        in checkout_text,
         "GitHub must bind local default refresh to the merged repository",
     )
     require(
-        "require the exact final landing sha to exist and appear" in github_text
-        and "`upstream_sha`'s first-parent history" in github_text
-        and "re-check that `head` equals `upstream_sha` and contains the landing sha afterward"
-        in github_text
-        and "`head` equals `upstream_sha`" in repo_workflow_text
-        and "the final `head` contains the exact landing sha" in repo_workflow_text,
+        "require the exact final landing sha to exist and appear on that pinned commit's first-parent history"
+        in checkout_text
+        and "`head` equals `upstream_sha`" in checkout_text
+        and "the final `head` contains the exact landing sha" in checkout_text,
         "Default-checkout refresh must prove the exact landing SHA before and after mutation",
     )
     require(
         "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
-        in github_text
-        and "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
         in closeout_text
         and "-c core.hookspath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore"
-        in repo_workflow_text,
+        in checkout_text,
         "Default-checkout refresh must disable hooks and autostash while remaining ff-only",
     )
     require(
@@ -1355,13 +1352,13 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         and "local default checkout remains stale; fast-forward it before default-branch work or audits"
         in closeout_text
         and "local default checkout remains stale; fast-forward it before default-branch work or audits"
-        in repo_workflow_text,
+        in checkout_text,
         "GitHub and closeout guidance must surface the stale-default-checkout hint",
     )
     require(
         "the active task worktree remains the authoritative agent source" in github_text
         and "the active task worktree remains the authoritative agent source" in closeout_text
-        and "the active task worktree remains the authoritative agent source" in repo_workflow_text,
+        and "the active task worktree remains the authoritative agent source" in checkout_text,
         "Default-checkout refresh must preserve the active worktree as agent source",
     )
     require(
@@ -1371,7 +1368,7 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     for skill_name, text in (
         ("github", github_text),
         ("work-closeout", closeout_text),
-        ("repo-workflow", repo_workflow_text),
+        ("post-merge-checkouts", checkout_text),
     ):
         require(
             "apply refresh gates in this order" in text
@@ -1394,12 +1391,6 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
     )
     clean_sections = (
         (
-            "github-clean",
-            github_raw,
-            "- **Local Default-Branch Freshness**",
-            "A dirty checkout remains an automatic-refresh blocker.",
-        ),
-        (
             "work-closeout-active-clean",
             closeout_raw,
             "For a checkout that is not runtime-bound",
@@ -1412,8 +1403,8 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
             "If the shared Launchplane context helper is present and configured",
         ),
         (
-            "repo-workflow-clean",
-            repo_workflow_raw,
+            "post-merge-checkouts-clean",
+            checkout_raw,
             "Otherwise, verify the checkout shares",
             "A dirty checkout is never eligible for automatic refresh.",
         ),
@@ -1445,20 +1436,14 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
             )
     exception_sections = (
         (
-            "github",
-            github_raw,
-            "A dirty checkout remains an automatic-refresh blocker.",
-            "- **Auto-Review Signals**",
-        ),
-        (
             "work-closeout",
             closeout_raw,
             "Do not broaden automatic closeout mutation for a dirty checkout.",
             "After merged work performed from a task branch",
         ),
         (
-            "repo-workflow",
-            repo_workflow_raw,
+            "post-merge-checkouts",
+            checkout_raw,
             "A dirty checkout is never eligible for automatic refresh.",
             "Keep this local-default result separate from the confirmed GitHub merge receipt.",
         ),
@@ -1537,12 +1522,7 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         )
     require(
         "because this is a post-merge refresh" in bounded_text(
-            github_raw,
-            "A dirty checkout remains an automatic-refresh blocker.",
-            "- **Auto-Review Signals**",
-        )
-        and "because this is a post-merge refresh" in bounded_text(
-            repo_workflow_raw,
+            checkout_raw,
             "A dirty checkout is never eligible for automatic refresh.",
             "Keep this local-default result separate from the confirmed GitHub merge receipt.",
         )
@@ -1920,7 +1900,7 @@ def test_launchplane_denials_escalate_instead_of_borrowing_ci_authority() -> Non
 
 
 def test_launchplane_preserves_stable_deploy_identity() -> None:
-    launchplane = (ROOT / "launchplane" / "SKILL.md").read_text().lower()
+    launchplane = (ROOT / "launchplane" / "references" / "deploy-identity.md").read_text().lower()
     normalized = " ".join(launchplane.split())
 
     require(
@@ -2147,7 +2127,7 @@ def test_code_readiness_requires_jetbrains_inspection_evidence() -> None:
     require(
         "qualitygate.inspection.prepare" in normalized_inspection
         and "run that exact repository command" in normalized_inspection
-        and "tracked-file mutations" in normalized_inspection,
+        and "tracked-file mutation" in normalized_inspection,
         "jetbrains-inspection must preserve configured project-model preparation",
     )
     require(
