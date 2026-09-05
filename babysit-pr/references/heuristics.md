@@ -58,7 +58,9 @@ Do not auto-fix when:
 
 Stop and ask the user instead of continuing automatically when:
 
-- The local worktree has unrelated uncommitted changes.
+- Unclear ownership or overlapping changes prevent safe isolation. Unrelated
+  uncommitted changes alone are not a stop condition: preserve them and use a
+  focused task worktree under the entrypoint's task-scope and isolation rules.
 - `gh` auth/permissions fail.
 - The PR branch cannot be pushed.
 - CI failures persist after the flaky retry budget.

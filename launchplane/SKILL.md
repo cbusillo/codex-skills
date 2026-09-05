@@ -689,26 +689,12 @@ readiness.
 
 ## Stable Deploy Identity
 
-For a Dokploy application target, the product build workflow must publish both
-an immutable image digest and an immutable SHA tag in the same repository before
-requesting deployment. Send the digest-pinned `repository@sha256:digest` value
-as `artifact_id` and the published `repository:sha-<commit>` tag as
-`deploy_reference`. Launchplane keeps `artifact_id` as the evidence and runtime
-artifact identity, uses `deploy_reference` only for the provider-facing Dokploy
-image, and records that provider tag as `image_reference` for read-back evidence.
-
-Treat non-floating tags as an agent-side safety requirement even if a current
-validator does not recognize every branch-shaped tag. Never use `latest`, a
-branch name, an environment name, or another floating tag as
-`deploy_reference`. This two-reference requirement is specific to application
-targets; resolve the target category from Launchplane context or the supported
-operator surface rather than product workflow inputs or checked-in metadata.
-
-If the SHA tag was not published or the deploy payload omitted
-`deploy_reference`, repair the product repository's build/deploy workflow and
-publish a new immutable pair. Do not edit Dokploy or Launchplane runtime records
-directly. Delegate protected workflow dispatch and watching to the `github`
-skill.
+Before preparing or repairing an application-target deployment, read
+[stable deploy identity](references/deploy-identity.md). Publish both an
+immutable digest and immutable SHA tag before deployment; never use a floating
+tag. Resolve the target category from Launchplane context or the operator
+surface. Repair missing references through the product repository's build/deploy
+workflow and delegate protected workflow dispatch and watching to `github`.
 
 ## Runtime Management (Operator)
 
@@ -850,7 +836,10 @@ answer to `authorization_denied`.
 
 ## Merge Train (Controller)
 
-Use Launchplane's controller route as the default merge-train workflow.
+Use Launchplane's controller route as the default merge-train workflow. Before
+advancing or diagnosing a train, read [merge-train execution](references/merge-train.md)
+for phase, stack, retry, and terminal evidence requirements. Label only the root
+PR and never hand-collapse stacks.
 
 - **Preferred Route**: `POST /v1/work-graph/merge-train/controller/run-once`.
 - **Helper**: Use `scripts/launchplane-write-action.py
@@ -858,37 +847,10 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   calls require an idempotency key.
 - **Operator Action**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
-- **Controller Semantics**: Each call advances one safe phase at a time:
-  same-repo linear stack-collapse planning/execution when needed,
-  collapsed-root admission, candidate plan/build/observe, landing-plan
-  creation, PR-native landing, and child PR disposition.
-- **Proven Batch Flow**: The controller has been proven against a live
-  multi-PR batch train. It can reflow a failed candidate when the eligible queue
-  changes, build and observe a replacement candidate, create a landing plan,
-  land the original PRs through GitHub's PR merge API in train order, and post
-  managed feedback to each PR. Treat this as the normal rollout path, not an
-  experimental one-off.
 - **Mutation Gate**: Keep scheduled runners in dry-run mode until the operator
   explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
   appropriate only after dry-run evidence shows the intended queue, candidate,
   and next action. Do not leave scheduled mutation enabled as a casual default.
-- **Stacked PRs**: For a same-repo linear stack, label only the root PR that
-  targets the protected base branch. Let Launchplane collapse child branches
-  into that root, wait for the root head SHA to satisfy checks, admit only the
-  root to the flat train, and resolve child PRs after the root lands according
-  to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
-  permission-limited stacks as blocked/unsupported instead of mutating by hand.
-- **Retry Model**: Repeated controller calls are expected. Stop and report
-  blocked, stale, denied, or failed states with compact evidence and trace IDs.
-- **Evidence**: For stack runs, report the stack-collapse plan record id, any
-  batch candidate record id, the landing-plan record id, workflow run URLs, and
-  the final root merge commit. Include child disposition evidence when the root
-  lands.
-- **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
-  candidate record id and candidate SHA, required-check status on the candidate
-  commit, landing-plan record id, each landed PR number and merge commit, managed
-  feedback delivery status, and post-merge checks on the target repository's
-  default branch.
 - **Post-Merge Checkout Handoff**: After the controller confirms a final landing
   commit, delegate post-merge default-branch freshness to `github` with the exact
   final landing SHA from that terminal controller result and an explicit source
@@ -901,12 +863,6 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   Launchplane landing success independently when local reconciliation is blocked
   or fails, and block only claims that installed runtime behavior or the local
   default checkout is current.
-- **Recovery Evidence**: If Launchplane patches are needed during rollout,
-  verify their PR checks, post-merge CI/Security/CodeQL, and Deploy Launchplane
-  before retrying mutation. Record the failing workflow run id and trace id that
-  motivated the patch.
-- **Troubleshooting**: Treat phase-specific merge-train endpoints as detail or
-  recovery surfaces. They are not the default skill workflow.
 - **Boundaries**: Merge-train behavior is DB/policy-backed. Do not hardcode
   repositories, labels, tokens, protected branches, or local file config.
 
