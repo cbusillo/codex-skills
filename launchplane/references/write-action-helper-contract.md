@@ -477,8 +477,11 @@ provider dictionary pass-through:
 - `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
   apply status, policy record id, digest, revision, policy status, and effective
   timestamp.
-- `change-impact-policy-read` may emit only shadow/enforcement status, history
-  count, and the same bounded current-policy metadata.
+- `change-impact-policy-read` emits history count and bounded current-policy
+  metadata. Legacy `mode`, `authoritative`, and `enforcement_effect` fields are
+  validated and emitted only when supplied with non-null values; the current
+  service read model omits them. Their absence does not imply authorization or
+  enforcement status. Policy bodies and path rules remain excluded.
 - `merge-train-policy-import-dry-run` and
   `merge-train-policy-import-apply` may emit only active-policy identity and
   digest, candidate record identity, digest, status, target count, replay state,
