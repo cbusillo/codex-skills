@@ -11966,5 +11966,138 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(jb_inspect.redact_durable_log(values), values)
 
 
+class ScopedLeaseCleanupTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="scoped-lease-cleanup-")
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.selected_id = "190abb77-89c0-458b-84ce-39a2d638dd91"
+        self.foreign_id = "04f75cb7-770c-481c-91fc-67509436dafd"
+        self.lease = {
+            "lease_id": self.selected_id, "state": "cleanup_failed", "pid": 68466,
+            "opened_by_helper": True, "updated_at_ms": 1,
+            "worktree_root": "/tmp/selected", "project_key": "path:/tmp/selected",
+            "project_instance_id": "session:1", "session_id": "session",
+        }
+        self.selected_path = self.directory / f"{self.selected_id}.json"
+        self.foreign_path = self.directory / f"{self.foreign_id}.json"
+        write_json(self.selected_path, self.lease)
+        write_json(self.foreign_path, self.lease | {"lease_id": self.foreign_id})
+        self.foreign_bytes = self.foreign_path.read_bytes()
+        self.enterContext(patch.object(jb_inspect, "lease_dir", return_value=self.directory))
+        self.enterContext(patch.object(jb_inspect, "now_ms", return_value=100_000_000))
+        self.enterContext(patch.object(jb_inspect, "pid_alive", return_value=True))
+        self.discovery = self.enterContext(patch.object(
+            jb_inspect, "discover_routes_for_cleanup", return_value=([], {"session"}),
+        ))
+
+    def run_cleanup(self, *selectors, dry_run=False):
+        args = jb_inspect.build_parser().parse_args([
+            "cleanup-helper-leases", "--dry-run" if dry_run else "--no-dry-run",
+            *[value for selector in selectors for value in ("--lease-id", selector)],
+        ])
+        return jb_inspect.command_cleanup_leases(args)
+
+    def test_selected_stale_lease_is_reconciled_without_touching_foreign_lease(self):
+        # Discovery proves the original session exists but its exact project is gone.
+        result = self.run_cleanup(self.selected_id)
+        self.assertEqual(result["removed"], [str(self.selected_path)])
+        self.assertFalse(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
+
+    def test_scoped_dry_run_reports_only_selected_lease_without_discovery(self):
+        result = self.run_cleanup(self.selected_id, dry_run=True)
+        self.assertEqual(result["stale"], [str(self.selected_path)])
+        self.assertEqual(result["removed"], [])
+        self.discovery.assert_not_called()
+        self.assertTrue(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_invalid_missing_and_multiple_selectors_fail_without_discovery(self):
+        cases = [
+            (("../other",), "invalid_lease_selector"),
+            (("",), "invalid_lease_selector"),
+            (("00000000-0000-0000-0000-000000000000",), "lease_not_found"),
+            ((self.selected_id, self.foreign_id), "invalid_lease_selector"),
+            ((self.selected_id, self.selected_id), "invalid_lease_selector"),
+        ]
+        for selectors, reason in cases:
+            with self.subTest(selectors=selectors):
+                result = self.run_cleanup(*selectors)
+                self.assertEqual(result["failed"][0]["reason"], reason)
+                self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+                self.assertEqual(result["removed"], [])
+        self.discovery.assert_not_called()
+        self.assertTrue(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_duplicate_payload_identity_and_mismatched_filename_fail_closed(self):
+        write_json(self.foreign_path, self.lease)
+        result = self.run_cleanup(self.selected_id)
+        self.assertEqual(result["failed"][0]["reason"], "lease_identity_ambiguous")
+        self.selected_path.unlink()
+        result = self.run_cleanup(self.selected_id)
+        self.assertEqual(result["failed"][0]["reason"], "lease_identity_mismatch")
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+        self.discovery.assert_not_called()
+        self.assertTrue(self.foreign_path.exists())
+
+    def test_live_pid_with_recent_cleanup_failed_lease_is_not_forced_stale(self):
+        write_json(self.selected_path, self.lease | {"updated_at_ms": 99_999_999})
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                result = self.run_cleanup(self.selected_id, dry_run=dry_run)
+                self.assertEqual(result["unresolved"][0]["reason"], "lease_not_stale")
+                self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+        self.discovery.assert_not_called()
+        self.assertTrue(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_scoped_discovery_failure_preserves_both_leases(self):
+        self.discovery.side_effect = jb_inspect.InspectError("unavailable", 3)
+        result = self.run_cleanup(self.selected_id)
+        self.assertEqual(result["failed"][0]["reason"], "route_discovery_failed")
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+        self.assertTrue(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_same_path_in_foreign_session_does_not_authorize_cleanup(self):
+        self.discovery.return_value = ([{
+            "base_path": "/tmp/selected", "project_instance_id": "foreign:1",
+            "session_id": "foreign", "project_key": "path:/tmp/selected",
+        }], {"foreign"})
+        with patch.object(jb_inspect, "reclaim_lifecycle_claim") as claim:
+            result = self.run_cleanup(self.selected_id)
+        claim.assert_not_called()
+        self.assertEqual(result["unresolved"][0]["reason"], "ownership_route_unavailable")
+        self.assertTrue(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_selection_and_cleanup_remain_inside_lifecycle_lock(self):
+        held = []
+        class Lock:
+            def __enter__(self):
+                held.append(True)
+            def __exit__(self, *_):
+                held.pop()
+        original_read = jb_inspect.read_local_leases
+        def read_locked():
+            self.assertEqual(held, [True])
+            return original_read()
+        with (
+            patch.object(jb_inspect, "lifecycle_lock", return_value=Lock()),
+            patch.object(jb_inspect, "read_local_leases", side_effect=read_locked),
+        ):
+            result = self.run_cleanup(self.selected_id)
+        self.assertEqual(result["removed"], [str(self.selected_path)])
+
+    def test_default_cleanup_still_processes_all_stale_leases(self):
+        result = self.run_cleanup()
+        self.assertCountEqual(result["removed"], [str(self.selected_path), str(self.foreign_path)])
+        self.assertFalse(self.selected_path.exists())
+        self.assertFalse(self.foreign_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -86,6 +86,31 @@ Preparation failures for projects that were already open release only the local
 lease and never call lifecycle close. `cleanup-helper-leases` uses the same
 lifecycle lock as inspection commands so stale reconciliation cannot race a new
 helper-owned open or close.
+When recovering one known stale lease, scope both the dry-run and cleanup with
+`cleanup-helper-leases --lease-id <UUID>`. The selector accepts one exact UUID
+only, filters before staleness checks and route discovery, and runs under the
+existing lifecycle lock. It does not force a live lease stale or relax ownership
+proof. First use `--dry-run`; add `--no-dry-run` only when the exact project's
+current route is verified and indexing, scanning, and inspection have settled.
+Do not use a global sweep to recover one project.
+
+Scoped results preserve these boundaries:
+
+- Malformed or repeated selectors, unknown IDs, duplicate lease identities, and
+  filename/identity mismatches return nonzero without lifecycle requests or
+  deletion. Their reason codes are `invalid_lease_selector`, `lease_not_found`,
+  `lease_identity_ambiguous`, and `lease_identity_mismatch`.
+- A selected lease that fails the existing age/PID staleness predicate returns
+  nonzero with `lease_not_stale`, including in dry-run mode. A matched stale
+  dry-run lists only that lease and does not discover routes or mutate it.
+- Discovery failures, unresolved ownership, route/session mismatches, and
+  refused closes retain the selected lease with the existing failure evidence.
+- Only the maintained helper removes the selected lease after confirmed close
+  or an existing proved no-close outcome: `open_not_attempted`,
+  `project_not_open`, `project_preexisted`, `ownership_not_proven` (a definitive
+  negative claim), or `original_ide_process_dead_no_route`. Other leases remain
+  untouched. Running without a selector retains the existing global behavior.
+
 Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it
 or increase `--lifecycle-lock-timeout-ms`; do not start parallel auto-open
