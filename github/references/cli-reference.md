@@ -119,6 +119,15 @@ cooldown-lock acquisition, and any reconciliation reads share the same
 effective deadline; none starts a fresh retry window after the parent request
 expires or is cancelled.
 
+A merge response stating that required status checks are still expected is a
+confirmed readiness rejection. The helper submits one merge request, reports
+`required_status_checks_expected` with
+`recommended_next_action: wait_for_required_checks`, and does not publish a
+shared API cooldown. Run `gh-pr.py checks` for the current head and retry the
+merge in a new invocation after GitHub receives the required checks. Other
+unclassified responses keep the unknown-outcome and reconciliation behavior
+described below.
+
 Read calls may retry provider-classified transient failures. Writes marked
 idempotent in the accepted matrix may also retry transient unknown outcomes.
 Other writes retry only when the shared result marks the write `not_started` or

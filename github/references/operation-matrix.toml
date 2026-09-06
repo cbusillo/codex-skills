@@ -317,7 +317,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "sha_guarded_merge"
 retained_graphql_rationale = "No retained GraphQL transport; REST merge accepts an expected head SHA and gives the helper a concrete merge guard."
 source_refs = ["github/scripts/gh-pr.py:cmd_merge"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_merge_reconciles_accepted_unknown_outcome_to_final_sha", "github/scripts/validate-gh-plan.py:test_merge_reconciliation_rejects_head_drift", "github/scripts/validate-gh-plan.py:test_merge_identity_reread_rejects_head_drift", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_merge_reconciles_accepted_unknown_outcome_to_final_sha", "github/scripts/validate-gh-plan.py:test_merge_reconciliation_rejects_head_drift", "github/scripts/validate-gh-plan.py:test_merge_identity_reread_rejects_head_drift", "github/scripts/validate-gh-plan.py:test_required_check_rejection_stops_without_cooldown_until_readiness_changes", "github/scripts/validate-gh-plan.py:test_ambiguous_405_reconciles_same_head_before_bounded_retry", "github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
 id = "github.pr.delete_ref"

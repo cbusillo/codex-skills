@@ -4886,6 +4886,169 @@ def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
     assert result.stderr.strip() == "error: PR merge was not completed", result.stderr
 
 
+def test_required_check_rejection_stops_without_cooldown_until_readiness_changes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        ready_path = tmp_path / "ready"
+        retry_state_path = tmp_path / "retry-state"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "respond() {\n"
+            "  status=$1\n"
+            "  body=$2\n"
+            "  printf 'HTTP/2.0 %s \\r\\n' \"$status\"\n"
+            "  printf 'content-type: application/json\\r\\n'\n"
+            "  printf 'x-ratelimit-resource: core\\r\\n\\r\\n'\n"
+            "  printf '%s\\n' \"$body\"\n"
+            "}\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  if [[ -f \"$GH_PR_READY_FILE\" ]]; then\n"
+            "    respond 200 '{\"merged\":true,\"message\":\"Pull Request successfully merged\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}'\n"
+            "  else\n"
+            "    respond 405 '{\"message\":\"2 of 2 required status checks are expected.\"}'\n"
+            "    exit 1\n"
+            "  fi\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  mergeable_state=blocked\n"
+            "  [[ ! -f \"$GH_PR_READY_FILE\" ]] || mergeable_state=clean\n"
+            "  respond 200 \"{\\\"number\\\":12,\\\"title\\\":\\\"Demo\\\",\\\"state\\\":\\\"open\\\",\\\"draft\\\":false,\\\"mergeable\\\":true,\\\"mergeable_state\\\":\\\"$mergeable_state\\\",\\\"html_url\\\":\\\"https://github.com/owner/repo/pull/12\\\",\\\"head\\\":{\\\"ref\\\":\\\"topic\\\",\\\"sha\\\":\\\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\\",\\\"repo\\\":{\\\"full_name\\\":\\\"owner/repo\\\"}},\\\"base\\\":{\\\"ref\\\":\\\"main\\\",\\\"repo\\\":{\\\"full_name\\\":\\\"owner/repo\\\"}}}\"\n"
+            "else\n"
+            "  printf 'unexpected command: %s\\n' \"$*\" >&2\n"
+            "  exit 2\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GH_PR_READY_FILE=str(ready_path),
+            GH_PR_TEST_LOG=str(log_path),
+            GITHUB_RETRY_MAX_ATTEMPTS="8",
+            GITHUB_RETRY_MAX_WAIT_SECONDS="1",
+            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_JITTER_SECONDS="0",
+            GITHUB_RETRY_DRAIN_SECONDS="30",
+            GITHUB_RETRY_STATE_DIR=str(retry_state_path),
+        )
+        rejected = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        rejected_calls = log_path.read_text(encoding="utf-8").splitlines()
+        assert rejected.returncode == 1, rejected
+        rejected_payload = json.loads(rejected.stdout)
+        assert rejected_payload["failure"]["cause"] == "required_status_checks_expected", rejected_payload
+        assert rejected_payload["write_outcome"] == "rejected", rejected_payload
+        assert rejected_payload["fallback_eligible"] is False, rejected_payload
+        assert rejected_payload["recommended_next_action"] == "wait_for_required_checks", rejected_payload
+        assert rejected_payload["reconciliation"] is None, rejected_payload
+        assert "gh-pr.py checks" in rejected_payload["hint"], rejected_payload
+        assert sum("/pulls/12/merge" in call for call in rejected_calls) == 1, rejected_calls
+        assert sum("/pulls/12" in call and "/merge" not in call for call in rejected_calls) == 1, rejected_calls
+        assert list(retry_state_path.glob("*.json")) == [], list(retry_state_path.glob("*"))
+
+        unrelated_read = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        unrelated_payload = json.loads(unrelated_read.stdout)
+        assert unrelated_payload["elapsed_wait"] == 0.0, unrelated_payload
+        assert unrelated_payload["attempts"] == 1, unrelated_payload
+
+        ready_path.write_text("ready\n", encoding="utf-8")
+        merged = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        merged_payload = json.loads(merged.stdout)
+        assert merged_payload["mergeCommitOid"] == "a" * 40, merged_payload
+        assert merged_payload["elapsed_wait"] == 0.0, merged_payload
+        all_calls = log_path.read_text(encoding="utf-8").splitlines()
+        assert sum("/pulls/12/merge" in call for call in all_calls) == 2, all_calls
+        assert sum("/pulls/12" in call and "/merge" not in call for call in all_calls) == 3, all_calls
+
+
+def test_ambiguous_405_reconciles_same_head_before_bounded_retry() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        log_path = tmp_path / "calls.log"
+        put_count_path = tmp_path / "put-count"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "respond() {\n"
+            "  status=$1\n"
+            "  body=$2\n"
+            "  printf 'HTTP/2.0 %s \\r\\ncontent-type: application/json\\r\\nx-ratelimit-resource: core\\r\\n\\r\\n' \"$status\"\n"
+            "  printf '%s\\n' \"$body\"\n"
+            "}\n"
+            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
+            "  count=0\n"
+            "  [[ ! -f \"$GH_PR_PUT_COUNT_FILE\" ]] || count=$(cat \"$GH_PR_PUT_COUNT_FILE\")\n"
+            "  count=$((count + 1))\n"
+            "  printf '%s' \"$count\" >\"$GH_PR_PUT_COUNT_FILE\"\n"
+            "  if [[ $count -eq 1 ]]; then\n"
+            "    respond 405 '{\"message\":\"Method Not Allowed\"}'\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  respond 200 '{\"merged\":true,\"message\":\"Pull Request successfully merged\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  respond 200 '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}'\n"
+            "else\n"
+            "  printf 'unexpected command: %s\\n' \"$*\" >&2\n"
+            "  exit 2\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(
+            os.environ,
+            GH_PR_GH=str(gh_path),
+            GH_PR_PUT_COUNT_FILE=str(put_count_path),
+            GH_PR_TEST_LOG=str(log_path),
+            GITHUB_RETRY_MAX_ATTEMPTS="2",
+            GITHUB_RETRY_BASE_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_MAX_BACKOFF_SECONDS="0",
+            GITHUB_RETRY_JITTER_SECONDS="0",
+            GITHUB_RETRY_DRAIN_SECONDS="0",
+            GITHUB_RETRY_STATE_DIR=str(tmp_path / "retry-state"),
+        )
+        merged = REAL_SUBPROCESS_RUN(
+            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            check=True,
+        )
+        calls = log_path.read_text(encoding="utf-8").splitlines()
+
+    payload = json.loads(merged.stdout)
+    assert payload["mergeCommitOid"] == "a" * 40, payload
+    assert payload["reconciliation"]["result"] == "no_match", payload
+    assert sum("/pulls/12/merge" in call for call in calls) == 2, calls
+    assert sum("/pulls/12" in call and "/merge" not in call for call in calls) == 2, calls
+
+
 def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -6027,6 +6190,8 @@ def main() -> None:
         test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_merge_semantic_rejection_exits_nonzero,
+        test_required_check_rejection_stops_without_cooldown_until_readiness_changes,
+        test_ambiguous_405_reconciles_same_head_before_bounded_retry,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_supersede_does_not_comment_when_close_fails,

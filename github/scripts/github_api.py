@@ -15,8 +15,8 @@ Provides:
 - Write-safe reconciliation callbacks for unknown non-idempotent outcomes
 - Error classification: invalid_credentials, actor_mismatch, permission_denied,
   rest_primary_rate_limited, graphql_primary_rate_limited,
-  secondary_rate_limited, not_found, validation_error, conflict,
-  network_provider_failure, unconfigured_identity
+  secondary_rate_limited, not_found, required_status_checks_expected,
+  validation_error, conflict, network_provider_failure, unconfigured_identity
 - Field redaction for tokens, headers, paths, private body keys
 - Bounded one-call-per-process /rate_limit probe
 - Configurable gh command path via gh_cmd parameter
@@ -61,6 +61,11 @@ PRIMARY_RATE_LIMIT_CAUSES = frozenset(
     {"graphql_primary_rate_limited", "rest_primary_rate_limited", "rate_limited_unknown_bucket"}
 )
 OPERATION_MARKER_PREFIX = "<!-- github-skill-operation:"
+REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN = re.compile(
+    r'(?:\d+\s+of\s+\d+\s+)?required status checks?'
+    r'(?:\s+"[^"\r\n]{1,100}")?\s+(?:is|are)\s+expected\.?',
+    re.IGNORECASE,
+)
 
 GraphQLOperation = Literal["query", "mutation", "subscription", "unknown"]
 ReconciliationOutcome = Literal["matched", "no_match", "ambiguous", "failed"]
@@ -1142,6 +1147,21 @@ def classify_error(
             fallback_eligible=False,
             disposition="stop",
             write_outcome=not_started,
+            request_id=request_id,
+        )
+
+    if (
+        status == 405
+        and isinstance(body, dict)
+        and REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN.fullmatch(msg.strip())
+    ):
+        return FailureDetail(
+            cause="required_status_checks_expected",
+            message=f"Merge readiness is blocked because required status checks have not reported: {msg}",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome=rejected,
             request_id=request_id,
         )
 
@@ -2605,9 +2625,13 @@ def run_with_retry(
                 is_write=is_write,
                 reconciliation=reconciliation,
                 recommended_next_action=(
-                    "reconcile_or_retry_manually"
-                    if is_write and failure and failure.write_outcome == "unknown"
-                    else "inspect_last_failure"
+                    "wait_for_required_checks"
+                    if failure and failure.cause == "required_status_checks_expected"
+                    else (
+                        "reconcile_or_retry_manually"
+                        if is_write and failure and failure.write_outcome == "unknown"
+                        else "inspect_last_failure"
+                    )
                 ),
                 effective_deadline=effective_deadline,
                 exhausted_reason="not_retryable",

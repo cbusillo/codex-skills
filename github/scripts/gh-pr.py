@@ -562,7 +562,10 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             endpoint=merge_path,
             method=args.method,
             headSha=pr["head"]["sha"],
-            hint=merge_failure_hint(str(exc)),
+            hint=merge_failure_hint(
+                str(exc),
+                cause=exc.failure.cause if isinstance(exc, PrHelperError) and exc.failure else None,
+            ),
             api_result=api_result,
         ) from exc
     if not result.get("merged"):
@@ -904,7 +907,12 @@ MERGE_STATE_STATUS = {
 }
 
 
-def merge_failure_hint(message: str) -> str:
+def merge_failure_hint(message: str, *, cause: Optional[str] = None) -> str:
+    if cause == "required_status_checks_expected":
+        return (
+            "Wait for GitHub to receive the required status checks for this head, "
+            "rerun gh-pr.py checks, then retry the merge."
+        )
     lowered = message.lower()
     if "not found" in lowered or "404" in lowered:
         return "GitHub may mask missing merge permission as 404; compare helper token scope with active gh auth."
