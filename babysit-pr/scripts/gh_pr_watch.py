@@ -19,9 +19,12 @@ from urllib.parse import urlparse
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
+DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
+PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
 IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+import github_api
 import github_identity
 
 FAILED_RUN_CONCLUSIONS = {
@@ -31,13 +34,6 @@ FAILED_RUN_CONCLUSIONS = {
     "action_required",
     "startup_failure",
     "stale",
-}
-PENDING_CHECK_STATES = {
-    "QUEUED",
-    "IN_PROGRESS",
-    "PENDING",
-    "WAITING",
-    "REQUESTED",
 }
 REVIEW_BOT_LOGIN_KEYWORDS = {
     "codex",
@@ -64,6 +60,16 @@ MERGE_CONFLICT_OR_BLOCKING_STATES = {
     "DIRTY",
     "DRAFT",
     "UNKNOWN",
+}
+KNOWN_MERGE_STATES = {
+    "BEHIND",
+    "BLOCKED",
+    "CLEAN",
+    "DIRTY",
+    "DRAFT",
+    "HAS_HOOKS",
+    "UNKNOWN",
+    "UNSTABLE",
 }
 
 
@@ -162,88 +168,168 @@ def parse_pr_spec(pr_spec):
     raise ValueError("--pr must be 'auto', a PR number, or a PR URL")
 
 
-def pr_view_fields():
-    return (
-        "number,url,state,mergedAt,closedAt,mergeCommit,baseRefName,headRefName,headRefOid,"
-        "headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision"
+def compact_helper_diagnostic(payload, returncode):
+    keys = (
+        "transport",
+        "bucket",
+        "actor",
+        "expected_actor",
+        "status",
+        "request_id",
+        "attempts",
+        "retryable",
+        "retry_at",
+        "retry_after",
+        "retry_exhausted_reason",
+        "failed_step",
+        "completed_steps",
     )
+    diagnostic = {key: payload[key] for key in keys if payload.get(key) is not None}
+    diagnostic["ok"] = payload.get("ok") is True
+    diagnostic["returncode"] = returncode
+    return diagnostic
 
 
-def checks_fields():
-    return "name,state,bucket,link,workflow,event,startedAt,completedAt"
+def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
+    helper_path = Path(PR_HELPER)
+    if not helper_path.is_file():
+        raise GhCommandError(f"REST-first PR helper not found: {PR_HELPER}")
+    cmd = [sys.executable, str(helper_path)]
+    if repo:
+        cmd.extend(["--repo", repo])
+    cmd.append(command)
+    if pr_spec and pr_spec != "auto":
+        cmd.append(pr_spec)
+    env = os.environ.copy()
+    env["GH_PR_GH"] = GH_COMMAND
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    raw = proc.stdout.strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as err:
+        detail = github_api.redact_string(proc.stderr.strip())[:500]
+        suffix = f": {detail}" if detail else ""
+        raise GhCommandError(
+            f"REST-first PR helper returned invalid JSON for {command}{suffix}"
+        ) from err
+    if not isinstance(payload, dict):
+        raise GhCommandError(f"Unexpected REST-first PR helper payload for {command}")
+    payload["_watcher_diagnostic"] = compact_helper_diagnostic(payload, proc.returncode)
+    if proc.returncode != 0 and not allow_partial:
+        detail = str(payload.get("error") or payload.get("recommended_next_action") or "")
+        suffix = f": {detail}" if detail else ""
+        raise GhCommandError(f"REST-first PR helper failed for {command}{suffix}")
+    return payload
+
+
+def normalize_mergeable(value):
+    if value is True:
+        return "MERGEABLE"
+    if value is False:
+        return "CONFLICTING"
+    return "UNKNOWN"
 
 
 def resolve_pr(pr_spec, repo_override=None):
     parsed = parse_pr_spec(pr_spec)
-    cmd = ["pr", "view"]
-    if parsed["value"] is not None:
-        cmd.append(parsed["value"])
-    cmd.extend(["--json", pr_view_fields()])
-    data = gh_json(cmd, repo=repo_override)
-    if not isinstance(data, dict):
-        raise GhCommandError("Unexpected PR payload from `gh pr view`")
+    requested_repo = None
+    requested_number = None
+    helper_pr_spec = pr_spec
+    if parsed["mode"] == "url":
+        requested_repo = extract_repo_from_pr_url(pr_spec)
+        requested_number = extract_pr_number_from_url(pr_spec)
+        if not requested_repo or requested_number is None:
+            raise GhCommandError(
+                f"Unable to determine repository and PR number from URL: {pr_spec}"
+            )
+        helper_pr_spec = str(requested_number)
+    elif parsed["mode"] == "number":
+        requested_number = int(parsed["value"])
+    if repo_override and requested_repo and repo_override.casefold() != requested_repo.casefold():
+        raise GhCommandError(
+            f"PR URL repository {requested_repo} does not match --repo {repo_override}"
+        )
+    payload = pr_helper_json(
+        "view",
+        pr_spec=helper_pr_spec,
+        repo=repo_override or requested_repo,
+    )
+    data = payload.get("pr")
+    if payload.get("ok") is not True or not isinstance(data, dict):
+        raise GhCommandError("REST-first PR helper did not return usable PR metadata")
 
     pr_url = str(data.get("url") or "")
     url_repo = extract_repo_from_pr_url(pr_url)
-    if repo_override and url_repo and repo_override.casefold() != url_repo.casefold():
-        raise GhCommandError(
-            f"PR URL repository {url_repo} does not match --repo {repo_override}"
-        )
-    repo = (
-        repo_override
-        or url_repo
-        or extract_repo_from_pr_view(data)
-    )
-    if not repo:
-        raise GhCommandError("Unable to determine OWNER/REPO for the PR")
+    repo = str(payload.get("repo") or url_repo or "")
+    if not pr_url or not url_repo or not repo:
+        raise GhCommandError("REST-first PR metadata did not contain an exact URL and repository")
+    if repo.casefold() != url_repo.casefold():
+        raise GhCommandError(f"PR URL repository {url_repo} does not match helper repository {repo}")
+    if repo_override and repo.casefold() != repo_override.casefold():
+        raise GhCommandError(f"PR repository {repo} does not match --repo {repo_override}")
 
-    state = str(data.get("state") or "")
-    merged = bool(data.get("mergedAt"))
-    closed = bool(data.get("closedAt")) or state.upper() == "CLOSED"
-    merge_commit = data.get("mergeCommit")
-    merge_commit_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else ""
+    try:
+        number = int(data["number"])
+    except (KeyError, TypeError, ValueError) as err:
+        raise GhCommandError("REST-first PR metadata did not contain an exact PR number") from err
+    if requested_number is not None:
+        if number != requested_number:
+            raise GhCommandError(
+                f"REST-first PR helper returned PR {number}, expected {requested_number}"
+            )
+
+    head_sha = str(data.get("headRefOid") or "")
+    if not head_sha:
+        raise GhCommandError("REST-first PR metadata did not contain an exact head SHA")
+    merged = data.get("merged") is True or bool(data.get("mergedAt"))
+    raw_state = str(data.get("state") or "")
+    state = "MERGED" if merged else raw_state.upper()
+    closed = merged or state == "CLOSED"
+    merge_state_status = str(data.get("mergeStateStatus") or "").upper()
+    merge_state_available = merge_state_status in KNOWN_MERGE_STATES
+    if not merge_state_available:
+        merge_state_status = "UNKNOWN"
+    review_decision = data.get("reviewDecision")
 
     return {
-        "number": int(data["number"]),
+        "number": number,
         "url": pr_url,
         "repo": repo,
-        "head_sha": str(data.get("headRefOid") or ""),
+        "head_sha": head_sha,
         "head_branch": str(data.get("headRefName") or ""),
         "base_branch": str(data.get("baseRefName") or ""),
-        "merge_commit_sha": str(merge_commit_sha or ""),
+        "merge_commit_sha": str(data.get("mergeCommitOid") or "") if merged else "",
         "state": state,
         "merged": merged,
         "closed": closed,
-        "mergeable": str(data.get("mergeable") or ""),
-        "merge_state_status": str(data.get("mergeStateStatus") or ""),
-        "review_decision": str(data.get("reviewDecision") or ""),
+        "draft": data.get("draft") is True,
+        "mergeable": normalize_mergeable(data.get("mergeable")),
+        "merge_state_status": merge_state_status,
+        "review_decision": str(review_decision or ""),
+        "metadata_availability": {
+            "draft": isinstance(data.get("draft"), bool),
+            "mergeable": isinstance(data.get("mergeable"), bool),
+            "merge_state_status": merge_state_available,
+            "review_decision": review_decision is not None,
+        },
+        "_read_diagnostic": payload["_watcher_diagnostic"],
     }
 
 
-def extract_repo_from_pr_view(data):
-    head_repo = data.get("headRepository")
-    head_owner = data.get("headRepositoryOwner")
-    owner = None
-    name = None
-    if isinstance(head_owner, dict):
-        owner = head_owner.get("login") or head_owner.get("name")
-    elif isinstance(head_owner, str):
-        owner = head_owner
-    if isinstance(head_repo, dict):
-        name = head_repo.get("name")
-        repo_owner = head_repo.get("owner")
-        if not owner and isinstance(repo_owner, dict):
-            owner = repo_owner.get("login") or repo_owner.get("name")
-    elif isinstance(head_repo, str):
-        name = head_repo
-    if owner and name:
-        return f"{owner}/{name}"
-    return None
 def extract_repo_from_pr_url(pr_url):
     parsed = urlparse(pr_url)
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) >= 4 and parts[2] == "pull":
         return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+def extract_pr_number_from_url(pr_url):
+    parsed = urlparse(pr_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 4 and parts[2] == "pull" and parts[3].isdigit():
+        return int(parts[3])
     return None
 
 
@@ -291,42 +377,63 @@ def default_state_file_for(pr):
 
 
 def get_pr_checks(pr_spec, repo):
-    parsed = parse_pr_spec(pr_spec)
-    cmd = ["pr", "checks"]
-    if parsed["value"] is not None:
-        cmd.append(parsed["value"])
-    cmd.extend(["--json", checks_fields()])
-    data = gh_json(cmd, repo=repo)
-    if data is None:
-        return []
-    if not isinstance(data, list):
-        raise GhCommandError("Unexpected payload from `gh pr checks`")
-    return data
+    payload = pr_helper_json(
+        "checks",
+        pr_spec=pr_spec,
+        repo=repo,
+        allow_partial=True,
+    )
+    if not isinstance(payload.get("summary"), dict):
+        raise GhCommandError("REST-first PR helper did not return a check summary")
+    if not isinstance(payload.get("pr"), dict) or not payload.get("headSha"):
+        raise GhCommandError("REST-first PR helper did not return an exact check head SHA")
+    return payload
 
 
-def is_pending_check(check):
-    bucket = str(check.get("bucket") or "").lower()
-    state = str(check.get("state") or "").upper()
-    return bucket == "pending" or state in PENDING_CHECK_STATES
+def nonnegative_int(value):
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
-def summarize_checks(checks):
-    pending_count = 0
-    failed_count = 0
-    passed_count = 0
-    for check in checks:
-        bucket = str(check.get("bucket") or "").lower()
-        if is_pending_check(check):
-            pending_count += 1
-        if bucket == "fail":
-            failed_count += 1
-        if bucket == "pass":
-            passed_count += 1
+def summarize_checks(checks, expected_head_sha):
+    summary = checks.get("summary") if isinstance(checks, dict) else None
+    if not isinstance(summary, dict):
+        raise GhCommandError("REST-first PR check summary was not an object")
+    pending_count = nonnegative_int(summary.get("pendingCount"))
+    failed_count = nonnegative_int(summary.get("failingCount"))
+    check_count = summary.get("checkRunCount")
+    status_count = summary.get("statusCount")
+    counts_valid = all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in (summary.get("pendingCount"), summary.get("failingCount"), check_count, status_count)
+    )
+    known_total = nonnegative_int(check_count) + nonnegative_int(status_count)
+    passed_count = max(known_total - pending_count - failed_count, 0)
+    unavailable = summary.get("unavailableComponents")
+    if not isinstance(unavailable, list):
+        unavailable = []
+    counts_are_lower_bounds = summary.get("countsAreLowerBounds") is not False
+    counts_complete = summary.get("countsComplete") is True
+    head_sha = str(checks.get("headSha") or "")
+    head_matches = bool(expected_head_sha) and head_sha == expected_head_sha
+    evidence_complete = (
+        counts_valid
+        and counts_complete
+        and not counts_are_lower_bounds
+        and not unavailable
+        and head_matches
+    )
     return {
         "pending_count": pending_count,
         "failed_count": failed_count,
         "passed_count": passed_count,
-        "all_terminal": pending_count == 0,
+        "all_terminal": evidence_complete and pending_count == 0,
+        "evidence_complete": evidence_complete,
+        "counts_are_lower_bounds": counts_are_lower_bounds,
+        "unavailable_components": [str(item) for item in unavailable],
+        "head_matches": head_matches,
     }
 
 
@@ -648,19 +755,47 @@ def has_active_failed_job(failed_jobs):
 def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
     if pr["closed"] or pr["merged"]:
         return False
+    if pr.get("draft"):
+        return False
     if not checks_summary["all_terminal"]:
         return False
     if checks_summary["failed_count"] > 0 or checks_summary["pending_count"] > 0:
         return False
     if new_review_items:
         return False
+    availability = pr.get("metadata_availability")
+    if not isinstance(availability, dict) or not all(
+        availability.get(field) is True
+        for field in ("draft", "mergeable", "merge_state_status", "review_decision")
+    ):
+        return False
     if str(pr.get("mergeable") or "") != "MERGEABLE":
         return False
     if str(pr.get("merge_state_status") or "") in MERGE_CONFLICT_OR_BLOCKING_STATES:
         return False
-    if str(pr.get("review_decision") or "") in MERGE_BLOCKING_REVIEW_DECISIONS:
-        return False
-    return True
+    return str(pr.get("review_decision") or "") not in MERGE_BLOCKING_REVIEW_DECISIONS
+
+
+def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
+    availability = pr.get("metadata_availability")
+    return (
+        not pr["closed"]
+        and not pr["merged"]
+        and not pr.get("draft")
+        and checks_summary["all_terminal"]
+        and checks_summary["failed_count"] == 0
+        and checks_summary["pending_count"] == 0
+        and not new_review_items
+        and isinstance(availability, dict)
+        and all(
+            availability.get(field) is True
+            for field in ("draft", "mergeable", "merge_state_status")
+        )
+        and str(pr.get("mergeable") or "") == "MERGEABLE"
+        and str(pr.get("merge_state_status") or "")
+        not in MERGE_CONFLICT_OR_BLOCKING_STATES
+        and availability.get("review_decision") is not True
+    )
 
 
 def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries):
@@ -675,10 +810,22 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         actions.append("ready_to_merge")
         return unique_actions(actions)
 
+    has_failed_pr_checks = (
+        checks_summary["failed_count"] > 0 and checks_summary.get("head_matches") is True
+    ) or has_active_failed_job(failed_jobs)
+
+    if (
+        not has_failed_pr_checks
+        and is_review_readiness_unavailable(pr, checks_summary, new_review_items)
+    ):
+        actions.append("review_readiness_unavailable")
+
     if new_review_items:
         actions.append("process_review_comment")
 
-    has_failed_pr_checks = checks_summary["failed_count"] > 0 or has_active_failed_job(failed_jobs)
+    if checks_summary.get("evidence_complete") is not True:
+        actions.append("check_evidence_incomplete")
+
     if has_failed_pr_checks:
         if checks_summary["all_terminal"] and retries_used >= max_retries:
             actions.append("stop_exhausted_retries")
@@ -694,6 +841,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
 
 def collect_snapshot(args):
     pr = resolve_pr(args.pr, repo_override=args.repo)
+    pr_diagnostic = pr.pop("_read_diagnostic", None)
     state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
     state, fresh_state = load_state(state_path)
 
@@ -710,10 +858,11 @@ def collect_snapshot(args):
     # Surface review feedback before drilling into CI and mergeability details.
     # That keeps the babysitter responsive to new comments even when other
     # actions are also available.
-    # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
-    # After resolving `--pr auto`, reuse the concrete PR number.
+    # After resolving `--pr auto`, give the REST-first checks helper the
+    # concrete PR number so both reads stay pinned to one target.
     checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
-    checks_summary = summarize_checks(checks)
+    checks_diagnostic = checks.pop("_watcher_diagnostic", None)
+    checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
     workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"])
@@ -745,6 +894,10 @@ def collect_snapshot(args):
             "current_sha_retries_used": retries_used,
             "max_flaky_retries": args.max_flaky_retries,
         },
+        "read_diagnostics": {
+            "pr": pr_diagnostic,
+            "checks": checks_diagnostic,
+        },
     }
     return snapshot, state_path
 
@@ -768,6 +921,9 @@ def retry_failed_now(args):
 
     if pr["closed"] or pr["merged"]:
         result["reason"] = "pr_closed"
+        return result
+    if checks_summary.get("evidence_complete") is not True:
+        result["reason"] = "check_evidence_incomplete"
         return result
     if checks_summary["failed_count"] <= 0:
         result["reason"] = "no_failed_pr_checks"

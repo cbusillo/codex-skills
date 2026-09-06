@@ -10,15 +10,27 @@ write-like calls such as Actions reruns remain fail-closed by default.
 
 ### PR metadata
 
-- `github/scripts/gh-with-env-token pr view --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner`
+- `github/scripts/gh-pr.py --repo OWNER/REPO view <pr>`
 
-Used to resolve PR number, URL, branch, head SHA, and closed/merged state.
+Used to resolve PR number, URL, branch, head SHA, and closed/merged state through
+the shared REST-first helper. The watcher preserves the helper's compact
+transport, quota, retry, and actor diagnostics. REST does not provide the
+GraphQL `reviewDecision` field, so that readiness input remains explicitly
+unavailable and cannot produce a `ready_to_merge` recommendation.
+When every other readiness input is green, the watcher emits
+`review_readiness_unavailable` instead of the ambiguous `idle` action and keeps
+monitoring the open PR.
 
 ### PR checks summary
 
-- `github/scripts/gh-with-env-token pr checks --json name,state,bucket,link,workflow,event,startedAt,completedAt`
+- `github/scripts/gh-pr.py --repo OWNER/REPO checks <pr>`
 
-Used to compute pending/failed/passed counts and whether the current CI round is terminal.
+Used to read check runs and commit statuses through the shared REST-first
+helper. A partial response can prove a failure, but incomplete counts, lower
+bounds, unavailable components, or a head SHA mismatch cannot prove the
+current CI round terminal.
+The watcher emits `check_evidence_incomplete` for that state and keeps
+monitoring without treating the incomplete round as rerunnable.
 
 ### Workflow runs for head SHA
 
@@ -53,23 +65,37 @@ GitHub write and must be owned by the configured automation account.
 
 ## JSON fields consumed by the watcher
 
-### `gh pr view`
+### REST-first PR view
 
 - `number`
 - `url`
 - `state`
+- `merged`
 - `mergedAt`
-- `closedAt`
+- `mergeCommitOid`
+- `draft`
+- `baseRefName`
 - `headRefName`
 - `headRefOid`
+- `mergeable`
+- `mergeStateStatus`
+- `reviewDecision` (normally unavailable through REST)
 
-### `gh pr checks`
+### REST-first PR checks
 
-- `bucket` (`pass`, `fail`, `pending`, `skipping`)
-- `state`
-- `name`
-- `workflow`
-- `link`
+- `pr`
+- `headSha`
+- `summary.checkRunCount`
+- `summary.statusCount`
+- `summary.failingCount`
+- `summary.pendingCount`
+- `summary.countsComplete`
+- `summary.countsAreLowerBounds`
+- `summary.unavailableComponents`
+
+The watcher supports `GH_PR_WATCH_PR_HELPER` for an explicit helper path and
+passes its configured `GH_PR_WATCH_GH` command to that helper as `GH_PR_GH`, so
+both layers use the same automation identity route.
 
 ### Actions runs API (`workflow_runs[]`)
 
