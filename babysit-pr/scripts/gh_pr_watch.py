@@ -202,7 +202,7 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
         cmd.append(pr_spec)
     env = os.environ.copy()
     env["GH_PR_GH"] = GH_COMMAND
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     raw = proc.stdout.strip()
     try:
@@ -217,7 +217,7 @@ def pr_helper_json(command, pr_spec=None, repo=None, allow_partial=False):
         raise GhCommandError(f"Unexpected REST-first PR helper payload for {command}")
     payload["_watcher_diagnostic"] = compact_helper_diagnostic(payload, proc.returncode)
     if proc.returncode != 0 and not allow_partial:
-        detail = payload.get("error") or payload.get("recommended_next_action")
+        detail = str(payload.get("error") or payload.get("recommended_next_action") or "")
         suffix = f": {detail}" if detail else ""
         raise GhCommandError(f"REST-first PR helper failed for {command}{suffix}")
     return payload

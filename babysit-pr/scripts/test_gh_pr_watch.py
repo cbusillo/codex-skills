@@ -151,8 +151,9 @@ def test_pr_helper_json_forwards_gh_command_to_rest_helper(monkeypatch):
     monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", "/graphql-fails-rest-works")
     monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
 
-    def fake_run(cmd, check, capture_output, text, env):
-        assert check is False
+    def fake_run(cmd, capture_output, text, env):
+        assert capture_output is True
+        assert text is True
         calls.append((cmd, env["GH_PR_GH"]))
         return subprocess.CompletedProcess(
             cmd,
@@ -425,7 +426,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
         },
     )
 
-    def fake_summarize(checks, **kwargs):
+    def fake_summarize(_checks, **kwargs):
         call_order.append("summarize")
         summarize_kwargs.update(kwargs)
         return sample_checks()
