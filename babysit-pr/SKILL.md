@@ -127,6 +127,11 @@ Accept any of the following:
    one-shot diagnostic snapshot.
 2. Run the watcher script to snapshot PR/review/CI state (or consume each streamed snapshot from `--watch`).
 3. Inspect the `actions` list in the JSON response.
+   `check_evidence_incomplete` means the REST check counts cannot prove a
+   terminal round; keep watching and do not rerun from that evidence alone.
+   `review_readiness_unavailable` means the other readiness inputs are green
+   but REST cannot prove the review decision; keep watching and confirm review
+   state through a separate readiness check before any merge decision.
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
 5. If the failure is likely caused by the current branch, patch code locally,
    commit with `github/scripts/git-commit-as-bot`, and push with

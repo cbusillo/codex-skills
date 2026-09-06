@@ -7,7 +7,10 @@
 # ///
 
 import argparse
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
@@ -28,9 +31,16 @@ def sample_pr():
         "state": "OPEN",
         "merged": False,
         "closed": False,
+        "draft": False,
         "mergeable": "MERGEABLE",
         "merge_state_status": "CLEAN",
         "review_decision": "",
+        "metadata_availability": {
+            "draft": True,
+            "mergeable": True,
+            "merge_state_status": True,
+            "review_decision": True,
+        },
     }
 
 
@@ -40,54 +50,320 @@ def sample_checks(**overrides):
         "failed_count": 0,
         "passed_count": 12,
         "all_terminal": True,
+        "evidence_complete": True,
+        "counts_are_lower_bounds": False,
+        "unavailable_components": [],
+        "head_matches": True,
     }
     checks.update(overrides)
     return checks
 
 
-def test_resolve_pr_exposes_final_merge_commit(monkeypatch):
+def sample_rest_view(**overrides):
+    pr = {
+        "number": 42,
+        "url": "https://github.com/example/repo/pull/42",
+        "state": "open",
+        "merged": False,
+        "mergedAt": None,
+        "mergeCommitOid": "",
+        "draft": False,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": "b" * 40,
+        "mergeable": True,
+        "mergeStateStatus": "clean",
+        "reviewDecision": None,
+    }
+    pr.update(overrides)
+    return {
+        "ok": True,
+        "repo": "example/repo",
+        "pr": pr,
+        "_watcher_diagnostic": {"transport": "rest_api", "ok": True},
+    }
+
+
+def test_resolve_pr_uses_rest_helper_and_exposes_final_merge_commit(monkeypatch):
+    calls = []
     monkeypatch.setattr(
         gh_pr_watch,
-        "gh_json",
-        lambda *args, **kwargs: {
-            "number": 42,
-            "url": "https://github.com/example/repo/pull/42",
-            "state": "MERGED",
-            "mergedAt": "2026-07-17T19:00:00Z",
-            "closedAt": "2026-07-17T19:00:00Z",
-            "mergeCommit": {"oid": "a" * 40},
-            "baseRefName": "main",
-            "headRefName": "feature",
-            "headRefOid": "b" * 40,
-            "mergeable": "UNKNOWN",
-            "mergeStateStatus": "UNKNOWN",
-            "reviewDecision": "",
-        },
+        "pr_helper_json",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or sample_rest_view(
+            state="closed",
+            merged=True,
+            mergedAt="2026-07-17T19:00:00Z",
+            mergeCommitOid="a" * 40,
+            mergeable=None,
+            mergeStateStatus="unknown",
+        ),
     )
 
     pr = gh_pr_watch.resolve_pr("42", repo_override="example/repo")
 
     assert pr["merged"] is True
+    assert pr["closed"] is True
+    assert pr["state"] == "MERGED"
     assert pr["base_branch"] == "main"
     assert pr["merge_commit_sha"] == "a" * 40
     assert pr["head_sha"] == "b" * 40
+    assert pr["mergeable"] == "UNKNOWN"
+    assert pr["metadata_availability"]["review_decision"] is False
+    assert calls == [
+        (("view",), {"pr_spec": "42", "repo": "example/repo"})
+    ]
 
 
 def test_resolve_pr_rejects_conflicting_repo_override(monkeypatch):
-    monkeypatch.setattr(
-        gh_pr_watch,
-        "gh_json",
-        lambda *args, **kwargs: {
-            "number": 42,
-            "url": "https://github.com/example/repo/pull/42",
-            "state": "OPEN",
-            "headRefName": "feature",
-            "headRefOid": "b" * 40,
-        },
-    )
+    monkeypatch.setattr(gh_pr_watch, "pr_helper_json", lambda *args, **kwargs: None)
 
     with pytest.raises(gh_pr_watch.GhCommandError, match="does not match --repo"):
-        gh_pr_watch.resolve_pr("42", repo_override="other/repo")
+        gh_pr_watch.resolve_pr(
+            "https://github.com/example/repo/pull/42",
+            repo_override="other/repo",
+        )
+
+
+def test_resolve_pr_accepts_extended_url_and_preserves_empty_open_merge_commit(
+    monkeypatch,
+):
+    calls = []
+    payload = sample_rest_view(mergeCommitOid="a" * 40)
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "pr_helper_json",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or payload,
+    )
+    url = "https://github.com/example/repo/pull/42/files?diff=split#discussion_r1"
+
+    pr = gh_pr_watch.resolve_pr(url)
+
+    assert pr["number"] == 42
+    assert pr["merge_commit_sha"] == ""
+    assert calls == [
+        (("view",), {"pr_spec": "42", "repo": "example/repo"})
+    ]
+
+
+def test_pr_helper_json_forwards_gh_command_to_rest_helper(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", "/graphql-fails-rest-works")
+    monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
+
+    def fake_run(cmd, check, capture_output, text, env):
+        assert check is False
+        calls.append((cmd, env["GH_PR_GH"]))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "transport": "rest_api",
+                    "bucket": "rest_core",
+                    "repo": "example/repo",
+                    "pr": {"number": 42},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", fake_run)
+
+    payload = gh_pr_watch.pr_helper_json("view", "42", repo="example/repo")
+    gh_pr_watch.pr_helper_json("view", "auto")
+
+    assert payload["pr"] == {"number": 42}
+    assert payload["_watcher_diagnostic"] == {
+        "transport": "rest_api",
+        "bucket": "rest_core",
+        "ok": True,
+        "returncode": 0,
+    }
+    assert calls == [
+        (
+            [
+                sys.executable,
+                str(gh_pr_watch.DEFAULT_PR_HELPER),
+                "--repo",
+                "example/repo",
+                "view",
+                "42",
+            ],
+            "/graphql-fails-rest-works",
+        ),
+        ([sys.executable, str(gh_pr_watch.DEFAULT_PR_HELPER), "view"], "/graphql-fails-rest-works"),
+    ]
+
+
+def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
+    partial = {
+        "ok": False,
+        "transport": "rest_api",
+        "bucket": "rest_core",
+        "pr": {"number": 42},
+        "headSha": "b" * 40,
+        "summary": {
+            "failingCount": 1,
+            "pendingCount": 0,
+            "countsComplete": False,
+            "countsAreLowerBounds": True,
+            "unavailableComponents": ["commitStatuses"],
+        },
+    }
+    monkeypatch.setattr(
+        gh_pr_watch.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout=json.dumps(partial), stderr="redacted error"
+        ),
+    )
+    monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
+
+    payload = gh_pr_watch.pr_helper_json(
+        "checks", "42", repo="example/repo", allow_partial=True
+    )
+    summary = gh_pr_watch.summarize_checks(payload, expected_head_sha="b" * 40)
+
+    assert summary == {
+        "pending_count": 0,
+        "failed_count": 1,
+        "passed_count": 0,
+        "all_terminal": False,
+        "evidence_complete": False,
+        "counts_are_lower_bounds": True,
+        "unavailable_components": ["commitStatuses"],
+        "head_matches": True,
+    }
+
+
+def test_mismatched_check_head_never_becomes_terminal_or_reruns(monkeypatch):
+    payload = {
+        "headSha": "c" * 40,
+        "summary": {
+            "checkRunCount": 0,
+            "statusCount": 0,
+            "failingCount": 0,
+            "pendingCount": 0,
+            "countsComplete": True,
+            "countsAreLowerBounds": False,
+            "unavailableComponents": [],
+        },
+    }
+
+    summary = gh_pr_watch.summarize_checks(payload, expected_head_sha="b" * 40)
+
+    assert summary["all_terminal"] is False
+    assert summary["evidence_complete"] is False
+    assert summary["head_matches"] is False
+
+    snapshot = {
+        "pr": sample_pr(),
+        "checks": summary,
+        "failed_runs": [{"run_id": 99}],
+        "retry_state": {"current_sha_retries_used": 0, "max_flaky_retries": 3},
+    }
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "collect_snapshot",
+        lambda args: (snapshot, Path("/tmp/pr-babysit-state.json")),
+    )
+
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+
+    assert result["rerun_attempted"] is False
+    assert result["reason"] == "check_evidence_incomplete"
+
+
+@pytest.mark.parametrize(
+    "summary_overrides",
+    [
+        {"countsComplete": False},
+        {"countsAreLowerBounds": True},
+        {"unavailableComponents": ["checkRuns"]},
+        {
+            "checkRunCount": None,
+            "statusCount": None,
+            "countsComplete": None,
+            "countsAreLowerBounds": None,
+        },
+        {"pendingCount": None},
+    ],
+)
+def test_each_incomplete_check_axis_fails_closed(summary_overrides):
+    summary = {
+        "checkRunCount": 0,
+        "statusCount": 0,
+        "failingCount": 0,
+        "pendingCount": 0,
+        "countsComplete": True,
+        "countsAreLowerBounds": False,
+        "unavailableComponents": [],
+        **summary_overrides,
+    }
+
+    checks = gh_pr_watch.summarize_checks(
+        {"headSha": "b" * 40, "summary": summary},
+        expected_head_sha="b" * 40,
+    )
+
+    assert checks["all_terminal"] is False
+    assert checks["evidence_complete"] is False
+
+
+def test_green_rest_snapshot_surfaces_unavailable_review_readiness():
+    pr = sample_pr()
+    pr["metadata_availability"]["review_decision"] = False
+
+    assert gh_pr_watch.recommend_actions(
+        pr,
+        sample_checks(),
+        [],
+        [],
+        [],
+        0,
+        3,
+    ) == ["review_readiness_unavailable"]
+
+
+def test_head_mismatch_does_not_diagnose_unrelated_check_failure():
+    checks = sample_checks(
+        all_terminal=False,
+        evidence_complete=False,
+        failed_count=1,
+        head_matches=False,
+    )
+
+    assert gh_pr_watch.recommend_actions(
+        sample_pr(),
+        checks,
+        [],
+        [],
+        [],
+        0,
+        3,
+    ) == ["check_evidence_incomplete"]
+
+
+def test_incomplete_evidence_still_diagnoses_proven_failure():
+    checks = sample_checks(
+        all_terminal=False,
+        evidence_complete=False,
+        counts_are_lower_bounds=True,
+        failed_count=1,
+        head_matches=True,
+    )
+
+    assert gh_pr_watch.recommend_actions(
+        sample_pr(),
+        checks,
+        [{"run_id": 1}],
+        [],
+        [],
+        0,
+        3,
+    ) == ["check_evidence_incomplete", "diagnose_ci_failure"]
 
 
 def test_gh_text_uses_wrapper_by_default(monkeypatch):
@@ -123,6 +399,7 @@ def test_gh_text_uses_wrapper_by_default(monkeypatch):
 
 def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     call_order = []
+    summarize_kwargs = {}
     pr = sample_pr()
 
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
@@ -140,13 +417,20 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gh_pr_watch,
         "get_pr_checks",
-        lambda *args, **kwargs: call_order.append("checks") or [],
+        lambda *args, **kwargs: call_order.append("checks")
+        or {
+            "headSha": pr["head_sha"],
+            "summary": {},
+            "_watcher_diagnostic": {},
+        },
     )
-    monkeypatch.setattr(
-        gh_pr_watch,
-        "summarize_checks",
-        lambda checks: call_order.append("summarize") or sample_checks(),
-    )
+
+    def fake_summarize(checks, **kwargs):
+        call_order.append("summarize")
+        summarize_kwargs.update(kwargs)
+        return sample_checks()
+
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", fake_summarize)
     monkeypatch.setattr(
         gh_pr_watch,
         "get_workflow_runs_for_sha",
@@ -180,6 +464,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
 
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
+    assert summarize_kwargs == {"expected_head_sha": pr["head_sha"]}
 
 
 def test_recommend_actions_prioritizes_review_comments():
@@ -198,6 +483,27 @@ def test_recommend_actions_prioritizes_review_comments():
         "diagnose_ci_failure",
         "retry_failed_checks",
     ]
+
+
+@pytest.mark.parametrize(
+    "terminal_fields",
+    [
+        {"merged": True, "closed": True, "state": "MERGED"},
+        {"merged": False, "closed": True, "state": "CLOSED"},
+    ],
+)
+def test_recommend_actions_stops_for_merged_or_closed_pr(terminal_fields):
+    pr = {**sample_pr(), **terminal_fields}
+
+    assert gh_pr_watch.recommend_actions(
+        pr,
+        sample_checks(),
+        [],
+        [],
+        [],
+        0,
+        3,
+    ) == ["stop_pr_closed"]
 
 
 def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):

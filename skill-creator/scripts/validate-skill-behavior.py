@@ -1297,7 +1297,8 @@ def test_runtime_checkout_reconciliation_is_safe_and_delegated() -> None:
         "babysit-pr must resolve the watched repository worktree unambiguously",
     )
     require(
-        "merge_commit_sha" in watcher_text and '"mergecommit"' in watcher_text,
+        "merge_commit_sha" in watcher_text
+        and '"mergecommitoid"' in watcher_text,
         "babysit-pr must surface the final merge commit instead of only the PR head",
     )
     require(
