@@ -707,6 +707,10 @@ def build_parser() -> argparse.ArgumentParser:
             help="Ignore a reusable preparation receipt and execute preparation again.",
         )
     subparsers.choices["cleanup-helper-leases"].add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
+    subparsers.choices["cleanup-helper-leases"].add_argument(
+        "--lease-id", action="append", metavar="UUID",
+        help="Limit cleanup to one exact stale lease; specify this option only once.",
+    )
     subparsers.choices["cleanup-helper-leases"].add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     subparsers.choices["cleanup-helper-leases"].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["summarize-outcomes"].add_argument("--log", dest="log_path", help="Outcome JSONL log path. Defaults to JB_INSPECT_OUTCOME_LOG or the standard Code log path.")
@@ -9786,6 +9790,30 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
     failed: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     local_leases = read_local_leases()
+    selectors = getattr(args, "lease_id", None)
+    selected_id = None
+    if selectors is not None:
+        reason = None
+        try:
+            if len(selectors) != 1:
+                raise ValueError("Exactly one lease selector is required.")
+            selected_id = str(uuid.UUID(selectors[0]))
+        except (ValueError, TypeError, AttributeError):
+            reason = "invalid_lease_selector"
+        if reason is None:
+            local_leases = [(path, lease) for path, lease in local_leases if lease.get("lease_id") == selected_id]
+            if not local_leases:
+                reason = "lease_not_found"
+            elif len(local_leases) != 1:
+                reason = "lease_identity_ambiguous"
+            elif local_leases[0][0].stem != selected_id:
+                reason = "lease_identity_mismatch"
+        if reason is not None:
+            return {
+                "status": "incomplete", "dry_run": args.dry_run,
+                "stale": [], "removed": [], "closed": [], "unresolved": [],
+                "failed": [{"status": "failed", "reason": reason, "lease_id": selected_id}],
+            }
     if not local_leases:
         return {"status": "ok", "removed": [], "stale": [], "closed": [], "failed": [], "unresolved": []}
     cutoff = now_ms() - int(args.max_age_ms)
@@ -9798,6 +9826,12 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             continue
         stale.append(str(path))
         stale_leases.append((path, lease))
+    if selected_id is not None and not stale_leases:
+        return {
+            "status": "incomplete", "dry_run": args.dry_run,
+            "stale": [], "removed": [], "closed": [], "failed": [],
+            "unresolved": [{"status": "skipped", "reason": "lease_not_stale", "lease_id": selected_id}],
+        }
     if args.dry_run or not stale_leases:
         return {
             "status": "ok",
