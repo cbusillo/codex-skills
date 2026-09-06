@@ -758,6 +758,126 @@ def test_classify_404_not_found() -> None:
     assert result.failure.disposition == "stop"
 
 
+def test_classify_405_expected_required_checks_as_rejected_readiness() -> None:
+    result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            405,
+            body={"message": "2 of 2 required status checks are expected."},
+        ),
+        returncode=1,
+    )
+    assert result.failure == _api.FailureDetail(
+        cause="required_status_checks_expected",
+        message=(
+            "Merge readiness is blocked because required status checks have not reported: "
+            "2 of 2 required status checks are expected."
+        ),
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome="rejected",
+        completed_steps=[],
+        failed_step="http_405",
+        request_id="AABB:1234:CCDD",
+        rate_limit={
+            "limit": 5000,
+            "remaining": 4999,
+            "reset": 1700000000,
+            "used": 1,
+            "resource": "core",
+        },
+    )
+    singular_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            405,
+            body={"message": 'Required status check "ci/build" is expected.'},
+        ),
+        returncode=1,
+    )
+    assert singular_result.failure is not None
+    assert singular_result.failure.cause == "required_status_checks_expected"
+    assert singular_result.failure.write_outcome == "rejected"
+
+    non_405_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            422,
+            body={"message": "2 of 2 required status checks are expected."},
+        ),
+        returncode=1,
+    )
+    assert non_405_result.failure is not None
+    assert non_405_result.failure.cause == "validation_error"
+
+
+def test_classify_405_unrelated_failure_as_unknown_write() -> None:
+    result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(405, body={"message": "Method Not Allowed"}),
+        returncode=1,
+    )
+    assert result.failure == _api.FailureDetail(
+        cause="unknown_error",
+        message="Unexpected error (status=405): Method Not Allowed",
+        retryable=False,
+        fallback_eligible=False,
+        disposition="stop",
+        write_outcome="unknown",
+        completed_steps=[],
+        failed_step="http_405",
+        request_id="AABB:1234:CCDD",
+        rate_limit={
+            "limit": 5000,
+            "remaining": 4999,
+            "reset": 1700000000,
+            "used": 1,
+            "resource": "core",
+        },
+    )
+    html_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            405,
+            headers={"content-type": "text/html"},
+            body="<html><h1>Required status checks are expected</h1></html>",
+        ),
+        returncode=1,
+    )
+    assert html_result.failure is not None
+    assert html_result.failure.cause == "unknown_error"
+    assert html_result.failure.write_outcome == "unknown"
+    near_miss_result = _call(
+        "PUT",
+        "/repos/owner/repo/pulls/1/merge",
+        body={},
+        fake_stdout=_include_output(
+            405,
+            body={
+                "message": (
+                    "Required status checks are configured; "
+                    "the head commit is expected to change."
+                )
+            },
+        ),
+        returncode=1,
+    )
+    assert near_miss_result.failure is not None
+    assert near_miss_result.failure.cause == "unknown_error"
+    assert near_miss_result.failure.write_outcome == "unknown"
+
+
 def test_classify_422_validation_error() -> None:
     stdout = _include_output(422, body={"message": "Validation Failed", "errors": [{"code": "missing_field"}]})
     result = _call("POST", "/repos/owner/repo/issues", body={"title": ""}, fake_stdout=stdout, returncode=1)
@@ -2766,6 +2886,8 @@ def main() -> None:
         test_permission_403_wins_over_incidental_zero_remaining,
         test_classify_200_graphql_rate_limit,
         test_classify_404_not_found,
+        test_classify_405_expected_required_checks_as_rejected_readiness,
+        test_classify_405_unrelated_failure_as_unknown_write,
         test_classify_422_validation_error,
         test_classify_409_conflict,
         test_classify_500_network_error,
