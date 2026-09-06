@@ -3771,29 +3771,71 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result["failed"][0]["lease_id"], "old-lease")
 
     def test_problems_params_preserve_files_scope_selectors(self):
-        args = helper_args(
-            scope="files",
-            files=["src/App.kt", "src/AppTest.kt"],
-            directory=None,
-            max_files=25,
-            severity="all",
-            problem_type="all",
-            file_pattern="all",
-            limit=100,
-            offset=0,
-            include_stale=False,
-            project_key=None,
-            project_path=None,
-            worktree_path=None,
-            cwd=None,
-            project=None,
-            session_id=None,
-        )
+        parser = jb_inspect.build_parser()
+        args = parser.parse_args([
+            "get-problems",
+            "--scope",
+            "files",
+            "--file",
+            "src/App.kt",
+            "--file",
+            "src/AppTest.kt",
+            "--max-files",
+            "25",
+            "--limit",
+            "500",
+        ])
         params = jb_inspect.problems_params(args, {"scope": "files"}, {"project_key": "path:/tmp/repo"})
 
-        self.assertEqual(params["scope"], "files")
-        self.assertEqual(params["files"], "src/App.kt\nsrc/AppTest.kt")
-        self.assertEqual(params["max_files"], 25)
+        self.assertEqual(params, {
+            "project_key": "path:/tmp/repo",
+            "session_id": None,
+            "project_path": None,
+            "worktree_path": None,
+            "cwd": None,
+            "project": None,
+            "ide": None,
+            "scope": "files",
+            "include_unversioned": "true",
+            "changed_files_mode": "all",
+            "profile": "",
+            "files": "src/App.kt\nsrc/AppTest.kt",
+            "max_files": 25,
+            "severity": "all",
+            "problem_type": "all",
+            "file_pattern": "all",
+            "limit": 500,
+            "offset": 0,
+        })
+
+    def test_get_problems_scope_parser_preserves_existing_defaults(self):
+        parser = jb_inspect.build_parser()
+        args = parser.parse_args(["get-problems"])
+
+        params = jb_inspect.problems_params(
+            args,
+            {"scope": "directory"},
+            {"project_key": "path:/tmp/repo"},
+        )
+
+        self.assertEqual(params, {
+            "project_key": "path:/tmp/repo",
+            "session_id": None,
+            "project_path": None,
+            "worktree_path": None,
+            "cwd": None,
+            "project": None,
+            "ide": None,
+            "scope": "directory",
+            "include_unversioned": "true",
+            "changed_files_mode": "all",
+            "profile": "",
+            "severity": "all",
+            "problem_type": "all",
+            "file_pattern": "all",
+            "limit": 100,
+            "offset": 0,
+        })
 
     def test_find_exact_route_returns_none_for_containing_project(self):
         original_resolve_route = jb_inspect.resolve_route

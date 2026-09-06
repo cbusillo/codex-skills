@@ -663,7 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
         "start-inspection": ("Start an inspection run without waiting for results.", True),
         "wait-for-inspection": ("Wait for a previously triggered inspection.", False),
         "get-status": ("Read current route-pinned inspection status.", False),
-        "get-problems": ("Fetch current inspection problem details.", False),
+        "get-problems": ("Fetch current inspection problem details.", True),
         "claim-worktree": ("Claim an already-open exact worktree without opening an IDE.", False),
         "open-worktree": ("Open and claim the exact worktree; does not inspect.", False),
         "agent-inspect": ("Agent assessment: inspect once and emit a compact terminal result envelope.", True),
@@ -717,7 +717,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.choices["summarize-outcomes"].add_argument("--limit", type=int, default=10, help="Maximum number of recent events to include.")
     subparsers.choices["summarize-outcomes"].add_argument("--qualification-file", help="Qualification schema v1 JSON file for strict artifact-pinned gating.")
     subparsers.choices["summarize-outcomes"].add_argument("--sample-size", type=int, default=50, help="Required strict qualification sample size. Defaults to 50.")
-    subparsers.choices["get-problems"].add_argument("--scope", help="Problem scope filter. Defaults from repo config or changed_files.")
     for name in ("get-problems", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--severity", default="all")
         subparsers.choices[name].add_argument("--problem-type", default="all")
