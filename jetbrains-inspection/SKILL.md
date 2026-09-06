@@ -212,6 +212,19 @@ Command model:
   is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
 - `get-status` and `get-problems`: route-pinned diagnostics for
   already-routable projects.
+- `get-problems` reads the stored inspection run; it does not start a new one.
+  Repeat the original scope selectors so the plugin can prove the requested
+  results belong to that run. For a `files` scope, pass at least one repeatable
+  `--file` selector. Use a larger `--limit` when the compact assessment envelope
+  omitted finding details:
+
+  ```bash
+  uv run "$HELPER" get-problems --json --repo "$PWD" \
+    --project-key "$PROJECT_KEY" --session-id "$SESSION_ID" \
+    --scope files --file src/App.kt --file src/AppTest.kt --limit 500
+  ```
+
+  A selector mismatch fails closed instead of widening retrieval.
 - `summarize-outcomes`: keep the existing diagnostic verdict/bucket/retry
   summary when no qualification file is supplied. With
   `--qualification-file`, run the strict post-boundary assessment gate described
