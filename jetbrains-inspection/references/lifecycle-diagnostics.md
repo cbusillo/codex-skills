@@ -86,9 +86,11 @@ Preparation failures for projects that were already open release only the local
 lease and never call lifecycle close. `cleanup-helper-leases` uses the same
 lifecycle lock as inspection commands so stale reconciliation cannot race a new
 helper-owned open or close.
+
 When recovering one known stale lease, scope both the dry-run and cleanup with
-`cleanup-helper-leases --lease-id <UUID>`. The selector accepts one exact UUID
-only, filters before staleness checks and route discovery, and runs under the
+`cleanup-helper-leases --lease-id <UUID>`. The selector normalizes one UUID
+(including uppercase or hyphenless input), filters before staleness checks and
+route discovery, and runs under the
 existing lifecycle lock. It does not force a live lease stale or relax ownership
 proof. First use `--dry-run`; add `--no-dry-run` only when the exact project's
 current route is verified and indexing, scanning, and inspection have settled.
