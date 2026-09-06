@@ -4942,7 +4942,6 @@ def test_required_check_rejection_stops_without_cooldown_until_readiness_changes
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
         rejected_calls = log_path.read_text(encoding="utf-8").splitlines()
         assert rejected.returncode == 1, rejected
