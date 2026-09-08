@@ -7,7 +7,9 @@ import argparse
 import html
 import os
 import subprocess
+import sys
 import tempfile
+from xml.etree import ElementTree
 from pathlib import Path
 
 
@@ -18,9 +20,35 @@ def sdk_name_for(venv: Path, home: Path) -> str:
         return str(venv)
 
 
-def render_project_files(repo: Path, module_name: str, test_roots: list[str]) -> dict[Path, str]:
+def registered_sdk_name(venv: Path, sdk_table: Path | None) -> str | None:
+    if sdk_table is None or not sdk_table.exists():
+        return None
+    try:
+        root = ElementTree.parse(sdk_table).getroot()
+    except (OSError, ElementTree.ParseError) as error:
+        raise RuntimeError("Cannot read the selected IDE's Python SDK table") from error
+    interpreter = os.path.normpath(str(venv / "bin" / "python"))
+    matches = set()
+    for sdk in root.findall("./component[@name='ProjectJdkTable']/jdk"):
+        sdk_type, sdk_home, sdk_name = sdk.find("type"), sdk.find("homePath"), sdk.find("name")
+        if sdk_type is None or sdk_home is None or sdk_name is None:
+            continue
+        if sdk_type.get("value") != "Python SDK":
+            continue
+        home = sdk_home.get("value", "").replace("$USER_HOME$", str(Path.home()))
+        home = os.path.normpath(os.path.expanduser(home))
+        if home == interpreter and sdk_name.get("value"):
+            matches.add(sdk_name.get("value"))
+    if len(matches) > 1:
+        raise RuntimeError("Multiple Python SDK names match this worktree interpreter in the selected IDE")
+    return next(iter(matches), None)
+
+
+def render_project_files(
+    repo: Path, module_name: str, test_roots: list[str], sdk_name: str | None = None,
+) -> dict[Path, str]:
     idea = repo / ".idea"
-    sdk_name = html.escape(sdk_name_for(repo / ".venv", Path.home()), quote=True)
+    sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()), quote=True)
     safe_module_name = "".join(character if character.isalnum() or character in "-_" else "-" for character in module_name)
     module_file = idea / f"{safe_module_name}.iml"
     source_folders = "\n".join(
@@ -131,6 +159,7 @@ def main() -> int:
     parser.add_argument("--test-root", action="append", default=[])
     parser.add_argument("--sync", action="store_true")
     parser.add_argument("--extra", action="append", default=[])
+    parser.add_argument("--sdk-table", type=Path, help="Read SDK names from the selected IDE's options/jdk.table.xml.")
     args = parser.parse_args()
 
     repo = Path(args.repo).expanduser().resolve()
@@ -146,7 +175,8 @@ def main() -> int:
         if not (repo / test_root).is_dir():
             parser.error(f"test root does not exist: {test_root}")
 
-    project_files = render_project_files(repo, args.module_name, args.test_root)
+    sdk_name = registered_sdk_name(repo / ".venv", args.sdk_table)
+    project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name)
     ensure_ignored_outputs(repo, [repo / ".venv", *project_files])
     validate_existing_venv(repo / ".venv", args.python)
     if not (repo / ".venv").exists():
@@ -159,6 +189,14 @@ def main() -> int:
         subprocess.run(build_sync_command(args.python, args.extra), cwd=repo, check=True)
     for path, content in project_files.items():
         atomic_write(path, content)
+    if sdk_name is None:
+        print(
+            "Python environment prepared; IDE SDK registration is not confirmed. "
+            "The generated SDK name is provisional. Inspection must verify registration and assignment. "
+            "If inspection reports language_sdk_missing, register this worktree's .venv/bin/python "
+            "in the selected IDE and rerun preparation.",
+            file=sys.stderr,
+        )
     return 0
 
 
