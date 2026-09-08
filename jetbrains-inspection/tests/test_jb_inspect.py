@@ -12193,6 +12193,7 @@ class PythonSdkFailureReportingTests(unittest.TestCase):
         for suffix, bucket in [
             ("sdk_conflict", "environment_blocked"),
             ("existing_sdk_incomplete", "environment_blocked"),
+            ("inspection_in_progress", "environment_blocked"),
             ("session_drift", "route_not_ready"),
             ("token_mismatch", "route_not_ready"),
             ("request_failed", "tool_bug"),

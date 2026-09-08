@@ -6646,7 +6646,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "venv_configuration_missing", "interpreter_missing", "project_untrusted",
             "unsupported", "no_python_modules", "sdk_conflict", "ambiguous_registered_sdk",
             "existing_sdk_incomplete", "project_root_missing", "module_model_changed",
-            "in_progress", "cancelled",
+            "in_progress", "inspection_in_progress", "cancelled",
         }:
             return "environment_blocked"
         return "tool_bug"
