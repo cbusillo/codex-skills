@@ -12173,6 +12173,40 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(jb_inspect.redact_durable_log(values), values)
 
 
+class PythonSdkFailureReportingTests(unittest.TestCase):
+    def test_sdk_worker_close_refusal_preserves_lease_and_specific_cleanup_action(self):
+        lease = {"lease_id": "owned-lease", "opened_by_helper": True}
+        close_result = {"status": "close_skipped", "reason": "python_sdk_preparation_in_progress"}
+        error = jb_inspect.InspectError("SDK deadline", 3, {"error_reason": "python_sdk_preparation_timeout"})
+        with patch.object(jb_inspect, "write_lease") as write:
+            result = jb_inspect.defer_failed_preparation_cleanup(
+                lease, None, error, "python_sdk_preparation", cleanup_result=close_result,
+            )
+        self.assertEqual(lease["state"], "cleanup_pending")
+        self.assertEqual(result["reason"], "python_sdk_preparation_in_progress")
+        self.assertEqual(result["close_result"], close_result)
+        self.assertIn("after the worker exits", result["next_action"])
+        self.assertIn("Do not repeat SDK preparation", lease["cleanup_next_action"])
+        write.assert_called_once_with(lease)
+
+    def test_sdk_failures_distinguish_configuration_ownership_and_tool_errors_without_retry(self):
+        for suffix, bucket in [
+            ("sdk_conflict", "environment_blocked"),
+            ("existing_sdk_incomplete", "environment_blocked"),
+            ("inspection_in_progress", "environment_blocked"),
+            ("session_drift", "route_not_ready"),
+            ("token_mismatch", "route_not_ready"),
+            ("request_failed", "tool_bug"),
+            ("invalid_response", "tool_bug"),
+            ("registration_failed", "tool_bug"),
+            ("timeout", "tool_bug"),
+        ]:
+            with self.subTest(suffix=suffix):
+                actual = jb_inspect.outcome_bucket({}, "python_sdk_preparation_" + suffix)
+                self.assertEqual(actual, bucket)
+                self.assertNotIn(actual, jb_inspect.UNKNOWN_RETRY_BUCKETS)
+
+
 class ScopedLeaseCleanupTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="scoped-lease-cleanup-")
@@ -12325,6 +12359,369 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.discovery.assert_not_called()
         self.assertFalse(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+
+class PythonSdkPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / ".venv").mkdir()
+        self.args = jb_inspect.build_parser().parse_args(["agent-inspect", "--repo", str(self.root)])
+        self.context = {"worktree_root": str(self.root), "project_path": str(self.root)}
+        self.route = {
+            "port": 63342, "project_key": "project", "project_instance_id": "instance",
+            "session_id": "session", "ide": {"product_code": "IU", "python_sdk_preparation_version": 1},
+        }
+        self.lease = {"opened_by_helper": True, "lease_id": "lease"}
+        self.preparation = {
+            "configured": True, "kind": "python", "command": "uv run prepare-python-project.py",
+            "execution_state": "succeeded", "target_worktree": str(self.root),
+            "generated_state_snapshot": {
+                "all_present": True, "paths": [{"path": ".venv", "kind": "directory", "exists": True}],
+            },
+        }
+        self.response = {
+            "status": "prepared", "sdk_preparation_version": 1, "operation": "created",
+            "project_key": "project", "project_instance_id": "instance", "session_id": "session",
+            "registered_local_python_sdk_count": 1, "assigned_local_python_sdk_count": 1,
+            "python_module_count": 2, "assigned_python_module_count": 2, "project_sdk_assigned": True,
+        }
+
+    def prepare(self, token="private-token"):
+        return jb_inspect.prepare_owned_python_sdk(
+            self.args, self.context, self.route, self.lease, token, self.preparation,
+        )
+
+    def lifecycle_context(self):
+        return self.context | {
+            "_repository_preparation_completed": True,
+            "repository_preparation": self.preparation,
+        }
+
+    def test_owned_prepared_environment_uses_one_explicit_post_with_route_pins(self):
+        with patch.object(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, self.response, "redacted")) as post:
+            result = self.prepare()
+        self.assertEqual(result, self.response)
+        post.assert_called_once()
+        port, endpoint, params = post.call_args.args
+        self.assertEqual((port, endpoint), (63342, "lifecycle/prepare-python-sdk"))
+        self.assertEqual(params["lease_id"], "lease")
+        self.assertEqual(params["close_token"], "private-token")
+        self.assertEqual(params["project_instance_id"], "instance")
+        self.assertEqual(params["session_id"], "session")
+        self.assertNotIn("interpreter", params)
+
+    def test_unowned_project_is_never_provisioned(self):
+        self.lease["opened_by_helper"] = False
+        with patch.object(jb_inspect, "http_post") as post:
+            self.assertEqual(self.prepare()["reason"], "helper_ownership_not_proven")
+        post.assert_not_called()
+
+    def test_missing_proof_is_never_provisioned(self):
+        with patch.object(jb_inspect, "http_post") as post:
+            self.assertEqual(self.prepare(None)["reason"], "helper_ownership_not_proven")
+        post.assert_not_called()
+
+    def test_reclaimed_worker_active_lease_cannot_repeat_sdk_preparation(self):
+        self.lease["cleanup_result"] = {"status": "close_skipped", "reason": "python_sdk_preparation_in_progress"}
+        with patch.object(jb_inspect, "http_post") as post:
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                self.prepare()
+        post.assert_not_called()
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"]["status"], "not_attempted")
+        self.assertEqual(caught.exception.payload["error_reason"], "python_sdk_preparation_in_progress")
+
+    def test_old_plugin_and_web_lane_do_not_receive_mutations(self):
+        for ide, expected in [
+            ({"product_code": "IU"}, "plugin_capability_unavailable"),
+            ({"product_code": "IU", "python_sdk_preparation_version": True}, "plugin_capability_unavailable"),
+            ({"product_code": "WS", "python_sdk_preparation_version": 1}, "non_python_ide_lane"),
+        ]:
+            with self.subTest(ide=ide), patch.object(jb_inspect, "http_post") as post:
+                self.route["ide"] = ide
+                self.assertEqual(self.prepare()["reason"], expected)
+                post.assert_not_called()
+
+    def test_failed_preparation_and_nested_target_do_not_provision_root_environment(self):
+        with patch.object(jb_inspect, "http_post") as post:
+            self.preparation["execution_state"] = "failed"
+            self.assertEqual(self.prepare()["status"], "skipped")
+            self.preparation["execution_state"] = "succeeded"
+            self.context["project_path"] = str(self.root / "nested")
+            self.assertEqual(self.prepare()["status"], "skipped")
+        post.assert_not_called()
+
+    def test_incomplete_route_cannot_start_sdk_mutation(self):
+        del self.route["session_id"]
+        with patch.object(jb_inspect, "http_post") as post:
+            with self.assertRaises(jb_inspect.InspectError):
+                self.prepare()
+        post.assert_not_called()
+
+    def test_read_commands_do_not_provision_even_with_prepared_environment(self):
+        for command in ("claim-worktree", "get-status", "resolve-route"):
+            with self.subTest(command=command), patch.object(jb_inspect, "http_post") as post:
+                self.args.command = command
+                self.assertEqual(self.prepare()["reason"], "preparation_not_requested")
+                post.assert_not_called()
+
+    def test_shared_python_preparation_does_not_mutate_a_jvm_only_lane(self):
+        self.args.files = ["src/main/Main.kt", "README.md"]
+        with patch.object(jb_inspect, "http_post") as post:
+            self.assertEqual(self.prepare()["reason"], "python_not_selected")
+        post.assert_not_called()
+
+    def test_success_requires_exact_identity_and_positive_readback_counts(self):
+        for field, value in [
+            ("session_id", "other"), ("project_key", None), ("project_instance_id", "other"),
+            ("registered_local_python_sdk_count", 0), ("assigned_local_python_sdk_count", None),
+            ("assigned_local_python_sdk_count", True), ("sdk_preparation_version", 2),
+            ("sdk_preparation_version", True),
+            ("registered_local_python_sdk_count", 2), ("python_module_count", 0),
+            ("assigned_python_module_count", 1), ("project_sdk_assigned", False),
+        ]:
+            with self.subTest(field=field, value=value):
+                response = self.response | {field: value}
+                with patch.object(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, response, "redacted")):
+                    with self.assertRaises(jb_inspect.InspectError):
+                        self.prepare()
+
+    def test_transport_failure_is_not_retried_and_preserves_preparation_diagnostic(self):
+        error = jb_inspect.InspectError("Timed out", 3, {"error_reason": "timeout"})
+        with patch.object(jb_inspect, "http_post", side_effect=error) as post:
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                self.prepare()
+        post.assert_called_once()
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"]["status"], "failed")
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"]["reason"], "timeout")
+        self.assertEqual(caught.exception.payload["error_reason"], "python_sdk_preparation_request_failed")
+
+    def test_prepare_lifecycle_claims_then_posts_sdk_preparation_then_waits_for_readiness(self):
+        lease = {"lease_id": "lease", "state": "preparing"}
+        events = []
+        writes = []
+
+        def claim(*_args):
+            events.append("claim")
+            return claimed_lifecycle_result(self.route, "private-token")
+
+        def post(port, endpoint, params, timeout):
+            events.append("sdk_post")
+            self.assertEqual(lease["preparation_stage"], "python_sdk_preparation")
+            self.assertEqual((port, endpoint, timeout), (63342, "lifecycle/prepare-python-sdk", 75.0))
+            self.assertEqual(params["close_token"], "private-token")
+            return jb_inspect.HttpResult(200, self.response, "redacted")
+
+        def readiness(*_args):
+            events.append("readiness")
+            self.assertEqual(lease["preparation_stage"], "readiness_wait")
+            return {"status": "ready"}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "claim_lifecycle", side_effect=claim),
+            patch.object(jb_inspect, "http_post", side_effect=post),
+            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
+            patch.object(jb_inspect, "write_lease", side_effect=lambda value: writes.append(value.copy())),
+        ):
+            prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
+                self.args, self.lifecycle_context(),
+            )
+
+        self.assertEqual(events, ["claim", "sdk_post", "readiness"])
+        self.assertEqual(close_proof, "private-token")
+        self.assertIs(prepared_lease, lease)
+        self.assertEqual(prepared["python_sdk_preparation"], self.response)
+        self.assertEqual(prepared["readiness_barrier"], {"status": "ready"})
+        self.assertEqual(
+            [item["preparation_stage"] for item in writes],
+            ["lifecycle_claim", "python_sdk_preparation", "readiness_wait", "prepared"],
+        )
+
+    def test_prepare_lifecycle_skips_sdk_post_when_claim_does_not_prove_ownership(self):
+        lease = {"lease_id": "lease", "state": "preparing"}
+        events = []
+
+        def claim(*_args):
+            events.append("claim")
+            return unowned_lifecycle_result(self.route)
+
+        def readiness(*_args):
+            events.append("readiness")
+            return {"status": "ready"}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "claim_lifecycle", side_effect=claim),
+            patch.object(jb_inspect, "http_post") as post,
+            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
+                self.args, self.lifecycle_context(),
+            )
+
+        self.assertEqual(events, ["claim", "readiness"])
+        post.assert_not_called()
+        self.assertFalse(prepared["opened_by_helper"])
+        self.assertFalse(prepared_lease["opened_by_helper"])
+        self.assertIsNone(close_proof)
+        self.assertEqual(
+            prepared["python_sdk_preparation"],
+            {"status": "skipped", "reason": "helper_ownership_not_proven"},
+        )
+
+    def test_successful_sdk_evidence_survives_a_later_readiness_inspect_error(self):
+        lease = {"lease_id": "lease", "state": "preparing"}
+        readiness_error = jb_inspect.InspectError(
+            "not ready", 3, {"error_reason": "language_sdk_missing"},
+        )
+        cleanup = {"status": "closed"}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect, "claim_lifecycle",
+                return_value=claimed_lifecycle_result(self.route, "private-token"),
+            ),
+            patch.object(
+                jb_inspect, "http_post",
+                return_value=jb_inspect.HttpResult(200, self.response, "redacted"),
+            ),
+            patch.object(
+                jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry",
+                side_effect=readiness_error,
+            ),
+            patch.object(jb_inspect, "cleanup_failed_preparation", return_value=cleanup) as cleanup_call,
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
+
+        self.assertIs(caught.exception, readiness_error)
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"], self.response)
+        self.assertEqual(caught.exception.payload["preparation_stage"], "readiness_wait")
+        self.assertEqual(lease["python_sdk_preparation"], self.response)
+        self.assertEqual(cleanup_call.call_args.kwargs["stage"], "readiness_wait")
+
+    def test_successful_sdk_evidence_survives_a_later_unexpected_exception(self):
+        lease = {"lease_id": "lease", "state": "preparing"}
+
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(
+                jb_inspect, "claim_lifecycle",
+                return_value=claimed_lifecycle_result(self.route, "private-token"),
+            ),
+            patch.object(
+                jb_inspect, "http_post",
+                return_value=jb_inspect.HttpResult(200, self.response, "redacted"),
+            ),
+            patch.object(
+                jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry",
+                side_effect=RuntimeError("readiness exploded"),
+            ),
+            patch.object(jb_inspect, "cleanup_failed_preparation", return_value={"status": "closed"}),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
+
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertEqual(caught.exception.payload["error_reason"], "helper_plugin_error")
+        self.assertEqual(caught.exception.payload["error_message"], "readiness exploded")
+        self.assertEqual(caught.exception.payload["preparation_stage"], "readiness_wait")
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"], self.response)
+
+    def test_invalid_sdk_operations_are_never_accepted_as_prepared(self):
+        for operation in (None, "", "registered", "CREATED", True, 1, [], {"created": True}):
+            with self.subTest(operation=operation):
+                response = self.response | {"operation": operation}
+                with patch.object(
+                    jb_inspect, "http_post",
+                    return_value=jb_inspect.HttpResult(200, response, "redacted"),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as caught:
+                        self.prepare()
+
+                self.assertEqual(
+                    caught.exception.payload["error_reason"],
+                    "python_sdk_preparation_invalid_response",
+                )
+                self.assertEqual(caught.exception.payload["python_sdk_preparation"]["operation"], operation)
+
+    def test_skipped_sdk_stage_preserves_unexpected_exception_behavior(self):
+        lease = {"lease_id": "lease", "state": "preparing"}
+        error = RuntimeError("unrelated readiness failure")
+        with (
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
+            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch.object(jb_inspect, "ensure_exact_worktree"),
+            patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(self.route)),
+            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=error),
+            patch.object(jb_inspect, "cleanup_failed_preparation", return_value={"status": "not_needed"}),
+            patch.object(jb_inspect, "write_lease"),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
+        self.assertIs(caught.exception, error)
+
+    def test_sdk_post_does_not_swallow_inspection_shaped_http_conflicts(self):
+        body = json.dumps({
+            "inspection_in_progress": True, "reason": "python_sdk_preparation_in_progress",
+        }).encode()
+        error = jb_inspect.urllib.error.HTTPError("http://localhost", 409, "Conflict", {}, io.BytesIO(body))
+        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                self.prepare()
+        self.assertEqual(caught.exception.payload["error_reason"], "python_sdk_preparation_in_progress")
+        self.assertEqual(caught.exception.payload["python_sdk_preparation"]["http_status"], 409)
+
+    def test_plugin_failure_reason_and_observed_state_are_preserved(self):
+        error = jb_inspect.InspectError("HTTP 409", 3, {
+            "reason": "python_sdk_preparation_sdk_conflict", "http_status": 409,
+            "detail": "A different valid SDK is assigned", "registered_local_python_sdk_count": 0,
+        })
+        with patch.object(jb_inspect, "http_post", side_effect=error):
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                self.prepare()
+        payload = caught.exception.payload
+        self.assertEqual(payload["error_reason"], "python_sdk_preparation_sdk_conflict")
+        self.assertEqual(payload["python_sdk_preparation"]["detail"], error.payload["detail"])
+        self.assertEqual(payload["python_sdk_preparation"]["registered_local_python_sdk_count"], 0)
+        self.assertEqual(jb_inspect.outcome_bucket(payload, payload["error_reason"]), "environment_blocked")
+
+    def test_post_transport_uses_post_and_redacts_the_ownership_token(self):
+        with patch.object(jb_inspect.urllib.request, "urlopen") as urlopen:
+            response = urlopen.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b'{"status":"prepared"}'
+            result = jb_inspect.http_post(63342, "lifecycle/prepare-python-sdk", {"close_token": "private-token"})
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.data, b"")
+        self.assertNotIn("private-token", result.url)
+
+    def test_provisioning_evidence_survives_compact_agent_and_durable_outcome(self):
+        payload = {"status": "clean", "prepared": {"python_sdk_preparation": self.response}}
+        compact = jb_inspect.compact_agent_result_payload(payload, 0)
+        self.assertEqual(compact["diagnostic"]["python_sdk_preparation"], self.response)
+        _, record = jb_inspect.outcome_record_base(payload)
+        self.assertEqual(record["python_sdk_preparation"], self.response)
 
 
 if __name__ == "__main__":

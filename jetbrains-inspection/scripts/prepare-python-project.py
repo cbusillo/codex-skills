@@ -193,6 +193,7 @@ def main() -> int:
         print(
             "Python environment prepared; IDE SDK registration is not confirmed. "
             "The generated SDK name is provisional. Inspection must verify registration and assignment. "
+            "The lifecycle helper can request explicit SDK preparation for helper-owned projects when the plugin supports it. "
             "If inspection reports language_sdk_missing, register this worktree's .venv/bin/python "
             "in the selected IDE and rerun preparation.",
             file=sys.stderr,

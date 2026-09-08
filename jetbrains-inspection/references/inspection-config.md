@@ -53,7 +53,7 @@ tracked mutation, hidden index mutation, missing `requiredGeneratedState`, or
 recursive invocation is a terminal preparation result. Do not continue with an
 unprepared project model or substitute a different command.
 
-Structured Python preparation reads only the selected IDE configuration's
+The structured Python generator reads the selected IDE configuration's
 `options/jdk.table.xml` and binds the generated project/module to a registered
 Python SDK with the same normalized worktree-local `.venv/bin/python` home.
 SDK display names may differ from environment paths. Interpreter symlinks are
@@ -61,13 +61,33 @@ not resolved to a shared base Python, so another worktree's SDK cannot match.
 Multiple matching SDK names or an unreadable table block preparation. A missing
 table or matching SDK uses the existing provisional path-based name and reports
 that IDE registration is still unconfirmed; inspection readiness must independently
-prove registration and assignment. Preparation never edits the global SDK table.
+prove registration and assignment. The generator never edits the global SDK table.
 For direct generator use, `--sdk-table` selects the same read-only input; normal
 agent flows supply it from the resolved IDE, without repository-specific paths.
 For lane-configured repositories, shared Python preparation resolves the unique
 PyCharm lane before opening any project. A sole non-PyCharm lane can supply its
 own SDK table. Ambiguous lane ownership uses the provisional fallback rather
 than an unrelated top-level IDE selection.
+
+After opening and claiming a project, the lifecycle helper uses the plugin's
+explicit Python SDK preparation operation when version 1 of that capability is
+advertised. This is part of configured `prepare.python` behavior. It requires
+server-proven helper ownership and a prepared `.venv` in that exact project;
+WebStorm lanes and user-owned windows are left alone. The plugin registers or
+reuses the exact local interpreter through IDE APIs and assigns the real Python
+modules, refusing conflicting SDK assignments. Registration remains separate
+from the subsequent inspection proof. The operation's result is recorded as
+`python_sdk_preparation` in preparation output, compact agent diagnostics, and
+durable outcome records. A failed request is not retried automatically.
+SDK preparation has its own 60-second server deadline and a 75-second HTTP
+budget; `--prepare-timeout-ms` still controls each route/readiness wait. If a
+timed-out SDK worker has not exited, project cleanup retains the exact lease
+and reports `python_sdk_preparation_in_progress` with a deferred cleanup action.
+
+For an otherwise eligible, helper-owned Python project, older plugins keep the
+existing IDE discovery path and report `plugin_capability_unavailable` in this diagnostic. If registration remains
+missing, configure the worktree interpreter in the selected IDE and rerun
+preparation. Read-only commands never invoke the provisioning operation.
 
 Successful preparation writes a bounded durable receipt under the helper cache.
 The receipt is reused only when the command/configuration hashes, exact worktree
