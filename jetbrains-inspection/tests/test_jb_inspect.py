@@ -935,6 +935,50 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         self.assertEqual(seen[0]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
         self.assertIn(str(root / "pycharm/options/jdk.table.xml"), seen[0]["command"])
 
+    def test_structured_preparation_uses_explicit_config_override_and_invalidates_receipt(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        script = root / "prepare-python-project.py"
+        script.write_text("import sys; print(sys.argv[1:])\n", encoding="utf-8")
+        context = self.make_context(root, [sys.executable, "-u", str(script)])
+        context["repository_preparation"]["kind"] = "python"
+        context["ide_config_dir"] = str(root / "normal-ide")
+        isolated_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(isolated_directory.cleanup)
+        isolated = Path(isolated_directory.name).resolve()
+        table = isolated / "options/jdk.table.xml"
+        table.parent.mkdir(parents=True)
+        with patch.dict(os.environ, {
+            "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent),
+            "JETBRAINS_INSPECTION_IDE_CONFIG_DIR": str(isolated),
+        }):
+            first = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            self.assertIn(str(table), first["command"])
+            self.assertNotIn(str(root / "normal-ide"), first["command"])
+            reused = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            self.assertEqual(reused["execution_state"], jb_inspect.REPOSITORY_PREPARATION_REUSED)
+            table.write_text("<application />\n", encoding="utf-8")
+            refreshed = jb_inspect.run_repository_preparation(self.prep_args(), context)
+            self.assertEqual(refreshed["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+
+    def test_explicit_config_override_applies_to_one_python_lane_only(self):
+        context = {"_inspection_lanes": jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+            {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+        ]})}
+        with (
+            patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "~/isolated-ide"}),
+            patch.object(jb_inspect, "resolve_ide_selection", return_value=Namespace(config_dir=Path("/normal"))),
+        ):
+            self.assertEqual(
+                jb_inspect.repository_preparation_sdk_table(context),
+                Path("~/isolated-ide/options/jdk.table.xml").expanduser().resolve(),
+            )
+            context["_inspection_lanes"] += jb_inspect.parse_inspection_lanes({"lanes": [
+                {"id": "eap", "ide": "PyCharm EAP", "include": ["eap/**/*.py"]},
+            ]})
+            self.assertIsNone(jb_inspect.repository_preparation_sdk_table(context))
+
     def test_ambiguous_python_lanes_do_not_reuse_top_level_sdk_selection(self):
         context = {"ide_config_dir": "/unrelated", "_inspection_lanes": jb_inspect.parse_inspection_lanes({"lanes": [
             {"id": "one", "ide": "PyCharm", "include": ["one/**/*.py"]},

@@ -1079,6 +1079,9 @@ def repository_preparation_sdk_table(context: dict[str, Any]) -> Path | None:
             return None
         selection = resolve_ide_selection({"ide": candidates[0].ide})
         config_dir = selection.config_dir if selection else None
+    override = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
+    if override:
+        config_dir = Path(override).expanduser().resolve()
     return Path(config_dir) / "options" / "jdk.table.xml" if config_dir else None
 
 
