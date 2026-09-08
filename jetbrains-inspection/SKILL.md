@@ -110,8 +110,9 @@ repository policy and ask when the sharing decision remains unclear.
 ## Before The First Inspection
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
-repository command in the exact linked worktree you plan to inspect. The
-preferred public command for opening that worktree is:
+repository command in the exact linked worktree through the lifecycle helper,
+which performs preparation before opening it. The preferred public command for
+preparing and opening that worktree is:
 
 ```bash
 uv run "$HELPER" open-worktree --repo "$PWD"
@@ -202,8 +203,8 @@ Command model:
 - `list-projects`: discover plugin-visible projects only.
 - `resolve-route`: probe for an already-open exact route; it does not open or
   inspect.
-- `open-worktree`: preferred public command; open and claim the exact
-  worktree; it does not inspect.
+- `open-worktree`: preferred public command; run configured repository
+  preparation, then open and claim the exact worktree; it does not inspect.
 - `prepare-worktree` and `prepare`: backward-compatible aliases for
   `open-worktree`.
 - `inspect`: open if needed, inspect, fetch problems, and clean up

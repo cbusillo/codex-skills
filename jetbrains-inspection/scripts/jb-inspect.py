@@ -685,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--prepare-timeout-ms", type=int, default=DEFAULT_PREPARE_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--keep-warm", action="store_true", help="Leave helper-opened projects open after inspect or inspect-closeout.")
-    for name in ("agent-inspect", "inspect", "inspect-closeout"):
+    for name in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument(
             "--repository-preparation-timeout-ms",
             type=int,
@@ -3513,7 +3513,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             context.get("repository_preparation"),
             target_worktree=str(repository_preparation_target(context)),
         )
-    elif command in {"agent", "run", "closeout", ""}:
+    elif command in {"open-worktree", "agent", "run", "closeout", ""}:
         repository_preparation = run_repository_preparation(args, context)
     else:
         repository_preparation = bounded_repository_preparation(
