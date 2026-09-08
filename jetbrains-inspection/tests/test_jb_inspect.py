@@ -619,10 +619,92 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         self.assertTrue(args.skip_preparation)
         self.assertTrue(args.force_preparation)
 
-        open_args = parser.parse_args(["open-worktree"])
-        self.assertFalse(hasattr(open_args, "repository_preparation_timeout_ms"))
-        self.assertFalse(hasattr(open_args, "skip_preparation"))
-        self.assertFalse(hasattr(open_args, "force_preparation"))
+        for command in ("open-worktree", "prepare-worktree", "prepare"):
+            with self.subTest(command=command):
+                open_args = jb_inspect.parse_cli_args(
+                    parser,
+                    [
+                        command,
+                        "--repository-preparation-timeout-ms",
+                        "2345",
+                        "--no-repository-preparation",
+                        "--force-refresh-preparation",
+                    ],
+                )
+                self.assertEqual(open_args.command, "open-worktree")
+                self.assertEqual(open_args.repository_preparation_timeout_ms, 2345)
+                self.assertTrue(open_args.skip_preparation)
+                self.assertTrue(open_args.force_preparation)
+
+    def test_open_worktree_prepares_once_before_route_discovery(self):
+        context = {
+            "worktree_root": "/tmp/repo",
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        prepared_state = {
+            "configured": True,
+            "execution_state": jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+        }
+        route = {
+            "base_path": "/tmp/repo",
+            "project_instance_id": "session:1",
+            "project_key": "path:/tmp/repo",
+            "session_id": "session",
+        }
+
+        parser = jb_inspect.build_parser()
+        for command in ("open-worktree", "prepare-worktree", "prepare"):
+            with self.subTest(command=command):
+                events = []
+
+                def prepare(_args, _context):
+                    events.append("repository_preparation")
+                    return prepared_state
+
+                def discover(_args, _context):
+                    events.append("route_discovery")
+                    return route
+
+                with (
+                    patch.object(jb_inspect, "run_repository_preparation", side_effect=prepare) as run_preparation,
+                    patch.object(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
+                    patch.object(jb_inspect, "find_exact_route", side_effect=discover),
+                    patch.object(jb_inspect, "ensure_exact_worktree"),
+                    patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
+                    patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", return_value={"ready": True}),
+                    patch.object(jb_inspect, "write_lease"),
+                    patch.object(jb_inspect, "remove_lease"),
+                ):
+                    result = jb_inspect.command_prepare(
+                        jb_inspect.parse_cli_args(parser, [command, "--repo", "/tmp/repo"]),
+                        context,
+                    )
+
+                self.assertEqual(events, ["repository_preparation", "route_discovery"])
+                run_preparation.assert_called_once()
+                self.assertEqual(
+                    result["repository_preparation"]["execution_state"],
+                    jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED,
+                )
+
+    def test_claim_worktree_does_not_run_repository_preparation(self):
+        context = {
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": jb_inspect.REPOSITORY_PREPARATION_NOT_RUN,
+            },
+        }
+        with (
+            patch.object(jb_inspect, "run_repository_preparation") as run_preparation,
+            patch.object(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
+        ):
+            result = jb_inspect.command_claim(Namespace(command="claim"), context)
+
+        run_preparation.assert_not_called()
+        self.assertEqual(result["status"], "claimed")
 
     def test_trusted_preparation_runs_in_exact_worktree_and_writes_receipt(self):
         temporary, root = self.make_git_worktree()
