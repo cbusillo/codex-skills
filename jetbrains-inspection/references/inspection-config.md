@@ -39,11 +39,13 @@ Optional-lane failures remain visible without changing the required-lane
 aggregate. When `lanes` is absent, the existing single-IDE path remains
 unchanged.
 
-When `qualityGate.inspection.prepare` is configured, `agent-inspect`, `inspect`,
-and `inspect-closeout` run that exact repository command in the exact target
-worktree before IDE lifecycle open or claim. Automatic execution is allowed
-only below a configured trusted auto-open root; an untrusted root returns an
-actionable manual-preparation result and never runs repository-controlled argv.
+When `qualityGate.inspection.prepare` is configured, `open-worktree`,
+`agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository
+command in the exact target worktree before IDE lifecycle open or claim.
+`claim-worktree` and read-only commands do not run preparation. Automatic
+execution is allowed only below a configured trusted auto-open root; an
+untrusted root returns an actionable manual-preparation result and never runs
+repository-controlled argv.
 The helper uses `shlex`-validated argv with `shell=False`, a dedicated bounded
 `--repository-preparation-timeout-ms`, and a recursion guard. It snapshots Git
 status plus the worktree's index bytes before and after. Nonzero exit, timeout,
