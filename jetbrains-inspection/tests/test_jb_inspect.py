@@ -7350,6 +7350,393 @@ class AgentInspectContractTest(unittest.TestCase):
         self.assertEqual(jb_inspect.classify_run_exit({"status": "error"}), 1)
 
 
+class InspectionStageDiagnosticsTest(unittest.TestCase):
+    @staticmethod
+    def failure(source, outcome, stage, elapsed_ms, run_elapsed_ms, stack=None):
+        return {
+            "source": source,
+            "outcome": outcome,
+            "inspection_stage_at_failure": stage,
+            "inspection_stage_elapsed_ms": elapsed_ms,
+            "inspection_run_elapsed_ms": run_elapsed_ms,
+            "dumb_mode": False,
+            "inspection_worker_thread": "inspection-worker",
+            "inspection_worker_stack": stack or ["inspection-worker-frame"],
+        }
+
+    @staticmethod
+    def compact(payload):
+        jb_inspect.apply_verdict(payload)
+        return jb_inspect.compact_agent_result_payload(payload, jb_inspect.classify_run_exit(payload))
+
+    def test_wait_command_carries_stage_and_primary_failure_into_agent_diagnostic(self):
+        route = {"project_key": "path:/repo", "session_id": "session", "port": 63342}
+        wait_body = {
+            "status": "timed_out",
+            "completion_reason": "timeout",
+            "timed_out": True,
+            "inspection_in_progress": True,
+            "inspection_run_id": 41,
+            "inspection_stage": "smart_wait",
+            "inspection_stage_elapsed_ms": 3_000,
+            "inspection_run_elapsed_ms": 5_000,
+            "inspection_stage_history": [{"stage": "sync", "elapsed_ms": 2_000}],
+            "inspection_failure_diagnostic": self.failure(
+                "wait_timeout", "timeout", "smart_wait", 3_000, 5_000
+            ),
+        }
+
+        with (
+            patch.object(jb_inspect, "resolve_route", return_value=route),
+            patch.object(jb_inspect, "call_contextual_endpoint", return_value=wait_body),
+        ):
+            result = jb_inspect.command_wait(
+                helper_args(timeout_ms=5_000, poll_ms=1_000),
+                {"scope": "changed_files"},
+            )
+
+        compact = jb_inspect.compact_agent_result_payload(result, 1)
+        diagnostic = compact["diagnostic"]
+        self.assertEqual(diagnostic["inspection_stage_run_id"], 41)
+        self.assertEqual(diagnostic["inspection_stage"], "smart_wait")
+        self.assertEqual(diagnostic["inspection_stage_history"], [{"stage": "sync", "elapsed_ms": 2_000}])
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["source"], "wait_timeout")
+        self.assertNotIn("inspection_stage_index", json.dumps(compact))
+
+    def test_capture_deadline_is_read_from_raw_capture_diagnostic_without_flattening_input(self):
+        capture_failure = self.failure(
+            "capture_deadline", "timeout", "result_settling", 4_000, 14_000
+        )
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "raw": {
+                "inspection_run_id": 42,
+                "inspection_stage": "result_settling",
+                "inspection_stage_elapsed_ms": 4_000,
+                "inspection_run_elapsed_ms": 14_000,
+                "capture_diagnostic": {"inspection_failure_diagnostic": capture_failure},
+            },
+        }
+
+        compact = self.compact(payload)
+
+        diagnostic = compact["diagnostic"]
+        self.assertEqual(diagnostic["inspection_stage_run_id"], 42)
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"], capture_failure)
+        self.assertEqual(
+            payload["raw"]["capture_diagnostic"]["inspection_failure_diagnostic"],
+            capture_failure,
+        )
+        self.assertNotIn("capture_diagnostic", diagnostic)
+
+    def test_terminal_status_supplies_history_while_wait_timeout_remains_primary(self):
+        wait_failure = self.failure("wait_timeout", "timeout", "native_execute", 8_000, 18_000)
+        cancel_failure = self.failure("cancellation", "cancelled", "native_execute", 9_000, 19_000)
+        payload = {
+            "status": "timed_out",
+            "trigger": {"inspection_run_id": 43},
+            "wait": {
+                "inspection_run_id": 43,
+                "inspection_stage": "native_execute",
+                "inspection_run_elapsed_ms": 18_000,
+                "inspection_failure_diagnostic": wait_failure,
+            },
+            "cancellation": {
+                "expected_inspection_run_id": 43,
+                "response": {
+                    "inspection_run_id": 43,
+                    "inspection_failure_diagnostic": cancel_failure,
+                },
+                "last_status": {
+                    "inspection_run_id": 43,
+                    "inspection_stage": "native_execute",
+                    "inspection_stage_elapsed_ms": 9_500,
+                    "inspection_run_elapsed_ms": 19_500,
+                    "inspection_stage_history": [
+                        {"stage": "sync", "elapsed_ms": 1_000},
+                        {"stage": "smart_wait", "elapsed_ms": 2_000},
+                    ],
+                    "inspection_terminal_outcome": "cancelled",
+                    "inspection_failure_diagnostic": wait_failure,
+                    "inspection_failure_history": [wait_failure, cancel_failure],
+                },
+            },
+        }
+
+        diagnostic = self.compact(payload)["diagnostic"]
+
+        self.assertEqual(diagnostic["inspection_run_elapsed_ms"], 19_500)
+        self.assertEqual(diagnostic["inspection_terminal_outcome"], "cancelled")
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["source"], "wait_timeout")
+        self.assertEqual(
+            [entry["source"] for entry in diagnostic["inspection_failure_history"]],
+            ["wait_timeout", "cancellation"],
+        )
+
+    def test_diagnostics_never_cross_an_explicit_run_change(self):
+        replacement_failure = self.failure(
+            "capture_deadline", "timeout", "publish", 10_000, 60_000
+        )
+        payload = jb_inspect.inspection_run_changed_result(
+            {"project_key": "path:/repo"},
+            {"inspection_run_id": 44},
+            {
+                "inspection_run_id": 45,
+                "inspection_stage": "publish",
+                "inspection_run_elapsed_ms": 60_000,
+                "inspection_terminal_outcome": "completed",
+                "inspection_failure_diagnostic": replacement_failure,
+            },
+        )
+
+        compact = self.compact(payload)
+        diagnostic = compact["diagnostic"]
+
+        self.assertEqual(compact["identity"]["inspection_run_id"], 45)
+        self.assertEqual(diagnostic["inspection_stage_run_id"], 45)
+        self.assertEqual(diagnostic["inspection_stage"], "publish")
+        self.assertEqual(diagnostic["inspection_run_elapsed_ms"], 60_000)
+        self.assertEqual(diagnostic["inspection_terminal_outcome"], "completed")
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["source"], "capture_deadline")
+
+    def test_inspection_failure_wrapper_preserves_the_nested_run_identity(self):
+        payload = {
+            "status": "error",
+            "error_reason": "inspection_api_http_error",
+            "inspection_failure": {
+                "evidence_ids": {"inspection_run_id": 46},
+                "wait": {
+                    "inspection_run_id": 46,
+                    "inspection_stage": "exact_proof",
+                    "inspection_run_elapsed_ms": 12_000,
+                },
+            },
+        }
+
+        compact = self.compact(payload)
+
+        self.assertIsNone(compact["identity"]["inspection_run_id"])
+        self.assertEqual(compact["diagnostic"]["inspection_stage_run_id"], 46)
+        self.assertEqual(compact["diagnostic"]["inspection_stage"], "exact_proof")
+
+    def test_retry_and_lane_diagnostics_keep_each_run_separate(self):
+        first_failure = self.failure("capture_deadline", "timeout", "result_settling", 5_000, 15_000)
+        single_payload = {
+            "status": "clean",
+            "inspection_attribution": {"inspection_run_id": 48},
+            "inspection_stage": "publish",
+            "inspection_run_elapsed_ms": 8_000,
+            "inspection_terminal_outcome": "completed",
+            "internal_retries": [
+                {
+                    "inspection_run_id": 47,
+                    "inspection_stage": "result_settling",
+                    "inspection_run_elapsed_ms": 15_000,
+                    "inspection_failure_diagnostic": first_failure,
+                }
+            ],
+        }
+        single_diagnostic = self.compact(single_payload)["diagnostic"]
+        self.assertEqual(
+            [attempt["inspection_run_id"] for attempt in single_diagnostic["inspection_attempts"]],
+            [47, 48],
+        )
+        self.assertEqual(
+            single_diagnostic["inspection_attempts"][0]["inspection_failure_diagnostic"]["source"],
+            "capture_deadline",
+        )
+
+        lane_payload = {
+            "status": "inspection_lanes_unknown",
+            "lane_selection": {"scope": "files"},
+            "lane_results": [
+                {
+                    "id": "python",
+                    "required": True,
+                    "verdict": "UNKNOWN",
+                    "bucket": "capture_not_ready",
+                    "status": "results_available",
+                    "retry_policy": {"retry": True, "max_attempts": 1, "wait_ms": 1_000},
+                    "evidence_ids": {"inspection_run_id": 49},
+                    "wait": {
+                        "inspection_run_id": 49,
+                        "inspection_stage": "native_execute",
+                        "inspection_run_elapsed_ms": 9_000,
+                        "inspection_stage_history": [
+                            {"stage": "sync", "elapsed_ms": index}
+                            for index in range(12)
+                        ],
+                        "inspection_failure_diagnostic": self.failure(
+                            "wait_timeout",
+                            "timeout",
+                            "native_execute",
+                            8_000,
+                            9_000,
+                            stack=[f"lane-frame-{index} token=lane-secret" for index in range(70)],
+                        ),
+                    },
+                    "diagnostic": {
+                        "error_reason": "capture_not_ready",
+                        "inspection_run_id": 999,
+                        "inspection_stage": "publish",
+                        "inspection_run_elapsed_ms": 99_000,
+                    },
+                    "capture_diagnostic": {
+                        "capture_complete": False,
+                        "inspection_failure_diagnostic": self.failure(
+                            "capture_deadline", "timeout", "publish", 9_000, 10_000
+                        ),
+                    },
+                },
+                {
+                    "id": "jvm",
+                    "required": True,
+                    "verdict": "GREEN",
+                    "bucket": "clean",
+                    "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0},
+                    "evidence_ids": {"inspection_run_id": 50},
+                    "diagnostic": {
+                        "inspection_run_id": 50,
+                        "inspection_stage": "publish",
+                        "inspection_run_elapsed_ms": 7_000,
+                        "inspection_terminal_outcome": "completed",
+                    },
+                },
+            ],
+        }
+
+        lanes = jb_inspect.compact_multi_lane_agent_result_payload(lane_payload, 1)["lanes"]
+        self.assertEqual(lanes[0]["diagnostic"]["inspection_stage_run_id"], 49)
+        self.assertEqual(lanes[0]["diagnostic"]["inspection_stage"], "native_execute")
+        self.assertEqual(lanes[0]["diagnostic"]["error_reason"], "capture_not_ready")
+        self.assertEqual(lanes[0]["status"], "results_available")
+        self.assertEqual(lanes[0]["capture_diagnostic"], {"capture_complete": False})
+        self.assertEqual(len(lanes[0]["diagnostic"]["inspection_stage_history"]), 8)
+        self.assertEqual(
+            len(lanes[0]["diagnostic"]["inspection_failure_diagnostic"]["inspection_worker_stack"]),
+            64,
+        )
+        self.assertNotIn("lane-secret", json.dumps(lanes[0]))
+        self.assertEqual(lanes[1]["diagnostic"]["inspection_stage_run_id"], 50)
+        self.assertEqual(lanes[1]["diagnostic"]["inspection_stage"], "publish")
+
+    def test_stage_diagnostics_keep_established_run_id_provenance(self):
+        payload = {
+            "command": "inspect-closeout",
+            "status": "clean",
+            "inspection_attribution": {"inspection_run_id": "61"},
+            "inspection_stage": "publish",
+            "inspection_run_elapsed_ms": 8_000,
+        }
+        retry = jb_inspect.compact_retry_result(payload, 0)
+        logged = jb_inspect.logged_attempt_summary(payload, 0, terminal=True)
+        record = jb_inspect.outcome_log_record(payload, 1)
+        compact = self.compact(payload)
+        lane_record = jb_inspect.outcome_log_record(
+            {
+                "command": "inspect-closeout",
+                "status": "clean",
+                "lane_results": [
+                    {
+                        "id": "python",
+                        "evidence_ids": {"inspection_run_id": "62"},
+                        "inspection_stage": "publish",
+                        "inspection_run_elapsed_ms": 9_000,
+                    }
+                ],
+            },
+            1,
+        )
+
+        for summary in (retry, logged, record):
+            self.assertEqual(summary["inspection_run_id"], "61")
+            self.assertEqual(summary["inspection_stage_run_id"], 61)
+        self.assertEqual(compact["identity"]["inspection_run_id"], "61")
+        self.assertEqual(compact["diagnostic"]["inspection_stage_run_id"], 61)
+        self.assertEqual(lane_record["inspection_lanes"][0]["inspection_run_id"], "62")
+        self.assertEqual(lane_record["inspection_lanes"][0]["inspection_stage_run_id"], 62)
+
+    def test_wait_and_cancel_failures_form_bounded_history_without_plugin_history(self):
+        wait_failure = self.failure("wait_timeout", "timeout", "native_execute", 8_000, 18_000)
+        cancel_failure = self.failure("cancellation", "cancelled", "native_execute", 9_000, 19_000)
+        payload = {
+            "status": "timed_out",
+            "trigger": {"inspection_run_id": 51},
+            "wait": {
+                "inspection_run_id": 51,
+                "inspection_failure_diagnostic": wait_failure,
+            },
+            "cancellation": {
+                "expected_inspection_run_id": 51,
+                "response": {"inspection_failure_diagnostic": cancel_failure},
+            },
+        }
+
+        diagnostic = self.compact(payload)["diagnostic"]
+
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["source"], "wait_timeout")
+        self.assertEqual(
+            [entry["source"] for entry in diagnostic["inspection_failure_history"]],
+            ["wait_timeout", "cancellation"],
+        )
+
+    def test_durable_records_bound_and_redact_stage_diagnostics(self):
+        stack = [
+            f"frame-{index} token=top-secret at /Users/example/private/File{index}.kt:12"
+            for index in range(80)
+        ]
+        primary = self.failure(
+            "wait_timeout", "timeout", "native_execute", 30_000, 40_000, stack=stack
+        )
+        cancellation = self.failure(
+            "cancellation", "cancelled", "native_execute", 31_000, 41_000
+        )
+        payload = {
+            "command": "inspect-closeout",
+            "status": "timed_out",
+            "timed_out": True,
+            "context": {"client_run_id": "stage-diagnostic-record"},
+            "inspection_attribution": {"inspection_run_id": 51},
+            "inspection_stage": "native_execute",
+            "inspection_stage_elapsed_ms": 31_000,
+            "inspection_run_elapsed_ms": 41_000,
+            "inspection_stage_history": [
+                {"stage": stage, "elapsed_ms": index * 1_000}
+                for index, stage in enumerate(
+                    [
+                        "sync",
+                        "smart_wait",
+                        "python_sdk_readiness",
+                        "native_configure",
+                        "native_execute",
+                        "exact_proof",
+                        "result_settling",
+                        "publish",
+                        "sync",
+                        "smart_wait",
+                    ]
+                )
+            ],
+            "inspection_failure_diagnostic": primary,
+            "inspection_failure_history": [primary, cancellation, primary, cancellation],
+        }
+        jb_inspect.apply_verdict(payload)
+
+        record = jb_inspect.outcome_log_record(payload, 1)
+        serialized = json.dumps(record)
+
+        self.assertEqual(record["inspection_run_id"], 51)
+        self.assertEqual(len(record["inspection_stage_history"]), 8)
+        self.assertEqual(len(record["inspection_failure_history"]), 3)
+        self.assertEqual(len(record["inspection_failure_diagnostic"]["inspection_worker_stack"]), 64)
+        self.assertEqual(record["inspection_failure_diagnostic"]["source"], "wait_timeout")
+        self.assertNotIn("top-secret", serialized)
+        self.assertNotIn("/Users/example/private", serialized)
+        self.assertIn("<redacted>", serialized)
+        self.assertIn("<path:sha256:", serialized)
+
+
 class ClassificationTest(unittest.TestCase):
     def test_clean_run_exits_zero(self):
         self.assertEqual(jb_inspect.classify_run_exit({"status": "clean"}), 0)
@@ -12237,6 +12624,8 @@ class PythonSdkFailureReportingTests(unittest.TestCase):
         for suffix, bucket in [
             ("sdk_conflict", "environment_blocked"),
             ("existing_sdk_incomplete", "environment_blocked"),
+            ("existing_sdk_changed", "environment_blocked"),
+            ("persistence_failed", "tool_bug"),
             ("inspection_in_progress", "environment_blocked"),
             ("session_drift", "route_not_ready"),
             ("token_mismatch", "route_not_ready"),
@@ -12249,6 +12638,15 @@ class PythonSdkFailureReportingTests(unittest.TestCase):
                 actual = jb_inspect.outcome_bucket({}, "python_sdk_preparation_" + suffix)
                 self.assertEqual(actual, bucket)
                 self.assertNotIn(actual, jb_inspect.UNKNOWN_RETRY_BUCKETS)
+
+
+    def test_worktree_mutation_guidance_preserves_user_and_agent_edits(self):
+        guidance = jb_inspect.next_action_for_unknown("worktree_mutation_detected", {})
+
+        self.assertIn("Inspect the mutation evidence", guidance)
+        self.assertIn("preserve user and agent edits", guidance)
+        self.assertIn("coordinate same-worktree writers", guidance)
+        self.assertNotIn("IDE-created", guidance)
 
 
 class ScopedLeaseCleanupTests(unittest.TestCase):
