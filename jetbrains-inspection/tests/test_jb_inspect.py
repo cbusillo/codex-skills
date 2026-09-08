@@ -450,7 +450,9 @@ class BuildContextTest(unittest.TestCase):
         preparation = context["repository_preparation"]
         argv = context["_repository_preparation_argv"]
         self.assertEqual(preparation["kind"], "python")
-        self.assertEqual(preparation["required_generated_state"], [".venv", ".idea"])
+        self.assertEqual(preparation["required_generated_state"], [
+            ".venv", ".idea", ".idea/launchplane.iml", ".idea/modules.xml", ".idea/misc.xml",
+        ])
         self.assertEqual(argv[:2], ["uv", "run"])
         self.assertEqual(Path(argv[2]).name, "prepare-python-project.py")
         self.assertEqual(
@@ -776,6 +778,87 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             second = jb_inspect.repository_preparation_command_hash(argv)
 
         self.assertNotEqual(first, second)
+
+    def test_sdk_table_changes_invalidate_preparation_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            helper = Path(temporary) / "prepare-python-project.py"
+            helper.write_text("pass\n", encoding="utf-8")
+            table = Path(temporary) / "jdk.table.xml"
+            argv = ["uv", "run", str(helper), "--sdk-table", str(table)]
+            absent = jb_inspect.repository_preparation_command_hash(argv)
+            table.write_text("<application />", encoding="utf-8")
+            present = jb_inspect.repository_preparation_command_hash(argv)
+            self.assertNotEqual(absent, present)
+            table.write_text("<application><component /></application>", encoding="utf-8")
+            self.assertNotEqual(present, jb_inspect.repository_preparation_command_hash(argv))
+
+    def test_prepared_model_content_changes_invalidate_receipt_snapshot(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        path = root / "model.iml"
+        context = self.make_context(root, ["true"], generated=["model.iml"])
+        path.write_text("first", encoding="utf-8")
+        first = jb_inspect.repository_preparation_generated_state_snapshot(context)
+        path.write_text("other", encoding="utf-8")
+        self.assertNotEqual(first, jb_inspect.repository_preparation_generated_state_snapshot(context))
+        path.unlink()
+        self.assertFalse(jb_inspect.repository_preparation_generated_state_snapshot(context)["all_present"])
+
+    def test_structured_preparation_passes_only_selected_ide_sdk_table(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        script = root / "prepare-python-project.py"
+        script.write_text("import sys; print(sys.argv[1:])\n", encoding="utf-8")
+        context = self.make_context(root, [sys.executable, "-u", str(script)])
+        context["repository_preparation"]["kind"] = "python"
+        context["ide_config_dir"] = str(root / "selected-ide")
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
+            result = jb_inspect.run_repository_preparation(self.prep_args(), context)
+        self.assertIn("--sdk-table", result["command"])
+        self.assertIn(str(root / "selected-ide/options/jdk.table.xml"), result["command"])
+
+    def test_lane_flow_resolves_python_sdk_table_before_shared_preparation(self):
+        temporary, root = self.make_git_worktree()
+        self.addCleanup(temporary.cleanup)
+        script = root / "prepare-python-project.py"
+        script.write_text("import sys; print(sys.argv[1:])\n", encoding="utf-8")
+        selected = root / "example.py"
+        selected.write_text("value = 1\n", encoding="utf-8")
+        context = self.make_context(root, [sys.executable, "-u", str(script)])
+        context["repository_preparation"]["kind"] = "python"
+        context["_inspection_lanes"] = jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+            {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]},
+        ]})
+        context["scope"] = "files"
+        args = self.prep_args(scope="files", files=[str(selected)], max_files=None, profile="")
+        seen = []
+
+        def inspect(_args, lane_context):
+            seen.append(lane_context["repository_preparation"])
+            return {"status": "clean", "total_problems": 0, "problems": []}
+
+        def resolve(selection_context):
+            if selection_context.get("ide") == "PyCharm":
+                return Namespace(config_dir=root / "pycharm", app_path=None, app_name=None, public=lambda: {})
+            return None
+
+        with (
+            patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}),
+            patch.object(jb_inspect, "resolve_ide_selection", side_effect=resolve),
+            patch.object(jb_inspect, "run_prepared_inspection", side_effect=inspect),
+        ):
+            jb_inspect.run_configured_inspection_lanes(args, context)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["execution_state"], jb_inspect.REPOSITORY_PREPARATION_SUCCEEDED)
+        self.assertIn(str(root / "pycharm/options/jdk.table.xml"), seen[0]["command"])
+
+    def test_ambiguous_python_lanes_do_not_reuse_top_level_sdk_selection(self):
+        context = {"ide_config_dir": "/unrelated", "_inspection_lanes": jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "one", "ide": "PyCharm", "include": ["one/**/*.py"]},
+            {"id": "two", "ide": "PyCharm EAP", "include": ["two/**/*.py"]},
+        ]})}
+        self.assertIsNone(jb_inspect.repository_preparation_sdk_table(context))
 
     @unittest.skipUnless(os.name == "posix", "process-group timeout coverage requires POSIX")
     def test_timeout_kills_descendants_that_inherit_output_pipes(self):

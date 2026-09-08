@@ -992,6 +992,9 @@ def parse_structured_repository_preparation(
         argv.append("--sync")
     for extra in normalized_extras:
         argv.extend(("--extra", extra))
+    generated_state = list(dict.fromkeys([
+        *generated_state, ".venv", f".idea/{module_name}.iml", ".idea/modules.xml", ".idea/misc.xml",
+    ]))
     return {
         "configured": True,
         "command": shlex.join(argv),
@@ -1063,16 +1066,39 @@ def repository_preparation_target(context: dict[str, Any]) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def repository_preparation_sdk_table(context: dict[str, Any]) -> Path | None:
+    config_dir = context.get("ide_config_dir")
+    lanes = configured_inspection_lanes(context)
+    if lanes:
+        python_lanes = [
+            lane for lane in lanes
+            if (product := product_for_selector(lane.ide)) is not None and product.key == "pycharm"
+        ]
+        candidates = python_lanes or lanes
+        if len(candidates) != 1:
+            return None
+        selection = resolve_ide_selection({"ide": candidates[0].ide})
+        config_dir = selection.config_dir if selection else None
+    return Path(config_dir) / "options" / "jdk.table.xml" if config_dir else None
+
+
 def repository_preparation_command_hash(argv: list[str]) -> str:
     helper_sha256 = None
+    sdk_table_sha256 = None
     if len(argv) >= 3 and Path(argv[2]).name == "prepare-python-project.py":
         try:
             helper_sha256 = hashlib.sha256(Path(argv[2]).read_bytes()).hexdigest()
         except OSError:
             helper_sha256 = "unavailable"
+        if "--sdk-table" in argv:
+            try:
+                sdk_table = Path(argv[argv.index("--sdk-table") + 1])
+                sdk_table_sha256 = hashlib.sha256(sdk_table.read_bytes()).hexdigest()
+            except (OSError, IndexError):
+                sdk_table_sha256 = "unavailable"
     return stable_value_hash(
         json.dumps(
-            {"argv": argv, "helper_sha256": helper_sha256},
+            {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -1132,6 +1158,11 @@ def repository_preparation_generated_state_snapshot(context: dict[str, Any]) -> 
             "kind": "directory" if path.is_dir() else "file" if path.is_file() else "other",
             "size": stat.st_size if path.is_file() else None,
         }
+        if path.is_file():
+            try:
+                entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                entry.update(exists=False, reason="unreadable")
         entries.append({key: value for key, value in entry.items() if value is not None})
     return {"paths": entries, "all_present": all(entry.get("exists") is True for entry in entries)}
 
@@ -1277,6 +1308,11 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     argv = context.get("_repository_preparation_argv")
     if not isinstance(argv, list) or not argv:
         raise repository_preparation_config_error("Repository preparation command validation did not produce argv.")
+    if state.get("kind") == "python":
+        sdk_table = repository_preparation_sdk_table(context)
+        if sdk_table is not None:
+            argv = [*argv, "--sdk-table", str(sdk_table)]
+            preparation["command"] = shlex.join(argv)
     preparation["command_sha256"] = repository_preparation_command_hash(argv)
     preparation["config_sha256"] = repository_preparation_config_hash(context)
     preparation["worktree_identity_hash"] = stable_value_hash(str(target))

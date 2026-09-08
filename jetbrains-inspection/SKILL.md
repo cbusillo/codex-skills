@@ -381,14 +381,17 @@ scope, never source code or a mixed scope containing source code.
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
 - A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
-  after the initial readiness wait while the IDE registers the generated
-  `.venv`. When repository preparation
+  after the initial readiness wait if IDE auto-configuration is still registering
+  the generated `.venv`. Preparation binds an existing SDK by interpreter home
+  when available; it does not register an SDK or guarantee auto-configuration.
+  When repository preparation
   succeeded and proved that the active lane project contains its generated
   `.venv`, the helper performs exactly one additional route-readiness wait,
   bounded by the internal retry timeout and gated by route-pinned status. A
   surfaced `language_sdk_missing` means that internal
   retry was unavailable or exhausted and remains a terminal configuration
-  blocker; agents must not add another retry loop.
+  blocker; agents must not add another retry loop. Register the worktree's
+  `.venv/bin/python` in the selected IDE, then rerun preparation and inspection.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.
