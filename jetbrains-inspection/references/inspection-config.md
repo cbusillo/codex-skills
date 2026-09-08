@@ -79,9 +79,13 @@ modules, refusing conflicting SDK assignments. Registration remains separate
 from the subsequent inspection proof. The operation's result is recorded as
 `python_sdk_preparation` in preparation output, compact agent diagnostics, and
 durable outcome records. A failed request is not retried automatically.
+SDK preparation has its own 60-second server deadline and a 75-second HTTP
+budget; `--prepare-timeout-ms` still controls each route/readiness wait. If a
+timed-out SDK worker has not exited, project cleanup retains the exact lease
+and reports `python_sdk_preparation_in_progress` with a deferred cleanup action.
 
-Older plugins keep the existing IDE discovery path and report
-`plugin_capability_unavailable` in this diagnostic. If registration remains
+For an otherwise eligible, helper-owned Python project, older plugins keep the
+existing IDE discovery path and report `plugin_capability_unavailable` in this diagnostic. If registration remains
 missing, configure the worktree interpreter in the selected IDE and rerun
 preparation. Read-only commands never invoke the provisioning operation.
 

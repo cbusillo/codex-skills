@@ -3526,6 +3526,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
     open_attempts: list[dict[str, Any]] = []
     close_proof: str | None = None
     preparation_stage = "route_discovery"
+    python_sdk_preparation: dict[str, Any] | None = None
     try:
         exact_route = find_exact_route(args, context)
         if exact_route is None:
@@ -3598,6 +3599,21 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
         persist_preparation_lease(
             lease,
             state="ownership_claimed" if opened_by_helper else "ownership_not_proven",
+            stage="python_sdk_preparation",
+            opened_by_helper=opened_by_helper,
+            open_method=open_method,
+            open_attempts=open_attempts,
+            route=validated_route,
+            claim_metadata=claim_metadata,
+        )
+        preparation_stage = "python_sdk_preparation"
+        python_sdk_preparation = prepare_owned_python_sdk(
+            args, context, validated_route, lease, close_proof, repository_preparation,
+        )
+        lease["python_sdk_preparation"] = python_sdk_preparation
+        persist_preparation_lease(
+            lease,
+            state="ownership_claimed" if opened_by_helper else "ownership_not_proven",
             stage="readiness_wait",
             opened_by_helper=opened_by_helper,
             open_method=open_method,
@@ -3606,9 +3622,6 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             claim_metadata=claim_metadata,
         )
         preparation_stage = "readiness_wait"
-        python_sdk_preparation = prepare_owned_python_sdk(
-            args, context, validated_route, lease, close_proof, repository_preparation,
-        )
         readiness = wait_until_route_ready_with_prepared_sdk_retry(
             args,
             context,
@@ -3642,6 +3655,8 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             prepared["readiness_barrier"] = readiness
         return prepared, lease, close_proof
     except BaseException as error:
+        if python_sdk_preparation is not None and isinstance(error, InspectError):
+            error.payload.setdefault("python_sdk_preparation", python_sdk_preparation)
         cleanup = cleanup_failed_preparation(
             lease=lease,
             route=validated_route,
@@ -3658,6 +3673,19 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             error.payload.setdefault("lease", lease_payload)
             error.payload["preparation_cleanup"] = cleanup_payload
             error.payload["preparation_lease"] = lease_payload
+        elif (
+            python_sdk_preparation is not None
+            and python_sdk_preparation.get("status") == "prepared"
+            and isinstance(error, Exception)
+        ):
+            raise InspectError(
+                "Project preparation failed after the Python SDK preparation stage.",
+                3,
+                {"error_reason": "helper_plugin_error", "error_type": type(error).__name__,
+                 "error_message": str(error), "python_sdk_preparation": python_sdk_preparation,
+                 "preparation_stage": preparation_stage, "context": public_context(context),
+                 "cleanup": public_payload(cleanup), "lease": public_lease(lease)},
+            ) from error
         raise
 
 
@@ -3893,6 +3921,16 @@ def defer_failed_preparation_cleanup(
         "preparation_failure_reason": failure_reason,
         "cleanup_next_action": "Run cleanup-helper-leases after the exact IDE route is available or the helper process exits.",
     }
+    sdk_worker_active = (
+        isinstance(cleanup_result, dict)
+        and cleanup_result.get("reason") == "python_sdk_preparation_in_progress"
+    )
+    if sdk_worker_active:
+        updates["cleanup_next_action"] = (
+            "The IDE is still finishing or cancelling Python SDK preparation. Keep this lease; "
+            "run cleanup-helper-leases for its exact lease ID after the worker exits. "
+            "Do not repeat SDK preparation or force-close the project."
+        )
     if route is not None:
         updates.update(
             {
@@ -3917,7 +3955,9 @@ def defer_failed_preparation_cleanup(
         "status": "failed" if state_write_error is not None else "deferred",
         "cleanup_deferred": state_write_error is None,
         "cleanup_failed": state_write_error is not None,
-        "reason": "preparation_cleanup_state_write_failed" if state_write_error is not None else "preparation_cleanup_pending",
+        "reason": "preparation_cleanup_state_write_failed" if state_write_error is not None else (
+            "python_sdk_preparation_in_progress" if sdk_worker_active else "preparation_cleanup_pending"
+        ),
         "lease_state": "cleanup_pending",
         "next_action": lease["cleanup_next_action"],
     }
@@ -4771,8 +4811,19 @@ def prepare_owned_python_sdk(
     ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
     if ide.get("product_code") == "WS":
         return {"status": "skipped", "reason": "non_python_ide_lane"}
+    selected_files = getattr(args, "files", None)
+    if selected_files and not any(Path(path).suffix.lower() in {".py", ".pyi", ".pyw"} for path in selected_files):
+        return {"status": "skipped", "reason": "python_not_selected"}
     if lease.get("opened_by_helper") is not True or not close_proof or not lease.get("lease_id"):
         return {"status": "skipped", "reason": "helper_ownership_not_proven"}
+    prior_cleanup = lease.get("cleanup_result")
+    if isinstance(prior_cleanup, dict) and prior_cleanup.get("reason") == "python_sdk_preparation_in_progress":
+        raise InspectError(
+            "A prior SDK worker has not been reconciled for this lease; finish exact-lease cleanup first.",
+            3, {"error_reason": "python_sdk_preparation_in_progress", "python_sdk_preparation": {
+                "status": "not_attempted", "reason": "python_sdk_preparation_in_progress",
+            }},
+        )
     version = ide.get("python_sdk_preparation_version")
     if type(version) is not int or version != 1:
         return {"status": "skipped", "reason": "plugin_capability_unavailable"}
@@ -4792,31 +4843,45 @@ def prepare_owned_python_sdk(
             route_port(route), "lifecycle/prepare-python-sdk", params, timeout=75.0,
         ).body
     except InspectError as error:
-        error.payload.setdefault("python_sdk_preparation", {
-            "status": "failed", "reason": error.payload.get("error_reason") or "preparation_request_failed",
+        original_reason = (
+            error.payload.get("error_reason") or error.payload.get("reason")
+            or error.payload.get("response_code") or "preparation_request_failed"
+        )
+        error.payload.setdefault("python_sdk_preparation", public_payload(error.payload) | {
+            "status": "failed", "reason": original_reason,
         })
+        error.payload["error_reason"] = (
+            original_reason if str(original_reason).startswith("python_sdk_preparation_")
+            else "python_sdk_preparation_request_failed"
+        )
         raise
     for field in ("project_key", "project_instance_id", "session_id"):
         if not route.get(field) or response.get(field) != route[field]:
             raise InspectError(
                 "Python SDK preparation did not confirm the exact IDE project instance.",
                 3,
-                {"error_reason": "session_drift", "session_drift": True, "field": field,
+                {"error_reason": "python_sdk_preparation_session_drift", "session_drift": True, "field": field,
                  "python_sdk_preparation": public_payload(response)},
             )
     counts = [response.get(key) for key in (
         "registered_local_python_sdk_count", "assigned_local_python_sdk_count",
     )]
+    module_count = response.get("python_module_count")
+    assigned_module_count = response.get("assigned_python_module_count")
     if (
         response.get("status") != "prepared"
+        or response.get("operation") not in ("created", "reused", "already_assigned")
         or type(response.get("sdk_preparation_version")) is not int
         or response.get("sdk_preparation_version") != 1
-        or not all(type(count) is int and count > 0 for count in counts)
+        or not all(type(count) is int and count == 1 for count in counts)
+        or type(module_count) is not int or module_count < 1
+        or type(assigned_module_count) is not int or assigned_module_count != module_count
+        or response.get("project_sdk_assigned") is not True
     ):
         raise InspectError(
             "The IDE could not prepare this worktree's Python SDK.",
             3,
-            {"error_reason": "python_sdk_preparation_failed", "python_sdk_preparation": public_payload(response)},
+            {"error_reason": "python_sdk_preparation_invalid_response", "python_sdk_preparation": public_payload(response)},
         )
     return public_payload(response)
 
@@ -5138,7 +5203,7 @@ def http_request(port: int, endpoint: str, params: dict[str, Any], timeout: floa
             return HttpResult(response.status, body, display_url)
     except urllib.error.HTTPError as error:
         body = parse_http_json(error.read(), endpoint, error.code, clean_params.get("client_run_id"))
-        if error.code == 409 and is_inspection_in_progress_conflict(body):
+        if method == "GET" and error.code == 409 and is_inspection_in_progress_conflict(body):
             return HttpResult(error.code, body, display_url)
         payload = dict(body)
         payload.setdefault("endpoint", endpoint)
@@ -6001,6 +6066,7 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
 
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
+    reason = normalize_reason(reason)
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
         preparation = repository_preparation_for_payload(payload)
         return repository_preparation_next_action(reason, preparation)
@@ -6081,6 +6147,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         if preparation_action:
             return preparation_action
         return "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+    if reason.startswith("python_sdk_preparation_"):
+        return "Inspect python_sdk_preparation and the outcome bucket for the exact SDK, ownership, transport, or plugin failure. Resolve that condition before another request; do not retry SDK preparation automatically."
     if reason == PROJECT_CONTENT_ROOTS_MISSING_REASON:
         preparation_action = repository_preparation_action(payload)
         if preparation_action:
@@ -6564,6 +6632,21 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "native_inspection_scope_empty",
             "native_inspection_scope_incomplete",
             "native_inspection_scope_mismatch",
+        }:
+            return "environment_blocked"
+        return "tool_bug"
+    if normalized.startswith("python_sdk_preparation_"):
+        suffix = normalized.removeprefix("python_sdk_preparation_")
+        if suffix in {
+            "session_drift", "not_claimed", "token_mismatch", "lease_mismatch",
+            "claim_mismatch", "ownership_changed", "route_incomplete",
+        }:
+            return "route_not_ready"
+        if suffix in {
+            "venv_configuration_missing", "interpreter_missing", "project_untrusted",
+            "unsupported", "no_python_modules", "sdk_conflict", "ambiguous_registered_sdk",
+            "existing_sdk_incomplete", "project_root_missing", "module_model_changed",
+            "in_progress", "cancelled",
         }:
             return "environment_blocked"
         return "tool_bug"
