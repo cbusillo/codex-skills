@@ -64,10 +64,12 @@ that IDE registration is still unconfirmed; inspection readiness must independen
 prove registration and assignment. The generator never edits the global SDK table.
 For direct generator use, `--sdk-table` selects the same read-only input; normal
 agent flows supply it from the resolved IDE, without repository-specific paths.
+An explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` also selects this read-only
+SDK table, keeping isolated IDE preparation consistent with its trust settings.
 For lane-configured repositories, shared Python preparation resolves the unique
 PyCharm lane before opening any project. A sole non-PyCharm lane can supply its
 own SDK table. Ambiguous lane ownership uses the provisional fallback rather
-than an unrelated top-level IDE selection.
+than an unrelated top-level IDE selection, even when a config override is set.
 
 After opening and claiming a project, the lifecycle helper uses the plugin's
 explicit Python SDK preparation operation when version 1 of that capability is
