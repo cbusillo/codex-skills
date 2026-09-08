@@ -37,8 +37,9 @@ including them in the compact `agent-inspect` diagnostic or durable outcome
 record, exposing that derived identity as `inspection_stage_run_id` so existing
 run-ID provenance remains unchanged. A later status for the same run supplies
 the terminal stage and bounded history, while the original timeout or capture
-deadline remains the primary failure. Evidence from a replacement run is
-discarded instead of being merged. Internal retry attempts and configured IDE
+deadline remains the primary failure. Evidence from a replacement run may be
+retained only when pinned to that replacement run; it is never merged into the
+expected run. Internal retry attempts and configured IDE
 lanes retain separate run IDs. Stage history is capped at eight entries, failure
 history at three entries, and worker stacks at 64 frames; durable records also
 redact token-like text and local paths.
