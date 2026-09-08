@@ -3606,6 +3606,9 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             claim_metadata=claim_metadata,
         )
         preparation_stage = "readiness_wait"
+        python_sdk_preparation = prepare_owned_python_sdk(
+            args, context, validated_route, lease, close_proof, repository_preparation,
+        )
         readiness = wait_until_route_ready_with_prepared_sdk_retry(
             args,
             context,
@@ -3633,6 +3636,7 @@ def prepare_lifecycle_details(args: argparse.Namespace, context: dict[str, Any])
             "open_method": open_method,
             "open_attempts": open_attempts,
             "claim": claim_metadata,
+            "python_sdk_preparation": python_sdk_preparation,
         }
         if isinstance(readiness, dict):
             prepared["readiness_barrier"] = readiness
@@ -4750,6 +4754,80 @@ def claim_lifecycle(
     return claim_metadata, close_proof, ownership_proven is True, claimed_route
 
 
+def prepare_owned_python_sdk(
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    route: dict[str, Any],
+    lease: dict[str, Any],
+    close_proof: str | None,
+    preparation: dict[str, Any],
+) -> dict[str, Any]:
+    if canonical_command(str(getattr(args, "command", ""))) not in {"open-worktree", "agent", "run", "closeout", ""}:
+        return {"status": "skipped", "reason": "preparation_not_requested"}
+    if preparation.get("kind") != "python" or not prepared_python_sdk_discovery_pending(
+        {"context": context, "repository_preparation": preparation}
+    ):
+        return {"status": "skipped", "reason": "local_python_environment_not_prepared"}
+    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    if ide.get("product_code") == "WS":
+        return {"status": "skipped", "reason": "non_python_ide_lane"}
+    if lease.get("opened_by_helper") is not True or not close_proof or not lease.get("lease_id"):
+        return {"status": "skipped", "reason": "helper_ownership_not_proven"}
+    version = ide.get("python_sdk_preparation_version")
+    if type(version) is not int or version != 1:
+        return {"status": "skipped", "reason": "plugin_capability_unavailable"}
+    if not all(isinstance(route.get(field), str) and route[field] for field in (
+        "project_key", "project_instance_id", "session_id",
+    )):
+        raise InspectError(
+            "Python SDK preparation requires a complete exact-project route.",
+            3, {"error_reason": "python_sdk_preparation_route_incomplete"},
+        )
+    params = route_params(args, context, route) | {
+        "lease_id": lease.get("lease_id"),
+        "close_token": close_proof,
+    }
+    try:
+        response = http_post(
+            route_port(route), "lifecycle/prepare-python-sdk", params, timeout=75.0,
+        ).body
+    except InspectError as error:
+        error.payload.setdefault("python_sdk_preparation", {
+            "status": "failed", "reason": error.payload.get("error_reason") or "preparation_request_failed",
+        })
+        raise
+    for field in ("project_key", "project_instance_id", "session_id"):
+        if not route.get(field) or response.get(field) != route[field]:
+            raise InspectError(
+                "Python SDK preparation did not confirm the exact IDE project instance.",
+                3,
+                {"error_reason": "session_drift", "session_drift": True, "field": field,
+                 "python_sdk_preparation": public_payload(response)},
+            )
+    counts = [response.get(key) for key in (
+        "registered_local_python_sdk_count", "assigned_local_python_sdk_count",
+    )]
+    if (
+        response.get("status") != "prepared"
+        or type(response.get("sdk_preparation_version")) is not int
+        or response.get("sdk_preparation_version") != 1
+        or not all(type(count) is int and count > 0 for count in counts)
+    ):
+        raise InspectError(
+            "The IDE could not prepare this worktree's Python SDK.",
+            3,
+            {"error_reason": "python_sdk_preparation_failed", "python_sdk_preparation": public_payload(response)},
+        )
+    return public_payload(response)
+
+
+def python_sdk_preparation_for_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    for candidate in (payload, payload.get("prepared"), payload.get("inspection_failure")):
+        if isinstance(candidate, dict) and isinstance(candidate.get("python_sdk_preparation"), dict):
+            return public_payload(candidate["python_sdk_preparation"])
+    return None
+
+
 def ensure_claim_route_matches(expected_route: dict[str, Any], claimed_route: dict[str, Any]) -> None:
     for field in ("session_id", "project_instance_id", "project_key"):
         expected = expected_route.get(field)
@@ -5032,6 +5110,14 @@ def identity_for_port(port: int) -> dict[str, Any]:
 
 
 def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> HttpResult:
+    return http_request(port, endpoint, params, timeout, method="GET")
+
+
+def http_post(port: int, endpoint: str, params: dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> HttpResult:
+    return http_request(port, endpoint, params, timeout, method="POST")
+
+
+def http_request(port: int, endpoint: str, params: dict[str, Any], timeout: float, *, method: str) -> HttpResult:
     clean_params = {key: str(value) for key, value in params.items() if value is not None and value != ""}
     if _ACTIVE_CLIENT_RUN_ID and "client_run_id" not in clean_params:
         clean_params["client_run_id"] = _ACTIVE_CLIENT_RUN_ID
@@ -5042,7 +5128,10 @@ def http_get(port: int, endpoint: str, params: dict[str, Any], timeout: float = 
     base_url = f"http://{LOOPBACK_HOST}:{port}/api/inspection/{endpoint}"
     request_url = f"{base_url}?{query}" if query else base_url
     display_url = f"{base_url}?{display_query}" if display_query else base_url
-    request = urllib.request.Request(request_url, headers={"Accept": "application/json"})
+    request = urllib.request.Request(
+        request_url, headers={"Accept": "application/json"}, method=method,
+        data=b"" if method == "POST" else None,
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = parse_http_json(response.read(), endpoint, response.status, clean_params.get("client_run_id"))
@@ -7007,6 +7096,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "cleanup_status": cleanup_status,
         "cleanup_reason": cleanup_reason,
         "repository_preparation": durable_repository_preparation_for_payload(public),
+        "python_sdk_preparation": python_sdk_preparation_for_payload(public),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
         "internal_attempts": ordered_internal_attempts(public),
@@ -8180,6 +8270,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
             "internal_retry_skipped": payload.get("internal_retry_skipped"),
             "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
             "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
+            "python_sdk_preparation": python_sdk_preparation_for_payload(payload),
             "unknown_log_path": payload.get("unknown_log_path"),
             "unknown_log_error": payload.get("unknown_log_error"),
             "outcome_log_path": payload.get("outcome_log_path"),
