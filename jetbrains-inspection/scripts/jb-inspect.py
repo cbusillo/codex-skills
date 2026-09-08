@@ -77,6 +77,12 @@ UNKNOWN_RETRY_WAIT_MS = 30_000
 NATIVE_BROAD_SCOPE_PROOF_VERSION = 2
 MAX_WORKTREE_MUTATION_PATHS = 25
 MAX_LANE_FILE_PATHS = 100
+MAX_INSPECTION_STAGE_HISTORY = 8
+MAX_INSPECTION_FAILURE_HISTORY = 3
+MAX_INSPECTION_WORKER_STACK = 64
+MAX_INSPECTION_WORKER_FRAME_LENGTH = 1_024
+MAX_INSPECTION_WORKER_THREAD_LENGTH = 256
+MAX_INSPECTION_ATTEMPT_DIAGNOSTICS = 4
 LANE_MUTATION_SETTLE_DELAY_MS = 5_000
 INTERNAL_RETRY_READY_TIMEOUT_MS = 90_000
 INTERNAL_RETRY_READY_STABLE_OBSERVATIONS = 3
@@ -194,6 +200,42 @@ VERDICT_SOURCE_KEYS = (
     "inspection_verdict_next_action",
     "inspection_attribution",
     "proof_failures",
+)
+INSPECTION_STAGE_VALUES = frozenset(
+    {
+        "sync",
+        "smart_wait",
+        "python_sdk_readiness",
+        "native_configure",
+        "native_execute",
+        "exact_proof",
+        "result_settling",
+        "publish",
+    }
+)
+INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed"})
+INSPECTION_FAILURE_SOURCES = frozenset({"wait_timeout", "capture_deadline", "cancellation"})
+INSPECTION_FAILURE_OUTCOMES = frozenset({"timeout", "cancelled"})
+INSPECTION_STAGE_EVIDENCE_KEYS = (
+    "inspection_stage",
+    "inspection_stage_elapsed_ms",
+    "inspection_run_elapsed_ms",
+    "inspection_stage_history",
+    "inspection_terminal_outcome",
+    "inspection_failure_diagnostic",
+    "inspection_failure_history",
+)
+INSPECTION_STAGE_RUN_ID_KEY = "inspection_stage_run_id"
+INSPECTION_DIAGNOSTIC_CHILD_KEYS = (
+    "inspection_failure",
+    "wait",
+    "status",
+    "raw",
+    "cancellation",
+    "response",
+    "last_status",
+    "capture_diagnostic",
+    "diagnostic",
 )
 SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 SEMANTIC_COVERAGE_TRUNCATED_REASON = "scope_semantic_coverage_truncated"
@@ -2261,6 +2303,7 @@ def copy_verdict_evidence(target: dict[str, Any], source: dict[str, Any]) -> Non
         "cached_problems_shown",
         "capture_incomplete_reason",
         "capture_diagnostic",
+        *INSPECTION_STAGE_EVIDENCE_KEYS,
         *VERDICT_SOURCE_KEYS,
     ):
         if key in source:
@@ -2970,7 +3013,7 @@ def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]
     wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
     attribution = result.get("inspection_attribution") if isinstance(result.get("inspection_attribution"), dict) else {}
     retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
-    return {
+    summary = {
         "attempt": attempt,
         "status": result.get("status"),
         "verdict": result.get("verdict"),
@@ -2992,6 +3035,8 @@ def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]
         "snapshot_trigger_time_ms": result.get("snapshot_trigger_time_ms"),
         "results_timestamp_ms": result.get("results_timestamp_ms"),
     }
+    summary.update(inspection_stage_diagnostics(result, positive_run_id(summary.get("inspection_run_id"))))
+    return summary
 
 
 def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -3258,6 +3303,8 @@ def inspection_run_changed_result(
         phase: observed,
     }
     copy_verdict_evidence(result, observed)
+    for key in INSPECTION_STAGE_EVIDENCE_KEYS:
+        result.pop(key, None)
     apply_verdict(result)
     return result
 
@@ -3288,6 +3335,230 @@ def positive_run_id(value: Any) -> int | None:
     if isinstance(value, str) and value.isdigit() and int(value) > 0:
         return int(value)
     return None
+
+
+def direct_inspection_run_id(payload: dict[str, Any]) -> int | None:
+    for key in ("inspection_run_id", "run_id"):
+        run_id = positive_run_id(payload.get(key))
+        if run_id is not None:
+            return run_id
+    evidence_ids = payload.get("evidence_ids") if isinstance(payload.get("evidence_ids"), dict) else {}
+    evidence_run_id = positive_run_id(evidence_ids.get("inspection_run_id"))
+    if evidence_run_id is not None:
+        return evidence_run_id
+    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+    attribution_run_id = positive_run_id(attribution.get("inspection_run_id"))
+    if attribution_run_id is not None:
+        return attribution_run_id
+    return None
+
+
+def inspection_diagnostic_payloads(payload: dict[str, Any]) -> list[tuple[dict[str, Any], int | None]]:
+    candidates: list[tuple[dict[str, Any], int | None]] = []
+    pending: list[tuple[dict[str, Any], int | None]] = [(payload, None)]
+    visited: set[int] = set()
+    while pending:
+        candidate, inherited_run_id = pending.pop(0)
+        identity = id(candidate)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        candidate_run_id = direct_inspection_run_id(candidate) or inherited_run_id
+        if candidate_run_id is None:
+            candidate_run_id = positive_run_id(candidate.get("expected_inspection_run_id"))
+        candidates.append((candidate, candidate_run_id))
+        for key in INSPECTION_DIAGNOSTIC_CHILD_KEYS:
+            child = candidate.get(key)
+            if isinstance(child, dict):
+                pending.append((child, candidate_run_id))
+    return candidates
+
+
+def inspection_diagnostic_target_run_id(payload: dict[str, Any]) -> int | None:
+    expected_run_id = positive_run_id(payload.get("expected_inspection_run_id"))
+    if expected_run_id is not None:
+        return expected_run_id
+    for candidate in (
+        payload,
+        payload.get("inspection_failure"),
+        payload.get("trigger"),
+    ):
+        if isinstance(candidate, dict):
+            run_id = direct_inspection_run_id(candidate)
+            if run_id is not None:
+                return run_id
+    observed_run_ids = {
+        run_id
+        for _, run_id in inspection_diagnostic_payloads(payload)
+        if run_id is not None
+    }
+    if len(observed_run_ids) == 1:
+        return next(iter(observed_run_ids))
+    return None
+
+
+def nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def bounded_inspection_stage_history(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    history: list[dict[str, Any]] = []
+    for entry in value[-MAX_INSPECTION_STAGE_HISTORY:]:
+        if not isinstance(entry, dict):
+            continue
+        stage = entry.get("stage")
+        elapsed_ms = nonnegative_int(entry.get("elapsed_ms"))
+        if stage not in INSPECTION_STAGE_VALUES or elapsed_ms is None:
+            continue
+        history.append({"stage": stage, "elapsed_ms": elapsed_ms})
+    return history
+
+
+def bounded_inspection_failure_diagnostic(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    source = value.get("source")
+    outcome = value.get("outcome")
+    if source not in INSPECTION_FAILURE_SOURCES or outcome not in INSPECTION_FAILURE_OUTCOMES:
+        return {}
+    diagnostic: dict[str, Any] = {"source": source, "outcome": outcome}
+    stage = value.get("inspection_stage_at_failure")
+    if stage in INSPECTION_STAGE_VALUES:
+        diagnostic["inspection_stage_at_failure"] = stage
+    for key in ("inspection_stage_elapsed_ms", "inspection_run_elapsed_ms"):
+        elapsed_ms = nonnegative_int(value.get(key))
+        if elapsed_ms is not None:
+            diagnostic[key] = elapsed_ms
+    if isinstance(value.get("dumb_mode"), bool):
+        diagnostic["dumb_mode"] = value["dumb_mode"]
+    worker_thread = value.get("inspection_worker_thread")
+    if isinstance(worker_thread, str) and worker_thread:
+        diagnostic["inspection_worker_thread"] = redact_inspection_diagnostic_text(worker_thread)[
+            :MAX_INSPECTION_WORKER_THREAD_LENGTH
+        ]
+    stack = value.get("inspection_worker_stack")
+    if isinstance(stack, list):
+        frames = [
+            redact_inspection_diagnostic_text(frame)[:MAX_INSPECTION_WORKER_FRAME_LENGTH]
+            for frame in stack
+            if isinstance(frame, str) and frame
+        ][:MAX_INSPECTION_WORKER_STACK]
+        if frames:
+            diagnostic["inspection_worker_stack"] = frames
+    return diagnostic
+
+
+def bounded_inspection_failure_history(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    history: list[dict[str, Any]] = []
+    for entry in value:
+        diagnostic = bounded_inspection_failure_diagnostic(entry)
+        if diagnostic:
+            history.append(diagnostic)
+        if len(history) >= MAX_INSPECTION_FAILURE_HISTORY:
+            break
+    return history
+
+
+def redact_inspection_diagnostic_text(value: str) -> str:
+    bearer_redacted = SENSITIVE_OUTPUT_BEARER_PATTERN.sub(
+        lambda match: f"{match.group(1)}{REDACTED}",
+        value,
+    )
+    return SENSITIVE_OUTPUT_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        bearer_redacted,
+    )
+
+
+def inspection_stage_diagnostics(payload: Any, target_run_id: int | None = None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    target_run_id = target_run_id or inspection_diagnostic_target_run_id(payload)
+    if target_run_id is None:
+        return {}
+    candidates = [
+        (index, candidate)
+        for index, (candidate, run_id) in enumerate(inspection_diagnostic_payloads(payload))
+        if run_id in {None, target_run_id}
+    ]
+
+    stage_snapshots: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
+    stage_histories: list[tuple[tuple[int, int, int], list[dict[str, Any]]]] = []
+    failure_histories: list[tuple[tuple[int, int, int], list[dict[str, Any]]]] = []
+    failure_diagnostics: list[tuple[int, dict[str, Any]]] = []
+    for index, candidate in candidates:
+        snapshot: dict[str, Any] = {}
+        stage = candidate.get("inspection_stage")
+        if stage in INSPECTION_STAGE_VALUES:
+            snapshot["inspection_stage"] = stage
+        for key in ("inspection_stage_elapsed_ms", "inspection_run_elapsed_ms"):
+            elapsed_ms = nonnegative_int(candidate.get(key))
+            if elapsed_ms is not None:
+                snapshot[key] = elapsed_ms
+        terminal_outcome = candidate.get("inspection_terminal_outcome")
+        if terminal_outcome in INSPECTION_TERMINAL_OUTCOMES:
+            snapshot["inspection_terminal_outcome"] = terminal_outcome
+        stage_history = bounded_inspection_stage_history(candidate.get("inspection_stage_history"))
+        run_elapsed_ms = snapshot.get("inspection_run_elapsed_ms", -1)
+        if stage_history:
+            stage_histories.append(((len(stage_history), run_elapsed_ms, index), stage_history))
+        if snapshot:
+            stage_snapshots.append(
+                (
+                    (
+                        1 if "inspection_terminal_outcome" in snapshot else 0,
+                        run_elapsed_ms,
+                        len(stage_history),
+                        index,
+                    ),
+                    snapshot,
+                )
+            )
+        failure = bounded_inspection_failure_diagnostic(candidate.get("inspection_failure_diagnostic"))
+        if failure:
+            failure_diagnostics.append((index, failure))
+        failure_history = bounded_inspection_failure_history(candidate.get("inspection_failure_history"))
+        if failure_history:
+            failure_elapsed_ms = max(
+                (entry.get("inspection_run_elapsed_ms", -1) for entry in failure_history),
+                default=-1,
+            )
+            failure_histories.append(((len(failure_history), failure_elapsed_ms, index), failure_history))
+
+    result: dict[str, Any] = {}
+    if stage_snapshots:
+        result.update(max(stage_snapshots, key=lambda item: item[0])[1])
+    if stage_histories:
+        result["inspection_stage_history"] = max(stage_histories, key=lambda item: item[0])[1]
+
+    failure_history = max(failure_histories, key=lambda item: item[0])[1] if failure_histories else []
+    observed_failures = [diagnostic for _, diagnostic in failure_diagnostics]
+    primary_failure = failure_history[0] if failure_history else next(
+        (diagnostic for diagnostic in observed_failures if diagnostic.get("source") != "cancellation"),
+        observed_failures[0] if observed_failures else None,
+    )
+    if primary_failure is not None:
+        result["inspection_failure_diagnostic"] = primary_failure
+    if not failure_history and primary_failure is not None:
+        failure_history = [primary_failure]
+        for failure in observed_failures:
+            if failure not in failure_history:
+                failure_history.append(failure)
+            if len(failure_history) >= MAX_INSPECTION_FAILURE_HISTORY:
+                break
+    if len(failure_history) > 1:
+        result["inspection_failure_history"] = failure_history
+    if result:
+        result[INSPECTION_STAGE_RUN_ID_KEY] = target_run_id
+    return result
 
 
 def inspection_endpoint_failure_result(
@@ -3394,11 +3665,9 @@ def recover_inspection_transport_timeout(
 
 def inspection_run_id(payload: dict[str, Any]) -> int | None:
     for key in ("inspection_run_id", "run_id"):
-        value = payload.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-        if isinstance(value, str) and value.isdigit() and int(value) > 0:
-            return int(value)
+        run_id = positive_run_id(payload.get(key))
+        if run_id is not None:
+            return run_id
     return None
 
 
@@ -5389,6 +5658,7 @@ def summarize_problems(
         "results_timestamp_ms",
         "stale_reasons",
         "capture_diagnostic",
+        *INSPECTION_STAGE_EVIDENCE_KEYS,
         *VERDICT_SOURCE_KEYS,
     ):
         if key in body:
@@ -6185,7 +6455,10 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "session_drift":
         return "Resolve the route again and rerun; the IDE/plugin session changed."
     if reason == "worktree_mutation_detected":
-        return "Inspect and remove the IDE-created worktree changes, then rerun after lifecycle cleanup leaves the exact worktree unchanged."
+        return (
+            "Inspect the mutation evidence, preserve user and agent edits, coordinate same-worktree writers, "
+            "and rerun after the worktree is stable."
+        )
     if reason.startswith("cleanup_"):
         return "Inspect lifecycle cleanup output; close helper-opened IDE projects or rerun inspect-closeout after cleanup succeeds."
     if diagnostic.get("observed_non_empty_inspection_tree") is True:
@@ -6649,7 +6922,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "venv_configuration_missing", "interpreter_missing", "project_untrusted",
             "unsupported", "no_python_modules", "sdk_conflict", "ambiguous_registered_sdk",
             "existing_sdk_incomplete", "project_root_missing", "module_model_changed",
-            "in_progress", "inspection_in_progress", "cancelled",
+            "existing_sdk_changed", "in_progress",
+            "inspection_in_progress", "cancelled",
         }:
             return "environment_blocked"
         return "tool_bug"
@@ -7051,6 +7325,7 @@ def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal:
         "snapshot_trigger_time_ms": source.get("snapshot_trigger_time_ms"),
         "results_timestamp_ms": source.get("results_timestamp_ms"),
     }
+    summary.update(inspection_stage_diagnostics(source, positive_run_id(summary.get("inspection_run_id"))))
     return {key: value for key, value in summary.items() if value not in (None, {}, [])}
 
 
@@ -7067,6 +7342,25 @@ def ordered_internal_attempts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         next_index = max(next_index, attempt_index + 1)
     attempts.append(logged_attempt_summary(payload, next_index, terminal=True))
     return attempts
+
+
+def compact_inspection_attempt_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    retries = payload.get("internal_retries") if isinstance(payload.get("internal_retries"), list) else []
+    if not retries:
+        return []
+    diagnostics: list[dict[str, Any]] = []
+    for attempt in ordered_internal_attempts(payload)[-MAX_INSPECTION_ATTEMPT_DIAGNOSTICS:]:
+        diagnostic = {
+            "terminal": attempt.get("terminal"),
+            **{
+                key: attempt.get(key)
+                for key in ("inspection_run_id", INSPECTION_STAGE_RUN_ID_KEY, *INSPECTION_STAGE_EVIDENCE_KEYS)
+                if attempt.get(key) not in (None, {}, [])
+            },
+        }
+        if len(diagnostic) > 1:
+            diagnostics.append(diagnostic)
+    return diagnostics
 
 
 def derived_cleanup_status(
@@ -7125,6 +7419,10 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
             "session_id": (lane.get("evidence_ids") or {}).get("session_id"),
             "project_instance_id": (lane.get("evidence_ids") or {}).get("project_instance_id"),
             "inspection_run_id": (lane.get("evidence_ids") or {}).get("inspection_run_id"),
+            **inspection_stage_diagnostics(
+                lane,
+                positive_run_id((lane.get("evidence_ids") or {}).get("inspection_run_id")),
+            ),
         }
         for lane in lane_results
         if isinstance(lane, dict)
@@ -7199,6 +7497,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
         "inspection_lanes": lane_summaries or None,
     }
+    record.update(inspection_stage_diagnostics(public, positive_run_id(record.get("inspection_run_id"))))
     return public, record
 
 
@@ -8316,6 +8615,31 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     proof_failures = payload.get("proof_failures")
     compact_proof_failures = [str(failure) for failure in proof_failures] if isinstance(proof_failures, list) else []
     inspection_proof = compact_inspection_proof(payload)
+    identity_run_id = attribution.get("inspection_run_id") or inspection_run_id(payload)
+    stage_pin_run_id = positive_run_id(identity_run_id) or inspection_run_id(payload)
+    stage_diagnostic = inspection_stage_diagnostics(payload, stage_pin_run_id)
+    diagnostic = {
+        "error_reason": payload.get("error_reason"),
+        "error_message": guidance_for_command(payload.get("error_message") or payload.get("error"), "agent-inspect"),
+        "hint": guidance_for_command(payload.get("hint"), "agent-inspect"),
+        "attribution_class": payload.get("attribution_class"),
+        "failure_phase": payload.get("failure_phase"),
+        "unknown_diagnosis": payload.get("unknown_diagnosis"),
+        "internal_retry_count": payload.get("internal_retry_count"),
+        "internal_retry_reason": payload.get("internal_retry_reason"),
+        "internal_retry_skipped": payload.get("internal_retry_skipped"),
+        "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
+        "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
+        "python_sdk_preparation": python_sdk_preparation_for_payload(payload),
+        "unknown_log_path": payload.get("unknown_log_path"),
+        "unknown_log_error": payload.get("unknown_log_error"),
+        "outcome_log_path": payload.get("outcome_log_path"),
+        "outcome_log_error": payload.get("outcome_log_error"),
+    }
+    diagnostic.update(stage_diagnostic)
+    attempt_diagnostics = compact_inspection_attempt_diagnostics(payload)
+    if attempt_diagnostics:
+        diagnostic["inspection_attempts"] = attempt_diagnostics
     result = {
         "schema_version": AGENT_RESULT_SCHEMA_VERSION,
         "command": "agent-inspect",
@@ -8342,26 +8666,9 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
             "ide_product_code": attribution.get("ide_product_code") or ide.get("product_code"),
             "plugin_version": attribution.get("plugin_version") or ide.get("plugin_version"),
             "plugin_build_fingerprint": attribution.get("plugin_build_fingerprint") or ide.get("plugin_build_fingerprint"),
-            "inspection_run_id": attribution.get("inspection_run_id") or inspection_run_id(payload),
+            "inspection_run_id": identity_run_id,
         },
-        "diagnostic": {
-            "error_reason": payload.get("error_reason"),
-            "error_message": guidance_for_command(payload.get("error_message") or payload.get("error"), "agent-inspect"),
-            "hint": guidance_for_command(payload.get("hint"), "agent-inspect"),
-            "attribution_class": payload.get("attribution_class"),
-            "failure_phase": payload.get("failure_phase"),
-            "unknown_diagnosis": payload.get("unknown_diagnosis"),
-            "internal_retry_count": payload.get("internal_retry_count"),
-            "internal_retry_reason": payload.get("internal_retry_reason"),
-            "internal_retry_skipped": payload.get("internal_retry_skipped"),
-            "prepared_internal_retry_count": payload.get("prepared_internal_retry_count"),
-            "prepared_internal_retry_reason": payload.get("prepared_internal_retry_reason"),
-            "python_sdk_preparation": python_sdk_preparation_for_payload(payload),
-            "unknown_log_path": payload.get("unknown_log_path"),
-            "unknown_log_error": payload.get("unknown_log_error"),
-            "outcome_log_path": payload.get("outcome_log_path"),
-            "outcome_log_error": payload.get("outcome_log_error"),
-        },
+        "diagnostic": diagnostic,
     }
     return public_payload(result)
 
@@ -8416,7 +8723,42 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
 
 
 def bounded_inspection_lane_result(lane: dict[str, Any]) -> dict[str, Any]:
-    bounded = dict(lane)
+    bounded = {
+        key: value
+        for key, value in lane.items()
+        if key not in INSPECTION_STAGE_EVIDENCE_KEYS
+    }
+    capture_diagnostic = lane.get("capture_diagnostic")
+    if isinstance(capture_diagnostic, dict):
+        bounded["capture_diagnostic"] = {
+            key: value
+            for key, value in capture_diagnostic.items()
+            if key not in INSPECTION_STAGE_EVIDENCE_KEYS
+        }
+    for key in (
+        "inspection_failure",
+        "wait",
+        "raw",
+        "cancellation",
+        "response",
+        "last_status",
+    ):
+        if isinstance(lane.get(key), dict):
+            bounded.pop(key, None)
+    existing_diagnostic = lane.get("diagnostic") if isinstance(lane.get("diagnostic"), dict) else {}
+    diagnostic = {
+        key: value
+        for key, value in existing_diagnostic.items()
+        if key not in {
+            "inspection_run_id",
+            *INSPECTION_STAGE_EVIDENCE_KEYS,
+            *INSPECTION_DIAGNOSTIC_CHILD_KEYS,
+        }
+    }
+    lane_evidence_ids = lane.get("evidence_ids") if isinstance(lane.get("evidence_ids"), dict) else {}
+    lane_run_id = positive_run_id(lane_evidence_ids.get("inspection_run_id")) or inspection_run_id(lane)
+    diagnostic.update(inspection_stage_diagnostics(lane, lane_run_id))
+    bounded["diagnostic"] = diagnostic
     for field in ("files", "relative_files"):
         values = lane.get(field) if isinstance(lane.get(field), list) else []
         bounded[field] = values[:MAX_LANE_FILE_PATHS]
@@ -8931,7 +9273,15 @@ def redact_durable_text(value: str) -> str:
     def replace_ambiguous_tail(match: re.Match[str]) -> str:
         return redact_ambiguous_spaced_path_tail(match.group("path"))
 
-    quoted_redacted = DURABLE_QUOTED_PATH_PATTERN.sub(replace_quoted, value)
+    sensitive_redacted = SENSITIVE_OUTPUT_BEARER_PATTERN.sub(
+        lambda match: f"{match.group(1)}{REDACTED}",
+        value,
+    )
+    sensitive_redacted = SENSITIVE_OUTPUT_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        sensitive_redacted,
+    )
+    quoted_redacted = DURABLE_QUOTED_PATH_PATTERN.sub(replace_quoted, sensitive_redacted)
     spaced_redacted = DURABLE_SPACED_FILE_PATH_PATTERN.sub(replace_token, quoted_redacted)
     ambiguous_redacted = DURABLE_SPACED_PATH_TAIL_PATTERN.sub(replace_ambiguous_tail, spaced_redacted)
     return DURABLE_PATH_TOKEN_PATTERN.sub(replace_token, ambiguous_redacted)

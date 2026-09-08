@@ -21,6 +21,30 @@ foreign-owned and is never cancelled. If the run changed, the helper leaves the
 newer run untouched. If the trigger/wait transport itself times out, the helper
 probes status first; an unproven or foreign active run, or unreachable status,
 keeps the owned project warm instead of closing it blindly.
+
+Current plugins report the active inspection phase as `inspection_stage`, with
+`inspection_stage_elapsed_ms`, `inspection_run_elapsed_ms`, and a chronological
+`inspection_stage_history`. Terminal status may also include
+`inspection_terminal_outcome`. Timeout, capture-deadline, and cancellation
+records use `inspection_failure_diagnostic`; when more than one was observed,
+`inspection_failure_history` repeats the primary failure first. The failure
+`source` identifies `wait_timeout`, `capture_deadline`, or `cancellation`.
+Capture-deadline evidence remains nested under
+`capture_diagnostic.inspection_failure_diagnostic` in the plugin response.
+
+The helper pins these observations to one positive `inspection_run_id` before
+including them in the compact `agent-inspect` diagnostic or durable outcome
+record, exposing that derived identity as `inspection_stage_run_id` so existing
+run-ID provenance remains unchanged. A later status for the same run supplies
+the terminal stage and bounded history, while the original timeout or capture
+deadline remains the primary failure. Evidence from a replacement run is
+discarded instead of being merged. Internal retry attempts and configured IDE
+lanes retain separate run IDs. Stage history is capped at eight entries, failure
+history at three entries, and worker stacks at 64 frames; durable records also
+redact token-like text and local paths.
+These fields diagnose where an existing run stopped. They do not authorize an
+extra retry or change the lifecycle policy.
+
 Once settled, it closes the helper-owned project normally. If indexing,
 scanning, or inspection churn remains active, the helper leaves the project warm
 and reports `cleanup.status=deferred` with `cleanup_deferred=true`. Treat that as
