@@ -295,8 +295,18 @@ def parse_args() -> argparse.Namespace:
 
 def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
-    pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
-    return {"ok": True, "repo": repo, "pr": normalize_pr(pr)}
+    reader = github_read_core.GitHubReader(
+        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=CURRENT_OPERATION,
+        cache_enabled=True,
+    )
+    try:
+        pr = reader.get_json(f"/repos/{repo}/pulls/{number}", step="pull_request")
+    except github_read_core.GitHubReadError as exc:
+        raise PrHelperError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
+    if not isinstance(pr, dict):
+        raise PrHelperError("PR metadata response was not an object", diagnostics=reader.diagnostics(), repo=repo, pr=number)
+    record_retry_summary(reader.retry_summary())
+    return {"ok": True, "repo": repo, "pr": normalize_pr(pr), "diagnostics": reader.diagnostics()}
 
 
 def cmd_list(args: argparse.Namespace) -> dict[str, Any]:

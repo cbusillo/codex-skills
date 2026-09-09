@@ -26,6 +26,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import github_api
 import github_identity
+import github_read
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -86,7 +87,8 @@ def parse_args():
     )
     parser.add_argument("--pr", default="auto", help="auto, PR number, or PR URL")
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
-    parser.add_argument("--poll-seconds", type=int, default=30, help="Watch poll interval")
+    parser.add_argument("--poll-seconds", type=int, default=60, help="Active watch poll interval")
+    parser.add_argument("--green-poll-seconds", type=int, default=300, help="Quiet green PR poll interval")
     parser.add_argument(
         "--max-flaky-retries",
         type=int,
@@ -108,8 +110,8 @@ def parse_args():
     )
     args = parser.parse_args()
 
-    if args.poll_seconds <= 0:
-        parser.error("--poll-seconds must be > 0")
+    if args.poll_seconds <= 0 or args.green_poll_seconds <= 0:
+        parser.error("poll intervals must be > 0")
     if args.max_flaky_retries < 0:
         parser.error("--max-flaky-retries must be >= 0")
     if args.watch and args.retry_failed_now:
@@ -437,7 +439,21 @@ def summarize_checks(checks, expected_head_sha):
     }
 
 
-def get_workflow_runs_for_sha(repo, head_sha):
+def watcher_reader():
+    return github_read.GitHubReader(
+        gh_cmd=GH_COMMAND,
+        expected_actor=github_identity.automation_login(),
+        operation="github.pr.watch",
+        cache_enabled=True,
+    )
+
+
+def get_workflow_runs_for_sha(repo, head_sha, reader=None):
+    if reader is not None:
+        return reader.paged_json(
+            f"/repos/{repo}/actions/runs", step_prefix="workflow_runs",
+            params={"head_sha": head_sha}, collection_key="workflow_runs",
+        )
     endpoint = f"repos/{repo}/actions/runs"
     data = gh_json(
         ["api", endpoint, "-X", "GET", "-f", f"head_sha={head_sha}", "-f", "per_page=100"],
@@ -474,7 +490,12 @@ def failed_runs_from_workflow_runs(runs, head_sha):
     return failed_runs
 
 
-def get_jobs_for_run(repo, run_id):
+def get_jobs_for_run(repo, run_id, reader=None):
+    if reader is not None:
+        return reader.paged_json(
+            f"/repos/{repo}/actions/runs/{run_id}/jobs", step_prefix=f"workflow_run_{run_id}_jobs",
+            params={"filter": "latest"}, collection_key="jobs",
+        )
     endpoint = f"repos/{repo}/actions/runs/{run_id}/jobs"
     data = gh_json(["api", endpoint, "-X", "GET", "-f", "per_page=100"], repo=repo)
     if not isinstance(data, dict):
@@ -485,7 +506,7 @@ def get_jobs_for_run(repo, run_id):
     return jobs
 
 
-def failed_jobs_from_workflow_runs(repo, runs, head_sha):
+def failed_jobs_from_workflow_runs(repo, runs, head_sha, reader=None):
     failed_jobs = []
     for run in runs:
         if not isinstance(run, dict):
@@ -497,9 +518,11 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
             continue
         run_status = str(run.get("status") or "")
         run_conclusion = str(run.get("conclusion") or "")
-        if run_status.lower() == "completed" and run_conclusion not in FAILED_RUN_CONCLUSIONS:
+        # Job detail is diagnostic evidence, not a per-poll health signal. A
+        # completed failed run needs it; queued/running runs do not.
+        if run_status.lower() != "completed" or run_conclusion not in FAILED_RUN_CONCLUSIONS:
             continue
-        jobs = get_jobs_for_run(repo, run_id)
+        jobs = get_jobs_for_run(repo, run_id, **({"reader": reader} if reader is not None else {}))
         for job in jobs:
             if not isinstance(job, dict):
                 continue
@@ -534,7 +557,15 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
     return failed_jobs
 
 
-def get_authenticated_login():
+def get_authenticated_login(reader=None):
+    configured = github_identity.automation_login()
+    if configured:
+        return configured
+    if reader is not None:
+        data = reader.get_json("/user", step="authenticated_user")
+        if isinstance(data, dict) and data.get("login"):
+            return str(data["login"])
+        raise GhCommandError("Unable to determine authenticated GitHub login from GitHub REST API")
     data = gh_json(["api", "user"])
     if not isinstance(data, dict) or not data.get("login"):
         raise GhCommandError("Unable to determine authenticated GitHub login from `gh api user`")
@@ -549,7 +580,9 @@ def comment_endpoints(repo, pr_number):
     }
 
 
-def gh_api_list_paginated(endpoint, repo=None, per_page=100):
+def gh_api_list_paginated(endpoint, repo=None, per_page=100, reader=None):
+    if reader is not None:
+        return reader.paged_json(endpoint if endpoint.startswith("/") else f"/{endpoint}", step_prefix="review_items", params={"per_page": per_page})
     items = []
     page = 1
     while True:
@@ -662,14 +695,15 @@ def is_external_human_review_author(item, authenticated_login):
     return not is_bot_login(author)
 
 
-def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
+def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, reader=None):
     repo = pr["repo"]
     pr_number = pr["number"]
     endpoints = comment_endpoints(repo, pr_number)
 
-    issue_payload = gh_api_list_paginated(endpoints["issue_comment"], repo=repo)
-    review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo)
-    review_payload = gh_api_list_paginated(endpoints["review"], repo=repo)
+    extra = {"reader": reader} if reader is not None else {}
+    issue_payload = gh_api_list_paginated(endpoints["issue_comment"], repo=repo, **extra)
+    review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo, **extra)
+    review_payload = gh_api_list_paginated(endpoints["review"], repo=repo, **extra)
 
     issue_items = normalize_issue_comments(issue_payload)
     review_comment_items = normalize_review_comments(review_comment_payload)
@@ -848,24 +882,28 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    authenticated_login = get_authenticated_login()
+    reader = watcher_reader()
+    authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,
         state,
         fresh_state=fresh_state,
         authenticated_login=authenticated_login,
+        reader=reader,
     )
     # Surface review feedback before drilling into CI and mergeability details.
     # That keeps the babysitter responsive to new comments even when other
     # actions are also available.
     # After resolving `--pr auto`, give the REST-first checks helper the
     # concrete PR number so both reads stay pinned to one target.
-    checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
-    checks_diagnostic = checks.pop("_watcher_diagnostic", None)
+    checks = github_read.pull_request_checks(
+        reader, pr["repo"], pr["number"], head_sha=pr["head_sha"]
+    )
+    checks_diagnostic = reader.diagnostics()
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
-    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"], reader=reader)
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
-    failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"])
+    failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
 
     retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
@@ -1027,10 +1065,10 @@ def run_watch(args):
         pr = snapshot.get("pr") or {}
         pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
 
-        if not green or pr_open:
+        if not green or not pr_open or changed or last_change_key is None:
             poll_seconds = args.poll_seconds
-        elif changed or last_change_key is None:
-            poll_seconds = args.poll_seconds
+        else:
+            poll_seconds = getattr(args, "green_poll_seconds", 300)
 
         last_change_key = current_change_key
         time.sleep(poll_seconds)
