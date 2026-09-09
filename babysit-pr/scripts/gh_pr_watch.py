@@ -52,10 +52,6 @@ def configured_bot_logins() -> frozenset[str]:
     )
 
 
-MERGE_BLOCKING_REVIEW_DECISIONS = {
-    "REVIEW_REQUIRED",
-    "CHANGES_REQUESTED",
-}
 MERGE_CONFLICT_OR_BLOCKING_STATES = {
     "BLOCKED",
     "DIRTY",
@@ -72,6 +68,23 @@ KNOWN_MERGE_STATES = {
     "UNKNOWN",
     "UNSTABLE",
 }
+REVIEW_DECISION_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    pullRequest(number: $number) {
+      number
+      url
+      headRefOid
+      baseRefName
+      isDraft
+      state
+      reviewDecision
+      mergeStateStatus
+    }
+  }
+}
+""".strip()
 
 
 class GhCommandError(RuntimeError):
@@ -309,6 +322,8 @@ def resolve_pr(pr_spec, repo_override=None):
         "mergeable": normalize_mergeable(data.get("mergeable")),
         "merge_state_status": merge_state_status,
         "review_decision": str(review_decision or ""),
+        "review_requirement": "unknown",
+        "review_decision_source": "not_queried",
         "metadata_availability": {
             "draft": isinstance(data.get("draft"), bool),
             "mergeable": isinstance(data.get("mergeable"), bool),
@@ -446,6 +461,111 @@ def watcher_reader():
         operation="github.pr.watch",
         cache_enabled=True,
     )
+
+
+def query_review_readiness(pr, reader):
+    """Read review policy once, only after REST proves every other gate."""
+    owner, name = pr["repo"].split("/", 1)
+    retry_policy = github_api.RetryPolicy(max_wait_seconds=2.0, max_attempts=1)
+    result = reader.graphql_json(
+        REVIEW_DECISION_QUERY,
+        {"owner": owner, "name": name, "number": pr["number"]},
+        step="review_readiness",
+        operation="github.pr.review_readiness",
+        retry_policy=retry_policy,
+        deadline_at=time.time() + 2.0,
+    )
+    diagnostic = reader.requests[-1] if reader.requests else {}
+    if not result.ok:
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    if any(
+        reason.get("component") == "actor"
+        for reason in getattr(reader, "degraded_reasons", [])
+    ):
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    body = result.body
+    if not isinstance(body, dict) or body.get("errors"):
+        reader.mark_degraded("review_readiness", "graphql_partial_error", "GraphQL review query returned errors")
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    repository = body.get("data", {}).get("repository") if isinstance(body.get("data"), dict) else None
+    item = repository.get("pullRequest") if isinstance(repository, dict) else None
+    if not isinstance(repository, dict) or not isinstance(item, dict):
+        reader.mark_degraded("review_readiness", "graphql_missing_pull_request", "GraphQL review query omitted the pull request")
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    expected_repo = pr["repo"].casefold()
+    if str(repository.get("nameWithOwner") or "").casefold() != expected_repo:
+        reason = "GraphQL review query repository did not match the REST target"
+        reader.mark_degraded("review_readiness", "graphql_repository_mismatch", reason)
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    if (
+        item.get("number") != pr["number"]
+        or str(item.get("headRefOid") or "") != pr["head_sha"]
+        or str(item.get("url") or "") != pr["url"]
+    ):
+        reason = "GraphQL review query PR number or head SHA did not match the REST target"
+        reader.mark_degraded("review_readiness", "graphql_head_mismatch", reason)
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    if item.get("baseRefName") != pr["base_branch"] or item.get("isDraft") is not pr["draft"]:
+        reason = "GraphQL review query base branch or draft state did not match the REST target"
+        reader.mark_degraded("review_readiness", "graphql_state_mismatch", reason)
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    if str(item.get("state") or "").upper() != "OPEN":
+        reason = "GraphQL review query state was not OPEN"
+        reader.mark_degraded("review_readiness", "graphql_state_mismatch", reason)
+        return {"status": "unknown", "requirement": "unknown", "source": "transport"}, diagnostic
+    if "reviewDecision" not in item or "mergeStateStatus" not in item:
+        reader.mark_degraded("review_readiness", "graphql_missing_field", "GraphQL review query omitted a required field")
+        return {"status": "unknown", "requirement": "unknown", "source": "missing_field"}, diagnostic
+    merge_state = str(item.get("mergeStateStatus") or "").upper()
+    if merge_state not in KNOWN_MERGE_STATES:
+        reader.mark_degraded("review_readiness", "graphql_unknown_merge_state", "GraphQL review query returned an unknown merge state")
+        return {"status": "unknown", "requirement": "unknown", "source": "graphql"}, diagnostic
+    decision = item.get("reviewDecision")
+    if decision is None:
+        requirement = "not_applicable" if merge_state == "CLEAN" else "unknown"
+    else:
+        decision = str(decision).upper()
+        requirement = {
+            "APPROVED": "satisfied",
+            "CHANGES_REQUESTED": "changes_requested",
+            "REVIEW_REQUIRED": "pending",
+        }.get(decision, "unknown")
+        if requirement == "unknown":
+            reader.mark_degraded("review_readiness", "graphql_unknown_review_decision", "GraphQL review query returned an unknown review decision")
+            return {"status": "unknown", "requirement": "unknown", "source": "graphql"}, diagnostic
+    return {
+        "status": "available",
+        "requirement": requirement,
+        "source": "graphql",
+        "decision": decision,
+        "merge_state_status": merge_state,
+    }, diagnostic
+
+
+def apply_review_readiness(pr, review):
+    pr["review_requirement"] = review.get("requirement", "unknown")
+    pr["review_decision_source"] = review.get("source", "transport")
+    if review.get("status") == "available":
+        pr["metadata_availability"]["review_decision"] = True
+        decision = review.get("decision")
+        pr["review_decision"] = decision
+        if review.get("merge_state_status"):
+            pr["merge_state_status"] = review["merge_state_status"]
+    else:
+        pr["metadata_availability"]["review_decision"] = False
+
+
+def review_readiness_diagnostic(reader, review):
+    """Keep the exact query evidence beside its normalized readiness result."""
+    return {
+        "request": reader.requests[-1] if reader.requests else None,
+        "readiness": {
+            "status": review.get("status"),
+            "source": review.get("source"),
+            "requirement": review.get("requirement"),
+        },
+        "degradedReasons": list(getattr(reader, "degraded_reasons", [])),
+    }
 
 
 def get_workflow_runs_for_sha(repo, head_sha, reader=None):
@@ -793,6 +913,10 @@ def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         return False
     if not checks_summary["all_terminal"]:
         return False
+    if checks_summary.get("evidence_complete") is not True:
+        return False
+    if checks_summary.get("head_matches") is not True:
+        return False
     if checks_summary["failed_count"] > 0 or checks_summary["pending_count"] > 0:
         return False
     if new_review_items:
@@ -807,7 +931,10 @@ def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         return False
     if str(pr.get("merge_state_status") or "") in MERGE_CONFLICT_OR_BLOCKING_STATES:
         return False
-    return str(pr.get("review_decision") or "") not in MERGE_BLOCKING_REVIEW_DECISIONS
+    requirement = pr.get("review_requirement")
+    if requirement == "satisfied" and pr.get("review_decision_source") == "graphql":
+        return True
+    return requirement == "not_applicable" and pr.get("review_decision_source") == "graphql" and pr.get("merge_state_status") == "CLEAN"
 
 
 def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -817,6 +944,8 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
         and not pr["merged"]
         and not pr.get("draft")
         and checks_summary["all_terminal"]
+        and checks_summary.get("evidence_complete") is True
+        and checks_summary.get("head_matches") is True
         and checks_summary["failed_count"] == 0
         and checks_summary["pending_count"] == 0
         and not new_review_items
@@ -843,6 +972,11 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
     if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         actions.append("ready_to_merge")
         return unique_actions(actions)
+
+    if pr.get("review_requirement") == "pending":
+        actions.append("awaiting_review")
+    elif pr.get("review_requirement") == "changes_requested":
+        actions.append("address_review_changes")
 
     has_failed_pr_checks = (
         checks_summary["failed_count"] > 0 and checks_summary.get("head_matches") is True
@@ -905,6 +1039,12 @@ def collect_snapshot(args):
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
 
+    review_diagnostic = None
+    if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
+        review, _ = query_review_readiness(pr, reader)
+        apply_review_readiness(pr, review)
+        review_diagnostic = review_readiness_diagnostic(reader, review)
+
     retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
         pr,
@@ -935,6 +1075,7 @@ def collect_snapshot(args):
         "read_diagnostics": {
             "pr": pr_diagnostic,
             "checks": checks_diagnostic,
+            "review": review_diagnostic,
         },
     }
     return snapshot, state_path

@@ -218,26 +218,56 @@ class GitHubReader:
         self.last_result: Optional[github_api_core.ApiResult] = None
 
     def _transport_request(
-        self, method: str, path: str, *, step: str, extra_headers: Optional[dict[str, str]] = None
+        self, method: str, path: str, *, step: str, body: Any = None,
+        bucket: str = "rest_core", retry_policy: Optional[github_api_core.RetryPolicy] = None,
+        deadline_at: Optional[float] = None, operation: Optional[str] = None,
+        extra_headers: Optional[dict[str, str]] = None
     ) -> github_api_core.ApiResult:
         return github_api_core.call_gh_with_retry(
             method,
             path,
+            body,
             gh_cmd=self.gh_cmd,
             gh_prefix_args=self.gh_prefix_args,
-            operation=self.operation,
+            operation=operation or self.operation,
             actor=self.request_actor,
             expected_actor=self.expected_actor,
-            bucket="rest_core",
+            bucket=bucket,
             completed_steps=list(self.completed_steps),
             failed_step=step,
             is_write=False,
             extra_headers=extra_headers,
+            retry_policy=retry_policy,
+            deadline_at=deadline_at,
         )
 
-    def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
-        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
-        result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+    def graphql_json(
+        self,
+        query: str,
+        variables: dict[str, Any],
+        *,
+        step: str,
+        operation: Optional[str] = None,
+        retry_policy: Optional[github_api_core.RetryPolicy] = None,
+        deadline_at: Optional[float] = None,
+    ) -> github_api_core.ApiResult:
+        """Run one bounded, same-actor GraphQL query without REST caching."""
+        result = self._transport_request(
+            "POST",
+            "/graphql",
+            step=step,
+            body={"query": query, "variables": variables},
+            bucket="graphql",
+            operation=operation,
+            retry_policy=retry_policy,
+            deadline_at=deadline_at,
+        )
+        self._record_result(result, method="POST", path="/graphql", step=step)
+        return result
+
+    def _record_result(
+        self, result: github_api_core.ApiResult, *, method: str, path: str, step: str
+    ) -> None:
         actor_mismatch = False
         if result.actor:
             if self.expected_actor and self.expected_actor.casefold() != result.actor.casefold():
@@ -278,8 +308,16 @@ class GitHubReader:
             self.failed_results.append(result)
             message = result.failure.message if result.failure else "GitHub REST read failed"
             self.mark_degraded(step, result.failure.cause if result.failure else "read_failed", message)
+        else:
+            self.completed_steps.append(step)
+
+    def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
+        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
+        result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
+        self._record_result(result, method=method, path=path, step=step)
+        if not result.ok:
+            message = result.failure.message if result.failure else "GitHub REST read failed"
             raise GitHubReadError(message, result=result, diagnostics=self.diagnostics())
-        self.completed_steps.append(step)
         return result
 
     def get_json(self, path: str, *, step: str) -> Any:
@@ -367,9 +405,14 @@ class GitHubReader:
             if reason.get("component")
         })
         retry_summary = self.retry_summary()
+        buckets = {str(request.get("bucket") or "") for request in self.requests}
+        transport = "graphql_api" if buckets == {"graphql"} else "rest_api"
+        bucket = next(iter(buckets)) if len(buckets) == 1 else "mixed"
+        if len(buckets) > 1:
+            transport = "mixed"
         return {
-            "transport": "rest_api",
-            "bucket": "rest_core",
+            "transport": transport or "unknown",
+            "bucket": bucket or "unknown",
             "actor": self.actor,
             "expectedActor": self.expected_actor,
             "requestCount": len(self.requests),
@@ -411,6 +454,7 @@ def request_diagnostic(
         "endpoint": github_api_core.redact_path(path),
         "ok": result.ok,
         "status": result.status,
+        "transport": payload.get("transport"),
         "requestId": payload.get("request_id"),
         "bucket": payload.get("bucket"),
         "actor": payload.get("actor"),

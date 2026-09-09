@@ -235,6 +235,23 @@ source_refs = ["github/scripts/gh-pr.py:cmd_list"]
 test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/github.json:qualityGate.syntax.python"]
 
 [[operations]]
+id = "github.pr.review_readiness"
+entrypoint = "babysit-pr/scripts/gh_pr_watch.py readiness boundary"
+intent = "Read one exact PR review decision and merge protection state after REST proves every other readiness gate."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "POST /graphql with one repository pullRequest document pinned to owner, name, number, headRefOid, and baseRefName"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL is intentionally retained only for the bounded readiness boundary because REST does not expose authoritative reviewDecision, required approval accounting, code-owner requirements, or dismissal state."
+source_refs = ["babysit-pr/scripts/gh_pr_watch.py:query_review_readiness", "github/scripts/github_read.py:graphql_json"]
+test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_query_distinguishes_nullable_decision", "babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_partial_error_is_unknown"]
+
+[[operations]]
 id = "github.pr.create"
 entrypoint = "github/scripts/gh-pr.py create"
 intent = "Create a pull request with safe title, body-file, labels, reviewers, assignees, milestone, and project flags."

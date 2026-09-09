@@ -109,6 +109,43 @@ def test_request_diagnostics_include_quota_and_request_id() -> None:
     assert diagnostics["degraded"] is False
 
 
+def test_graphql_json_uses_bounded_shared_graphql_transport() -> None:
+    response = process(
+        include_output(
+            {"data": {"repository": {"pullRequest": {"reviewDecision": None}}}},
+            headers={"x-ratelimit-resource": "graphql"},
+        )
+    )
+    reader = github_read.GitHubReader(
+        gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch"
+    )
+    with patch("subprocess.run", return_value=response) as run:
+        result = reader.graphql_json(
+            "query($number: Int!) { repository { pullRequest(number: $number) { reviewDecision } } }",
+            {"number": 7},
+            step="review_readiness",
+            retry_policy=github_read.github_api_core.RetryPolicy(max_wait_seconds=1, max_attempts=1),
+        )
+    assert result.ok is True
+    command = run.call_args.args[0]
+    assert command[command.index("api") + 1 : command.index("--input")] == [
+        "--method", "POST", "--include", "-H", f"X-GitHub-Api-Version: {github_read.github_api_core.DEFAULT_API_VERSION}", "/graphql"
+    ]
+    assert json.loads(run.call_args.kwargs["input"].decode())["variables"] == {"number": 7}
+    assert reader.requests[-1]["bucket"] == "graphql"
+
+
+def test_reader_diagnostics_marks_mixed_rest_and_graphql_buckets() -> None:
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch")
+    reader.requests = [
+        {"bucket": "rest_core", "transport": "gh_api"},
+        {"bucket": "graphql", "transport": "gh_api"},
+    ]
+    diagnostics = reader.diagnostics()
+    assert diagnostics["transport"] == "mixed"
+    assert diagnostics["bucket"] == "mixed"
+
+
 def test_conditional_cache_reuses_304_body_and_scopes_query_and_identity() -> None:
     first = process(include_output({"value": "first"}, headers={"etag": '"v1"'}))
     not_modified = process(include_output(None, status=304, headers={"etag": '"v1"'}), returncode=1)
@@ -748,6 +785,8 @@ def main() -> None:
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
+        test_graphql_json_uses_bounded_shared_graphql_transport,
+        test_reader_diagnostics_marks_mixed_rest_and_graphql_buckets,
         test_conditional_cache_reuses_304_body_and_scopes_query_and_identity,
         test_matrix_approved_reader_retries_and_reports_attempts,
         test_reader_aggregates_retry_summary_across_requests,
