@@ -8,12 +8,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.parse
 from collections.abc import Callable
 from typing import Any, Optional
@@ -54,6 +58,138 @@ class GitHubReadShapeError(Exception):
     pass
 
 
+def _default_cache_dir() -> pathlib.Path:
+    code_home = os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME")
+    root = pathlib.Path(code_home).expanduser() if code_home else pathlib.Path.home() / ".code"
+    return root / "state" / "github-read-cache"
+
+
+class ConditionalResponseCache:
+    """Small private, body-safe cache for validator-backed REST GETs.
+
+    The cache is deliberately opt-in at the reader boundary.  Entries are
+    scoped by host, configured authenticated actor, request path (including
+    query/page), and representation headers.  It never turns an auth failure
+    into cached success; a 304 is usable only when its matching body is present.
+    """
+
+    schema_version = 1
+
+    def __init__(self, root: pathlib.Path, *, scope: str, coalesce_seconds: float = 5.0) -> None:
+        self.root = root
+        self.scope = scope
+        self.coalesce_seconds = coalesce_seconds
+        self.max_age_seconds = float(os.environ.get("GITHUB_READ_CACHE_MAX_AGE_SECONDS") or 86400)
+
+    @classmethod
+    def from_reader(cls, reader: "GitHubReader") -> Optional["ConditionalResponseCache"]:
+        if not reader.cache_enabled or not reader.expected_actor:
+            return None
+        root = pathlib.Path(os.environ.get("GITHUB_READ_CACHE_DIR") or _default_cache_dir()).expanduser()
+        # The expected actor is identity context, not a credential.  The digest
+        # keeps private repository paths out of filenames and diagnostics.
+        scope = hashlib.sha256(
+            f"{github_api_core.DEFAULT_HOST}\0{reader.expected_actor.casefold()}".encode()
+        ).hexdigest()
+        return cls(root, scope=scope)
+
+    def _key(self, path: str, headers: dict[str, str]) -> str:
+        representation = "\n".join(
+            f"{name.casefold()}:{value}" for name, value in sorted(headers.items())
+            if name.casefold() in {"accept", "x-github-api-version"}
+        )
+        return hashlib.sha256(f"{self.scope}\0GET\0{path}\0{representation}".encode()).hexdigest()
+
+    def _paths(self, path: str, headers: dict[str, str]) -> tuple[pathlib.Path, pathlib.Path]:
+        key = self._key(path, headers)
+        return self.root / f"{key}.json", self.root / f"{key}.lock"
+
+    def _read(self, path: pathlib.Path) -> Optional[dict[str, Any]]:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(item, dict) or item.get("schema") != self.schema_version:
+            return None
+        if not isinstance(item.get("body"), (dict, list, str, int, float, bool)) and item.get("body") is not None:
+            return None
+        if not isinstance(item.get("headers"), dict):
+            return None
+        return item
+
+    def _write(self, path: pathlib.Path, item: dict[str, Any]) -> None:
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(self.root, 0o700)
+        except OSError:
+            pass
+        fd, name = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".tmp", dir=self.root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(item, stream, separators=(",", ":"), sort_keys=True)
+            os.replace(name, path)
+        finally:
+            try:
+                pathlib.Path(name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def request(self, reader: "GitHubReader", method: str, path: str, *, step: str) -> github_api_core.ApiResult:
+        headers = {"Accept": "application/vnd.github+json"}
+        body_path, lock_path = self._paths(path, headers)
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            cached = self._read(body_path)
+            now = time.time()
+            if cached and now - float(cached.get("validated_at") or 0) > self.max_age_seconds:
+                cached = None
+                try:
+                    body_path.unlink()
+                except OSError:
+                    pass
+            if cached and now - float(cached.get("validated_at") or 0) <= self.coalesce_seconds:
+                result = github_api_core.ApiResult(
+                    ok=True, status=200, body=cached["body"], headers=dict(cached["headers"]),
+                    operation=reader.operation, actor=reader.expected_actor,
+                    expected_actor=reader.expected_actor, host=github_api_core.DEFAULT_HOST,
+                    bucket="rest_core",
+                )
+                result.headers["x-codex-cache"] = "coalesced"
+                return result
+            validators = {}
+            if cached:
+                if isinstance(cached.get("etag"), str):
+                    validators["If-None-Match"] = cached["etag"]
+                elif isinstance(cached.get("last_modified"), str):
+                    validators["If-Modified-Since"] = cached["last_modified"]
+            result = reader._transport_request(method, path, step=step, extra_headers={**headers, **validators})
+            if result.status == 304:
+                if cached is None:
+                    # A malformed/corrupt cache cannot manufacture success. Make
+                    # one unconditioned recovery request while holding the lock.
+                    result = reader._transport_request(method, path, step=step, extra_headers=headers)
+                else:
+                    cached["validated_at"] = now
+                    self._write(body_path, cached)
+                    result.ok = True
+                    result.body = cached["body"]
+                    result.headers = {**dict(cached["headers"]), **result.headers, "x-codex-cache": "revalidated"}
+                    result.failure = None
+                    return result
+            if result.ok and result.status == 200:
+                etag = result.headers.get("etag")
+                modified = result.headers.get("last-modified")
+                if isinstance(etag, str) or isinstance(modified, str):
+                    self._write(body_path, {
+                        "schema": self.schema_version, "body": result.body,
+                        "headers": result.headers, "etag": etag, "last_modified": modified,
+                        "validated_at": now,
+                    })
+            return result
+
+
 class GitHubReader:
     def __init__(
         self,
@@ -64,6 +200,7 @@ class GitHubReader:
         actor: Optional[str] = None,
         gh_prefix_args: Optional[list[str]] = None,
         strict_actor: bool = False,
+        cache_enabled: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
         self.expected_actor = expected_actor
@@ -72,6 +209,7 @@ class GitHubReader:
         self.request_actor = actor
         self.gh_prefix_args = list(gh_prefix_args or [])
         self.strict_actor = strict_actor
+        self.cache_enabled = cache_enabled
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
         self.results: list[github_api_core.ApiResult] = []
@@ -79,8 +217,10 @@ class GitHubReader:
         self.degraded_reasons: list[dict[str, str]] = []
         self.last_result: Optional[github_api_core.ApiResult] = None
 
-    def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
-        result = github_api_core.call_gh_with_retry(
+    def _transport_request(
+        self, method: str, path: str, *, step: str, extra_headers: Optional[dict[str, str]] = None
+    ) -> github_api_core.ApiResult:
+        return github_api_core.call_gh_with_retry(
             method,
             path,
             gh_cmd=self.gh_cmd,
@@ -92,7 +232,12 @@ class GitHubReader:
             completed_steps=list(self.completed_steps),
             failed_step=step,
             is_write=False,
+            extra_headers=extra_headers,
         )
+
+    def request(self, method: str, path: str, *, step: str) -> github_api_core.ApiResult:
+        cache = ConditionalResponseCache.from_reader(self) if method.upper() == "GET" else None
+        result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step)
         actor_mismatch = False
         if result.actor:
             if self.expected_actor and self.expected_actor.casefold() != result.actor.casefold():
@@ -283,7 +428,8 @@ def request_diagnostic(
         "lastBucket": payload.get("last_bucket"),
         "reconciliation": payload.get("reconciliation"),
         "effectiveDeadline": payload.get("effective_deadline"),
-        "retryExhaustedReason": payload.get("retry_exhausted_reason"),
+            "retryExhaustedReason": payload.get("retry_exhausted_reason"),
+            "cache": result.headers.get("x-codex-cache"),
     }
     if result.failure:
         diagnostic["cause"] = result.failure.cause
@@ -531,11 +677,17 @@ def list_pull_requests(
     return [normalize_pull_request(item) for item in items]
 
 
-def pull_request_checks(reader: GitHubReader, repo: str, number: int) -> dict[str, Any]:
-    pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="pull_request")
-    if not isinstance(pull, dict) or not isinstance(pull.get("head"), dict) or not pull["head"].get("sha"):
-        reader.invalid_response("pull_request", "GitHub pull request response did not contain a head SHA")
-    sha = str(pull["head"]["sha"])
+def pull_request_checks(
+    reader: GitHubReader, repo: str, number: int, *, head_sha: Optional[str] = None
+) -> dict[str, Any]:
+    pull: Optional[dict[str, Any]] = None
+    sha = str(head_sha or "")
+    if not sha:
+        candidate = reader.get_json(f"/repos/{repo}/pulls/{number}", step="pull_request")
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("head"), dict) or not candidate["head"].get("sha"):
+            reader.invalid_response("pull_request", "GitHub pull request response did not contain a head SHA")
+        pull = candidate
+        sha = str(pull["head"]["sha"])
     availability = {"checkRuns": True, "commitStatuses": True, "combinedStatus": True}
     try:
         check_runs = reader.paged_json(
@@ -574,7 +726,7 @@ def pull_request_checks(reader: GitHubReader, repo: str, number: int) -> dict[st
     unavailable_components = [name for name, available in availability.items() if not available]
     return {
         "repo": repo,
-        "pr": normalize_pull_request(pull),
+        "pr": normalize_pull_request(pull) if pull is not None else None,
         "headSha": sha,
         "summary": {
             "checkRunCount": len(normalized_checks) if availability["checkRuns"] else None,

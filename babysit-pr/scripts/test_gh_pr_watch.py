@@ -408,7 +408,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gh_pr_watch,
         "get_authenticated_login",
-        lambda: call_order.append("auth") or "octocat",
+        lambda reader=None: call_order.append("auth") or "octocat",
     )
     monkeypatch.setattr(
         gh_pr_watch,
@@ -416,8 +416,8 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
         lambda *args, **kwargs: call_order.append("review") or [],
     )
     monkeypatch.setattr(
-        gh_pr_watch,
-        "get_pr_checks",
+        gh_pr_watch.github_read,
+        "pull_request_checks",
         lambda *args, **kwargs: call_order.append("checks")
         or {
             "headSha": pr["head_sha"],
@@ -651,7 +651,7 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     with pytest.raises(StopWatch):
         gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=30))
 
-    assert sleeps == [30, 30]
+    assert sleeps == [30, 300]
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
@@ -692,8 +692,8 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
             {
                 "id": 99,
                 "name": "CI",
-                "status": "in_progress",
-                "conclusion": "",
+                "status": "completed",
+                "conclusion": "failure",
                 "head_sha": "abc123",
             }
         ],
@@ -704,8 +704,8 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
         {
             "run_id": 99,
             "workflow_name": "CI",
-            "run_status": "in_progress",
-            "run_conclusion": "",
+                "run_status": "completed",
+                "run_conclusion": "failure",
             "job_id": 555,
             "job_name": "unit tests",
             "status": "completed",

@@ -9,7 +9,7 @@ resources:
     description: Shared body-safe GitHub API transport, terminal envelope, legacy failure classifier, GraphQL operation context, and rate-limit metadata layer.
   - path: scripts/github_read.py
     kind: script
-    description: Shared paged REST readers, including the automation-only sanitized secret-scanning status signal.
+    description: Shared paged REST readers, including private body-safe conditional GET caching for watcher use and the automation-only sanitized secret-scanning status signal.
   - path: scripts/gh-pr.py
     kind: script
     description: REST-first pull request helper for PR view, list, create, edit, comment, checks, merge, supersede, and rate-limit operations.

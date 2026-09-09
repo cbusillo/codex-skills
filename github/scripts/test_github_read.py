@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -106,6 +107,28 @@ def test_request_diagnostics_include_quota_and_request_id() -> None:
     assert diagnostics["requests"][0]["requestId"] == "READ:123"
     assert diagnostics["quota"]["remaining"] == 4999
     assert diagnostics["degraded"] is False
+
+
+def test_conditional_cache_reuses_304_body_and_scopes_query_and_identity() -> None:
+    first = process(include_output({"value": "first"}, headers={"etag": '"v1"'}))
+    not_modified = process(include_output(None, status=304, headers={"etag": '"v1"'}), returncode=1)
+    changed = process(include_output({"value": "second"}, headers={"etag": '"v2"'}))
+    other_page = process(include_output({"value": "page-two"}, headers={"etag": '"p2"'}))
+    with tempfile.TemporaryDirectory() as cache_dir, patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": cache_dir}):
+        with patch("subprocess.run", side_effect=[first, not_modified, changed, other_page]) as run:
+            one = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch", cache_enabled=True)
+            assert one.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="one") == {"value": "first"}
+            two = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch", cache_enabled=True)
+            # Force past the short coalescing window: this models a later poll.
+            with patch("github_read.time.time", return_value=time.time() + 10):
+                assert two.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="two") == {"value": "first"}
+            three = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.pr.watch", cache_enabled=True)
+            with patch("github_read.time.time", return_value=time.time() + 20):
+                assert three.get_json("/repos/o/r/pulls/1?per_page=100&page=1", step="three") == {"value": "second"}
+            other = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="other-actor", operation="github.pr.watch", cache_enabled=True)
+            assert other.get_json("/repos/o/r/pulls/1?per_page=100&page=2", step="other") == {"value": "page-two"}
+    assert run.call_count == 4
+    assert any("If-None-Match: \"v1\"" in arg for arg in run.call_args_list[1].args[0])
 
 
 def test_matrix_approved_reader_retries_and_reports_attempts() -> None:
@@ -725,6 +748,7 @@ def main() -> None:
         test_issue_reader_paginates_and_filters_pull_requests,
         test_present_terminal_link_header_does_not_fabricate_next_page,
         test_request_diagnostics_include_quota_and_request_id,
+        test_conditional_cache_reuses_304_body_and_scopes_query_and_identity,
         test_matrix_approved_reader_retries_and_reports_attempts,
         test_reader_aggregates_retry_summary_across_requests,
         test_reader_cli_operations_are_matrix_approved,

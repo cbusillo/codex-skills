@@ -45,8 +45,8 @@ workflow_defaults:
     value: "3"
     description: Stop for user help after three unrelated/flaky rerun cycles per head SHA.
   - name: poll_cadence
-    value: 1 minute while babysitting
-    description: Keep polling until the PR closes or a user-help blocker appears.
+    value: 1 minute active; 5 minutes for unchanged green PRs
+    description: Keep ownership until the PR closes or needs help; use conditional reads and automatically managed cooldowns between observations.
 ---
 
 # PR Babysitter
@@ -295,10 +295,11 @@ If a `--watch` process is still running and no strict stop condition has been re
 
 ## Polling Cadence
 
-Keep review polling aggressive and continue monitoring even after CI turns green:
+Keep ownership after CI turns green, but do not continuously refetch unchanged evidence:
 
 - While CI is not green (pending/running/queued or failing): poll every 1 minute.
-- After CI turns green: keep polling at the base cadence while the PR remains open so newly posted review comments are surfaced promptly instead of waiting on a long green-state backoff.
+- After CI turns green and the PR is otherwise unchanged: poll every 5 minutes. Conditional GETs reuse a matching cached body on `304 Not Modified`; this saves primary quota but the request can still count toward secondary limits.
+- The watcher automatically returns to the one-minute active cadence whenever a head, check, review, mergeability, review-decision, or provider cooldown signal changes. A normal cooldown is a managed wait inside the babysitting task, not a new permission request.
 - Reset the cadence immediately whenever anything changes (new commit/SHA, check status changes, new review comments, mergeability changes, review decision changes).
 - If CI stops being green again (new commit, rerun, or regression): stay on the base polling cadence.
 - If any poll shows the PR is merged or otherwise closed: stop polling immediately and report the terminal state.
