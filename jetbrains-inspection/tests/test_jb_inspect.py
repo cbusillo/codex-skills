@@ -10116,6 +10116,23 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(compact_again["inspection_outcome"]["phase"], "publish")
         self.assertEqual(compact_again["inspection_outcome"]["inspection_run_id"], 77)
 
+    def test_compact_native_snapshot_preserves_nested_run_identity(self):
+        result = {
+            "status": "clean",
+            "verdict": "GREEN",
+            "verdict_reason": "clean_confirmed",
+            "wait": {"inspection_run_id": 1, "status": "completed"},
+            "inspection_stage": "publish",
+        }
+
+        snapshot = jb_inspect.compact_inspection_result(result)
+        self.assertEqual(snapshot["inspection_run_id"], 1)
+        compact = jb_inspect.compact_agent_result_payload(
+            {"status": "clean", "verdict": "GREEN", "inspection_result": snapshot},
+            0,
+        )
+        self.assertEqual(compact["inspection_outcome"]["inspection_run_id"], 1)
+
     def test_generic_unknown_after_failed_setup_is_not_native_inspection_evidence(self):
         payload = {"status": "error", "error_reason": "inspection_api_unavailable"}
         jb_inspect.apply_verdict(payload)

@@ -3052,7 +3052,7 @@ def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
         "attribution": result.get("attribution_class"),
         "phase": result.get("failure_phase"),
         "results_may_be_stale": result.get("results_may_be_stale"),
-        "inspection_run_id": inspection_run_id(result),
+        "inspection_run_id": inspection_diagnostic_target_run_id(result) or inspection_run_id(result),
     }
 
 
