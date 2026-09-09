@@ -130,8 +130,15 @@ Accept any of the following:
    `check_evidence_incomplete` means the REST check counts cannot prove a
    terminal round; keep watching and do not rerun from that evidence alone.
    `review_readiness_unavailable` means the other readiness inputs are green
-   but REST cannot prove the review decision; keep watching and confirm review
-   state through a separate readiness check before any merge decision.
+   but review state is unavailable or the bounded GraphQL readiness read failed;
+   keep watching. The watcher may issue one same-actor GraphQL document at this
+   boundary, pinned to the exact repository, PR number, base, and head SHA.
+   A successful nullable decision is not approval: it is usable only when the
+   same document reports a clean merge state.
+   `awaiting_review` means GraphQL authoritatively reported
+   `REVIEW_REQUIRED`; keep monitoring for approval. `address_review_changes`
+   means it reported `CHANGES_REQUESTED`; surface the required review work and
+   keep monitoring after the branch is updated.
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
 5. If the failure is likely caused by the current branch, patch code locally,
    commit with `github/scripts/git-commit-as-bot`, and push with

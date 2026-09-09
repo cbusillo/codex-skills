@@ -35,6 +35,8 @@ def sample_pr():
         "mergeable": "MERGEABLE",
         "merge_state_status": "CLEAN",
         "review_decision": "",
+        "review_requirement": "satisfied",
+        "review_decision_source": "graphql",
         "metadata_availability": {
             "draft": True,
             "mergeable": True,
@@ -75,6 +77,7 @@ def sample_rest_view(**overrides):
         "mergeStateStatus": "clean",
         "reviewDecision": None,
     }
+
     pr.update(overrides)
     return {
         "ok": True,
@@ -82,6 +85,24 @@ def sample_rest_view(**overrides):
         "pr": pr,
         "_watcher_diagnostic": {"transport": "rest_api", "ok": True},
     }
+
+
+class ReviewReader:
+    def __init__(self, body=None, *, degraded_reasons=None):
+        self.body = body
+        self.requests = [{"ok": True, "status": 200}]
+        self.degraded_reasons = list(degraded_reasons or [])
+        self.degraded = None
+
+    def graphql_json(self, *_args, **_kwargs):
+        return type("Result", (), {"ok": True, "body": self.body})()
+
+    def mark_degraded(self, *args):
+        self.degraded = args
+        self.degraded_reasons.append({"component": args[0], "code": args[1], "message": args[2]})
+
+    def diagnostics(self):
+        return {"requests": self.requests, "degradedReasons": self.degraded_reasons}
 
 
 def test_resolve_pr_uses_rest_helper_and_exposes_final_merge_commit(monkeypatch):
@@ -328,6 +349,182 @@ def test_green_rest_snapshot_surfaces_unavailable_review_readiness():
     ) == ["review_readiness_unavailable"]
 
 
+def test_review_readiness_query_distinguishes_nullable_decision():
+    pr = sample_pr()
+    pr.update({"review_decision": "", "review_requirement": "unknown", "review_decision_source": "not_queried"})
+    body = {
+        "data": {"repository": {
+            "nameWithOwner": "openai/codex",
+            "pullRequest": {
+                "number": 123, "url": pr["url"], "headRefOid": pr["head_sha"],
+                "baseRefName": "main", "isDraft": False, "state": "OPEN",
+                "reviewDecision": None, "mergeStateStatus": "CLEAN",
+            },
+        }}
+    }
+
+    review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
+    gh_pr_watch.apply_review_readiness(pr, review)
+    assert review["requirement"] == "not_applicable"
+    assert pr["review_decision"] is None
+    assert pr["metadata_availability"]["review_decision"] is True
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is True
+
+
+def test_review_readiness_partial_error_is_unknown():
+    pr = sample_pr()
+    body = {"errors": [{"type": "RATE_LIMITED"}], "data": {"repository": {"pullRequest": None}}}
+
+    reader = ReviewReader(body)
+    review, _ = gh_pr_watch.query_review_readiness(pr, reader)
+    gh_pr_watch.apply_review_readiness(pr, review)
+    assert review["requirement"] == "unknown"
+    assert review["source"] == "transport"
+    assert reader.degraded[1] == "graphql_partial_error"
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is False
+
+
+def test_review_readiness_missing_field_is_distinct_from_nullable():
+    pr = sample_pr()
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
+        "reviewDecision": None,
+    }}}}
+
+    reader = ReviewReader(body)
+    review, _ = gh_pr_watch.query_review_readiness(pr, reader)
+    assert review["source"] == "missing_field"
+    assert reader.degraded[1] == "graphql_missing_field"
+
+
+def test_nullable_review_decision_does_not_override_blocking_merge_state():
+    pr = sample_pr()
+    body = {"data": {"repository": {
+        "nameWithOwner": "openai/codex",
+        "pullRequest": {
+            "number": 123, "url": pr["url"], "headRefOid": pr["head_sha"],
+            "baseRefName": "main", "isDraft": False, "state": "OPEN",
+            "reviewDecision": None, "mergeStateStatus": "BLOCKED",
+        },
+    }}}
+
+    review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
+    gh_pr_watch.apply_review_readiness(pr, review)
+    assert review["requirement"] == "unknown"
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is False
+
+
+def test_review_readiness_requires_complete_check_evidence():
+    pr = sample_pr()
+    pr["metadata_availability"]["review_decision"] = False
+    assert gh_pr_watch.is_review_readiness_unavailable(
+        pr, sample_checks(evidence_complete=False), []
+    ) is False
+
+
+def test_review_readiness_requires_exact_check_head():
+    pr = sample_pr()
+    pr["metadata_availability"]["review_decision"] = False
+    assert gh_pr_watch.is_review_readiness_unavailable(
+        pr, sample_checks(head_matches=False), []
+    ) is False
+    assert gh_pr_watch.is_pr_ready_to_merge(
+        {**pr, "review_requirement": "satisfied"}, sample_checks(head_matches=False), []
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("decision", "requirement", "ready"),
+    [
+        ("APPROVED", "satisfied", True),
+        ("REVIEW_REQUIRED", "pending", False),
+        ("CHANGES_REQUESTED", "changes_requested", False),
+    ],
+)
+def test_review_readiness_decision_matrix(decision, requirement, ready):
+    pr = sample_pr()
+    body = {"data": {"repository": {
+        "nameWithOwner": pr["repo"],
+        "pullRequest": {
+            "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+            "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
+            "reviewDecision": decision, "mergeStateStatus": "CLEAN",
+        },
+    }}}
+
+    review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
+    gh_pr_watch.apply_review_readiness(pr, review)
+    assert review["requirement"] == requirement
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is ready
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
+    expected_action = {
+        "pending": "awaiting_review",
+        "changes_requested": "address_review_changes",
+    }.get(requirement)
+    if expected_action:
+        assert expected_action in actions
+
+
+@pytest.mark.parametrize("field", ["url", "headRefOid", "baseRefName", "isDraft", "state"])
+def test_review_readiness_same_document_identity_mismatch_is_unknown(field):
+    pr = sample_pr()
+    item = {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
+        "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN",
+    }
+    item[field] = {
+        "url": "https://github.com/openai/codex/pull/999",
+        "headRefOid": "different",
+        "baseRefName": "other",
+        "isDraft": True,
+        "state": "CLOSED",
+    }[field]
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": item}}}
+
+    reader = ReviewReader(body)
+    review, _ = gh_pr_watch.query_review_readiness(pr, reader)
+    assert review["requirement"] == "unknown"
+    assert reader.degraded[1] == {
+        "url": "graphql_head_mismatch",
+        "headRefOid": "graphql_head_mismatch",
+        "baseRefName": "graphql_state_mismatch",
+        "isDraft": "graphql_state_mismatch",
+        "state": "graphql_state_mismatch",
+    }[field]
+
+
+def test_review_readiness_unknown_enum_remains_actionable():
+    pr = sample_pr()
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
+        "reviewDecision": "FUTURE_ENUM", "mergeStateStatus": "CLEAN",
+    }}}}
+
+    review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
+    gh_pr_watch.apply_review_readiness(pr, review)
+    assert review["requirement"] == "unknown"
+    assert "review_readiness_unavailable" in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3
+    )
+
+
+def test_review_readiness_actor_drift_is_unknown():
+    pr = sample_pr()
+    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
+        "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN",
+    }}}}
+
+    review, _ = gh_pr_watch.query_review_readiness(
+        pr, ReviewReader(body, degraded_reasons=[{"component": "actor", "code": "actor_changed"}])
+    )
+    assert review["requirement"] == "unknown"
+
+
 def test_head_mismatch_does_not_diagnose_unrelated_check_failure():
     checks = sample_checks(
         all_terminal=False,
@@ -466,6 +663,48 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
     assert summarize_kwargs == {"expected_head_sha": pr["head_sha"]}
+
+
+def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypatch, tmp_path):
+    pr = sample_pr()
+    pr["metadata_availability"]["review_decision"] = False
+
+    reader = ReviewReader(
+        None, degraded_reasons=[{"component": "actor", "code": "actor_changed"}]
+    )
+    reader.requests = [{"step": "review_readiness", "ok": True, "bucket": "graphql"}]
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        gh_pr_watch.github_read,
+        "pull_request_checks",
+        lambda *args, **kwargs: {"headSha": pr["head_sha"], "summary": {}, "_watcher_diagnostic": {}},
+    )
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *args, **kwargs: sample_checks())
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "failed_runs_from_workflow_runs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "query_review_readiness",
+        lambda *args, **kwargs: ({
+            "status": "unknown", "source": "transport", "requirement": "unknown"
+        }, reader.requests[-1]),
+    )
+
+    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
+        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
+    ))
+    review_diagnostic = snapshot["read_diagnostics"]["review"]
+    assert review_diagnostic["request"] == reader.requests[-1]
+    assert review_diagnostic["readiness"] == {
+        "status": "unknown", "source": "transport", "requirement": "unknown"
+    }
+    assert review_diagnostic["degradedReasons"] == reader.degraded_reasons
 
 
 def test_recommend_actions_prioritizes_review_comments():
