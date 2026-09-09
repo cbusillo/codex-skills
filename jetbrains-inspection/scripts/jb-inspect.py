@@ -9780,8 +9780,12 @@ def global_config_path() -> Path:
     override = os.environ.get("JETBRAINS_INSPECTION_GLOBAL_CONFIG")
     if override:
         return Path(override).expanduser()
+    shared_config = Path.home() / ".config" / "jetbrains-inspection" / "config.json"
+    if shared_config.exists():
+        return shared_config
     code_home = os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or str(Path.home() / ".code")
-    return Path(code_home).expanduser() / "jetbrains-inspection.json"
+    legacy_config = Path(code_home).expanduser() / "jetbrains-inspection.json"
+    return legacy_config if legacy_config.exists() else shared_config
 
 
 def read_global_config() -> dict[str, Any]:
