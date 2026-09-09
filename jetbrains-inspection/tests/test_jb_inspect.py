@@ -40,6 +40,64 @@ def write_json(path: Path, payload: dict) -> None:
         json.dump(payload, handle)
 
 
+
+class GlobalConfigTests(unittest.TestCase):
+    def test_shared_config_is_independent_of_cli_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            shared = home / ".config/jetbrains-inspection/config.json"
+            shared.parent.mkdir(parents=True)
+            write_json(shared, {"jetbrains": {"trustedAutoOpenRoots": [str(home / "worktrees")]}})
+            for variable in ("CODE_HOME", "CODEX_HOME", "CODEX_LAB_HOME"):
+                with self.subTest(variable=variable), patch.dict(os.environ, {variable: str(home / "cli")}, clear=True), patch.object(Path, "home", return_value=home):
+                    self.assertEqual(jb_inspect.global_config_path(), shared)
+                    self.assertEqual(jb_inspect.trusted_auto_open_roots(), [str((home / "worktrees").resolve())])
+
+    def test_explicit_override_wins_even_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            shared = home / ".config/jetbrains-inspection/config.json"
+            shared.parent.mkdir(parents=True)
+            write_json(shared, {"shared": True})
+            override = home / "override.json"
+            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(override)}, clear=True), patch.object(Path, "home", return_value=home):
+                self.assertEqual(jb_inspect.global_config_path(), override)
+                self.assertEqual(jb_inspect.read_global_config(), {})
+
+    def test_legacy_config_remains_available_until_migrated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            legacy = home / ".code/jetbrains-inspection.json"
+            legacy.parent.mkdir()
+            write_json(legacy, {"legacy": True})
+            for environment in ({}, {"CODE_HOME": str(legacy.parent)}, {"CODEX_HOME": str(legacy.parent)}):
+                with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), patch.object(Path, "home", return_value=home):
+                    self.assertEqual(jb_inspect.read_global_config(), {"legacy": True})
+                    shared = home / ".config/jetbrains-inspection/config.json"
+                    shared.parent.mkdir(parents=True, exist_ok=True)
+                    write_json(shared, {"shared": True})
+                    self.assertEqual(jb_inspect.read_global_config(), {"shared": True})
+                    shared.unlink()
+
+    def test_missing_configs_default_to_shared_location(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), patch.object(Path, "home", return_value=Path(tmp)):
+            self.assertEqual(jb_inspect.global_config_path(), Path(tmp) / ".config/jetbrains-inspection/config.json")
+            self.assertEqual(jb_inspect.read_global_config(), {})
+
+    def test_invalid_shared_config_does_not_fall_back_to_legacy_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            legacy = home / ".code/jetbrains-inspection.json"
+            legacy.parent.mkdir()
+            write_json(legacy, {"legacy": True})
+            shared = home / ".config/jetbrains-inspection/config.json"
+            shared.parent.mkdir(parents=True)
+            shared.write_text("invalid json")
+            with patch.dict(os.environ, {}, clear=True), patch.object(Path, "home", return_value=home):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.read_global_config()
+
+
 def attribution_cases() -> list[dict]:
     return json.loads(ATTRIBUTION_FIXTURE_PATH.read_text(encoding="utf-8"))
 
