@@ -203,7 +203,17 @@ Command model:
 - `agent-inspect`: primary LLM-facing command; runs the maintained inspection
   and lifecycle flow once, emits a compact JSON envelope, and exits successfully
   whenever it produced an `agent_result`. Read the verdict and retry permission
-  from `agent_result`, never from the shell exit code.
+  from `agent_result`, never from the shell exit code. The additive
+  `inspection_outcome` field describes the native inspection dimension, while
+  `lifecycle_outcome` describes cleanup/worktree lifecycle evidence. A lifecycle
+  mutation keeps the overall `agent_result.verdict` fail-closed as `UNKNOWN`;
+  it does not rewrite a native GREEN/RED result. Available mutation evidence
+  is bounded to paths and counts, carries `*_omitted_count` fields when
+  truncated, and
+  uses `attribution: "unattributed"` with `detection_phase:
+  "post_run_verification"` because before/after snapshots cannot identify the
+  writing process. Missing native or snapshot evidence remains `not_run` or
+  `unknown`; it is never presented as clean, fresh, or unchanged.
 - `list-projects`: discover plugin-visible projects only.
 - `resolve-route`: probe for an already-open exact route; it does not open or
   inspect.

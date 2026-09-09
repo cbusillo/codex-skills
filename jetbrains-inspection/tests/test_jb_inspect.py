@@ -9927,6 +9927,202 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(evidence["tracked_change_count"], 1)
         self.assertEqual(evidence["untracked_change_count"], 1)
         self.assertEqual(evidence["new_or_changed_paths"], [".idea/editor.xml", ".idea/misc.xml"])
+        self.assertEqual(evidence["tracked_content_changed_paths_omitted_count"], 0)
+
+    def test_worktree_mutation_blocker_preserves_native_outcome_and_uses_detection_phase(self):
+        payload = {
+            "status": "clean",
+            "verdict": "GREEN",
+            "verdict_reason": "clean_confirmed",
+            "inspection_result": {
+                "status": "clean",
+                "verdict": "GREEN",
+                "reason": "clean_confirmed",
+                "total_problems": 0,
+            },
+            "worktree_mutation_evidence": {
+                "before_status": "ok",
+                "after_status": "ok",
+                "new_or_changed_path_count": 1,
+                "removed_path_count": 0,
+                "new_or_changed_paths": [".idea/misc.xml"],
+                "removed_paths": [],
+            },
+        }
+
+        jb_inspect.apply_worktree_mutation_blocker(payload)
+        jb_inspect.apply_verdict(payload)
+        compact = jb_inspect.compact_agent_result_payload(payload, 1)
+
+        self.assertEqual(payload["verdict"], "UNKNOWN")
+        self.assertEqual(payload["failure_phase"], "post_run_verification")
+        self.assertEqual(payload["detection_phase"], "post_run_verification")
+        self.assertEqual(payload["agent_result"]["bucket"], "cleanup_not_clean")
+        self.assertFalse(payload["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(compact["inspection_outcome"]["status"], "clean")
+        self.assertEqual(compact["lifecycle_outcome"]["status"], "mutated")
+        self.assertEqual(compact["lifecycle_outcome"]["attribution"], "unattributed")
+        self.assertEqual(compact["worktree_mutation_evidence"]["new_or_changed_paths"], [".idea/misc.xml"])
+
+    def test_full_lifecycle_preserves_native_result_before_mutation_blocker(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        lease = {"lease_id": "lease-1", "opened_by_helper": True, "state": "prepared"}
+        native = {
+            "status": "clean",
+            "verdict": "GREEN",
+            "verdict_reason": "clean_confirmed",
+            "total_problems": 0,
+        }
+        before = {"status": "ok", "entries": {}}
+        after = {
+            "status": "ok",
+            "entries": {".idea/misc.xml": " M"},
+            "tracked_content_sha256": {},
+        }
+
+        with (
+            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=native),
+            patch.object(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}),
+            patch.object(jb_inspect, "lease_may_own_open_project", return_value=True),
+            patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=before),
+            patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
+        ):
+            result = jb_inspect.run_prepared_inspection(
+                helper_args(command="closeout", lifecycle_lock_timeout_ms=0),
+                {"worktree_root": "/tmp/worktree", "scope": "changed_files"},
+            )
+
+        compact = jb_inspect.compact_agent_result_payload(result, 1)
+        self.assertEqual(result["inspection_result"]["verdict"], "GREEN")
+        self.assertEqual(compact["inspection_outcome"]["status"], "clean")
+        self.assertEqual(compact["lifecycle_outcome"]["status"], "mutated")
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertFalse(result["agent_result"]["retry_policy"]["retry"])
+
+    def test_compact_lifecycle_outcome_has_bounded_zero_mutation_evidence(self):
+        compact = jb_inspect.compact_agent_result_payload({"status": "clean", "verdict": "GREEN"}, 0)
+
+        evidence = compact["lifecycle_outcome"]["worktree_mutation_evidence"]
+        self.assertEqual(compact["lifecycle_outcome"]["status"], "unknown")
+        self.assertEqual(evidence["status"], "unavailable")
+        self.assertNotIn("new_or_changed_path_count", evidence)
+        self.assertNotIn("removed_path_count", evidence)
+        self.assertNotIn("new_or_changed_paths", compact)
+
+    def test_red_native_outcome_survives_mutation_blocker(self):
+        payload = {
+            "status": "findings",
+            "verdict": "RED",
+            "verdict_reason": "actionable_findings",
+            "total_problems": 1,
+            "inspection_result": {
+                "status": "findings",
+                "verdict": "RED",
+                "reason": "actionable_findings",
+                "total_problems": 1,
+            },
+            "worktree_mutation_evidence": {
+                "before_status": "ok",
+                "after_status": "ok",
+                "new_or_changed_path_count": 1,
+                "removed_path_count": 0,
+                "new_or_changed_paths": [".idea/editor.xml"],
+                "removed_paths": [],
+            },
+        }
+
+        jb_inspect.apply_worktree_mutation_blocker(payload)
+        jb_inspect.apply_verdict(payload)
+        compact = jb_inspect.compact_agent_result_payload(payload, 1)
+
+        self.assertEqual(compact["inspection_outcome"]["status"], "red")
+        self.assertEqual(compact["inspection_outcome"]["verdict"], "RED")
+        self.assertEqual(compact["lifecycle_outcome"]["status"], "mutated")
+
+    def test_stale_unknown_native_outcome_and_missing_snapshots_stay_unknown(self):
+        stale = {
+            "status": "stale_results",
+            "verdict": "UNKNOWN",
+            "results_may_be_stale": True,
+            "inspection_result": {
+                "status": "stale_results",
+                "verdict": "UNKNOWN",
+                "reason": "stale_results",
+                "results_may_be_stale": True,
+            },
+            "worktree_mutation_evidence": {
+                "before_status": "unavailable",
+                "after_status": "unavailable",
+                "new_or_changed_path_count": 0,
+                "removed_path_count": 0,
+                "new_or_changed_paths": [],
+                "removed_paths": [],
+            },
+        }
+
+        compact = jb_inspect.compact_agent_result_payload(stale, 1)
+        self.assertEqual(compact["inspection_outcome"]["status"], "unknown")
+        self.assertEqual(compact["inspection_outcome"]["freshness"], "stale")
+        self.assertEqual(compact["lifecycle_outcome"]["status"], "unknown")
+        self.assertEqual(compact["lifecycle_outcome"]["snapshot_status"], "unavailable")
+
+        no_run = jb_inspect.compact_agent_result_payload({"status": "error", "error_reason": "inspection_api_unavailable"}, 1)
+        self.assertEqual(no_run["inspection_outcome"]["status"], "not_run")
+        self.assertEqual(no_run["inspection_outcome"]["freshness"], "unknown")
+        self.assertEqual(no_run["lifecycle_outcome"]["status"], "unknown")
+
+    def test_tracked_content_paths_report_omitted_count(self):
+        paths = {f"file-{index}.txt": " M" for index in range(jb_inspect.MAX_WORKTREE_MUTATION_PATHS + 3)}
+        before = {"status": "ok", "entries": {}, "tracked_content_sha256": {}}
+        after = {"status": "ok", "entries": paths, "tracked_content_sha256": {path: f"sha256:{index:064d}" for index, path in enumerate(paths)}}
+
+        evidence = jb_inspect.summarize_worktree_mutations(before, after)
+        self.assertEqual(len(evidence["tracked_content_changed_paths"]), jb_inspect.MAX_WORKTREE_MUTATION_PATHS)
+        self.assertEqual(evidence["tracked_content_changed_paths_omitted_count"], 3)
+
+    def test_compact_outcomes_are_idempotent_and_survive_durable_conversion(self):
+        payload = {
+            "status": "error",
+            "verdict": "UNKNOWN",
+            "verdict_reason": "worktree_mutation_detected",
+            "inspection_result": {
+                "status": "clean",
+                "verdict": "GREEN",
+                "reason": "clean_confirmed",
+                "total_problems": 0,
+                "attribution": "decisive",
+                "phase": "publish",
+                "results_may_be_stale": False,
+                "inspection_run_id": 77,
+            },
+            "worktree_mutation_evidence": {
+                "before_status": "ok",
+                "after_status": "ok",
+                "new_or_changed_path_count": 1,
+                "removed_path_count": 0,
+                "new_or_changed_paths": [".idea/misc.xml"],
+                "removed_paths": [],
+            },
+        }
+
+        compact = jb_inspect.compact_agent_result_payload(payload, 1)
+        _, record = jb_inspect.outcome_record_base(compact)
+        compact_again = jb_inspect.compact_agent_result_payload(compact, 1)
+
+        self.assertEqual(compact["inspection_outcome"], record["inspection_outcome"])
+        self.assertEqual(compact["inspection_outcome"], compact_again["inspection_outcome"])
+        self.assertEqual(compact_again["inspection_outcome"]["status"], "clean")
+        self.assertEqual(compact_again["inspection_outcome"]["phase"], "publish")
+        self.assertEqual(compact_again["inspection_outcome"]["inspection_run_id"], 77)
+
+    def test_generic_unknown_after_failed_setup_is_not_native_inspection_evidence(self):
+        payload = {"status": "error", "error_reason": "inspection_api_unavailable"}
+        jb_inspect.apply_verdict(payload)
+
+        outcome = jb_inspect.inspection_outcome_for_payload(payload)
+        self.assertEqual(outcome["status"], "not_run")
+        self.assertEqual(outcome["freshness"], "unknown")
 
     def test_git_porcelain_z_preserves_special_paths_and_rename_destination(self):
         entries = jb_inspect.parse_git_porcelain_z(
