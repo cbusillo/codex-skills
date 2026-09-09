@@ -2587,6 +2587,8 @@ def compact_inspection_lane_result(
                 "reason": cleanup.get("reason"),
                 "mutation_evidence": payload.get("worktree_mutation_evidence"),
             },
+            "inspection_outcome": inspection_outcome_for_payload(payload),
+            "lifecycle_outcome": lifecycle_outcome_for_payload(payload),
             "diagnostic": compact.get("diagnostic"),
             "repository_preparation": repository_preparation_for_payload(payload),
         }
@@ -3047,6 +3049,72 @@ def compact_inspection_result(result: dict[str, Any]) -> dict[str, Any]:
         "status": result.get("status"),
         "total_problems": result.get("total_problems"),
         "problems_shown": result.get("problems_shown"),
+        "attribution": result.get("attribution_class"),
+        "phase": result.get("failure_phase"),
+        "results_may_be_stale": result.get("results_may_be_stale"),
+        "inspection_run_id": inspection_diagnostic_target_run_id(result) or inspection_run_id(result),
+    }
+
+
+def inspection_outcome_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    existing = payload.get("inspection_outcome")
+    if isinstance(existing, dict) and existing.get("status") in {"clean", "red", "unknown", "not_run"}:
+        return dict(existing)
+    native_result = payload.get("inspection_result")
+    has_native_result = isinstance(native_result, dict) and (
+        native_result.get("inspection_run_id") is not None
+        or native_result.get("status") in {
+            "clean", "findings", "results_available", "stale_results", "capture_incomplete", "timed_out"
+        }
+    )
+    native = native_result if isinstance(native_result, dict) else payload
+    verdict = native.get("verdict")
+    status = native.get("status") or payload.get("status")
+    has_inspection_evidence = has_native_result or any(
+        payload.get(key) is not None
+        for key in ("inspection_verdict", "inspection_run_id", "total_problems", "problems", "inspection_proof")
+    ) or verdict in {"GREEN", "RED"}
+    freshness = "unknown" if not has_inspection_evidence else "stale" if (
+        native.get("results_may_be_stale")
+        or payload.get("results_may_be_stale")
+        or status == "stale_results"
+    ) else "fresh" if verdict in {"GREEN", "RED"} or status in {"clean", "findings", "results_available"} else "unknown"
+    return {
+        "status": "clean" if verdict == "GREEN" else "red" if verdict == "RED" else "unknown" if has_inspection_evidence else "not_run",
+        "verdict": verdict,
+        "native_status": status,
+        "reason": native.get("reason") or native.get("verdict_reason") or payload.get("verdict_reason"),
+        "freshness": freshness,
+        "finding_count": native.get("total_problems", payload.get("total_problems")),
+        "attribution": native.get("attribution") or native.get("attribution_class"),
+        "phase": native.get("phase") or native.get("failure_phase"),
+        "inspection_run_id": native.get("inspection_run_id") or inspection_run_id(payload),
+    }
+
+
+def lifecycle_outcome_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    evidence = payload.get("worktree_mutation_evidence")
+    existing = payload.get("lifecycle_outcome") if isinstance(payload.get("lifecycle_outcome"), dict) else {}
+    if not isinstance(evidence, dict):
+        nested_evidence = existing.get("worktree_mutation_evidence")
+        evidence = nested_evidence if isinstance(nested_evidence, dict) else None
+    if not isinstance(evidence, dict):
+        evidence = {
+            "status": "unavailable",
+            "paths_limit": MAX_WORKTREE_MUTATION_PATHS,
+        }
+    before_status = evidence.get("before_status")
+    after_status = evidence.get("after_status")
+    snapshots_available = before_status == "ok" and after_status == "ok"
+    mutated = int(evidence.get("new_or_changed_path_count") or 0) > 0 or int(evidence.get("removed_path_count") or 0) > 0
+    lifecycle_status = "mutated" if mutated else "unchanged" if snapshots_available else "unknown"
+    return {
+        "status": existing.get("status") or lifecycle_status,
+        "error_reason": existing.get("error_reason") or ("worktree_mutation_detected" if mutated else None),
+        "detection_phase": existing.get("detection_phase") or payload.get("detection_phase"),
+        "attribution": existing.get("attribution") or ("unattributed" if mutated else None),
+        "snapshot_status": "available" if snapshots_available else "unavailable",
+        "worktree_mutation_evidence": evidence,
     }
 
 
@@ -6779,6 +6847,8 @@ def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
         payload["status"] = "clean"
         payload["semantic_coverage_wait_timeout_recovered"] = True
     apply_inspection_attribution(payload)
+    if payload.get("error_reason") == "worktree_mutation_detected":
+        payload["failure_phase"] = payload.get("detection_phase") or "post_run_verification"
     apply_agent_result(payload)
     return payload
 
@@ -7416,6 +7486,8 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
             "session_id": (lane.get("evidence_ids") or {}).get("session_id"),
             "project_instance_id": (lane.get("evidence_ids") or {}).get("project_instance_id"),
             "inspection_run_id": (lane.get("evidence_ids") or {}).get("inspection_run_id"),
+            "inspection_outcome": lane.get("inspection_outcome"),
+            "lifecycle_outcome": lane.get("lifecycle_outcome"),
             **inspection_stage_diagnostics(
                 lane,
                 positive_run_id((lane.get("evidence_ids") or {}).get("inspection_run_id")),
@@ -7492,6 +7564,8 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "unknown_diagnosis": public.get("unknown_diagnosis"),
         "deployment_mismatch": public.get("deployment_mismatch"),
         "worktree_mutation_evidence": public.get("worktree_mutation_evidence"),
+        "inspection_outcome": inspection_outcome_for_payload(public),
+        "lifecycle_outcome": lifecycle_outcome_for_payload(public),
         "inspection_lanes": lane_summaries or None,
     }
     record.update(inspection_stage_diagnostics(public, positive_run_id(record.get("inspection_run_id"))))
@@ -8615,12 +8689,14 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     identity_run_id = attribution.get("inspection_run_id") or inspection_run_id(payload)
     stage_pin_run_id = positive_run_id(identity_run_id) or inspection_run_id(payload)
     stage_diagnostic = inspection_stage_diagnostics(payload, stage_pin_run_id)
+    lifecycle_outcome = lifecycle_outcome_for_payload(payload)
     diagnostic = {
         "error_reason": payload.get("error_reason"),
         "error_message": guidance_for_command(payload.get("error_message") or payload.get("error"), "agent-inspect"),
         "hint": guidance_for_command(payload.get("hint"), "agent-inspect"),
         "attribution_class": payload.get("attribution_class"),
         "failure_phase": payload.get("failure_phase"),
+        "detection_phase": payload.get("detection_phase"),
         "unknown_diagnosis": payload.get("unknown_diagnosis"),
         "internal_retry_count": payload.get("internal_retry_count"),
         "internal_retry_reason": payload.get("internal_retry_reason"),
@@ -8651,6 +8727,8 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "findings_truncated": findings_truncated,
         "proof_failures": compact_proof_failures or None,
         "inspection_proof": inspection_proof or None,
+        "inspection_outcome": inspection_outcome_for_payload(payload),
+        "lifecycle_outcome": lifecycle_outcome,
         "cleanup": {
             "status": cleanup.get("status"),
             "reason": cleanup.get("reason"),
@@ -8667,6 +8745,12 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         },
         "diagnostic": diagnostic,
     }
+    raw_mutation_evidence = payload.get("worktree_mutation_evidence")
+    if not isinstance(raw_mutation_evidence, dict):
+        nested_lifecycle = payload.get("lifecycle_outcome") if isinstance(payload.get("lifecycle_outcome"), dict) else {}
+        raw_mutation_evidence = nested_lifecycle.get("worktree_mutation_evidence")
+    if isinstance(raw_mutation_evidence, dict) and "before_status" in raw_mutation_evidence and "after_status" in raw_mutation_evidence:
+        result["worktree_mutation_evidence"] = lifecycle_outcome["worktree_mutation_evidence"]
     return public_payload(result)
 
 
@@ -8870,6 +8954,17 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
             }))
         if payload.get("verdict_next_action"):
             print(safe_text("NEXT_ACTION: {action}", {"action": payload.get("verdict_next_action")}))
+    native_outcome = inspection_outcome_for_payload(payload)
+    if native_outcome.get("status") != "not_run":
+        lifecycle_outcome = lifecycle_outcome_for_payload(payload)
+        print(safe_text(
+            "INSPECTION_OUTCOME: status={status} verdict={verdict} freshness={freshness} findings={finding_count}",
+            native_outcome,
+        ))
+        print(safe_text(
+            "LIFECYCLE_OUTCOME: status={status} detection_phase={detection_phase} attribution={attribution}",
+            lifecycle_outcome,
+        ))
     if payload.get("unknown_log_path"):
         print(safe_text("UNKNOWN_LOG: {path}", {"path": payload.get("unknown_log_path")}))
     if payload.get("unknown_log_error"):
@@ -9698,6 +9793,8 @@ def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) 
     removed_paths = sorted(removed_paths)
     emitted_paths = changed_paths[:MAX_WORKTREE_MUTATION_PATHS]
     emitted_removed_paths = removed_paths[:MAX_WORKTREE_MUTATION_PATHS]
+    emitted_content_paths = sorted(tracked_content_changed_paths)[:MAX_WORKTREE_MUTATION_PATHS]
+
     return {
         "schema_version": 1,
         "before_status": before.get("status"),
@@ -9720,8 +9817,9 @@ def summarize_worktree_mutations(before: dict[str, Any], after: dict[str, Any]) 
         "untracked_change_count": sum(
             1 for path in changed_paths if after_entries.get(path, before_entries.get(path, "")).startswith("??")
         ),
-        "tracked_content_changed_paths": sorted(tracked_content_changed_paths)[:MAX_WORKTREE_MUTATION_PATHS],
+        "tracked_content_changed_paths": emitted_content_paths,
         "tracked_content_changed_path_count": len(tracked_content_changed_paths),
+        "tracked_content_changed_paths_omitted_count": max(0, len(tracked_content_changed_paths) - len(emitted_content_paths)),
     }
 
 
@@ -9746,9 +9844,16 @@ def apply_worktree_mutation_blocker(result: dict[str, Any]) -> None:
         {
             "status": "error",
             "error_reason": "worktree_mutation_detected",
-            "error_message": "The helper-owned IDE lifecycle changed the worktree during inspection.",
+            "error_message": "The worktree changed during the inspection lifecycle; the writing process was not identified.",
             "worktree_mutation_detected": True,
-            "failure_phase": "cleanup",
+            "detection_phase": "post_run_verification",
+            "lifecycle_outcome": {
+                "status": "mutated",
+                "error_reason": "worktree_mutation_detected",
+                "detection_phase": "post_run_verification",
+                "attribution": "unattributed",
+                "worktree_mutation_evidence": evidence,
+            },
         }
     )
 
