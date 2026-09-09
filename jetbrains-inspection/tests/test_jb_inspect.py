@@ -7532,6 +7532,81 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
             ["wait_timeout", "cancellation"],
         )
 
+    def test_exact_proof_terminal_diagnostics_are_preserved_without_outer_retry(self):
+        deadline_failure = self.failure(
+            "exact_proof_deadline", "timeout", "exact_proof", 60_000, 75_000
+        )
+        deadline_failure.update(
+            {
+                "inspection_tool_short_name": "ProofTool",
+                "inspection_file": "/Users/example/project/src/Main.kt",
+                "inspection_worker_phase": "execution",
+            }
+        )
+        preempted_failure = self.failure(
+            "exact_proof_write_preempted", "preempted", "exact_proof", 61_000, 76_000
+        )
+        payload = {
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "inspection_verdict": "UNKNOWN",
+            "proof_failures": ["execution_not_proven"],
+            "trigger": {"inspection_run_id": 52},
+            "wait": {
+                "inspection_run_id": 52,
+                "inspection_failure_diagnostic": deadline_failure,
+            },
+            "last_status": {
+                "inspection_run_id": 52,
+                "inspection_stage": "exact_proof",
+                "inspection_terminal_outcome": "preempted",
+                "inspection_failure_history": [deadline_failure, preempted_failure],
+            },
+        }
+
+        compact = self.compact(payload)
+        diagnostic = compact["diagnostic"]
+
+        self.assertEqual(diagnostic["inspection_terminal_outcome"], "preempted")
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["source"], "exact_proof_deadline")
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["outcome"], "timeout")
+        self.assertEqual(
+            [entry["source"] for entry in diagnostic["inspection_failure_history"]],
+            ["exact_proof_deadline", "exact_proof_write_preempted"],
+        )
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["inspection_tool_short_name"], "ProofTool")
+        self.assertEqual(diagnostic["inspection_failure_diagnostic"]["inspection_worker_phase"], "execution")
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
+        self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
+        self.assertIn("Stop retrying", compact["agent_result"]["next_action"])
+
+    def test_exact_proof_worker_evidence_is_bounded_and_unknown_values_are_dropped(self):
+        value = self.failure("exact_proof_deadline", "timeout", "exact_proof", 1, 2)
+        value.update(
+            {
+                "inspection_tool_short_name": "tool=" + "x" * 300,
+                "inspection_file": "/repo/" + "x" * 5_000,
+                "inspection_worker_phase": "mapping",
+                "unexpected": "discarded",
+            }
+        )
+
+        bounded = jb_inspect.bounded_inspection_failure_diagnostic(value)
+
+        self.assertEqual(len(bounded["inspection_tool_short_name"]), jb_inspect.MAX_INSPECTION_TOOL_SHORT_NAME_LENGTH)
+        self.assertEqual(len(bounded["inspection_file"]), jb_inspect.MAX_INSPECTION_FILE_LENGTH)
+        self.assertNotIn("inspection_worker_phase", bounded)
+        self.assertNotIn("unexpected", bounded)
+        self.assertEqual(
+            jb_inspect.bounded_inspection_failure_diagnostic(
+                self.failure("unknown_source", "timeout", "exact_proof", 1, 2)
+            ),
+            {},
+        )
+        invalid_outcome = self.failure("exact_proof_deadline", "interrupted", "exact_proof", 1, 2)
+        self.assertEqual(jb_inspect.bounded_inspection_failure_diagnostic(invalid_outcome), {})
+
     def test_diagnostics_never_cross_an_explicit_run_change(self):
         replacement_failure = self.failure(
             "capture_deadline", "timeout", "publish", 10_000, 60_000
@@ -7747,6 +7822,13 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
         primary = self.failure(
             "wait_timeout", "timeout", "native_execute", 30_000, 40_000, stack=stack
         )
+        primary.update(
+            {
+                "inspection_tool_short_name": "ProofTool",
+                "inspection_file": "/Users/example/private/Proof.kt",
+                "inspection_worker_phase": "execution",
+            }
+        )
         cancellation = self.failure(
             "cancellation", "cancelled", "native_execute", 31_000, 41_000
         )
@@ -7789,6 +7871,13 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
         self.assertEqual(len(record["inspection_failure_history"]), 3)
         self.assertEqual(len(record["inspection_failure_diagnostic"]["inspection_worker_stack"]), 64)
         self.assertEqual(record["inspection_failure_diagnostic"]["source"], "wait_timeout")
+        self.assertEqual(record["inspection_failure_diagnostic"]["inspection_tool_short_name"], "ProofTool")
+        self.assertEqual(record["inspection_failure_diagnostic"]["inspection_worker_phase"], "execution")
+        self.assertEqual(
+            record["inspection_failure_diagnostic"]["inspection_file_hash"],
+            jb_inspect.stable_value_hash("/Users/example/private/Proof.kt"),
+        )
+        self.assertNotIn("inspection_file", record["inspection_failure_diagnostic"])
         self.assertNotIn("top-secret", serialized)
         self.assertNotIn("/Users/example/private", serialized)
         self.assertIn("<redacted>", serialized)

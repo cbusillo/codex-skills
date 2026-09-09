@@ -82,6 +82,8 @@ MAX_INSPECTION_FAILURE_HISTORY = 3
 MAX_INSPECTION_WORKER_STACK = 64
 MAX_INSPECTION_WORKER_FRAME_LENGTH = 1_024
 MAX_INSPECTION_WORKER_THREAD_LENGTH = 256
+MAX_INSPECTION_TOOL_SHORT_NAME_LENGTH = 160
+MAX_INSPECTION_FILE_LENGTH = 4_096
 MAX_INSPECTION_ATTEMPT_DIAGNOSTICS = 4
 LANE_MUTATION_SETTLE_DELAY_MS = 5_000
 INTERNAL_RETRY_READY_TIMEOUT_MS = 90_000
@@ -213,9 +215,12 @@ INSPECTION_STAGE_VALUES = frozenset(
         "publish",
     }
 )
-INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed"})
-INSPECTION_FAILURE_SOURCES = frozenset({"wait_timeout", "capture_deadline", "cancellation"})
-INSPECTION_FAILURE_OUTCOMES = frozenset({"timeout", "cancelled"})
+INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed", "timed_out", "preempted"})
+INSPECTION_FAILURE_SOURCES = frozenset(
+    {"wait_timeout", "capture_deadline", "cancellation", "exact_proof_deadline", "exact_proof_write_preempted"}
+)
+INSPECTION_FAILURE_OUTCOMES = frozenset({"timeout", "cancelled", "preempted"})
+INSPECTION_WORKER_PHASES = frozenset({"execution"})
 INSPECTION_STAGE_EVIDENCE_KEYS = (
     "inspection_stage",
     "inspection_stage_elapsed_ms",
@@ -3505,6 +3510,17 @@ def bounded_inspection_failure_diagnostic(value: Any) -> dict[str, Any]:
             diagnostic[key] = elapsed_ms
     if isinstance(value.get("dumb_mode"), bool):
         diagnostic["dumb_mode"] = value["dumb_mode"]
+    tool_short_name = value.get("inspection_tool_short_name")
+    if isinstance(tool_short_name, str) and tool_short_name:
+        diagnostic["inspection_tool_short_name"] = redact_inspection_diagnostic_text(tool_short_name)[
+            :MAX_INSPECTION_TOOL_SHORT_NAME_LENGTH
+        ]
+    inspection_file = value.get("inspection_file")
+    if isinstance(inspection_file, str) and inspection_file:
+        diagnostic["inspection_file"] = inspection_file[:MAX_INSPECTION_FILE_LENGTH]
+    worker_phase = value.get("inspection_worker_phase")
+    if worker_phase in INSPECTION_WORKER_PHASES:
+        diagnostic["inspection_worker_phase"] = worker_phase
     worker_thread = value.get("inspection_worker_thread")
     if isinstance(worker_thread, str) and worker_thread:
         diagnostic["inspection_worker_thread"] = redact_inspection_diagnostic_text(worker_thread)[
@@ -9400,6 +9416,7 @@ def redact_durable_log(value: Any) -> Any:
                     "rollout_file",
                     "scope_directory_requested",
                     "target_worktree",
+                    "inspection_file",
                 }
                 or lowered.endswith("_path")
                 or lowered.endswith("_root")
