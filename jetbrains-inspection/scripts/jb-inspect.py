@@ -6416,10 +6416,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "inspection_inputs_changed":
         return "Wait for same-worktree writers and IDE indexing/project-model updates to settle, then rerun after project files, VCS state, and inspection settings stop changing."
     if reason == "language_sdk_missing":
-        preparation_action = repository_preparation_action(payload)
-        if preparation_action:
-            return preparation_action
-        return "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+        return language_sdk_missing_next_action(payload)
     if reason.startswith("python_sdk_preparation_"):
         return "Inspect python_sdk_preparation and the outcome bucket for the exact SDK, ownership, transport, or plugin failure. Resolve that condition before another request; do not retry SDK preparation automatically."
     if reason == PROJECT_CONTENT_ROOTS_MISSING_REASON:
@@ -9483,7 +9480,11 @@ def durable_repository_preparation_text(value: Any, payload: dict[str, Any]) -> 
     return value.replace(command, redact_repository_preparation_command(command))
 
 
-def repository_preparation_action(payload: dict[str, Any]) -> str | None:
+def repository_preparation_action(
+    payload: dict[str, Any],
+    *,
+    rerun_action: str = "then rerun inspection.",
+) -> str | None:
     preparation = repository_preparation_for_payload(payload)
     if preparation.get("configured") is not True or preparation.get("execution_state") != REPOSITORY_PREPARATION_NOT_RUN:
         return None
@@ -9494,9 +9495,28 @@ def repository_preparation_action(payload: dict[str, Any]) -> str | None:
     if isinstance(target, str) and target:
         return (
             f"Run the configured repository preparation command `{command}` in the exact target worktree `{target}`, "
-            "then rerun inspection."
+            f"{rerun_action}"
         )
-    return f"Run the configured repository preparation command `{command}`, then rerun inspection."
+    return f"Run the configured repository preparation command `{command}`, {rerun_action}"
+
+
+def language_sdk_missing_next_action(payload: dict[str, Any]) -> str:
+    preparation_action = repository_preparation_action(
+        payload,
+        rerun_action=(
+            "then run one fresh `agent-inspect` assessment after the prerequisite changes. "
+            "Do not repeat the failed assessment unchanged."
+        ),
+    )
+    if preparation_action:
+        return preparation_action
+    return (
+        "Use the exact worktree's documented language/SDK setup to restore the missing language SDK and configure the "
+        "resulting SDK for the selected files in the current IDE project. For Python, use the repository's documented Python "
+        "setup; do not guess a Python version. Do not commit IDE configuration. Then run one fresh `agent-inspect` assessment. "
+        "Do not repeat the failed assessment unchanged."
+        " If the documented setup is absent, ambiguous, or requires global/system changes, report that blocker instead."
+    )
 
 
 def public_context(context: dict[str, Any]) -> dict[str, Any]:

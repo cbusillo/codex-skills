@@ -164,6 +164,10 @@ Run preparation before the first inspection assessment, not after an
 inspection has already started. Preparation is a repo-specific readiness step,
 not an inspection surrogate.
 
+Do not preflight SDK setup on every assessment. After `language_sdk_missing`,
+repair the documented prerequisite and run a new assessment; do not repeat the
+failed run unchanged.
+
 ## Primary Helper
 
 Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
@@ -391,8 +395,15 @@ scope, never source code or a mixed scope containing source code.
   bounded by the internal retry timeout and gated by route-pinned status. A
   surfaced `language_sdk_missing` means that internal
   retry was unavailable or exhausted and remains a terminal configuration
-  blocker; agents must not add another retry loop. Register the worktree's
-  `.venv/bin/python` in the selected IDE, then rerun preparation and inspection.
+  blocker; agents must not add another retry loop. Use the exact worktree's
+  documented language/SDK setup to restore its SDK, configure the resulting SDK
+  for the selected files in the current IDE project, then run one fresh
+  `agent-inspect` assessment. For Python, use the repository's documented Python
+  setup; do not guess a Python version. Do not commit IDE configuration. If
+  preparation evidence names a configured command, use that command; otherwise
+  consult the repository's setup instructions before changing the prerequisite.
+  If setup is absent, ambiguous, or requires global/system changes, report that
+  blocker instead.
 - Stale findings are withheld by default. Use `--include-stale` or
   `--allow-stale` only for explicit diagnostics, and do not treat returned
   cached findings as current inspection results.

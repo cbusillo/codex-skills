@@ -12239,7 +12239,11 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["bucket"], "environment_blocked")
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertEqual(payload["attribution_class"], "configuration_blocked")
-        self.assertIn("language SDK", payload["verdict_next_action"])
+        self.assertIn("documented language/SDK setup", payload["verdict_next_action"])
+        self.assertIn("one fresh `agent-inspect` assessment", payload["verdict_next_action"])
+        self.assertIn("do not guess a Python version", payload["verdict_next_action"])
+        self.assertIn("Do not repeat the failed assessment unchanged", payload["verdict_next_action"])
+        self.assertIn("absent, ambiguous, or requires global/system changes", payload["verdict_next_action"])
 
     def test_language_sdk_missing_remains_terminal_after_internal_retry_exhaustion(self):
         payload = {
@@ -12264,6 +12268,8 @@ class Issue458RegressionTest(unittest.TestCase):
         self.assertEqual(payload["bucket"], "environment_blocked")
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertEqual(payload["attribution_class"], "configuration_blocked")
+        self.assertIn("documented language/SDK setup", payload["verdict_next_action"])
+        self.assertNotIn("Run the configured repository preparation command", payload["verdict_next_action"])
 
     def test_prepared_sdk_retry_requires_venv_inside_active_lane_project(self):
         payload = {
@@ -12379,7 +12385,7 @@ class Issue458RegressionTest(unittest.TestCase):
         payload = jb_inspect.error_payload(raised.exception, helper_args())
         jb_inspect.apply_verdict(payload)
         self.assertFalse(payload["retry_policy"]["retry"])
-        self.assertIn("Configure the selected files' language SDK", payload["verdict_next_action"])
+        self.assertIn("configure the resulting SDK for the selected files", payload["verdict_next_action"])
         self.assertEqual(payload["internal_retry_count"], 0)
 
     def test_prepared_retry_evidence_is_promoted_to_top_level_result(self):
@@ -12480,6 +12486,10 @@ class Issue458RegressionTest(unittest.TestCase):
 
                 self.assertIn("uv run prepare-project.py --python 3.12", action)
                 self.assertIn("/tmp/linked-worktree", action)
+                if reason == "language_sdk_missing":
+                    self.assertIn("one fresh `agent-inspect` assessment", action)
+                    self.assertIn("Do not repeat the failed assessment unchanged", action)
+                    self.assertNotIn("then rerun inspection", action)
 
     def test_configuration_blockers_keep_fallback_without_repository_preparation(self):
         language_action = jb_inspect.next_action_for_unknown("language_sdk_missing", {})
@@ -12490,7 +12500,11 @@ class Issue458RegressionTest(unittest.TestCase):
 
         self.assertEqual(
             language_action,
-            "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection.",
+            "Use the exact worktree's documented language/SDK setup to restore the missing language SDK and configure the "
+            "resulting SDK for the selected files in the current IDE project. For Python, use the repository's documented Python "
+            "setup; do not guess a Python version. Do not commit IDE configuration. Then run one fresh `agent-inspect` assessment. "
+            "Do not repeat the failed assessment unchanged. "
+            "If the documented setup is absent, ambiguous, or requires global/system changes, report that blocker instead.",
         )
         self.assertEqual(
             content_root_action,
