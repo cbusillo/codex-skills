@@ -32,11 +32,16 @@ follow-up under launchplane#2374.
 Used to resolve PR number, URL, branch, head SHA, and closed/merged state through
 the shared REST-first helper. The watcher preserves the helper's compact
 transport, quota, retry, and actor diagnostics. REST does not provide the
-GraphQL `reviewDecision` field, so that readiness input remains explicitly
-unavailable and cannot produce a `ready_to_merge` recommendation.
-When every other readiness input is green, the watcher emits
-`review_readiness_unavailable` instead of the ambiguous `idle` action and keeps
-monitoring the open PR.
+GraphQL `reviewDecision` field. When every other readiness input is green, the
+watcher performs one bounded same-actor GraphQL readiness query pinned to the
+REST repository, PR number, base branch, and head SHA. A successful nullable
+`reviewDecision` remains null and is only treated as `not_applicable` when the
+same document reports `mergeStateStatus: CLEAN`; it is never rewritten as
+`APPROVED`. Missing fields, partial GraphQL errors, quota/cooldown responses,
+actor failures, and identity mismatches remain `unknown`, emit
+`review_readiness_unavailable`, and preserve REST monitoring. Successful
+decisions are not cached indefinitely because review rules can change without
+a head SHA change.
 
 ### PR checks summary
 

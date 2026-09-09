@@ -49,6 +49,12 @@ The PR helper is REST-first for normal orientation. Its snapshot-compatible
 `reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
 ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
 --json statusCheckRollup,reviewDecision` only when that exact data is needed.
+The PR babysitter's readiness boundary is the maintained exception: after
+complete REST check evidence and clean mergeability are observed, it issues
+one short-deadline, same-actor GraphQL document pinned to the exact PR head.
+Successful `reviewDecision: null` remains nullable and is accepted only with
+same-document `mergeStateStatus: CLEAN`; transport errors, partial responses,
+missing fields, and head mismatches remain unavailable readiness evidence.
 If a workflow wait by name reports no runs found, or GitHub returns transient
 mergeability/rollup states such as `mergeable: UNKNOWN` or queued
 `statusCheckRollup` entries, switch to `gh-pr.py checks <pr-or-url>` for PR-head
