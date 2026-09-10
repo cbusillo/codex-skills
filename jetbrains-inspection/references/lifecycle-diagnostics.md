@@ -25,10 +25,13 @@ keeps the owned project warm instead of closing it blindly.
 Current plugins report the active inspection phase as `inspection_stage`, with
 `inspection_stage_elapsed_ms`, `inspection_run_elapsed_ms`, and a chronological
 `inspection_stage_history`. Terminal status may also include
-`inspection_terminal_outcome`. Timeout, capture-deadline, and cancellation
-records use `inspection_failure_diagnostic`; when more than one was observed,
-`inspection_failure_history` repeats the primary failure first. The failure
-`source` identifies `wait_timeout`, `capture_deadline`, or `cancellation`.
+`inspection_terminal_outcome`, including `timed_out` and `preempted`. Timeout,
+capture-deadline, exact-proof deadline, exact-proof write-preemption, and
+cancellation records use `inspection_failure_diagnostic`; when more than one
+was observed, `inspection_failure_history` repeats the primary failure first.
+The failure `source` identifies `wait_timeout`, `capture_deadline`,
+`exact_proof_deadline`, `exact_proof_write_preempted`, or `cancellation`, with
+`timeout`, `cancelled`, or `preempted` as the corresponding failure outcome.
 Capture-deadline evidence remains nested under
 `capture_diagnostic.inspection_failure_diagnostic` in the plugin response.
 
@@ -42,7 +45,8 @@ retained only when pinned to that replacement run; it is never merged into the
 expected run. Internal retry attempts and configured IDE
 lanes retain separate run IDs. Stage history is capped at eight entries, failure
 history at three entries, and worker stacks at 64 frames; durable records also
-redact token-like text and local paths.
+redact token-like text and local paths. Primary tool/file worker evidence is
+bounded by the helper and local inspection files are hashed in durable records.
 These fields diagnose where an existing run stopped. They do not authorize an
 extra retry or change the lifecycle policy.
 
