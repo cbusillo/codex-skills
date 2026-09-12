@@ -1,137 +1,101 @@
 ---
 name: "openai-docs"
-description: "Use when the user asks how to build with OpenAI products or APIs and needs up-to-date official documentation with citations, help choosing the latest model for a use case, or model upgrade and prompt-upgrade guidance; supersedes docs-lookup for OpenAI-specific questions; prioritize OpenAI docs MCP tools, use bundled references only as helper context, and restrict any fallback browsing to official OpenAI domains."
+description: "Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, customization, automations, and self-knowledge—including 'you,' 'your,' 'this app,' or 'this coding agent' when they refer to Codex—and for OpenAI APIs/products and ChatGPT Work. Also use for model choice/migration, prompting, SDKs, Responses, Realtime, agents, evals, and Chat/Work/Codex comparisons. Supersedes docs-lookup for OpenAI-specific questions. Do not use for generic app/software tasks that merely mention Codex."
 metadata:
-  short-description: Reference official OpenAI docs
+  short-description: "Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, and self-knowledge; OpenAI APIs and ChatGPT Work. 'You'/'this app' means Codex only."
 resources:
-  - path: scripts/resolve-latest-model-info.js
+  - path: scripts/resolve-latest-model-info
     kind: script
-    description: Resolve latest model, migration guide, and prompting guide metadata from official docs markdown.
+    description: Resolve current model and guide URLs with a compatible Node runtime on POSIX.
+  - path: scripts/resolve-latest-model-info.cjs
+    kind: script
+    description: CommonJS resolver entrypoint for Windows and direct Node invocation.
+  - path: scripts/fetch-codex-manual.mjs
+    kind: script
+    description: Fetch and verify the current Codex manual with a temporary cache and outline.
+  - path: references/model-migration.md
+    kind: reference
+    description: Route model migrations and model-specific prompting requests.
+  - path: references/model-selection.md
+    kind: reference
+    description: Resolve current model selection and workload tradeoffs.
+  - path: references/official-docs.md
+    kind: reference
+    description: Look up official product and API documentation.
+  - path: references/codex-self-knowledge.md
+    kind: reference
+    description: Use the Codex manual for broad setup and cross-topic synthesis.
+  - path: references/mcp-diagnostics.md
+    kind: reference
+    description: Configure or diagnose local documentation MCP only when requested.
   - path: references/latest-model.md
     kind: reference
-    description: Bundled fallback for latest/current model-selection guidance.
+    description: Bundled fallback for current model-selection guidance.
   - path: references/upgrade-guide.md
     kind: reference
-    description: Bundled fallback for model upgrade planning and migration guidance.
+    description: Route unavailable live migration guidance to the relevant fallback.
+  - path: references/upgrading-to-gpt-6-astra.md
+    kind: reference
+    description: Scoped Astra migration workflow and offline compatibility guidance.
   - path: references/prompting-guide.md
     kind: reference
-    description: Bundled fallback for prompt rewrite and prompt-behavior upgrade guidance.
+    description: Bundled fallback for model-specific prompt guidance.
 commands:
   - name: resolve-latest-model-info
     source: skill
-    resource_path: scripts/resolve-latest-model-info.js
-    example_argv: ["node", "scripts/resolve-latest-model-info.js"]
-    purpose: Resolves latest model and related guide URLs from official docs markdown.
+    resource_path: scripts/resolve-latest-model-info
+    example_argv: ["sh", "scripts/resolve-latest-model-info"]
+    purpose: Resolve current model and guide URLs on POSIX.
+  - name: resolve-latest-model-info-node
+    source: skill
+    resource_path: scripts/resolve-latest-model-info.cjs
+    example_argv: ["node", "scripts/resolve-latest-model-info.cjs"]
+    purpose: Resolve current model and guide URLs with Node.js 18 or newer.
+  - name: fetch-codex-manual
+    source: skill
+    resource_path: scripts/fetch-codex-manual.mjs
+    example_argv: ["node", "scripts/fetch-codex-manual.mjs"]
+    purpose: Fetch the current Codex manual and outline for broad Codex questions.
 ---
-
 
 # OpenAI Docs
 
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
 
-Provide authoritative, current guidance from OpenAI developer docs. Use the
-developer-docs MCP tools first when they are available and useful; use official
-OpenAI-domain web search as the fallback. This skill owns OpenAI model
-selection, model migration, and prompt-upgrade guidance as well as general API
-docs lookup.
+Provide current, cited OpenAI product, API, model, and Codex guidance. Read zero or one primary reference.
 
-## Source priority
+**First substantive action:** Search the user's exact requested official OpenAI documentation topic and any explicitly named model using a concise, topic-specific query of 2-6 essential terms. When an already-available direct official documentation search and page-retrieval capability is present, use it first: search, then fetch or open the matching official page before general web search. Otherwise, immediately use official-domain web search, then actually open or fetch the relevant official page. Complete this source order before reading a reference, inspecting local or repository files, running a Codex manual or model resolver, drafting a plan, or answering from memory. Use the actual fetched page, not a search snippet or an unopened link. If one official search or page does not establish the answer, search another appropriate official domain and actually open or fetch the result. Preserve the exact requested model; never substitute a newer model.
 
-- Search with a compact, title-like query of 2-6 discriminative terms instead
-  of turning the full user question into a keyword list.
-- Use `mcp__openaiDeveloperDocs__search_openai_docs` to discover relevant pages
-  and `mcp__openaiDeveloperDocs__fetch_openai_doc` to read exact sections.
-- For API schema, parameter, or required-field questions, use
-  `mcp__openaiDeveloperDocs__get_openapi_spec` when available alongside the
-  relevant guide or reference page.
-- When an official page URL is already known, fetch that page before relying on
-  search-result summaries.
-- Use `mcp__openaiDeveloperDocs__list_openai_docs` only when no clear query or
-  candidate page exists.
-- If MCP tools are unavailable or unhelpful, continue with official OpenAI web
-  sources. Do not install or reconfigure MCP as a side effect of a docs lookup;
-  offer setup only when the user asks to configure it.
+**Only exception:** An explicitly requested, genuinely broad, cross-topic Codex setup, orientation, or system-map synthesis may use the manual first when shell execution and an allowed temporary cache are available. A specific Codex feature, setting, command, error, model, or requested citation remains docs-first. Mixed Chat/Work/Codex comparisons are official documentation questions, not manual-first Codex requests.
 
-## Latest-model route
+For generic software tasks, answer the software task directly. OpenAI implementation, debugging, SDK, API, prompting, agent, and eval requests are not generic.
 
-- Fetch `https://developers.openai.com/api/docs/guides/latest-model.md` first
-  for latest/current/default model questions.
-- For a latest/current/default migration, run
-  `node scripts/resolve-latest-model-info.js`, then fetch the returned migration
-  and prompting URLs.
-- Treat a non-2xx, empty, whitespace-only, or non-substantive guide response as
-  unavailable. Try MCP fetch/search or official OpenAI web search for the same
-  guidance before using bundled fallbacks.
-- Preserve explicit targets. If the user asks for GPT-5.4, do not silently
-  retarget the work to GPT-5.6; mention newer guidance only as optional context.
-- If current remote guidance cannot be read, use the bundled references and
-  disclose that fallback guidance was used.
-- If current OpenAI pages disagree, state the conflict and avoid inventing a
-  single value.
-
-## Workflow
+For a straightforward factual or citation-only request, follow the source order and do not read a route reference. This includes straightforward API facts, ChatGPT Work or mixed Chat/Work/Codex comparisons, model tiers, aliases, Pro mode, reasoning settings, factual migration baselines, and narrow Codex facts. Prioritize `learn.chatgpt.com` for ChatGPT Work.
 
 For an instruction audit or prompt-only refactor, fetch the named model's
 current prompting guidance and inspect the active instruction sources. Preserve
 existing approval and quality policies unless changing them is explicitly in
 scope. Identify static conflicts separately from measured model behavior; a
 model switch or API evaluation is not a prerequisite for reviewing instruction
-files. The model-switch sequence below applies only to an actual model migration.
+files. The model-migration procedure applies only to an actual model migration.
 
-1. Classify the request as general docs lookup, model selection, model
-   migration, prompt migration, or broader API/provider implementation work.
-2. For model migrations, inventory active model usage, reasoning settings,
-   adjacent prompts, routers, fallbacks, schemas, parsers, tools, and tests.
-3. Map workload roles rather than replacing every model with the flagship tier.
-   Preserve historical docs, examples, eval baselines, comparison code,
-   intentionally pinned fallbacks, and ambiguous usage unless explicitly asked
-   to change them.
-4. For GPT-5.5 or GPT-5.4 migrations, preserve the current reasoning effort for
-   the baseline and test the same setting plus one level lower. Do not guess an
-   omitted setting when current docs or host behavior are unclear.
-5. Switch the model and run representative evals before rewriting prompts.
-   Remove redundant or stale scaffolding one group at a time and add only the
-   smallest instruction needed for a measured regression.
-6. Keep optional capabilities such as Pro mode, explicit caching, persisted
-   reasoning, Programmatic Tool Calling, and multi-agent behavior separate from
-   the baseline migration unless the user explicitly requests them.
-7. Do not turn a model-and-prompt upgrade into an SDK, endpoint, provider,
-   tooling, IDE, plugin, shell, auth, tool-schema, parser, or orchestration
-   migration without explicit scope.
-8. Validate user-visible behavior and machine-readable contracts. Report what
-   changed, what remained pinned, what was not run, and any compatibility
-   blockers.
+## Choose one primary route
 
-## Reference map
+Use the first matching route, and read its reference only when the requested task needs that specialized workflow:
 
-Read only what you need:
+- **Explicitly requested local documentation integration:** Read [integration guidance](references/mcp-diagnostics.md) only when the user explicitly requests that local integration.
+- **Model migration, upgrades, or model-specific prompting:** Read [model-migration.md](references/model-migration.md) for actual migration planning, implementation, dynamic target resolution, or prompt changes. Preserve an explicitly requested target.
+- **Model selection and comparisons:** Read [model-selection.md](references/model-selection.md) only when nuanced current, latest, default, cost, latency, quality, or modality tradeoffs need more guidance. Do not run a migration resolver for selection alone.
+- **Product, API, ChatGPT Work, and mixed Chat/Work/Codex documentation:** Read [official-docs.md](references/official-docs.md) only when fetched official pages leave source selection, API schemas, or the requested implementation unresolved. This route is not manual-first.
+- **Explicitly broad Codex setup, orientation, or cross-topic synthesis:** Read [codex-self-knowledge.md](references/codex-self-knowledge.md) when the eligible Codex manual or deeper Codex procedures are needed.
 
-- `https://developers.openai.com/api/docs/guides/latest-model.md` -> current model-selection and "best/latest/current model" questions.
-- `references/latest-model.md` -> bundled fallback for model-selection and "best/latest/current model" questions.
-- `references/upgrade-guide.md` -> bundled fallback for model upgrade and upgrade-planning requests.
-- `references/prompting-guide.md` -> bundled fallback for prompt rewrites and prompt-behavior upgrades.
+Read at most one primary reference. Do not open every route, bundled model guide, or helper script. Read a supporting reference or run a helper only when the chosen workflow demonstrably needs it.
 
-## Quality rules
+## Source and execution boundaries
 
-- Treat OpenAI docs as the source of truth; avoid speculation.
-- Keep migration changes narrow and behavior-preserving.
-- Prefer prompt-only fixes for prompt-specific regressions; do not rewrite a
-  working prompt stack wholesale.
-- Do not invent pricing, availability, parameters, API changes, or breaking changes.
-- Keep quotes short and within policy limits; prefer paraphrase with citations.
-- If multiple pages differ, call out the difference and cite both.
-- If official docs and repo behavior disagree, state the conflict and stop before making broad edits.
-- If docs do not cover the user’s need, say so and offer next steps.
-
-## Tooling notes
-
-- Prefer MCP doc tools for OpenAI markdown docs when available, then use
-  official-domain web search when MCP is unavailable or unhelpful.
-- When falling back to web search, restrict to official OpenAI domains
-  (`developers.openai.com`, `platform.openai.com`, `learn.chatgpt.com`) and cite
-  the fetched page that supports the claim.
-- Use API documentation for API contracts, parameters, and API pricing. Use
-  `learn.chatgpt.com` for the ChatGPT and Codex product/configuration guidance it
-  hosts; do not infer API capabilities or account-specific availability from
-  product tutorials.
+- Search, open, fetch, and cite only `developers.openai.com`, `platform.openai.com`, and `learn.chatgpt.com`. Cite the page that supports the claim. State uncertainty when official sources do not establish pricing, availability, account access, limits, or behavior.
+- Preserve an explicitly requested model for selection, migration, and prompting. Resolve an unspecified latest or current migration target only after searching and fetching current official guidance.
+- Use `references/latest-model.md` only as a disclosed fallback after current official model guidance does not answer the question. Read `references/upgrading-to-gpt-6-astra.md` only for an actual, requested GPT-6 migration; read `references/prompting-guide.md` only for requested prompting work.
+- Before building, running, editing, debugging, or testing an API-backed app or tool, use `openai-platform-api-key` first when available. Documentation, conceptual examples, model selection, and read-only guidance do not require an API key.
+- Say "OpenAI Docs" or "official OpenAI documentation" in user-facing answers. Keep exact official citations and examples concise.
