@@ -17,6 +17,12 @@ Apply these rules when using the repository execution skills that link here.
   relevant instruction, and explain which information or authorization is still
   missing. Distinguish a requirement from an interpretation. Complete independent
   authorized work while the dependent action waits.
+- Ask for missing information early and continue independent authorized work.
+  Before requesting approval, complete the authorized preparation needed to make
+  the proposed action concrete and reviewable. For user decisions, explain the
+  choice, a recommendation when evidence supports one, and practical consequences
+  in plain language. Include technical detail when it affects the choice; resolve
+  routine engineering decisions within existing authorization.
 - Preserve unrelated changes and isolate implementation when necessary. Ask when
   edits overlap or ownership cannot be established, rather than treating every
   dirty checkout as a blocker. Isolation does not relax protected-branch or
