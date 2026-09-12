@@ -1,33 +1,21 @@
-# Exec Harness Scenarios
+# Historical Every Code Harness Fixtures
 
-These public-safe fixtures exercise observable skill context shape and selected
-fake-GitHub workflows with the Every Code exec harness and fake Responses API.
-They do not spend model tokens.
+These synthetic scenarios were written for the retired Every Code exec
+harness. They are retained as historical fixtures, not a supported validation
+suite. Do not run the old wrapper or restore Every Code for current skill work.
+Use [current validation guidance](../../references/validation.md) for Codex and
+Codex Lab.
 
-Files prefixed with `local-llm-` are the exception: they use the local LM Studio
-provider embedded in each scenario's `config_toml`, spend only trusted local
-model time, and keep raw outputs under the harness artifact directory.
+The fake Responses API scenarios inspected captured context without model
+tokens; fake GitHub scenarios exercised selected helper calls. Files prefixed
+with `local-llm-` used a trusted local provider and incurred local model work.
+Neither mode establishes current Codex or Codex Lab command interception.
 
-Run them from the repository root:
+The harness-dependent entries and CI-promotion decisions in
+[the scorecard](../../references/skill-scorecard.yaml) describe historical
+coverage. Their commands, models, gates, and not-run reasons do not schedule or
+recommend new runs. The scorecard's active static and helper checks still apply.
 
-```bash
-scripts/validate-exec-harness-skills.sh skill-creator/evaluations/exec-harness/*.json
-```
-
-If the sibling Every Code checkout is not at `../code`, set `CODE_EXEC_HARNESS`
-to the harness script path.
-
-CI-promotion decisions and public-safe not-run reasons for harness, local LLM,
-and performance checks are recorded in
-`skill-creator/references/skill-scorecard.yaml`.
-
-The scenario assertions inspect captured provider requests under
-`expect.responses`. Keep fixtures synthetic, avoid private paths or secrets, and
-record not-run evidence when the harness is unavailable.
-
-For command-policy scenarios, assert both sides of the contract when practical:
-the provider request should contain the relevant structured
-`policy.command_policies` entries, and the captured command should use the
-helper-backed path. These scenarios are regression coverage for the skill
-catalog and routing context; they are not a substitute for Codex Lab runtime
-command-blocker enforcement.
+A future port must explicitly select the current host and model, verify the
+fixture assumptions, and establish fresh evidence. Preserve synthetic inputs
+and useful behavioral assertions without treating old passes as current ones.

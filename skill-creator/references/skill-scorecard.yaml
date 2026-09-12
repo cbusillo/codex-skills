@@ -1,4 +1,8 @@
 ---
+# Every Code is retired. Harness-dependent suites, promotion decisions, and
+# baselines below are frozen historical records, not current execution routes.
+# Their commands and gates must not schedule new runs. Active static/helper
+# checks remain current. See exec_harness.md and validation.md.
 schema_version: 1
 owner_issue: 298
 normalization:
@@ -23,28 +27,28 @@ ci_promotion_decisions:
     ci_surface: scripts/validate-exec-harness-skills.sh <scenario.json> [...]
     not_run_reason: harness_unavailable
     rationale: >-
-      Fake gh and fake Responses API scenarios cover high-risk routing,
-      command-policy, and public-safety regressions without model tokens, but
-      they require the Every Code exec harness checkout and remain opt-in until
-      that dependency is hermetic in CI.
+      Historical decision for the retired Every Code harness. Fake gh and fake
+      Responses API scenarios exercised routing and context without model tokens.
+      This retained decision is not an opt-in execution route or a plan to restore
+      that dependency; current host coverage needs an explicitly scoped port.
   local_llm_advisory:
     decision: advisory_local
     ci_surface: >-
       scripts/validate-exec-harness-skills.sh <local-llm-scenario.json>
     not_run_reason: local_endpoint_unavailable
     rationale: >-
-      Trusted local-provider scenarios cover routing and judgment with local
-      model time only. They require an available local endpoint and must not
-      silently fall back to a cloud provider.
+      Historical decision for local-provider scenarios in the retired Every
+      Code harness. Their old endpoint/model assumptions do not select a current
+      local-model route. Use current validation guidance for new evidence.
   performance_probe:
     decision: advisory_local
     ci_surface: >-
       uv run skill-creator/scripts/collect_exec_harness_performance.py --latest 10
     not_run_reason: harness_unavailable
     rationale: >-
-      Performance summaries depend on local harness artifacts and are useful
-      for trend evidence, but budgets remain advisory and raw artifacts stay
-      local-only.
+      Historical artifact analysis only. The collector remains available to
+      interpret old runs, with advisory budgets and local-only raw artifacts;
+      its output does not establish current host or model performance.
   script_test:
     decision: required_for_pr
     ci_surface: scripts/validate-skills.sh

@@ -3,4 +3,4 @@ interface:
   short_description: "Create or update agent skills"
   icon_small: "./assets/skill-creator-small.svg"
   icon_large: "./assets/skill-creator.png"
-  default_prompt: "Use $skill-creator to design, validate, or update an Every Code skill."
+  default_prompt: "Use $skill-creator to design, validate, or update a Codex skill."
