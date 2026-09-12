@@ -6,6 +6,11 @@ focused on goal, success evidence, autonomy, routing, and result contracts.
 
 ## Structured metadata
 
+The following fields are extensions consumed by this repository's tooling.
+Preserve them where used, but do not require them in every portable Codex skill
+or treat their presence as proof of native runtime support. Codex invocation
+policy belongs in `agents/openai.yaml`; see [agents metadata](openai_yaml.md).
+
 Use `resources` to declare bundled files, `commands` to declare routine
 entrypoints, and `workflow_defaults` for simple stable defaults.
 
@@ -47,7 +52,9 @@ workflow_defaults:
 
 Use command policies when a raw command should route through a maintained
 helper, require confirmation, or be rejected. They are portable metadata, not a
-runtime blocker unless the host loads them into command execution.
+runtime blocker unless the host loads them into command execution. Keep the
+essential helper-routing instruction in skill prose as well. Verify the
+specific host implementation before claiming command interception or blocking.
 
 ```yaml
 policy:

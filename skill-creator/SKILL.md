@@ -12,7 +12,7 @@ resources:
     description: Validate a single skill's frontmatter, naming, command policies, and structured metadata.
   - path: scripts/generate_openai_yaml.py
     kind: script
-    description: Generate agents/openai.yaml UI metadata for a skill.
+    description: Generate initial agents/openai.yaml UI metadata for a skill.
   - path: scripts/validate-skill-behavior.py
     kind: script
     description: Run behavioral smoke checks for skill routing and invocation expectations.
@@ -21,16 +21,19 @@ resources:
     description: Validate all active skills in this repository.
   - path: scripts/collect_exec_harness_performance.py
     kind: script
-    description: Summarize public-safe performance metrics from local Every Code exec-harness artifacts.
+    description: Summarize public-safe metrics from existing legacy Every Code exec-harness artifacts.
   - path: references/openai_yaml.md
     kind: reference
     description: Field definitions and examples for agents/openai.yaml.
   - path: references/forward-testing.md
     kind: reference
     description: Guidance for subagent forward-testing of complex skill revisions.
+  - path: references/validation.md
+    kind: reference
+    description: Select proportional static, source-review, and execution evidence for the current host and model.
   - path: references/exec_harness.md
     kind: reference
-    description: How to run Every Code exec-harness scenarios for skill behavior validation.
+    description: Legacy Every Code harness instructions, only for an explicitly selected and available compatible runtime.
   - path: references/command-policy-contract.md
     kind: reference
     description: Contract for portable command-policy metadata, runtime enforcement boundaries, and simulator/harness expectations.
@@ -69,7 +72,7 @@ commands:
         "--interface",
         "short_description=<text>",
       ]
-    purpose: Generates or refreshes UI metadata for a skill.
+    purpose: Generates initial UI metadata; edit existing metadata files in place.
   - name: validate-skill-behavior
     source: skill
     resource_path: scripts/validate-skill-behavior.py
@@ -96,7 +99,12 @@ commands:
 
 # Skill Creator
 
-This skill provides guidance for creating effective skills.
+Create and update effective Codex skills. For Codex Lab or another compatible
+host, verify its current capabilities before relying on host-specific behavior.
+Apply [task scope and authorization](../references/execution-scope.md); preserve
+the user's existing authorization and intentional quality and approval policies.
+Install this maintained override with the catalog's shared `../references/`
+directory; copying this skill folder alone does not include those dependencies.
 
 ## About Skills
 
@@ -159,17 +167,28 @@ When using subagents for validation, treat that as an evaluation surface. The go
 
 Prefer raw artifacts such as example prompts, outputs, diffs, logs, or traces. Give the minimum task-local context needed to perform the validation. Avoid passing the intended answer, suspected bug, intended fix, or your prior conclusions unless the validation explicitly requires them.
 
-Use the exec harness for behavior-sensitive skill changes when available. A
-skill that changes routing, command policy, safety boundaries, or GitHub/repo
-workflow semantics should normally have at least three representative prompts:
-the intended trigger and success path, an adjacent request that should not
-trigger or should route elsewhere, and an ambiguity or safety-boundary case.
-Include a negative or ambiguity case when practical. Keep tests focused on
-observable behavior rather than private reasoning. For model-specific prompt
-migrations, consult current model guidance and preserve the existing eval
-baseline; use `openai-docs` for OpenAI models. For GPT-5.6 specifically, compare
-the target at the same reasoning effort and one level lower before changing the
-prompt. Read `references/exec_harness.md` before designing or running scenarios.
+For changes to routing, command policy, safety boundaries, or GitHub/repo
+workflow semantics, normally cover at least three representative prompts: the
+intended trigger and success path, an adjacent request that should route
+elsewhere, and a boundary case, using the evidence type selected below. Include
+a negative or ambiguity case when practical. Keep checks focused on observable
+behavior.
+
+Read [validation guidance](references/validation.md) when selecting evidence for
+a behavior-sensitive change. Use the current Codex or Codex Lab execution path
+when testing that host. A direct local-model response or a source review has a
+different scope from an agent execution test; report which one was performed.
+Only for an explicitly selected legacy Every Code runtime, use the exec harness
+for behavior-sensitive skill changes when available, and read
+[legacy harness instructions](references/exec_harness.md) first. Codex Lab is
+not an alias for that harness.
+
+For model-specific prompting, use `openai-docs` to fetch the named model's
+current guidance. Audit conflicting instructions, authorization scope,
+delegation, output requirements, and validation breadth. Preserve deliberate
+policies and an existing evaluation baseline. Apply effort-comparison advice
+only to the model and experiment it addresses; a model migration or API
+comparison is not a prerequisite for correcting instruction text.
 
 ### Anatomy of a Skill
 
@@ -182,10 +201,10 @@ skill-name/
 │   │   ├── name: (required)
 │   │   ├── description: (required)
 │   │   ├── metadata.short-description: (optional)
-│   │   └── policy: allow_implicit_invocation and command_policies (optional)
+│   │   └── catalog extensions: e.g. policy.command_policies (optional)
 │   └── Markdown instructions (required)
 ├── agents/ (recommended)
-│   └── openai.yaml - UI metadata for skill lists and chips
+│   └── openai.yaml - UI metadata, dependencies, and invocation policy
 └── Bundled Resources (optional)
     ├── scripts/          - Executable code (Python/Bash/etc.)
     ├── references/       - Documentation intended to be loaded into context as needed
@@ -196,23 +215,25 @@ skill-name/
 
 Every SKILL.md consists of:
 
-- **Frontmatter** (YAML): Contains `name` and `description` fields. `description` is the full model-visible trigger/routing text. Optional `metadata.short-description` provides compact human-facing listing text, and optional `policy.allow_implicit_invocation: false` marks a skill as manual-only.
-- **Structured metadata** (YAML): Optional `resources`, `commands`, and `workflow_defaults` fields describe bundled files and routine commands. Keep judgment, routing, safety, and procedural nuance in prose.
+- **Frontmatter** (YAML): Contains `name` and `description`. `description` is the full model-visible trigger/routing text. Optional `metadata.short-description` provides compact listing text.
+- **Repository metadata** (YAML): This catalog also supports `resources`, `commands`, `workflow_defaults`, and command-policy declarations for its tooling. These extensions are not Codex runtime enforcement controls.
 - **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
+- **`agents/openai.yaml`**: Codex UI metadata, tool dependencies, and invocation policy. Put `policy.allow_implicit_invocation: false` here for explicit-only invocation.
 
 ##### Structured resources and commands
 
-Use `resources` for bundled files, `commands` for routine entrypoints, and
-`workflow_defaults` for simple stable defaults. Keep descriptions and purposes
-short, distinguish similar commands clearly, and keep judgment, routing,
-safety, and exceptions in prose. Read `references/skill-design-details.md` when
-adding or changing structured metadata.
+Preserve metadata consumed by this repository's tooling. Add these extensions
+only when the target catalog uses them; a portable Codex skill does not need
+them. Keep essential routing and constraints in the body. Read
+[skill design details](references/skill-design-details.md) when adding or
+changing structured metadata.
 
 ##### Command policies
 
-When a skill owns a fragile or preferred command workflow, put the machine-readable
-mapping in `policy.command_policies` instead of relying only on prose. Keep prose
-for judgment, sequencing, and exceptions.
+When this catalog owns a fragile or preferred command workflow, preserve its
+machine-readable mapping in `policy.command_policies` as well as the essential
+helper-routing instruction in prose. Codex reading that metadata is not proof
+that a command will be intercepted.
 
 Use `references/command-policy-contract.md` as the source of truth for the
 frontmatter/runtime boundary, matcher precedence, path resolution, and
@@ -226,7 +247,10 @@ portable metadata, not a runtime enforcement guarantee by themselves.
 - Read references/openai_yaml.md before generating values and follow its descriptions and constraints
 - Create: human-facing `display_name`, `short_description`, and `default_prompt` by reading the skill
 - Generate deterministically by passing the values as `--interface key=value` to `scripts/generate_openai_yaml.py` or `scripts/init_skill.py`
-- On updates: validate `agents/openai.yaml` still matches SKILL.md; regenerate if stale
+- On updates: check that `agents/openai.yaml` still matches the skill and edit
+  the intended fields in place. Preserve existing policy, dependencies, and
+  unrelated interface fields. The bundled generator writes an interface-only
+  file, so use it for initial generation, not an existing metadata update.
 - Only include other optional interface fields (icons, brand color) if explicitly provided
 - See references/openai_yaml.md for field definitions and examples
 
@@ -297,7 +321,9 @@ Follow these steps in order, skipping only if there is a clear reason why they a
 
 ### Step 1: Understanding the Skill with Concrete Examples
 
-Skip this step only when the skill's usage patterns are already clearly understood. It remains valuable even when working with an existing skill.
+Reuse usage patterns and examples already clear from the request, conversation,
+or existing skill. Ask only for missing information that materially affects the
+skill's purpose, audience, or behavior.
 
 To create an effective skill, clearly understand concrete examples of how the skill will be used. This understanding can come from either direct user examples or generated examples that are validated with user feedback.
 
@@ -307,10 +333,6 @@ For example, when building an image-editor skill, relevant questions include:
 - "Can you give some examples of how this skill would be used?"
 - "I can imagine users asking for things like 'Remove the red-eye from this image' or 'Rotate this image'. Are there other ways you imagine this skill being used?"
 - "What would a user say that should trigger this skill?"
-- "Where should I create this skill? If you do not have a preference, I will
-  place it in `$CODE_HOME/skills` when set, use `$CODEX_HOME/skills` for
-  compatibility, then prefer `~/.code/skills` if present, and finally fall back
-  to `~/.codex/skills`."
 
 To avoid overwhelming users, avoid asking too many questions in a single message. Start with the most important questions and follow up as needed for better effectiveness.
 
@@ -346,28 +368,40 @@ At this point, it is time to actually create the skill.
 
 Skip this step only if the skill being developed already exists. In this case, continue to the next step.
 
-Before running `init_skill.py`, ask where the user wants the skill created. If
-they do not specify a location, default to `$CODE_HOME/skills` when set, use
-`$CODEX_HOME/skills` for compatibility, then prefer `~/.code/skills` if
-present, and finally fall back to `~/.codex/skills` so the skill is
-auto-discovered.
+Use an explicit location or the established maintained source first. In a skills
+repository, follow its branch/worktree and runtime-checkout instructions; do not
+scaffold into the installed runtime or generated `.system`/plugin cache.
+For a new Codex skill outside an established catalog, use the intended scope:
+`.agents/skills` in the repository for project skills, `~/.agents/skills` for
+personal skills, or the owning plugin's source directory for plugin skills.
+These follow the current [Codex discovery documentation](https://learn.chatgpt.com/docs/build-skills).
+Ask about location only when the intended scope remains materially ambiguous.
+
+Resolve existing symlinks and host configuration before choosing a destination.
+`CODE_HOME`, `$CODEX_HOME/skills`, and `.code/skills` may describe compatibility
+or existing runtime layouts; they are not universal Codex authoring defaults.
+For another host, verify its current discovery rules in that host's
+documentation or maintained source before using a different layout.
 
 When creating a new skill from scratch, always run the `init_skill.py` script. The script conveniently generates a new template skill directory that automatically includes everything a skill requires, making the skill creation process much more efficient and reliable.
+
+Commands below are relative to this `skill-creator` directory; from another
+directory, use the script's absolute path. Use `uv` for the bundled Python
+helpers and their declared dependencies. If setup is needed, use
+`python-uv-workflow`.
 
 Usage:
 
 ```bash
-scripts/init_skill.py <skill-name> --path <output-directory> [--resources scripts,references,assets] [--examples]
+uv run scripts/init_skill.py <skill-name> --path <maintained-skill-root> [--resources scripts,references,assets] [--examples]
 ```
 
 Examples:
 
 ```bash
-skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}"
-skills_dir="$skills_home/skills"
-scripts/init_skill.py my-skill --path "$skills_dir"
-scripts/init_skill.py my-skill --path "$skills_dir" --resources scripts,references
-scripts/init_skill.py my-skill --path ~/work/skills --resources scripts --examples
+uv run scripts/init_skill.py my-skill --path <target-repo-root>/.agents/skills
+uv run scripts/init_skill.py my-skill --path <target-repo-root>/.agents/skills --resources scripts,references
+uv run scripts/init_skill.py my-skill --path <maintained-skill-root> --resources scripts --examples
 ```
 
 The script:
@@ -380,11 +414,18 @@ The script:
 
 After initialization, customize the SKILL.md and add resources as needed. If you used `--examples`, replace or delete placeholder files.
 
-Generate `display_name`, `short_description`, and `default_prompt` by reading the skill, then pass them as `--interface key=value` to `init_skill.py` or regenerate with:
+For initial UI metadata, derive `display_name`, `short_description`, and
+`default_prompt` from the skill and pass them as `--interface key=value` to
+`init_skill.py`. If `agents/openai.yaml` does not yet exist, it can also be
+generated with:
 
 ```bash
-scripts/generate_openai_yaml.py <path/to/skill-folder> --interface key=value
+uv run scripts/generate_openai_yaml.py <path/to/skill-folder> --interface key=value
 ```
+
+For an existing metadata file, edit only the intended fields in place; do not
+use that generator to update it. Preserve policy, dependencies, and unrelated
+interface fields.
 
 Only include other optional interface fields when the user explicitly provides them. For full field descriptions and examples, see references/openai_yaml.md.
 
@@ -412,8 +453,7 @@ If you used `--examples`, delete any placeholder files that are not needed for t
 
 ##### Frontmatter
 
-Write the YAML frontmatter for the Every Code agent with `name` and
-`description`:
+Write Codex YAML frontmatter with `name` and `description`:
 
 - `name`: The skill name
 - `description`: This is the primary triggering mechanism for your skill, and helps the agent understand when to use the skill.
@@ -421,10 +461,6 @@ Write the YAML frontmatter for the Every Code agent with `name` and
   - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to the agent.
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when Codex needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
 - `metadata.short-description`: Optional compact human-facing summary for UI/listing surfaces. Keep the full routing and trigger detail in `description`.
-- `policy.allow_implicit_invocation`: Optional boolean. Set to `false` only for skills that should be discoverable and explicitly invokable, but excluded from default implicit routing.
-- `resources`: Optional list of bundled files with `path`, `kind`, and `description`.
-- `commands`: Optional list of executable entrypoints with `name`, `source`, `example_argv`, and `purpose`. Use `resource_path` only for `source: skill` commands.
-- `workflow_defaults`: Optional list of simple defaults with `name`, `value`, and `description`.
 
 Example:
 
@@ -434,14 +470,23 @@ name: example-skill
 description: Full model-visible trigger/routing description. Use when ...
 metadata:
   short-description: Compact human-facing summary
-policy:
-  allow_implicit_invocation: false
 ---
 ```
 
-Runtime config may also disable skills by name or `SKILL.md` path for a local
-installation. Use frontmatter policy when the skill's own contract is
-manual-only; use runtime config for environment-specific selection.
+For a Codex skill requiring explicit invocation, add this to
+`agents/openai.yaml`, preserving any existing interface and dependencies:
+
+```yaml
+policy:
+  allow_implicit_invocation: false
+```
+
+Do not rely on a same-named `SKILL.md` frontmatter field for Codex invocation
+control. Preserve such fields only for a catalog or host that consumes them,
+and document that compatibility scope. Use runtime config for installation-only
+selection. Consult [agents metadata](references/openai_yaml.md) for supported
+fields and [skill design details](references/skill-design-details.md) for this
+repository's additional frontmatter metadata.
 
 ##### Body
 
@@ -452,10 +497,14 @@ Write instructions for using the skill and its bundled resources.
 Once development of the skill is complete, validate the skill folder to catch basic issues early:
 
 ```bash
-scripts/quick_validate.py <path/to/skill-folder>
+uv run scripts/quick_validate.py <path/to/skill-folder>
 ```
 
-The validation script checks YAML frontmatter format, required fields, and naming rules. If validation fails, fix the reported issues and run the command again.
+The local validator checks frontmatter, naming, and this catalog's metadata
+contracts. It does not prove target-host discovery or model behavior. Complete
+the owning repository's required checks; select additional evidence using
+[validation guidance](references/validation.md). If a check fails, fix the issue
+and rerun the affected check.
 
 ### Step 6: Iterate
 
@@ -464,11 +513,14 @@ fresh user feedback to identify measured failures.
 
 **Forward-testing and iteration workflow:**
 
-1. Record a baseline on representative tasks.
+1. Reuse an applicable baseline on representative tasks, or record one when
+   making a behavior or performance comparison.
 2. Identify a concrete struggle, inefficiency, or contract failure.
 3. Change one instruction group, resource, or tool route at a time.
-4. Rerun the same cases and compare observable outcomes.
-5. Keep the change only when it improves behavior without weakening boundaries.
+4. Run affected cases and compare observable outcomes with any applicable
+   baseline; reuse current evidence for unchanged scope and inputs.
+5. Keep supported improvements and report unmeasured effects or unavailable
+   execution evidence without claiming a demonstrated speedup.
 
 Read `references/forward-testing.md` only when planning or running a subagent
 forward-test for a tricky skill revision.

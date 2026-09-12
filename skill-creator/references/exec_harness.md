@@ -1,6 +1,13 @@
-# Exec Harness Skill Evaluation
+# Legacy Every Code Exec Harness
 
-Use the Every Code exec harness when a skill change affects observable agent
+Read this reference only when the task explicitly selects the legacy Every Code
+harness and a compatible executable and checkout are available. Its commands,
+model examples, and paths are legacy compatibility material. Do not treat a
+Codex or Codex Lab executable as a substitute, revive retired tooling for an
+ordinary skill edit, or use these examples as current model recommendations.
+For current validation, use [validation guidance](validation.md).
+
+For that legacy runtime, use its exec harness when a skill change affects observable agent
 behavior, especially routing, command policy, safety boundaries, GitHub workflow
 semantics, or closeout/readiness order. Unit tests and static validators prove
 helper code and metadata; exec-harness scenarios prove the model can use the

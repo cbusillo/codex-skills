@@ -44,6 +44,10 @@ Top-level constraints:
 - `dependencies.tools[].description`: Human-readable explanation of the dependency.
 - `dependencies.tools[].transport`: Connection type when `type` is `mcp`.
 - `dependencies.tools[].url`: MCP server URL when `type` is `mcp`.
-- `policy.allow_implicit_invocation`: When false, the skill is not injected into
-  the model context by default, but can still be invoked explicitly via `$skill`.
-  Defaults to true.
+- `policy.allow_implicit_invocation`: When false, prevents implicit invocation;
+  explicit `$skill` invocation still works. Defaults to true. A similarly named
+  field in `SKILL.md` frontmatter is not the Codex invocation-policy setting.
+
+When changing UI metadata, preserve existing policy and tool dependencies. The
+bundled generator writes an interface-only file; edit the existing file directly
+when it contains other supported sections.
