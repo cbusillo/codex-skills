@@ -3,19 +3,20 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Offline tests for the latest-model metadata resolver and fallback bundle."""
+"""Offline tests for the latest-model metadata resolver entrypoints."""
 
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-RESOLVER = Path(__file__).with_name("resolve-latest-model-info.js")
+RESOLVER = Path(__file__).with_name("resolve-latest-model-info.cjs")
+POSIX_RESOLVER = Path(__file__).with_name("resolve-latest-model-info")
 
 
 def run_resolver(markdown: str, *, base_url: str = "https://developers.openai.com") -> subprocess.CompletedProcess[str]:
@@ -26,7 +27,6 @@ def run_resolver(markdown: str, *, base_url: str = "https://developers.openai.co
     try:
         return subprocess.run(
             ["node", str(RESOLVER), "--source", str(source), "--base-url", base_url],
-            check=False,
             capture_output=True,
             text=True,
         )
@@ -105,26 +105,38 @@ promptingGuide: prompt.md
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("latestModelInfo block not found", result.stderr)
 
-    def test_bundled_fallback_targets_gpt56(self) -> None:
-        latest = (SKILL_ROOT / "references" / "latest-model.md").read_text()
-        upgrade = (SKILL_ROOT / "references" / "upgrade-guide.md").read_text()
-        prompting = (SKILL_ROOT / "references" / "prompting-guide.md").read_text()
-        normalized_latest = " ".join(latest.split())
-
-        for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
-            self.assertIn(model, latest)
-        for invented_model in ("gpt-5.6-pro", "gpt-5.6-mini", "gpt-5.6-nano"):
-            self.assertNotIn(f"| `{invented_model}` |", latest)
-        self.assertIn("gpt-5.5-pro", latest)
-        self.assertIn("defaults to `medium`", normalized_latest)
-        self.assertIn("# Upgrading to GPT-5.6", upgrade)
-        self.assertIn('modelSlug: "gpt-5p6-sol"', upgrade)
-        self.assertIn('`gpt-5.6-sol` plus `reasoning.mode: "pro"`', upgrade)
-        self.assertIn('reasoning_effort: "none"', upgrade)
-        self.assertIn("Chat Completions routes that use function tools", upgrade)
-        self.assertIn("# Prompting guidance for GPT-5.6", prompting)
-        self.assertNotIn("# Upgrading to GPT-5.5", upgrade)
-        self.assertNotIn("GPT-5.5 works best", prompting)
+    def test_entrypoints_preserve_astra_anchors_inside_module_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "package.json").write_text('{"type":"module"}\n')
+            resolver = root / RESOLVER.name
+            wrapper = root / POSIX_RESOLVER.name
+            shutil.copyfile(RESOLVER, resolver)
+            shutil.copyfile(POSIX_RESOLVER, wrapper)
+            source = root / "model.md"
+            source.write_text(
+                "---\nlatestModelInfo:\n"
+                "  model: gpt-6-astra\n"
+                "  migrationGuide: /api/docs/guides/latest-model/gpt-6-astra.md#migration-quickstart\n"
+                "  promptingGuide: /api/docs/guides/latest-model/gpt-6-astra.md#prompting-best-practices\n"
+                "---\n"
+            )
+            expected = {
+                "model": "gpt-6-astra",
+                "modelSlug": "gpt-6-astra",
+                "migrationGuideUrl": "https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md#migration-quickstart",
+                "promptingGuideUrl": "https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md#prompting-best-practices",
+            }
+            for command in (["node", str(resolver)], ["sh", str(wrapper)]):
+                with self.subTest(command=command):
+                    result = subprocess.run(
+                        [*command, "--source", str(source)],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), expected)
 
 
 if __name__ == "__main__":

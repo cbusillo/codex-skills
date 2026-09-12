@@ -2458,37 +2458,42 @@ def test_dns_cloudflare_routes_to_local_infra_context() -> None:
 
 
 def test_openai_docs_latest_target_and_fallback_contract() -> None:
-    source = (ROOT / "openai-docs" / "SKILL.md").read_text()
-    normalized = " ".join(source.lower().split())
+    skill_root = ROOT / "openai-docs"
+    normalized = normalize_text((skill_root / "SKILL.md").read_text())
+    migration = normalize_text((skill_root / "references/model-migration.md").read_text())
+    upgrade = normalize_text((skill_root / "references/upgrading-to-gpt-6-astra.md").read_text())
+    integration = normalize_text((skill_root / "references/mcp-diagnostics.md").read_text())
 
     require(
-        "latest-model.md" in normalized
-        and "node scripts/resolve-latest-model-info.js" in normalized,
+        "latest-model.md" in migration
+        and "sh <skill-dir>/scripts/resolve-latest-model-info" in migration
+        and "scripts/resolve-latest-model-info.cjs" in normalized,
         "OpenAI Docs must resolve latest-model metadata before dynamic migrations",
     )
     require(
-        "non-2xx, empty, whitespace-only, or non-substantive" in normalized
-        and "mcp fetch/search or official openai web search" in normalized
-        and "bundled fallbacks" in normalized,
+        "non-2xx, empty, whitespace-only, or non-substantive" in migration
+        and "official documentation search and fetch before using disclosed bundled fallbacks" in migration,
         "OpenAI Docs must route empty or failed remote guides through official search before bundled fallback",
     )
     require(
-        "preserve explicit targets" in normalized
-        and "historical docs, examples, eval baselines, comparison code" in normalized
-        and "intentionally pinned fallbacks" in normalized,
+        "preserve the user's exact requested target" in migration
+        and "historical examples, fixtures, eval baselines, provider comparisons" in migration
+        and "intentionally pinned fallbacks" in migration,
         "OpenAI Docs must preserve explicit, historical, evaluation, and pinned model usage",
     )
     require(
-        "keep optional capabilities" in normalized
-        and "separate from the baseline migration" in normalized,
-        "OpenAI Docs must keep optional GPT-5.6 capabilities out of baseline migrations",
+        "optional feature adoption" in upgrade
+        and "separate from the baseline migration" in upgrade,
+        "OpenAI Docs must keep optional capabilities out of baseline migrations",
     )
     require(
-        "do not install or reconfigure mcp as a side effect of a docs lookup" in normalized,
+        "only when the user explicitly requests that local integration" in normalized
+        and "a missing documentation tool during an ordinary documentation request is not a setup request" in integration
+        and "without installation, sandbox escalation, configuration changes, or restart" in integration,
         "OpenAI Docs must not mutate MCP configuration during ordinary docs lookup",
     )
     require(
-        "run the install command yourself" not in normalized,
+        "run the install command yourself" not in normalized + integration,
         "OpenAI Docs must not retain automatic MCP installation instructions",
     )
 
