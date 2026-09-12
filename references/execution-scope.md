@@ -7,7 +7,8 @@ Apply these rules when using the repository execution skills that link here.
   through its applicable checks.
 - Reuse authorization already given for the same action and scope. A requirement
   for explicit approval does not imply a fresh question when that approval is
-  already present. Preserve narrower requirements such as approval of an exact
+  already present. Fresh readiness checks do not by themselves require renewed
+  user approval. Preserve narrower requirements such as approval of an exact
   comment, production target, release, plan digest, or immediate device restart.
 - A skill match is not authorization to expand the task. A read-only assessment
   remains read-only; a readiness check does not itself authorize a merge, release,
