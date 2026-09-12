@@ -1,234 +1,115 @@
-# Prompting guidance for GPT-5.6
+## Retrieve the live GPT-6 prompting guidance
 
-Use this offline guide when adapting prompts, tool descriptions, agent
-instructions, or prompt stacks to GPT-5.6. Pair it with current OpenAI docs when
-they are available.
+Use already-callable official documentation search and fetch, or immediately use official-domain web search and fetch, to retrieve the live GPT-6 prompting guidance from:
 
-GPT-5.6 works best when prompts define the outcome, important constraints,
-available evidence, and completion bar, then leave room for the model to choose
-an efficient path. Treat every reduction as an eval-backed change rather than a
-reason to remove safety or product requirements.
+https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md#prompting-best-practices
 
-## Simplify prompts first
+Read only the `## Prompting best practices` section, stopping at the next H2 heading. The URL anchor points to the section visually, but a documentation fetch may return the full page, so explicitly extract only that section.
 
-Start with a prompt and tool set that already works. Remove one group at a time,
-then rerun the same representative cases.
+Treat the live section as the canonical model-specific prompting guidance. Use the local copy below only when live guidance is unavailable. Keep it identical to the page's `## Prompting best practices` section when refreshing this reference.
 
-Trim:
+## Prompting best practices
 
-- repeated statements of the same rule;
-- style or process instructions that do not change behavior;
-- examples that do not change behavior;
-- scaffolding for behavior the model already performs reliably;
-- tools and tool descriptions unrelated to the task;
-- stale model-specific instructions.
+GPT-6 Astra is more intelligent and capable than prior models like GPT-5.6 Sol, and also exhibits behavior patterns that can be optimized through prompting the model for your use case.
 
-Keep:
+### GPT-6 Astra behavior
 
-- the user-visible outcome;
-- success criteria and stopping conditions;
-- safety, business, evidence, privacy, and permission constraints;
-- tool-routing rules whose choice depends on context;
-- required output shape and validation requirements.
+- [Initiative and follow-through](#initiative-and-follow-through) – The model is designed to be a more effective collaborator and is thus more likely to ask the user a question when additional input could materially change the result. This can cause it to stop when the user may expect it to make reasonable assumptions and persist.
+- [Instruction following](#instruction-following) – GPT-6 Astra is stronger at general instruction following than our previous models, giving you greater control over its behavior. It can be more sensitive to instructions contained in skills and other files, such as `AGENTS.md`. We **strongly recommend** auditing skills and other files accessible to your model for instructions that could influence its behavior.
+- [Personality and writing style](#personality-and-writing-style) – The model tends toward detailed, formatted responses and may use recurring phrases across sessions. Specify the writing style and structure your application needs.
+- [Subagent delegation](#subagent-delegation) – The model may delegate less often than desired for your workflow. Specify when and how much it should use subagents for parallel work.
+- [Testing and verification](#testing-and-verification) – For coding tasks, the model tends to be thorough in testing before considering a task complete. For smaller tasks, this can result in broader tests than the task requires.
 
-Review the remaining instructions for contradictions and specify precedence
-when two constraints can conflict. Conflicting prompt contracts can create more
-instability than missing detail.
+### Initiative and follow-through
 
-## Outcome-first prompts
+GPT-6 Astra is generally better than GPT-5.6 Sol and earlier models at staying coherent during long tasks. It is also more likely to ask for clarification where earlier models would make assumptions.
 
-Describe the destination rather than prescribing every step. Use absolute terms
-such as `always`, `never`, `must`, and `only` for true invariants. For judgment
-calls, provide decision rules.
+To encourage more autonomous work, start with this prompt:
 
 ```text
-Goal: Resolve the request end to end.
+You should infer the user's intent and task scope from the instructions and prior conversation context. Your job is to bias towards action and carry the user's intended task to completion.
 
-Success means:
-- make the decision from available evidence
-- complete every allowed in-scope action
-- return the result, completed actions, and blockers
-- ask only for the smallest missing fact when progress is unsafe without it
+When the user expresses intent to perform new work or fix an existing issue, persist until the user's intended goal is complete. Progress autonomously towards the user's goal (e.g. creating isolated worktrees / checkouts if needed, resolving merge conflicts, read-only actions, creating draft PRs etc.) unless they are clearly destructive or irreversible.
 ```
 
-Add stopping conditions. Minimize unnecessary loops, but do not let loop
-minimization outrank correctness, required evidence, calculations, citations,
-or validation.
-
-Preserve explicit user values. When a value is implicit, provide decision
-criteria and let the model use context rather than a universal default or broad
-keyword map.
-
-## Personality, collaboration, and response length
-
-Keep personality and collaboration instructions short:
-
-- personality controls tone, warmth, directness, formality, humor, and polish;
-- collaboration style controls when the model asks, assumes, takes initiative,
-  explains tradeoffs, checks work, and handles uncertainty.
-
-Neither replaces goals, success criteria, tool rules, or stop conditions.
-GPT-5.6 is concise by default, so re-evaluate broad brevity instructions and
-keep them only when they reliably improve the product output. Use
-`text.verbosity` values `low`, `medium`, or `high` for a stable API default and
-the prompt for task-specific length or format.
-
-For editing and rewriting, say what must be preserved: requested artifact,
-length, structure, genre, factual claims, and tone. Do not add claims, sections,
-or promotional language unless requested.
-
-## Define autonomy and approval boundaries
-
-State what level of action the request authorizes so GPT-5.6 can continue safe,
-in-scope work without pausing unnecessarily while stopping before destructive,
-external, costly, or scope-expanding actions.
+When the user’s intent is unclear, the model is more likely to ask the user for clarification to proceed. Prompt the model to follow through if the user’s prompt implies authorization:
 
 ```text
-For requests to answer, explain, review, diagnose, or plan, inspect relevant
-materials and report the result. Do not implement changes unless requested.
-
-For requests to change, build, or fix, make in-scope local changes and run
-relevant non-destructive validation without asking first.
-
-Require confirmation for external writes, destructive actions, purchases, or a
-material expansion of scope.
+When the user's prompt indicates a request for action, such as "can you...", "I want to...", "help me..." and similar expressions, treat these as instructions to do the work and take action. Do not stop at acknowledging capability (e.g. "Yes…"), proposing a plan, or offering to continue. Do not settle for a partial or "helpful enough" solution that does not fully satisfy the user's task to save time, effort or tokens. If a task requires sustained work, complete all the necessary work until the intended outcome is fulfilled.
 ```
 
-Keep the policy in one place. Repeating `ask first` or `do not mutate` can block
-safe work. For long-running work, name the current layer—research, design,
-implementation, review, or external coordination—so the model does not silently
-move into another layer.
-
-## Tool routing
-
-Expose only task-relevant tools. Tool descriptions should state what the tool
-does, when to use it, important return fields, and error behavior.
-
-- Resolve required discovery and validation before taking dependent actions.
-- Parallelize independent reads; keep dependent work sequential.
-- Synthesize parallel results before acting.
-- If results are empty, partial, or suspiciously narrow, try one or two
-  meaningful fallbacks before concluding that no result exists.
-- Preserve direct model judgment around approvals, semantic decisions,
-  citations, and final validation.
-
-Programmatic Tool Calling is useful for bounded filtering, joining, ranking,
-deduplication, batching, aggregation, or deterministic validation over large
-intermediate results. Do not choose it merely because calls are numerous or
-dependent. State the bounded stage, eligible tools, output schema, retry limit,
-stop condition, and handoff back to direct model judgment.
-
-## Grounding and retrieval budgets
-
-Define what needs support, what counts as enough evidence, and how to behave
-when evidence is missing. Absence of evidence is not automatically evidence of
-absence.
+Prompt the model to ask for approval only after preparing a concrete, reviewable result. This avoids blocking the task before the model has done the work it can, and often leads to quicker task completion.
 
 ```text
-Start with one broad search using short, discriminative keywords. Search again
-only when a required fact, owner, date, ID, source, or requested comparison is
-missing, a specific artifact must be read, or an important claim would
-otherwise be unsupported.
+Before asking the user clarifying questions, you should complete the work that is already authorized from context and necessary to make the proposed action concrete and reviewable. The user should be approving a concrete, reviewable result. For example, before deploying a change, writing to an external application, merging a PR or publishing a site, do all the required work first so that user approval is the final step. You don't need user permission for reversible tasks, read-only actions, reviews or fixes, or anything for which authorization is provided earlier in the session or strongly implied from the task instruction.
+
+Do not introduce unsolicited warnings, disclaimers, approval flows, or safety/compliance checklists due to hypothetical risk.
 ```
 
-For grounded answers:
+The model also likes to ask non-blocking questions as it’s working by default, so adjust these prompts to match the level of autonomy your application needs.
 
-- cite only retrieved sources and attach citations to supported claims;
-- label inference separately;
-- state conflicts between sources;
-- narrow the answer or report missing evidence instead of guessing.
+### Instruction following
 
-For creative drafting, distinguish sourced facts from creative wording. Do not
-invent names, metrics, dates, roadmap status, customer outcomes, or product
-capabilities.
-
-## Long-running workflows and state
-
-For multi-step or tool-heavy tasks, use a short visible preamble before the
-first tool call and sparse, outcome-based updates at major phase changes. Do not
-narrate routine calls.
-
-Preserve assistant phase values when replaying history. Compact after major
-milestones instead of every turn, keep the prompt functionally consistent after
-compaction, and do not treat persisted reasoning as always beneficial when the
-objective or assumptions have changed.
-
-Keep reusable prompt prefixes stable when prompt caching matters. Add explicit
-cache controls only when measured behavior justifies them.
-
-## Reasoning effort
-
-Establish a baseline before changing effort:
-
-- preserve the current GPT-5.5 or GPT-5.4 setting for the first comparison;
-- test the same setting and one level lower on representative tasks;
-- use lower effort for latency-sensitive work only when quality holds;
-- use higher efforts or Pro mode only when evals show a meaningful gain;
-- do not recommend the highest setting globally.
-
-Before increasing effort, check for a missing success criterion, dependency
-rule, tool-routing rule, or verification loop. Verify live endpoint guidance
-when the existing effort was omitted rather than assuming a default.
-
-## Frontend and visual tasks
-
-GPT-5.6 has stronger layout, visual hierarchy, and design judgment, but prompts
-should still provide product context, preserve the existing design system, and
-name important states and constraints.
-
-- inspect and preserve existing design tokens, components, and patterns;
-- do not add unrequested features or decorative UI;
-- preserve responsive behavior and expected states;
-- render and inspect the result before finalizing.
-
-Choose image detail intentionally for vision work. With GPT-5.6, `original` or
-`auto` detail preserves the source image dimensions; large images may increase
-input tokens and latency.
-
-## Check work before finishing
-
-Give GPT-5.6 access to validation tools and state what evidence matters.
-
-For coding, run targeted tests, type or lint checks when applicable, affected
-builds, and a minimal smoke test when broader validation is too expensive. If a
-check cannot run, report why and name the next best evidence.
-
-For visual artifacts, render and inspect layout, clipping, spacing, missing
-content, and consistency. For implementation plans, include requirements,
-named resources, data or state flow, validation, failure behavior, privacy or
-security constraints, and material open questions.
-
-## Suggested prompt structure
-
-Use this structure as a starting point for complex prompts. Keep each section
-short and add detail only where it changes behavior.
+GPT-6 Astra is better able to follow longer instructions, but can also be more sensitive to information in context. For example, unclear or conflicting guidance in a skill file may cause the model to pause and block work early. Make the priority of user instructions and skills explicit.
 
 ```text
-Role: [the model's function and context]
-
-Personality: [tone and collaboration style]
-
-Goal: [user-visible outcome]
-
-Success criteria: [what must be true before the final answer]
-
-Constraints: [policy, safety, business, evidence, and side-effect limits]
-
-Tools: [which tools to use, when, and what not to use]
-
-Output: [sections, length, format, and tone]
-
-Stop rules: [when to retry, fallback, abstain, ask, or stop]
+The user's instructions take precedence over guidelines provided in a skill. If explicit user instructions conflict with a skill's instructions, prioritize the user's instructions.
 ```
 
-## Prompt migration workflow
+Asking the model to identify the skill and instruction that caused it to pause or change direction can also be effective in providing transparency into model behavior.
 
-1. Switch the model and preserve the current reasoning effort.
-2. Run representative evals before changing the prompt.
-3. Remove obsolete scaffolding, repeated instructions, irrelevant examples,
-   and irrelevant tools one group at a time.
-4. Add only the smallest targeted instruction that fixes a measured regression.
-5. Rerun the same evals after each prompt or reasoning change.
+```text
+If a skill causes you to ask for permission or confirmation, pause, leave requested work unfinished, or diverge from the user's intent, name and link to the exact SKILL.md file you read, quote the relevant instruction, and briefly explain how it applies. Distinguish explicit skill requirements from your interpretation of guidelines.
+```
 
-Do not rewrite a working prompt stack all at once. Otherwise it becomes
-impossible to separate model, reasoning, prompt, tool-set, and runtime effects.
+Use this prompt to find silent and conflicting guidance when your application loads many skills and instruction files such as `AGENTS.md`.
+
+### Personality and writing style
+
+GPT-6 Astra tends to use lists, tables and Markdown to make responses scannable. If your application needs prose with less formatting, specify that preference.
+
+```text
+Default to using clear, concise paragraphs, each developing one main idea. Use lists only when the information is genuinely parallel, sequential, or easier to compare, and avoid nested lists unless the hierarchy cannot be expressed clearly in prose. Use plain, simple language: familiar words, concrete examples, and precise verbs. Prefer active voice and direct statements.
+
+Make sure to state the main point clearly and early, then develop it with the explanation and detail the reader needs. Let each sentence build on what came before. Develop the points that matter and provide enough support to be useful.
+```
+
+For technical communication, the following prompt helps strike a balance between using clear, coherent language while remaining domain appropriate:
+
+```text
+Use plain language over jargon, and reference technical details only to the degree that it helps illustrate an idea or your work to the user. Communicate complex concepts in a clear and cohesive manner, and calibrate your writing to the level of background knowledge assumed from the user's prompt and context.
+```
+
+To reduce jargon and stock phrases in writing, start with this prompt:
+
+```text
+Avoid using slop words or phrases like "Bottom Line:" in conclusions, "delve," "foster," "leverage," "it's worth noting," "importantly," "Question? Answer." or "This isn't about X. It's about Y.", "genuinely" or hyphenated compound descriptions and adjectives. Do not use concluding summary statements such as "In short:..", "The simplest mental model is:...".
+
+State the intended action directly. Avoid adding what you won't do, what will remain unchanged, or how you'll separate or categorize results. Do not use contrastive framing such as "X, not Y" or "X—not Y" that introduces an unprompted alternative that the user didn't ask about. Avoid invented compound labels like "exact-head checks" and "editorial-row layouts", vague qualifiers, and canned transitions; use plain verbs and prepositions to state the actual relationship directly.
+```
+
+### Subagent delegation
+
+GPT-6 Astra is trained to be able to divide and delegate work to subagents that work in parallel. If you are implementing a multi-agent system in your harness, use the following prompt to tune how much GPT-6 Astra should delegate work:
+
+```text
+If at any point you can parallelize work by delegating tasks to another agent (no matter if you are the root or subagent), you should do so using collaboration tools if it could save time or improve quality.
+```
+
+Messages between agents may contain grammar or spacing errors. Use this prompt to make inter-agent messages easier to read:
+
+```text
+Messages that you send to other agents and your final answer may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.
+```
+
+The model tends to respond well to prompting for how and when it should delegate work to subagents, so tune this behavior to fit with your harness and multi-agent implementation.
+
+### Testing and verification
+
+For coding tasks, calibrate how much testing and verification a change requires. This can help avoid unnecessary tests or repeated checks for small changes.
+
+```text
+Do not write tests for reversible, low-impact changes that mirror the implementation. If you do choose to verify your work with tests, make sure that the tests are meaningful and necessary to verify implementation.
+
+Run tests appropriate to the change and complete required checks. Once those pass, broaden or repeat testing only when new changes, failures, or unresolved concerns justify it; otherwise, continue toward completing the task.
+```

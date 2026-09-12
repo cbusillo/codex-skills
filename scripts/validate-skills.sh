@@ -71,6 +71,7 @@ helper_tests=(
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
 	openai-docs/scripts/test_resolve_latest_model_info.py
+	openai-docs/scripts/test_fetch_codex_manual.py
 	people/scripts/test_resolve_person.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
