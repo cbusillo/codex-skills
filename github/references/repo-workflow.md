@@ -389,7 +389,9 @@ Before merging any PR, do a fresh PR read and account for feedback:
   possible post-turn trigger is `not yet observable`, not skipped or not
   emitted, and is not a reason to poll indefinitely before reporting the
   point-in-time merge or closeout state
-- proceed only after explicit user approval for the merge action
+- confirm that explicit user approval, including approval already given in the
+  session, covers this merge; ask only when that authorization is missing or no
+  longer covers the action and scope
 
 When the user approves a merge and does not specify the method, use
 `scripts/gh-pr.py merge <pr> --method merge` for a normal merge commit.
@@ -537,10 +539,13 @@ Never include Codex Desktop or Every Code auto-review worktrees under
 Use `git branch -d <branch>` before considering `-D`; do not force-delete unless
 the user explicitly approves.
 
-## Ask First
+## Authorization For Gated Actions
 
-Ask before actions that encode product, workflow, or shared-environment
-decisions:
+Before actions that encode product, workflow, or shared-environment decisions,
+confirm that the user has authorized the action and scope. Reuse applicable
+approval already given, including session-wide approval; ask only for missing
+authorization or a scope change that the existing approval does not cover.
+Apply this check to:
 
 - merge a PR
 - use squash or rebase merge instead of a normal merge commit
