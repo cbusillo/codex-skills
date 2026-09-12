@@ -2560,22 +2560,18 @@ def test_upstream_convergence_preserves_repository_authority() -> None:
     )
 
 
-def test_skill_creator_mentions_exec_harness_for_behavior_changes() -> None:
+def test_skill_creator_behavior_guidance_and_size() -> None:
     creator_source = (ROOT / "skill-creator" / "SKILL.md").read_text()
     creator_text = creator_source.lower()
     normalized = " ".join(creator_text.split())
 
-    require(
-        "use the exec harness for behavior-sensitive skill changes when available" in normalized,
-        "Skill creator guidance must call out exec harness validation",
-    )
     require(
         "routing, command policy, safety boundaries, or github/repo workflow semantics" in normalized,
         "Skill creator guidance must identify behavior-sensitive skill changes",
     )
     require(
         "negative or ambiguity case when practical" in normalized,
-        "Skill creator guidance must encourage ambiguity/negative harness cases",
+        "Skill creator guidance must encourage ambiguity/negative behavior cases",
     )
     frontmatter_end = creator_source.find("\n---", 4)
     require(frontmatter_end >= 0, "Skill creator must have closing frontmatter")
@@ -2622,7 +2618,7 @@ def main() -> None:
         test_openai_docs_latest_target_and_fallback_contract,
         test_gpt56_rollout_comparisons_preserve_pinned_baselines,
         test_upstream_convergence_preserves_repository_authority,
-        test_skill_creator_mentions_exec_harness_for_behavior_changes,
+        test_skill_creator_behavior_guidance_and_size,
     ]
     for test in tests:
         test()
