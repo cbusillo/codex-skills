@@ -90,10 +90,12 @@ Runtime config owns:
 - trusted skill catalog roots
 - shell/pty interception details
 
-## Harness Boundary
+## Execution Evidence Boundary
 
-Exec-harness scenarios can prove that skill context exposes command-policy
-metadata and that a model chooses a helper-backed route. They do not prove that
-the runtime intercepted a raw command before execution. Runtime command-blocker
-tests must live with the host that implements the blocker. The legacy Every
-Code harness is not evidence of current Codex or Codex Lab enforcement.
+Agent execution cases can show that the tested context exposes command-policy
+metadata and that the tested model chooses a helper-backed route. They do not
+prove that the runtime intercepted a raw command before execution. Runtime
+command-blocker tests must live with the host that implements the blocker.
+Historical Every Code harness results are not evidence of current Codex or
+Codex Lab enforcement. Select current evidence using
+[validation guidance](validation.md).

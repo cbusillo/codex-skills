@@ -35,8 +35,8 @@ proof that Codex enforces it.
 ## Current Codex and Codex Lab execution
 
 Identify the intended host and model before selecting a command. Inspect the
-available executable's version and help; do not assume that `codex`, `codex-lab`,
-and legacy `code` have interchangeable flags, discovery rules, or harnesses.
+available executable's version and help; do not assume that `codex` and
+`codex-lab` have interchangeable flags, discovery rules, or harnesses.
 Use the existing authorized access path and the host's supported execution
 interface. An instruction audit alone does not require changing runtime or
 model configuration.
@@ -73,11 +73,8 @@ propose decisions, but its answer is not an Astra execution test.
 
 ## Model guidance and reporting
 
-For model-specific work, fetch the named model's current official guidance using
-`openai-docs`. Keep effort and migration recipes scoped to that model. Review
-instruction priority, permitted follow-through, material decision points,
-delegation, output requirements, and validation breadth without changing the
-user's intentional policies.
+For model-specific work, use [model-aware authoring](model-aware-authoring.md)
+to select current guidance and scope any experiment.
 
 Record the source revision, host/model, relevant configuration and scope, cases
 run, observed result, and any missing evidence. Reuse an applicable baseline;

@@ -76,7 +76,7 @@ Supported matchers are `argv_exact`, `argv_prefix`, and `shell_regex`; declare
 exactly one. Supported actions are `require_preferred`, `require_confirm`, and
 `reject`. Preferred entries may name `script`, `skill`, or `command` actions.
 Read `command-policy-contract.md` for precedence, path resolution, simulator,
-and exec-harness details.
+and execution-evidence boundaries.
 
 ## Resource design
 

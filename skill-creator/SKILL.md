@@ -19,9 +19,6 @@ resources:
   - path: scripts/validate-skill-repo.py
     kind: script
     description: Validate all active skills in this repository.
-  - path: scripts/collect_exec_harness_performance.py
-    kind: script
-    description: Summarize public-safe metrics from existing legacy Every Code exec-harness artifacts.
   - path: references/openai_yaml.md
     kind: reference
     description: Field definitions and examples for agents/openai.yaml.
@@ -31,12 +28,12 @@ resources:
   - path: references/validation.md
     kind: reference
     description: Select proportional static, source-review, and execution evidence for the current host and model.
-  - path: references/exec_harness.md
+  - path: references/model-aware-authoring.md
     kind: reference
-    description: Legacy Every Code harness instructions, only for an explicitly selected and available compatible runtime.
+    description: Apply current named-model prompting guidance to skill authoring without changing shared policies or defaults.
   - path: references/command-policy-contract.md
     kind: reference
-    description: Contract for portable command-policy metadata, runtime enforcement boundaries, and simulator/harness expectations.
+    description: Contract for portable command-policy metadata, runtime enforcement boundaries, and simulator evidence.
   - path: references/skill-design-details.md
     kind: reference
     description: Detailed structured metadata, resource, and progressive-disclosure patterns for skill authors.
@@ -83,18 +80,6 @@ commands:
     resource_path: scripts/validate-skill-repo.py
     example_argv: ["uv", "run", "scripts/validate-skill-repo.py"]
     purpose: Runs repository-wide validation across active skills.
-  - name: collect-exec-harness-performance
-    source: skill
-    resource_path: scripts/collect_exec_harness_performance.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/collect_exec_harness_performance.py",
-        "--latest",
-        "10",
-      ]
-    purpose: Emits public-safe advisory performance metrics from local exec-harness artifacts.
 ---
 
 # Skill Creator
@@ -178,17 +163,13 @@ Read [validation guidance](references/validation.md) when selecting evidence for
 a behavior-sensitive change. Use the current Codex or Codex Lab execution path
 when testing that host. A direct local-model response or a source review has a
 different scope from an agent execution test; report which one was performed.
-Only for an explicitly selected legacy Every Code runtime, use the exec harness
-for behavior-sensitive skill changes when available, and read
-[legacy harness instructions](references/exec_harness.md) first. Codex Lab is
-not an alias for that harness.
+Every Code is retired; its harness is not a supported validation path. Retained
+fixtures and artifact readers are historical material.
 
-For model-specific prompting, use `openai-docs` to fetch the named model's
-current guidance. Audit conflicting instructions, authorization scope,
-delegation, output requirements, and validation breadth. Preserve deliberate
-policies and an existing evaluation baseline. Apply effort-comparison advice
-only to the model and experiment it addresses; a model migration or API
-comparison is not a prerequisite for correcting instruction text.
+Read [model-aware authoring](references/model-aware-authoring.md) when adapting
+a skill for a named model or investigating a model-specific behavior change.
+Use `openai-docs` for current OpenAI model guidance. Keep shared policies in their
+existing owners; model-specific experiments do not become permanent defaults.
 
 ### Anatomy of a Skill
 
@@ -237,7 +218,7 @@ that a command will be intercepted.
 
 Use `references/command-policy-contract.md` as the source of truth for the
 frontmatter/runtime boundary, matcher precedence, path resolution, and
-exec-harness limits. Keep one canonical owner for each raw command path and use
+execution-evidence limits. Keep one canonical owner for each raw command path and use
 the narrowest matcher that represents the workflow. Command policies are
 portable metadata, not a runtime enforcement guarantee by themselves.
 
