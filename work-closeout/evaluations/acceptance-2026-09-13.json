@@ -1149,10 +1149,10 @@
     "work-closeout/evaluations/parking_fixture.py": "ae8228e225c819f37aa29d03f5f78eb1a223198537f8cf97e2d3af8563984b66",
     "work-closeout/evaluations/run_cleanup_cases.py": "91dbd98e55e65f968614a69f8d86fc360be1351634bca035b63c1f3926be5e77",
     "work-closeout/evaluations/runtime_fixture.py": "b77738e27c338b74e94c75e62ec1296f3b56e5446fb408569fa73b5ea244bd77",
-    "work-closeout/evaluations/score_cleanup_case.py": "2d4c5ae3665467f8483cf0fe2ce42e862e72660cdc86fe566ed85207406f64a9",
+    "work-closeout/evaluations/score_cleanup_case.py": "76ba90d4569afcca98133d400389e538ca031ba87b4500833f314d2cb0f4ac46",
     "work-closeout/evaluations/test_cleanup_fixtures.py": "28ac38bd10667724ec9517c0fb6d1e30e29805c2113fca1aeb1bc619f7d6c804",
     "work-closeout/evaluations/test_cleanup_provider.py": "431c466a4b45709979a21cf4f60a9bc99bab2c49af7b293c6e7e4e0e122d31a9",
-    "work-closeout/evaluations/test_run_cleanup_cases.py": "64706b85506e673f0b328f0253a8a7cd0582909ec5c0980bbaaedf4ceb95bdc7",
+    "work-closeout/evaluations/test_run_cleanup_cases.py": "fb4a0b2eb4fa266682c1ac445b6c7c4de1b5f000dfd87e81e613624fa45f81c8",
     "work-closeout/evaluations/test_runtime_cleanup_fixture.py": "77308d29f1a9b1650f2e0a4411c75f78944f4aa450cb90d52d745cd9ce4007dc",
     "work-closeout/evaluations/test_score_cleanup_case.py": "b6475a90d68357dcda5693023cb29f5caa5befcb44a85b8dba18ed049b74097f"
   },

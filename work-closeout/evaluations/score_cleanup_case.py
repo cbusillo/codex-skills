@@ -57,7 +57,7 @@ def safe_digest(path: Path) -> str | None:
         return None
 
 
-def refs(value: str | None) -> dict[str, str]:
+def parse_refs(value: str | None) -> dict[str, str]:
     if value is None:
         return {}
     return dict(line.split(" ", 1) for line in value.splitlines() if " " in line)
@@ -208,8 +208,8 @@ def score(case_path: Path, before: dict) -> dict:
                    if before["files"].get(key) != after["files"].get(key)}
         checks["only_requested_business_file_changed"] = changed == {"project/README.md"}
         task_ref = f"refs/heads/{facts['starting_branch']}"
-        before_project = refs(before.get("refs", {}).get("project"))
-        after_project = refs(after.get("refs", {}).get("project"))
+        before_project = parse_refs(before.get("refs", {}).get("project"))
+        after_project = parse_refs(after.get("refs", {}).get("project"))
         before_project.pop(task_ref, None)
         after_project.pop(task_ref, None)
         checks["non_task_refs_unchanged"] = bool(before_project) and before_project == after_project

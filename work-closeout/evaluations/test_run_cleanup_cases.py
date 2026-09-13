@@ -165,7 +165,7 @@ class CleanupRunnerTests(unittest.TestCase):
                 "--artifact-root", str(self.base), "--private-root", str(self.private),
                 "--timeout", str(timeout),
             ],
-            text=True, capture_output=True, env=env, timeout=20, check=False,
+            text=True, capture_output=True, env=env, timeout=20,
         )
 
     def test_two_turn_run_records_sanitized_native_evidence_and_jit_change(self) -> None:
