@@ -94,10 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "claim":
             result = client.claim(alias=args.alias)
         elif args.command == "session-propose":
-            if not args.input_file:
-                raise OrdinaryAgentClientError("input_file_required")
             result = client.propose_session(
-                _json_file(args.input_file), alias=args.alias
+                None if not args.input_file else _json_file(args.input_file),
+                alias=args.alias,
             )
         elif args.command == "session-status":
             result = client.session_status(alias=args.alias)
@@ -114,10 +113,13 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     except OrdinaryAgentClientError as exc:
+        detail: dict[str, object] = {"code": exc.code}
+        if exc.retry_after_seconds is not None:
+            detail["retry_after_seconds"] = exc.retry_after_seconds
+        if exc.trace_id:
+            detail["trace_id"] = exc.trace_id
         print(
-            json.dumps(
-                {"status": "error", "error": {"code": exc.code}}, sort_keys=True
-            ),
+            json.dumps({"status": "error", "error": detail}, sort_keys=True),
             file=sys.stderr,
         )
         return 2

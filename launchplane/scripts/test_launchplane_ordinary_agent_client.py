@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import tempfile
 import threading
@@ -29,7 +30,8 @@ from launchplane_ordinary_agent_client import (
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ordinary-agent-responses.json"
-RESPONSES = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))["responses"]
+FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+RESPONSES = FIXTURE["responses"]
 
 
 class Response:
@@ -76,6 +78,24 @@ def response(name: str) -> Response:
     return Response(RESPONSES[name])
 
 
+def provider_wait_error(
+    *, code: str = "provider_readiness_in_progress", retry_after: str = "12"
+) -> urllib.error.HTTPError:
+    body = json.dumps(
+        {
+            "trace_id": "launchplane_req_fixture123",
+            "error": {"code": code, "message": "provider details are hidden"},
+        }
+    ).encode()
+    return urllib.error.HTTPError(
+        "http://127.0.0.1:8123/v1/agent/ordinary-agent-jobs",
+        503,
+        "Service Unavailable",
+        {"Retry-After": retry_after, "Content-Type": "application/json"},
+        io.BytesIO(body),
+    )
+
+
 def enrollment() -> dict[str, object]:
     return {
         "descriptor_id": "ordinary-agent-enrollment",
@@ -113,6 +133,10 @@ class OrdinaryAgentClientTests(TestCase):
         proof = receiver_proof(lambda size: b"x" * size)
         self.assertEqual(len(proof), 43)
         self.assertEqual(base64.urlsafe_b64decode(proof + "="), b"x" * 32)
+        self.assertEqual(
+            claim_digest(proof),
+            FIXTURE["receiver_claim_vector"]["receiver_claim_sha256"],
+        )
         self.assertNotEqual(
             claim_digest(proof), hashlib.sha256(proof.encode()).hexdigest()
         )
@@ -294,6 +318,85 @@ class OrdinaryAgentClientTests(TestCase):
                 "fixture-enrollment",
             )
 
+    def test_claim_custody_survives_enrollment_status_before_session_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient(
+                "http://127.0.0.1:8123", state=store, terminal_credential="terminal"
+            )
+            observed: list[urllib.request.Request] = []
+            responses = [
+                response("enrollment_pending"),
+                Response(RESPONSES["claim"], {"Cache-Control": "no-store"}),
+                response("enrollment_approved_terminal"),
+                response("initial_session_issued"),
+            ]
+            with patch.object(
+                urllib.request, "build_opener", return_value=Opener(responses, observed)
+            ):
+                client.prepare_enrollment(
+                    enrollment(), random_bytes=lambda size: b"p" * size
+                )
+                client.propose_enrollment()
+                self.assertEqual(client.claim(), {"status": "ready"})
+                self.assertEqual(client.enrollment_status()["status"], "approved")
+                self.assertEqual(
+                    client.session_status()["session_id"], "fixture-session"
+                )
+            state = store.load()
+            self.assertEqual(
+                state["enrollments"]["retry-key-2366"]["status"], "approved"
+            )
+            self.assertEqual(
+                state["enrollments"]["retry-key-2366"]["credential_key"],
+                "fixture-enrollment",
+            )
+            self.assertEqual(
+                [request.headers.get("Authorization") for request in observed],
+                [
+                    "Bearer terminal",
+                    "Bearer "
+                    + state["enrollments"]["retry-key-2366"]["receiver_proof"],
+                    "Bearer terminal",
+                    "Bearer synthetic-ordinary-credential",
+                ],
+            )
+
+    def test_claim_without_no_store_keeps_proof_and_does_not_store_credential(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient(
+                "http://127.0.0.1:8123", state=store, terminal_credential="terminal"
+            )
+            client.prepare_enrollment(
+                enrollment(), random_bytes=lambda size: b"n" * size
+            )
+            store.update(
+                lambda state: (
+                    state["enrollments"]["retry-key-2366"].update(
+                        {"canonical_operation_id": "fixture-enrollment"}
+                    )
+                    or state
+                )
+            )
+            with (
+                patch.object(
+                    urllib.request,
+                    "build_opener",
+                    return_value=Opener([Response(RESPONSES["claim"])], []),
+                ),
+                self.assertRaisesRegex(OrdinaryAgentClientError, "claim_cache_policy"),
+            ):
+                client.claim()
+            state = store.load()
+            self.assertNotIn("credentials", state)
+            self.assertEqual(
+                state["enrollments"]["retry-key-2366"]["receiver_proof"],
+                receiver_proof(lambda size: b"n" * size),
+            )
+
     def test_new_sessions_and_jobs_use_purpose_lease_and_saved_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PrivateStateStore(directory)
@@ -389,6 +492,69 @@ class OrdinaryAgentClientTests(TestCase):
             )
             self.assertEqual(retry_observed[0].data, base64.b64decode(saved))
 
+    def test_lost_session_proposal_resumes_saved_bytes_without_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            credential_state(store)
+            request = {
+                "descriptor_id": "ordinary-agent-session",
+                "operation_id": "lost-session",
+                "attenuation": {"actions": ["preflight"]},
+            }
+            first_observed: list[urllib.request.Request] = []
+            with (
+                patch.object(
+                    urllib.request,
+                    "build_opener",
+                    return_value=Opener(
+                        [urllib.error.URLError("lost response")] * 3,
+                        first_observed,
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    OrdinaryAgentClientError, "transport_unavailable"
+                ),
+            ):
+                client.propose_session(request, alias="lost-session")
+            saved = store.load()["sessions"]["lost-session"]
+            self.assertIsNone(saved["canonical_operation_id"])
+            saved_body = base64.b64decode(saved["request_bytes_b64"])
+            second_observed: list[urllib.request.Request] = []
+            with patch.object(
+                urllib.request,
+                "build_opener",
+                return_value=Opener([response("session_issued")], second_observed),
+            ):
+                result = client.propose_session(None, alias="lost-session")
+            self.assertEqual(result["operation_id"], "fixture-session-operation")
+            self.assertEqual(second_observed[0].data, saved_body)
+
+    def test_session_proposal_missing_handle_is_rejected_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            credential_state(store)
+            store.update(
+                lambda state: {
+                    **state,
+                    "sessions": {
+                        "missing-handle": {
+                            "retry_key": "missing-handle",
+                            "request_bytes_b64": base64.b64encode(b"{}").decode(),
+                            "canonical_operation_id": None,
+                            "credential_key": "fixture",
+                        }
+                    },
+                }
+            )
+            with (
+                patch.object(urllib.request, "build_opener") as build_opener,
+                self.assertRaisesRegex(OrdinaryAgentClientError, "session_unavailable"),
+            ):
+                client.session_status(alias="missing-handle")
+            build_opener.assert_not_called()
+
     def test_stale_session_has_no_stronger_credential_fallback_and_cancel_keeps_diagnostics(
         self,
     ) -> None:
@@ -428,6 +594,131 @@ class OrdinaryAgentClientTests(TestCase):
                 store.load()["sessions"]["initial"]["lease_selectors"][0]["revoked_at"],
                 2_000_000_030,
             )
+
+    def test_cancel_accepts_populated_revoked_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            credential_state(store)
+            store.update(
+                lambda state: {
+                    **state,
+                    "sessions": {
+                        "cancel-me": {
+                            "canonical_operation_id": "fixture-session-operation",
+                            "credential_key": "fixture",
+                            "lease_selectors": [],
+                        }
+                    },
+                    "current_session": "cancel-me",
+                }
+            )
+            with patch.object(
+                urllib.request,
+                "build_opener",
+                return_value=Opener([response("session_revoked")], []),
+            ):
+                result = client.cancel_session()
+            self.assertEqual(result["status"], "revoked")
+            self.assertEqual(
+                len(store.load()["sessions"]["cancel-me"]["lease_selectors"]), 2
+            )
+
+    def test_provider_wait_returns_guidance_once_and_resumes_exact_job_bytes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            credential_state(store)
+            store.update(
+                lambda state: {
+                    **state,
+                    "sessions": {
+                        "initial": {
+                            "canonical_operation_id": "fixture-session-operation",
+                            "credential_key": "fixture",
+                            "session_id": "fixture-session",
+                        }
+                    },
+                    "current_session": "initial",
+                }
+            )
+            guarded = {
+                "purpose": "guarded_delivery",
+                "idempotency_key": "provider-wait-job",
+                "base_sha": "a" * 40,
+                "pull_requests": [{"number": 1, "head_sha": "b" * 40}],
+                "permitted_stack_edit_pull_requests": [1],
+                "refresh_allowance": 0,
+            }
+            first_observed: list[urllib.request.Request] = []
+            with (
+                patch.object(
+                    urllib.request,
+                    "build_opener",
+                    return_value=Opener(
+                        [response("session_issued"), provider_wait_error()],
+                        first_observed,
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    OrdinaryAgentClientError, "provider_readiness_in_progress"
+                ) as caught,
+            ):
+                client.admit_job(guarded, alias="provider-wait-job")
+            self.assertEqual(caught.exception.retry_after_seconds, 12)
+            self.assertEqual(caught.exception.trace_id, "launchplane_req_fixture123")
+            self.assertEqual(len(first_observed), 2)
+            saved = store.load()["jobs"]["provider-wait-job"]["request_bytes_b64"]
+            second_observed: list[urllib.request.Request] = []
+            with patch.object(
+                urllib.request,
+                "build_opener",
+                return_value=Opener([response("job_pending")], second_observed),
+            ):
+                client.resume_job(alias="provider-wait-job")
+            self.assertEqual(second_observed[0].data, base64.b64decode(saved))
+
+    def test_poisoned_provider_metadata_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            errors = [provider_wait_error(code="ghp_poison") for _ in range(3)]
+            with (
+                patch.object(
+                    urllib.request,
+                    "build_opener",
+                    return_value=Opener(errors, []),
+                ),
+                self.assertRaisesRegex(OrdinaryAgentClientError, "http_503") as caught,
+            ):
+                client._request(
+                    "read_ordinary_agent_job",
+                    method="GET",
+                    parts={"request_id": "job"},
+                )
+            self.assertIsNone(caught.exception.retry_after_seconds)
+            self.assertIsNone(caught.exception.trace_id)
+            self.assertNotIn("ghp_poison", str(caught.exception))
+
+    def test_public_operation_metadata_and_review_query_reject_poisoned_values(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = OrdinaryAgentClient(
+                "http://127.0.0.1:8123", state=PrivateStateStore(directory)
+            )
+            payload = json.loads(json.dumps(RESPONSES["session_issued"]))
+            payload["operation"]["credential_id"] = "ghp_poison"
+            with self.assertRaisesRegex(
+                OrdinaryAgentClientError, "unsafe_response_shape"
+            ):
+                client._operation(payload)
+            payload = json.loads(json.dumps(RESPONSES["session_issued"]))
+            payload["review_url"] += "&credential=ordinary-secret"
+            with self.assertRaisesRegex(OrdinaryAgentClientError, "unsafe_review_url"):
+                client._operation(payload)
 
     def test_initial_session_follows_active_claimed_enrollment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

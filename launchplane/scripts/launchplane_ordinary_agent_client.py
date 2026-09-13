@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import tempfile
 import time
 import urllib.error
@@ -43,6 +44,9 @@ try:  # Direct execution and import from the skill's scripts directory.
         LaunchplaneSafetyError,
         assert_public_safe_shape,
         build_launchplane_url,
+        public_code,
+        public_identifier,
+        public_trace_id,
         validate_request_url,
         validate_service_url,
     )
@@ -52,6 +56,9 @@ except ImportError:  # pragma: no cover - package-style import fallback
         LaunchplaneSafetyError,
         assert_public_safe_shape,
         build_launchplane_url,
+        public_code,
+        public_identifier,
+        public_trace_id,
         validate_request_url,
         validate_service_url,
     )
@@ -74,9 +81,17 @@ _ALIAS_PATTERN = r"^[a-z0-9][a-z0-9._-]{2,127}$"
 class OrdinaryAgentClientError(RuntimeError):
     """Bounded public-safe client error; never contains private values."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        retry_after_seconds: int | None = None,
+        trace_id: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.retry_after_seconds = retry_after_seconds
+        self.trace_id = trace_id
 
 
 def _private_root_default() -> Path:
@@ -99,7 +114,15 @@ def _private_root_default() -> Path:
 
 
 def sys_platform_is_macos() -> bool:
-    return os.sys.platform == "darwin"
+    return sys.platform == "darwin"
+
+
+def _initial_session_alias(enrollment_alias: str) -> str:
+    prefix = f"initial-{enrollment_alias}"
+    if len(prefix) <= 128:
+        return _alias(prefix, fallback="initial-session")
+    digest = hashlib.sha256(enrollment_alias.encode("utf-8")).hexdigest()
+    return _alias(f"initial-{digest}", fallback="initial-session")
 
 
 def receiver_proof(random_bytes: Any = secrets.token_bytes) -> str:
@@ -478,6 +501,46 @@ class OrdinaryAgentClient:
         except (LaunchplaneSafetyError, ValueError, TypeError, KeyError):
             raise OrdinaryAgentClientError("invalid_operation_path") from None
 
+    @staticmethod
+    def _http_error_metadata(
+        error: urllib.error.HTTPError,
+    ) -> tuple[str, int, str | None] | None:
+        if error.code != 503:
+            return None
+        headers = error.headers
+        retry_value = headers.get("Retry-After", "") if headers else ""
+        if not isinstance(retry_value, str) or not re.fullmatch(
+            r"[0-9]{1,5}", retry_value.strip()
+        ):
+            return None
+        retry_after = int(retry_value.strip())
+        if retry_after > 86_400:
+            return None
+        try:
+            raw = error.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                return None
+            payload = json.loads(raw.decode("utf-8"))
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            code = public_code(detail.get("code")) if isinstance(detail, dict) else None
+            assert_public_safe_shape(code)
+            if not code:
+                return None
+            trace = (
+                public_trace_id(payload.get("trace_id"))
+                if isinstance(payload, dict)
+                else ""
+            )
+        except (
+            AttributeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            LaunchplaneSafetyError,
+            ValueError,
+        ):
+            return None
+        return code, retry_after, trace or None
+
     def _request(
         self,
         operation_id: str,
@@ -533,6 +596,14 @@ class OrdinaryAgentClient:
             except OrdinaryAgentClientError:
                 raise
             except urllib.error.HTTPError as exc:
+                metadata = self._http_error_metadata(exc)
+                if metadata is not None:
+                    code, retry_after, trace_id = metadata
+                    raise OrdinaryAgentClientError(
+                        code,
+                        retry_after_seconds=retry_after,
+                        trace_id=trace_id,
+                    ) from None
                 if 500 <= exc.code < 600 and attempt + 1 < self.attempts:
                     continue
                 raise OrdinaryAgentClientError(f"http_{exc.code}") from None
@@ -563,6 +634,23 @@ class OrdinaryAgentClient:
             raise OrdinaryAgentClientError("invalid_response") from None
         if endpoint.origin != tuple(self._binding["origin"]):
             raise OrdinaryAgentClientError("unsafe_review_url")
+        parsed = urllib.parse.urlsplit(endpoint.url)
+        try:
+            for key, item in urllib.parse.parse_qsl(
+                parsed.query, keep_blank_values=True, strict_parsing=True
+            ):
+                assert_public_safe_shape({key: item})
+            if parsed.fragment:
+                fragment_items = urllib.parse.parse_qsl(
+                    parsed.fragment, keep_blank_values=True, strict_parsing=False
+                )
+                if fragment_items:
+                    for key, item in fragment_items:
+                        assert_public_safe_shape({key: item})
+                else:
+                    assert_public_safe_shape(parsed.fragment)
+        except (LaunchplaneSafetyError, ValueError):
+            raise OrdinaryAgentClientError("unsafe_review_url") from None
         return endpoint.url
 
     def _operation(
@@ -644,6 +732,20 @@ class OrdinaryAgentClient:
             )
         ):
             raise OrdinaryAgentClientError("unsafe_response_shape")
+        for key in ("credential_id", "credential_version", "credential_expires_at"):
+            if key not in operation:
+                continue
+            value = operation[key]
+            if key == "credential_id":
+                if value is not None:
+                    try:
+                        public_identifier(value)
+                    except LaunchplaneSafetyError:
+                        raise OrdinaryAgentClientError(
+                            "unsafe_response_shape"
+                        ) from None
+            elif value is not None and not _strict_int(value):
+                raise OrdinaryAgentClientError("unsafe_response_shape")
         try:
             safe_operation = dict(operation)
             # These are public view metadata, but the generic helper's
@@ -660,6 +762,13 @@ class OrdinaryAgentClient:
             raise OrdinaryAgentClientError("unsafe_response_shape") from None
         projected = dict(operation)
         projected.pop("requester_token_label", None)
+        if projected.get("credential_id") is not None:
+            try:
+                projected["credential_id"] = public_identifier(
+                    projected["credential_id"]
+                )
+            except LaunchplaneSafetyError:
+                raise OrdinaryAgentClientError("unsafe_response_shape") from None
         projected["review_url"] = self._review_url(payload["review_url"])
         return projected
 
@@ -931,46 +1040,75 @@ class OrdinaryAgentClient:
         return {"status": "ready"}
 
     def propose_session(
-        self, request: Mapping[str, Any], *, alias: str | None = None
+        self, request: Mapping[str, Any] | None = None, *, alias: str | None = None
     ) -> dict[str, Any]:
-        if (
-            set(request) != {"descriptor_id", "operation_id", "attenuation"}
+        if request is not None and (
+            not isinstance(request, Mapping)
+            or set(request) != {"descriptor_id", "operation_id", "attenuation"}
             or request.get("descriptor_id") != "ordinary-agent-session"
             or not isinstance(request.get("attenuation"), Mapping)
         ):
             raise OrdinaryAgentClientError("invalid_session")
-        operation_id = request.get("operation_id")
-        if not isinstance(operation_id, str) or not operation_id:
+        operation_id = (
+            request.get("operation_id") if isinstance(request, Mapping) else None
+        )
+        if request is not None and (
+            not isinstance(operation_id, str) or not operation_id
+        ):
             raise OrdinaryAgentClientError("invalid_session")
-        try:
-            body = json.dumps(
-                dict(request), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-            ).encode("utf-8")
-        except (TypeError, ValueError):
-            raise OrdinaryAgentClientError("invalid_session") from None
-        session_alias = _alias(alias, fallback=str(operation_id))
+        body: bytes | None = None
+        if request is not None:
+            try:
+                body = json.dumps(
+                    dict(request),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError):
+                raise OrdinaryAgentClientError("invalid_session") from None
         with self.state.transaction() as state:
             sessions = state.setdefault("sessions", {})
             if not isinstance(sessions, dict):
                 raise OrdinaryAgentClientError("private_state_unavailable")
+            if request is None:
+                raw_alias = alias or state.get("current_session")
+                if not raw_alias:
+                    raise OrdinaryAgentClientError("session_unavailable")
+                session_alias = _alias(raw_alias, fallback="initial")
+            else:
+                session_alias = _alias(alias, fallback=str(operation_id))
             existing = sessions.get(session_alias)
             if isinstance(existing, dict):
+                current_credential = state.get("current_credential")
+                if (
+                    current_credential is not None
+                    and existing.get("credential_key") != current_credential
+                ):
+                    raise OrdinaryAgentClientError("session_stale")
                 stored_body = existing.get("request_bytes_b64")
-                if existing.get(
-                    "retry_key"
-                ) != operation_id or stored_body != base64.b64encode(body).decode(
-                    "ascii"
+                if request is not None and (
+                    existing.get("retry_key") != operation_id
+                    or stored_body != base64.b64encode(body or b"").decode("ascii")
                 ):
                     raise OrdinaryAgentClientError("idempotency_conflict")
+                body = self._decode_state_bytes(stored_body)
+                operation_id = existing.get("retry_key")
+                if not isinstance(operation_id, str) or not operation_id:
+                    raise OrdinaryAgentClientError("session_unavailable")
+            elif request is None:
+                raise OrdinaryAgentClientError("session_unavailable")
             else:
                 existing = {
                     "retry_key": operation_id,
-                    "request_bytes_b64": base64.b64encode(body).decode("ascii"),
-                    "canonical_operation_id": operation_id,
+                    "request_bytes_b64": base64.b64encode(body or b"").decode("ascii"),
+                    "canonical_operation_id": None,
                     "credential_key": state.get("current_credential"),
                 }
                 sessions[session_alias] = existing
                 self.state.checkpoint(state)
+            if not isinstance(body, bytes) or not isinstance(existing, dict):
+                raise OrdinaryAgentClientError("session_unavailable")
             state["current_session"] = session_alias
             payload, _ = self._request(
                 "propose_ordinary_agent_session",
@@ -1000,25 +1138,24 @@ class OrdinaryAgentClient:
             for name, record in enrollments.items()
             if isinstance(name, str)
             and isinstance(record, dict)
-            and record.get("status") == "claimed"
             and record.get("credential_key") == current_credential
             and record.get("canonical_operation_id")
         ]
         if len(candidates) != 1:
             raise OrdinaryAgentClientError("session_unavailable")
         enrollment_alias, enrollment = candidates[0]
-        session_alias = _alias(
-            f"initial-{enrollment_alias}", fallback="initial-session"
-        )
-        record = sessions.setdefault(
-            session_alias,
-            {
+        session_alias = _initial_session_alias(enrollment_alias)
+        record = sessions.get(session_alias)
+        if record is None:
+            record = {
                 "canonical_operation_id": enrollment["canonical_operation_id"],
                 "credential_key": current_credential,
-            },
-        )
+            }
+            sessions[session_alias] = record
         if not isinstance(record, dict) or not record.get("canonical_operation_id"):
             raise OrdinaryAgentClientError("session_unavailable")
+        if record["canonical_operation_id"] != enrollment["canonical_operation_id"]:
+            raise OrdinaryAgentClientError("session_stale")
         if record.get("credential_key") not in (None, current_credential):
             raise OrdinaryAgentClientError("session_stale")
         record["credential_key"] = current_credential
@@ -1028,6 +1165,11 @@ class OrdinaryAgentClient:
     def _refresh_session_state(
         self, state: dict[str, Any], session: dict[str, Any]
     ) -> dict[str, Any]:
+        if (
+            not isinstance(session.get("canonical_operation_id"), str)
+            or not session["canonical_operation_id"]
+        ):
+            raise OrdinaryAgentClientError("session_unavailable")
         current_credential = state.get("current_credential")
         if (
             current_credential is not None
@@ -1101,10 +1243,12 @@ class OrdinaryAgentClient:
                 body=b"",
                 credential=self._auth_from_state(state),
             )
-            operation = self._operation(payload, selectors=False)
+            operation = self._operation(payload)
             # A cancellation acknowledgement omits selectors; retain the
             # prior normal projection for later diagnostics.
             session["status"] = operation["status"]
+            if operation.get("lease_selectors"):
+                session["lease_selectors"] = operation["lease_selectors"]
             return operation
 
     @staticmethod
