@@ -282,35 +282,39 @@ def build_command(args: argparse.Namespace, executable: str, settings: dict[str,
     return command
 
 
-def stop_process_group(process: subprocess.Popen[bytes]) -> None:
-    """Signal only the new session's process group, including surviving children."""
-    # macOS can return EPERM when a process group contains only an unreaped
-    # zombie. Reap our leader before signaling, and retry if it just exited.
-    process.poll()
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except PermissionError:
-        if process.poll() is None:
-            raise
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    except ProcessLookupError:
-        wait_for_exit(process)
-        return
-    deadline = time.monotonic() + CLEANUP_SECONDS
-    while time.monotonic() < deadline:
+def signal_process_group(process: subprocess.Popen[bytes], signum: int, *, deadline: float) -> bool:
+    """Return false only when the group is gone; retry transient macOS EPERM."""
+    while True:
+        # An exiting leader may not be reapable on the first poll. On macOS,
+        # zombie-only groups can return EPERM for TERM, signal 0, or KILL.
         process.poll()
         try:
-            os.killpg(process.pid, 0)
+            os.killpg(process.pid, signum)
         except ProcessLookupError:
-            break
-        time.sleep(0.025)
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+            return False
+        except PermissionError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                # Reaping the leader alone does not prove descendants stopped.
+                # Preserve a real/unresolved permission error, without escalation.
+                raise
+            time.sleep(min(0.025, remaining))
+        else:
+            return True
+
+
+def stop_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Signal only the new session's process group, including surviving children."""
+    deadline = time.monotonic() + CLEANUP_SECONDS
+    if not signal_process_group(process, signal.SIGTERM, deadline=deadline):
+        wait_for_exit(process)
+        return
+    while time.monotonic() < deadline:
+        if not signal_process_group(process, 0, deadline=deadline):
+            wait_for_exit(process)
+            return
+        time.sleep(min(0.025, max(0, deadline - time.monotonic())))
+    signal_process_group(process, signal.SIGKILL, deadline=time.monotonic() + CLEANUP_SECONDS)
     wait_for_exit(process)
 
 

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
@@ -20,6 +21,7 @@ import textwrap
 import time
 import tomllib
 import unittest
+from itertools import count
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -513,10 +515,18 @@ class LocalCodexAgentTests(unittest.TestCase):
 
     def test_output_limit_fails_without_publishing_output(self) -> None:
         self.write_host(mode="output_limit")
-        result = self.invoke()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("output limit", result.stderr)
-        self.assertFalse(result.stdout)
+        output = self.root / "last.txt"
+        output.write_text("previous result")
+        for iteration in range(20):
+            with self.subTest(iteration=iteration):
+                result = self.invoke("--output-last-message", str(output))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output limit", result.stderr)
+                self.assertFalse(result.stdout)
+                self.assertEqual(output.read_text(), "previous result")
+                observed = self.observed()
+                self.assert_stopped(observed["pid"])
+                self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
 
     def test_unconfirmed_process_exit_is_a_cleanup_failure(self) -> None:
         process = Mock()
@@ -529,6 +539,69 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertEqual(kill_group.call_args.args[1], signal.SIGKILL)
         self.assertGreater(process.wait.call_args.kwargs["timeout"], 0)
         self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 1)
+
+    def test_cleanup_retries_permission_races_at_each_signal_stage(self) -> None:
+        for fault_signal in (signal.SIGTERM, 0, signal.SIGKILL):
+            with self.subTest(fault_signal=fault_signal):
+                process = Mock(pid=12345)
+                attempts = 0
+
+                def poll() -> int | None:
+                    return 0 if attempts >= 3 else None
+
+                def kill_group(_pgid: int, requested_signal: int) -> None:
+                    nonlocal attempts
+                    if requested_signal == fault_signal:
+                        attempts += 1
+                        if attempts <= 3:
+                            raise PermissionError(errno.EPERM, "synthetic exit/reap race")
+                        raise ProcessLookupError(errno.ESRCH, "synthetic group has exited")
+
+                process.poll.side_effect = poll
+                process.wait.return_value = 0
+                clock = Mock(side_effect=count(step=0.01))
+                with (
+                    patch.dict(vars(agent.os), {"killpg": kill_group}),
+                    patch.dict(vars(agent.time), {"monotonic": clock, "sleep": Mock()}),
+                ):
+                    agent.stop_process_group(process)
+                self.assertEqual(attempts, 4)
+                self.assertGreaterEqual(process.poll.call_count, 4)
+                process.wait.assert_called_once_with(timeout=agent.CLEANUP_SECONDS)
+                self.assertLessEqual(clock.call_count, 110)
+
+    def test_cleanup_preserves_persistent_permission_denial_even_after_leader_exit(self) -> None:
+        for fault_signal in (signal.SIGTERM, 0, signal.SIGKILL):
+            for leader_status in (None, 0):
+                with self.subTest(fault_signal=fault_signal, leader_status=leader_status):
+                    process = Mock(pid=12345)
+                    process.poll.return_value = leader_status
+                    denial = PermissionError(errno.EPERM, "synthetic genuine permission denial")
+
+                    def kill_group(_pgid: int, requested_signal: int) -> None:
+                        if requested_signal == fault_signal:
+                            raise denial
+
+                    clock = Mock(side_effect=count(step=0.01))
+                    with (
+                        patch.dict(vars(agent.os), {"killpg": kill_group}),
+                        patch.dict(vars(agent.time), {"monotonic": clock, "sleep": Mock()}),
+                    ):
+                        with self.assertRaises(PermissionError) as raised:
+                            agent.stop_process_group(process)
+                    self.assertIs(raised.exception, denial)
+                    process.wait.assert_not_called()
+                    self.assertLessEqual(clock.call_count, 110)
+
+    def test_cleanup_does_not_retry_an_unrelated_os_error(self) -> None:
+        process = Mock(pid=12345)
+        failure = OSError(errno.EIO, "synthetic unrelated failure")
+        kill_group = Mock(side_effect=failure)
+        with patch.dict(vars(agent.os), {"killpg": kill_group}):
+            with self.assertRaises(OSError) as raised:
+                agent.stop_process_group(process)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(kill_group.call_count, 1)
 
     def test_wrong_host_and_missing_capabilities_fail_before_exec(self) -> None:
         for options in ({"version": "code 1.0 Every Code"}, {"help": "--json --output-last-message"}):
