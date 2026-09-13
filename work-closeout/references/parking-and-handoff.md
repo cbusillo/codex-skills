@@ -28,8 +28,10 @@ Use this route only when cleanup finds valuable retained work that needs to
 survive its current branch, worktree, or checkout. Routine disposable output
 does not require a parking issue or remote publication.
 
-Before publishing cleanup recovery state, preflight the repository's live Issues
-capability and identify the canonical owner. Create or update that owner only
+Before publishing cleanup recovery state, preflight live Issues capability and
+the destination's applicable access permissions, and identify the canonical
+owner. Reuse current scoped identity/permission evidence; a known denial remains
+a blocker. Create or update that owner only
 when the valuable work needs the durable parking surface and the same action and
 publication scope are already authorized.
 If Issues are disabled, use an already authorized owner or consumer tracker when
