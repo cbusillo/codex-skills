@@ -5,14 +5,18 @@ by this skill. Its current identity is:
 
 - schema version: `1`
 - normalization version: `1`
-- semantic digest: `9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5`
-- non-gating source provenance: `2494668205388a7d70f1a9e74bd4af300854fd20`
-- operation count: `12`
+- semantic digest: `a6dad1fcf4fe6ee709f6c3fb0c6b9d40688f3b7eed443add30cbd65ce745bf8d`
+- non-gating source provenance: `88a912940df197fc839180681c5970aba206592e`
+- operation count: `20`
 
-This refresh also carries the upstream identity dependency change for
-`reconcile_managed_authz_policy` from browser mutation identity to bearer
-identity. The vendored artifact remains byte-identical to the published
-Launchplane contract; this skill does not reinterpret or widen that operation.
+This artifact is byte-identical to the published
+[Launchplane contract at d34bf73f](https://github.com/cbusillo/launchplane/blob/d34bf73f98368bc927fd7065d5c862d79ff6abe1/contracts/agent-operator-contract.json).
+It includes the terminal enrollment, private credential claim, ordinary session
+and finite-job operations. The embedded source provenance records the exporter
+checkout; the published commit above identifies this retrieved artifact. Neither
+provenance nor a matching contract grants runtime authority. Private claims are
+consumed only by the private ordinary-agent adapter, outside the generic
+agent-visible operator helper.
 
 Run the offline conformance gate with:
 
@@ -57,7 +61,7 @@ block ordinary Launchplane helper reads.
 The merge-train policy import dry-run/apply commands and generic-web
 deploy-recovery dry-run/apply commands are currently bounded local extensions
 because they are consumed by `launchplane-write-action.py` but are not present
-in the upstream 12-operation projection. The validator keeps all four explicit
+in the upstream public operation projection. The validator keeps all four explicit
 and fails if an upstream artifact later projects the same routes, forcing a
 deliberate migration instead of silently maintaining two sources of truth.
 

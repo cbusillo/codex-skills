@@ -22,6 +22,9 @@ resources:
   - path: scripts/launchplane-ordinary-agent.py
     kind: script
     description: Thin CLI for resuming the private ordinary-agent lifecycle.
+  - path: references/ordinary-agent-client.md
+    kind: reference
+    description: Private client custody, connection, session, retry, and cancellation behavior.
   - path: references/agent-operator-contract.json
     kind: reference
     description: Vendored public Launchplane agent/operator contract artifact.
@@ -641,10 +644,21 @@ operation map rather than adding duplicate literals.
 
 The merge-train policy import dry-run/apply commands and generic-web
 deploy-recovery dry-run/apply commands are explicit bounded local extensions
-because the current upstream 12-operation projection does not contain their
+because the upstream public operation projection does not contain their
 routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
+
+### Private Ordinary-Agent Client
+
+For an ordinary agent connection, session, finite job, or cancellation, read
+[the private client contract](references/ordinary-agent-client.md) and use
+`scripts/launchplane-ordinary-agent.py`. Keep credential claims inside that
+adapter; its public output must never contain the claim response or receiver
+proof. Present the service's review link for a pending administrator decision.
+Resume saved requests after interruption, and reuse issued session and lease
+handles without asking the user to locate or type them. A proposal does not
+approve itself, and client installation does not activate a worker.
 
 ### Contract-Backed Lifecycle And Repair Routing
 
