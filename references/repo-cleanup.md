@@ -115,6 +115,9 @@ Report what was **removed**, **retained** (with reason/trigger), **blocked**
 Keep the report proportional; omit empty detail. A completed local cleanup does
 not establish a full scan or release readiness. Excluded backups, inaccessible
 roots, interruptions and timeouts must remain visible; none means "all clean."
+Base coverage claims on actual traversal and probes of the named roots. Reading
+representative files or a prior record does not prove a complete scan or a current
+access failure; label unverified state as reported or unexamined.
 
 ## Outcome and limits
 
