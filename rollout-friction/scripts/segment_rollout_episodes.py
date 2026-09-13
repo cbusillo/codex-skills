@@ -35,20 +35,10 @@ def load_analyzer() -> Any:
 
 ANALYZER = load_analyzer()
 SIGNALS_BY_NAME = {signal.name: signal for signal in ANALYZER.SIGNALS}
-SUCCESS_RE = re.compile(
-    r"\b(exit[_ -]?code\s*[:=]?\s*0|process exited with code 0|passed|succeeded|success|green|mergeable)\b",
-    re.I,
-)
-FALSE_SUCCESS_RE = re.compile(r"(?i)(?:\bsuccess\b|['\"]success['\"])\s*[:=]\s*(?:false|0|null|no)\b")
-FAILURE_RE = re.compile(
-    r"\b(error|failed|failure|exit[_ -]?code\s*[:=]?\s*[1-9][0-9]*|process exited with code [1-9][0-9]*|timed out|timeout|blocked|rate limit|stale)\b",
-    re.I,
-)
 USER_CORRECTION_RE = re.compile(
     r"\b(wrong issue|wrong task|not what i asked|i meant|to be clear|disagree|you are wrong|please stop|hold on)\b",
     re.I,
 )
-TOOL_HINT_RE = re.compile(r"\b(shell|command|tool|gh|git|uv run|pytest|jq|curl|agent|browser|apply_patch)\b", re.I)
 
 
 @dataclass
@@ -62,6 +52,8 @@ class EventHit:
     category: str
     destination: str
     likely_cause: str
+    event_id: str = ""
+    outcome_basis: str | None = None
 
 
 @dataclass
@@ -69,6 +61,16 @@ class TraceLine:
     line: int
     snippet: str
     structured: bool
+    event_id: str = ""
+    tool_id: str | None = None
+    failed: bool = False
+    succeeded: bool = False
+    retry: bool = False
+    exit_code: int | None = None
+    expected_nonzero: bool = False
+    outcome_basis: str | None = None
+    kind: str = "legacy"
+    file_id: str = ""
 
 
 @dataclass
@@ -82,6 +84,9 @@ class Episode:
     retry_count: int = 0
     tool_call_count: int = 0
     failure_count: int = 0
+    nonzero_exit_count: int = 0
+    expected_nonzero_count: int = 0
+    text_hint_failure_count: int = 0
     outcome: str = "unknown"
     outcome_evidence_line: int | None = None
     outcome_evidence_snippet: str | None = None
@@ -126,68 +131,29 @@ def scan_targets(args: argparse.Namespace) -> tuple[list[Any], list[Any]]:
     return targets, [*limitations, *scan_limitations]
 
 
-def collect_hits_and_lines(target: Any, args: argparse.Namespace) -> tuple[list[EventHit], list[TraceLine]]:
+def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thresholds: bool = True) -> tuple[list[EventHit], list[TraceLine]]:
     since_ts = ANALYZER.parse_timestamp_arg(args.since, "--since") if args.since else None
     until_ts = ANALYZER.parse_timestamp_arg(args.until, "--until") if args.until else None
     hits: list[EventHit] = []
     trace_lines: list[TraceLine] = []
-    seen: set[tuple[int, str, str, int]] = set()
-    line_signal_texts: dict[tuple[int, str], set[str]] = {}
-    for line_no, text, is_summary, is_structured in ANALYZER.iter_lines(
-        target.path, target.read_bytes, since_ts, until_ts, None, None
-    ):
-        if ANALYZER.is_meta_echo(text):
+    events = ANALYZER.normalize_events(target.path, target.read_bytes, since_ts, until_ts)
+    findings = ANALYZER.collect_event_hits(target.path, events, args.context_chars, args.suppress_investigation_noise)
+    for finding in findings.values():
+        signal = finding.signal
+        if apply_thresholds and finding.count < signal.threshold:
             continue
-        if args.suppress_investigation_noise and not is_structured and ANALYZER.is_suppressed_noise(text):
-            continue
-        snippet = ANALYZER.redacted(text, args.context_chars)
-        trace_lines.append(TraceLine(line=line_no, snippet=snippet, structured=is_structured))
-        matched_auth_login_noise = bool(ANALYZER.AUTH_LOGIN_NOISE_RE.search(text))
-        canonical_text = ANALYZER.canonical_hit_text(text)
-        for signal in ANALYZER.SIGNALS:
-            if matched_auth_login_noise and signal.name in {
-                "github_graphql_rate_limit",
-                "github_rest_rate_limit",
-                "repeated_command_failure",
-                "missing_dependency_or_tool",
-                "generic_rate_limit",
-            }:
-                continue
-            if signal.name == "auth_login_loop" and not matched_auth_login_noise:
-                continue
-            for occurrence, match in enumerate(signal.pattern.finditer(text)):
-                if ANALYZER.should_skip_signal_match(signal.name, text, canonical_text, match):
-                    continue
-                tags = ANALYZER.signal_tags(signal.name, text, canonical_text)
-                line_key = (line_no, signal.name)
-                line_texts = line_signal_texts.setdefault(line_key, set())
-                if is_summary and ANALYZER.summary_only_repeats_seen_values(canonical_text, line_texts):
-                    continue
-                hit_key = (line_no, signal.name, canonical_text, occurrence)
-                if hit_key in seen:
-                    continue
-                seen.add(hit_key)
-                line_texts.add(canonical_text)
-                hits.append(
-                    EventHit(
-                        signal=signal.name,
-                        line=line_no,
-                        snippet=snippet,
-                        structured=is_structured,
-                        tags=tags,
-                        severity=signal.severity,
-                        category=signal.category,
-                        destination=signal.destination,
-                        likely_cause=signal.likely_cause,
-                    )
-                )
-    signal_counts: dict[str, int] = {}
-    for item in hits:
-        signal_counts[item.signal] = signal_counts.get(item.signal, 0) + 1
-    filtered_hits = [
-        item for item in hits if signal_counts[item.signal] >= getattr(SIGNALS_BY_NAME[item.signal], "threshold", 1)
-    ]
-    return sorted(filtered_hits, key=lambda hit: hit.line), trace_lines
+        for hit in finding.hits:
+            hits.append(EventHit(signal.name, hit.line, hit.snippet, hit.structured, hit.tags,
+                                 signal.severity, signal.category, signal.destination, signal.likely_cause,
+                                 hit.event_id, hit.outcome_basis))
+    for event in events:
+        trace_lines.append(TraceLine(
+            event.line, ANALYZER.redacted(event.evidence_text(), args.context_chars),
+            event.outcome_basis in {"result_status", "result_text"}, event.event_id, event.tool_id,
+            event.failed, event.succeeded, event.retry, event.exit_code,
+            event.expected_nonzero, event.outcome_basis, event.kind, event.file_id,
+        ))
+    return sorted(hits, key=lambda hit: hit.line), trace_lines
 
 
 def build_episodes(
@@ -235,18 +201,16 @@ def finalize_episode(
     next_episode: Episode | None = None,
 ) -> None:
     window = outcome_window(episode, trace_lines, max_gap_lines, previous_episode, next_episode)
-    episode.event_count = len(episode.hits)
-    episode.retry_count = count_matching(window, r"\b(retry|rerun|again|confirm|attempt)\b")
-    episode.tool_call_count = sum(1 for item in window if TOOL_HINT_RE.search(item.snippet))
-    episode.failure_count = sum(1 for item in window if FAILURE_RE.search(item.snippet))
+    episode.event_count = len({hit.event_id or str(hit.line) for hit in episode.hits})
+    episode.retry_count = len({item.tool_id for item in window if item.retry and item.tool_id})
+    episode.tool_call_count = len({item.tool_id for item in window if item.tool_id})
+    episode.failure_count = sum(item.failed for item in window)
+    episode.nonzero_exit_count = sum(item.exit_code is not None and item.exit_code != 0 for item in window)
+    episode.expected_nonzero_count = sum(item.expected_nonzero for item in window)
+    episode.text_hint_failure_count = sum(item.failed and item.outcome_basis == "text_hint" for item in window)
     episode.outcome, episode.outcome_evidence_line, episode.outcome_evidence_snippet = detect_outcome(episode, window)
     episode.cost_score = cost_score(episode)
     episode.episode_id = episode_fingerprint(episode)
-
-
-def count_matching(items: list[TraceLine], pattern: str) -> int:
-    regex = re.compile(pattern, re.I)
-    return sum(1 for item in items if regex.search(item.snippet))
 
 
 def outcome_window(
@@ -257,7 +221,7 @@ def outcome_window(
     next_episode: Episode | None = None,
 ) -> list[TraceLine]:
     if not trace_lines:
-        return [TraceLine(line=hit.line, snippet=hit.snippet, structured=hit.structured) for hit in episode.hits]
+        return []
     start = max(0, episode.start_line - max_gap_lines)
     end = episode.end_line + max_gap_lines
     if previous_episode is not None:
@@ -274,19 +238,17 @@ def detect_outcome(episode: Episode, window: list[TraceLine]) -> tuple[str, int 
         if hit.signal == "user_context_correction":
             return "user_corrected", hit.line, hit.snippet
     for item in window:
-        if USER_CORRECTION_RE.search(item.snippet):
+        if item.kind in {"context", "legacy"} and USER_CORRECTION_RE.search(item.snippet):
             return "user_corrected", item.line, item.snippet
     for item in reversed(window):
-        if is_success_snippet(item.snippet):
+        if item.failed:
+            break
+        if item.succeeded:
             outcome = "resolved_after_retries" if episode.failure_count or episode.retry_count else "resolved_immediately"
             return outcome, item.line, item.snippet
     if episode.failure_count or episode.retry_count:
         return "unresolved", episode.hits[-1].line, episode.hits[-1].snippet
     return "unknown", None, None
-
-
-def is_success_snippet(snippet: str) -> bool:
-    return bool(SUCCESS_RE.search(snippet) and not FAILURE_RE.search(snippet) and not FALSE_SUCCESS_RE.search(snippet))
 
 
 def cost_score(episode: Episode) -> int:
@@ -308,6 +270,7 @@ def cost_score(episode: Episode) -> int:
 def episode_fingerprint(episode: Episode) -> str:
     payload = {
         "file_id": episode.source_file_id,
+        "count_semantics": ANALYZER.COUNT_SEMANTICS,
         "start_line": episode.start_line,
         "end_line": episode.end_line,
         "signals": sorted({hit.signal for hit in episode.hits}),
@@ -325,7 +288,8 @@ def episode_to_json(episode: Episode) -> dict[str, Any]:
     primary = primary_hit(episode)
     tag_counts = Counter(tag for hit in episode.hits for tag in hit.tags)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "count_semantics": ANALYZER.COUNT_SEMANTICS,
         "episode_id": episode.episode_id,
         "source_file_id": episode.source_file_id,
         "source_suffix": episode.source_file.suffix,
@@ -346,6 +310,9 @@ def episode_to_json(episode: Episode) -> dict[str, Any]:
             "retry_count": episode.retry_count,
             "tool_call_count": episode.tool_call_count,
             "failure_count": episode.failure_count,
+            "nonzero_exit_count": episode.nonzero_exit_count,
+            "expected_nonzero_count": episode.expected_nonzero_count,
+            "text_hint_failure_count": episode.text_hint_failure_count,
         },
         "cost_score": episode.cost_score,
         "hits": [
@@ -355,6 +322,8 @@ def episode_to_json(episode: Episode) -> dict[str, Any]:
                 "snippet": hit.snippet,
                 "evidence_type": "structured_payload" if hit.structured else "broad_context",
                 "tags": list(hit.tags),
+                "event_id": hit.event_id,
+                "outcome_basis": hit.outcome_basis,
             }
             for hit in episode.hits
         ],
@@ -365,15 +334,19 @@ def main() -> int:
     args = parse_args()
     targets, limitations = scan_targets(args)
     episodes: list[Episode] = []
-    for target in targets:
-        hits, trace_lines = collect_hits_and_lines(target, args)
+    collected = [(target, *collect_hits_and_lines(target, args, apply_thresholds=False)) for target in targets]
+    counts = Counter(hit.signal for _target, hits, _lines in collected for hit in hits)
+    for target, hits, trace_lines in collected:
+        hits = [hit for hit in hits if counts[hit.signal] >= SIGNALS_BY_NAME[hit.signal].threshold]
         episodes.extend(build_episodes(target, hits, args.max_gap_lines, trace_lines))
     payloads = [episode_to_json(episode) for episode in episodes]
     if args.json:
         print(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "count_semantics": ANALYZER.COUNT_SEMANTICS,
+                    "outcome_summary": ANALYZER.outcome_summary([event for _target, _hits, lines in collected for event in lines]),
                     "episode_count": len(payloads),
                     "scan_limitations": [ANALYZER.limitation_to_json(limitation) for limitation in limitations],
                     "episodes": payloads,

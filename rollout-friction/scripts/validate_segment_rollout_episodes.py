@@ -8,9 +8,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import sys
+import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("segment_rollout_episodes.py")
@@ -47,9 +52,9 @@ def target() -> object:
 
 def test_groups_nearby_hits_and_detects_resolution(module: ModuleType) -> None:
     trace_lines = [
-        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True),
-        module.TraceLine(line=2, snippet="retry the same command again", structured=True),
-        module.TraceLine(line=3, snippet="Process exited with code 0 and tests passed", structured=True),
+        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True, failed=True, exit_code=1),
+        module.TraceLine(line=2, snippet="retry the same command again", structured=True, tool_id="second-call", retry=True, kind="call"),
+        module.TraceLine(line=3, snippet="Process exited with code 0 and tests passed", structured=True, succeeded=True, exit_code=0),
     ]
     episodes = module.build_episodes(
         target(),
@@ -87,11 +92,11 @@ def test_episode_carries_failure_cause_tags(module: ModuleType) -> None:
             raise AssertionError(f"missing failure tag {expected!r}: {payload}")
 
 
-def test_retry_count_uses_context_window(module: ModuleType) -> None:
+def test_retry_mentions_do_not_count_as_executed_retries(module: ModuleType) -> None:
     trace_lines = [
-        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True),
+        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True, failed=True, exit_code=1),
         module.TraceLine(line=2, snippet="retry the command with corrected args", structured=True),
-        module.TraceLine(line=3, snippet="Process exited with code 0 and tests passed", structured=True),
+        module.TraceLine(line=3, snippet="Process exited with code 0 and tests passed", structured=True, succeeded=True, exit_code=0),
     ]
     episodes = module.build_episodes(
         target(),
@@ -100,15 +105,15 @@ def test_retry_count_uses_context_window(module: ModuleType) -> None:
         trace_lines=trace_lines,
     )
     payload = module.episode_to_json(episodes[0])
-    if payload["cost"]["retry_count"] != 1:
-        raise AssertionError(f"retry count should include context window lines, got {payload['cost']}")
+    if payload["cost"]["retry_count"] != 0:
+        raise AssertionError(f"a prose retry intention is not an executed retry: {payload['cost']}")
     if payload["outcome"] != "resolved_after_retries":
         raise AssertionError(f"context retry should prevent immediate-resolution labeling, got {payload['outcome']}")
 
 
 def test_success_requires_success_word_or_zero_exit(module: ModuleType) -> None:
     trace_lines = [
-        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True),
+        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True, failed=True, exit_code=1),
         module.TraceLine(line=2, snippet="unsuccessful attempt after tool retry", structured=True),
     ]
     episodes = module.build_episodes(
@@ -125,7 +130,7 @@ def test_success_requires_success_word_or_zero_exit(module: ModuleType) -> None:
 
 
 def test_mixed_failed_and_passed_summary_stays_unresolved(module: ModuleType) -> None:
-    trace_lines = [module.TraceLine(line=1, snippet="pytest summary: 1 failed, 2 passed", structured=False)]
+    trace_lines = [module.TraceLine(line=1, snippet="pytest summary: 1 failed, 2 passed", structured=True, failed=True, exit_code=1)]
     episodes = module.build_episodes(
         target(),
         [hit(module, "repeated_command_failure", 1, "pytest summary: 1 failed, 2 passed")],
@@ -139,7 +144,7 @@ def test_mixed_failed_and_passed_summary_stays_unresolved(module: ModuleType) ->
 
 def test_false_success_flag_does_not_resolve_episode(module: ModuleType) -> None:
     trace_lines = [
-        module.TraceLine(line=1, snippet='{"success": false, "error": "command failed"}', structured=True),
+        module.TraceLine(line=1, snippet='{"success": false, "error": "command failed"}', structured=True, failed=True),
     ]
     episodes = module.build_episodes(
         target(),
@@ -154,9 +159,9 @@ def test_false_success_flag_does_not_resolve_episode(module: ModuleType) -> None
 
 def test_episode_windows_stop_at_neighbor_midpoints(module: ModuleType) -> None:
     trace_lines = [
-        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True),
-        module.TraceLine(line=6, snippet="Process exited with code 1", structured=True),
-        module.TraceLine(line=8, snippet="Process exited with code 0 and tests passed", structured=True),
+        module.TraceLine(line=1, snippet="Process exited with code 1", structured=True, failed=True, exit_code=1),
+        module.TraceLine(line=6, snippet="Process exited with code 1", structured=True, failed=True, exit_code=1),
+        module.TraceLine(line=8, snippet="Process exited with code 0 and tests passed", structured=True, succeeded=True, exit_code=0),
     ]
     episodes = module.build_episodes(
         target(),
@@ -208,14 +213,14 @@ def test_subthreshold_hits_are_filtered(module: ModuleType) -> None:
     )
     fake_target = SimpleNamespace(path=Path("rollout-test.jsonl"), read_bytes=1000)
 
-    original_iter_lines = module.ANALYZER.iter_lines
+    original_iter_lines = module.ANALYZER.iter_records
     try:
-        module.ANALYZER.iter_lines = lambda *_args, **_kwargs: iter(
-            [(1, "Process exited with code 1", False, True)]
+        module.ANALYZER.iter_records = lambda *_args, **_kwargs: iter(
+            [(1, {"exit_code": 1})]
         )
         hits, _trace_lines = module.collect_hits_and_lines(fake_target, args)
     finally:
-        module.ANALYZER.iter_lines = original_iter_lines
+        module.ANALYZER.iter_records = original_iter_lines
     if hits:
         raise AssertionError("single repeated_command_failure hit should stay below analyzer threshold")
 
@@ -229,27 +234,100 @@ def test_time_filters_use_analyzer_timestamp_parser(module: ModuleType) -> None:
     )
     fake_target = SimpleNamespace(path=Path("rollout-test.jsonl"), read_bytes=1000)
 
-    original_iter_lines = module.ANALYZER.iter_lines
+    original_iter_lines = module.ANALYZER.iter_records
     try:
-        module.ANALYZER.iter_lines = lambda *_args, **_kwargs: iter(
+        module.ANALYZER.iter_records = lambda *_args, **_kwargs: iter(
             [
-                (1, "Process exited with code 1", False, True),
-                (2, "Process exited with code 1", False, True),
-                (3, "Process exited with code 1", False, True),
+                (1, {"timestamp": "2026-06-13T01:00:00Z", "exit_code": 1}),
+                (2, {"timestamp": "2026-06-13T02:00:00Z", "exit_code": 1}),
+                (3, {"timestamp": "2026-06-13T03:00:00Z", "exit_code": 1}),
+                (4, {"timestamp": "2026-06-14T01:00:00Z", "exit_code": 1}),
             ]
         )
         hits, _trace_lines = module.collect_hits_and_lines(fake_target, args)
     finally:
-        module.ANALYZER.iter_lines = original_iter_lines
+        module.ANALYZER.iter_records = original_iter_lines
     if len(hits) != 3:
         raise AssertionError("time-bounded collection should parse timestamps and retain thresholded hits")
+
+
+def command_record(call_id: str, command: str) -> dict[str, object]:
+    return {"type": "response_item", "payload": {
+        "type": "function_call", "call_id": call_id, "name": "functions.exec_command",
+        "arguments": json.dumps({"cmd": command}),
+    }}
+
+
+def result_record(call_id: str, code: int, text: str = "") -> dict[str, object]:
+    return {"type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": call_id,
+        "output": json.dumps({"exit_code": code, "stdout": text, "stderr": text}),
+    }}
+
+
+def test_real_collection_counts_results_calls_and_retries_once(module: ModuleType) -> None:
+    records = []
+    for index in range(4):
+        call_id = f"build-{index}"
+        records.extend([command_record(call_id, "build --check"), result_record(call_id, 1 if index < 3 else 0,
+                        "error: first\nerror: second\nCommand failed" if index < 3 else "passed")])
+        if index == 0:
+            records.extend([result_record(call_id, 1, "error: first\nerror: second\nCommand failed"),
+                            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": "retry again"}}])
+    records.extend([command_record("search", "rg needle sample.txt"), result_record("search", 1)])
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "trace.jsonl"
+        trace.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+        scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
+        args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
+        hits, lines = module.collect_hits_and_lines(scan_target, args)
+        episodes = module.build_episodes(scan_target, hits, 25, lines)
+        analyzer = module.ANALYZER.scan([trace], 100_000, 240, suppress_investigation_noise=True)
+    if len(episodes) != 1:
+        raise AssertionError(f"expected one episode, got {len(episodes)}")
+    payload = module.episode_to_json(episodes[0])
+    expected = {"event_count": 3, "failure_count": 3, "tool_call_count": 5, "retry_count": 3,
+                "nonzero_exit_count": 4, "expected_nonzero_count": 1, "text_hint_failure_count": 0}
+    if payload["cost"] != expected or analyzer["repeated_command_failure"].count != 3:
+        raise AssertionError(f"analyzer/episode counts diverged or multiplied evidence: {payload['cost']}")
+    if payload["schema_version"] != 2 or payload["count_semantics"] != module.ANALYZER.COUNT_SEMANTICS:
+        raise AssertionError("new cost meanings must be versioned")
+
+
+def test_successful_argument_literals_do_not_create_episodes(module: ModuleType) -> None:
+    records = [command_record("search", "rg --count 'error:|Command failed|exit_code=1' sample.txt"),
+               result_record("search", 0, "3")]
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "trace.jsonl"
+        trace.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+        scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
+        args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
+        hits, lines = module.collect_hits_and_lines(scan_target, args)
+        if module.build_episodes(scan_target, hits, 25, lines) or any(line.failed for line in lines):
+            raise AssertionError("a successful command's argument literals must not create a friction episode")
+
+
+def test_cli_thresholds_agree_across_multiple_files(module: ModuleType) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for index in range(3):
+            trace = Path(tmp) / f"trace-{index}.jsonl"
+            trace.write_text(json.dumps(result_record("same-id", 1)) + "\n", encoding="utf-8")
+            paths.append(trace)
+        stdout = io.StringIO()
+        with mock.patch.object(sys, "argv", [str(SCRIPT), *map(str, paths), "--json"]), redirect_stdout(stdout):
+            module.main()
+        payload = json.loads(stdout.getvalue())
+        analyzer = module.ANALYZER.scan(paths, 100_000, 240)
+    if payload["episode_count"] != 3 or sum(item["cost"]["failure_count"] for item in payload["episodes"]) != analyzer["repeated_command_failure"].count:
+        raise AssertionError("the analyzer and segmenter must apply the reporting threshold over the same source set")
 
 
 def main() -> int:
     module = load_module()
     test_groups_nearby_hits_and_detects_resolution(module)
     test_episode_carries_failure_cause_tags(module)
-    test_retry_count_uses_context_window(module)
+    test_retry_mentions_do_not_count_as_executed_retries(module)
     test_success_requires_success_word_or_zero_exit(module)
     test_mixed_failed_and_passed_summary_stays_unresolved(module)
     test_false_success_flag_does_not_resolve_episode(module)
@@ -258,6 +336,9 @@ def main() -> int:
     test_episode_ids_are_stable(module)
     test_subthreshold_hits_are_filtered(module)
     test_time_filters_use_analyzer_timestamp_parser(module)
+    test_real_collection_counts_results_calls_and_retries_once(module)
+    test_successful_argument_literals_do_not_create_episodes(module)
+    test_cli_thresholds_agree_across_multiple_files(module)
     print("ok validate-segment-rollout-episodes")
     return 0
 

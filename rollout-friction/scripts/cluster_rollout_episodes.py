@@ -47,6 +47,18 @@ ROOT_CAUSE_TAG_PRIORITY = {
 }
 CAUSE_TAG_PRIORITY = {**ROOT_CAUSE_TAG_PRIORITY, "github_cli": 20, "command_failed": 21, "exit_code": 22}
 GENERIC_CAUSE_TAGS = {"command_failed", "exit_code"}
+LEGACY_COUNT_SEMANTICS = "legacy_fragment_hits_v1"
+EVENT_COUNT_SEMANTICS = "normalized_events_v2"
+
+
+def episode_count_semantics(episode: dict[str, Any]) -> str:
+    version = episode.get("schema_version", 1)
+    semantics = episode.get("count_semantics")
+    if version == 1 and semantics in {None, LEGACY_COUNT_SEMANTICS}:
+        return LEGACY_COUNT_SEMANTICS
+    if version == 2 and semantics == EVENT_COUNT_SEMANTICS:
+        return EVENT_COUNT_SEMANTICS
+    raise SystemExit("unsupported episode count semantics; regenerate episodes with the current segment_rollout_episodes.py")
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,7 +90,12 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
         object_records = payload.get("episodes", [])
         if not isinstance(object_records, list):
             raise SystemExit("episodes JSON object must contain an episodes array")
-        return [episode for episode in object_records if isinstance(episode, dict)]
+        episodes = [episode for episode in object_records if isinstance(episode, dict)]
+        if "schema_version" in payload or "count_semantics" in payload:
+            declared = episode_count_semantics(payload)
+            if any(episode_count_semantics(episode) != declared for episode in episodes):
+                raise SystemExit("episode envelope and record count semantics differ; regenerate the episode report")
+        return episodes
     line_records: list[dict[str, Any]] = []
     for line_no, line in enumerate(text.splitlines(), 1):
         if not line.strip():
@@ -91,13 +108,15 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
 
 
 def cluster_key(episode: dict[str, Any]) -> tuple[str, ...]:
+    semantics = episode_count_semantics(episode)
+    prefix = (semantics,) if semantics == EVENT_COUNT_SEMANTICS else ()
     signals = tuple(sorted(str(signal) for signal in episode.get("signals", []) if signal))
     cause = command_failure_cause(episode)
     if cause:
-        return ("repeated_command_failure", f"cause:{cause}")
+        return (*prefix, "repeated_command_failure", f"cause:{cause}")
     category = str(episode.get("category") or "unknown")
     destination = str(episode.get("recommended_destination") or "unknown")
-    return (*signals, f"category:{category}", f"destination:{destination}")
+    return (*prefix, *signals, f"category:{category}", f"destination:{destination}")
 
 
 def command_failure_cause(episode: dict[str, Any]) -> str | None:
@@ -143,6 +162,11 @@ def build_clusters(
     max_steps: int,
     trusted_originals: bool,
 ) -> dict[str, Any]:
+    semantics_seen = {episode_count_semantics(episode) for episode in episodes}
+    if len(semantics_seen) > 1:
+        raise SystemExit("mixed legacy/v2 episode count semantics; regenerate legacy episodes with the current segment_rollout_episodes.py or cluster each version separately")
+    semantics = next(iter(semantics_seen), EVENT_COUNT_SEMANTICS)
+    schema_version = 2 if semantics == EVENT_COUNT_SEMANTICS else 1
     grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for episode in episodes:
         grouped[cluster_key(episode)].append(episode)
@@ -166,7 +190,8 @@ def build_clusters(
         skeletons.append(skeleton)
         clusters.append(
             {
-                "schema_version": 1,
+                "schema_version": schema_version,
+                "count_semantics": semantics,
                 "cluster_id": cluster_id,
                 "label": cluster_label(signal_counts, representative),
                 "signals": sorted(signal_counts),
@@ -190,7 +215,8 @@ def build_clusters(
     clusters.sort(key=lambda item: (item["total_cost_score"], item["episode_count"], item["cluster_id"]), reverse=True)
     wanted_ids = {cluster["representative_skeleton_id"] for cluster in clusters[:top_clusters]}
     return {
-        "schema_version": 1,
+        "schema_version": schema_version,
+        "count_semantics": semantics,
         "cluster_count": min(len(clusters), top_clusters),
         "total_cluster_count": len(clusters),
         "episode_count": len(episodes),
@@ -236,6 +262,7 @@ def skeleton_for(
     max_steps: int,
     trusted_originals: bool,
 ) -> dict[str, Any]:
+    semantics = episode_count_semantics(episode)
     hits = episode.get("hits", [])
     steps: list[dict[str, Any]] = []
     for hit in hits:
@@ -244,17 +271,20 @@ def skeleton_for(
         snippet = str(hit.get("snippet") or "")
         steps.append(
             {
-                "kind": step_kind(str(hit.get("signal") or ""), snippet),
+                "kind": "failure" if semantics == EVENT_COUNT_SEMANTICS and hit.get("signal") == "repeated_command_failure" else step_kind(str(hit.get("signal") or ""), snippet),
                 "signal": hit.get("signal"),
                 "line": hit.get("line"),
                 "tags": hit.get("tags") if isinstance(hit.get("tags"), list) else [],
+                "event_id": hit.get("event_id"),
+                "outcome_basis": hit.get("outcome_basis"),
                 "summary": sanitize(snippet, trusted_originals),
             }
         )
     compacted, elided_count = compact_steps(steps, max_steps)
     skeleton_id = f"sk_{hashlib.sha256(str(episode.get('episode_id')).encode('utf-8')).hexdigest()[:16]}"
     return {
-        "schema_version": 1,
+        "schema_version": 2 if semantics == EVENT_COUNT_SEMANTICS else 1,
+        "count_semantics": semantics,
         "skeleton_id": skeleton_id,
         "cluster_id": cluster_id,
         "episode_id": episode.get("episode_id"),
