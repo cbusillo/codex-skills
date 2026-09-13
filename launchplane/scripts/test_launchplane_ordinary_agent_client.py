@@ -175,6 +175,22 @@ class OrdinaryAgentClientTests(TestCase):
             ):
                 OrdinaryAgentClient("http://127.0.0.1:8124", state=store)
 
+    def test_non_ascii_credential_is_rejected_before_header_construction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            with patch.object(urllib.request, "build_opener") as build_opener:
+                with self.assertRaisesRegex(
+                    OrdinaryAgentClientError, "credential_unavailable"
+                ):
+                    client._request(
+                        "read_ordinary_agent_job",
+                        method="GET",
+                        parts={"request_id": "job"},
+                        credential="bad-\u2603",
+                    )
+                build_opener.assert_not_called()
+
     def test_repository_relative_private_state_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory) / "checkout"
@@ -272,7 +288,9 @@ class OrdinaryAgentClientTests(TestCase):
                 operation["lease_selectors"][0]["lease_id"], "fixture-lease-preflight"
             )
             self.assertEqual(
-                store.load()["sessions"]["initial"]["canonical_operation_id"],
+                store.load()["sessions"]["initial-retry-key-2366"][
+                    "canonical_operation_id"
+                ],
                 "fixture-enrollment",
             )
 
@@ -358,6 +376,13 @@ class OrdinaryAgentClientTests(TestCase):
                 return_value=Opener([response("job_pending")], retry_observed),
             ):
                 client.resume_job(alias="guarded-job")
+            with self.assertRaisesRegex(
+                OrdinaryAgentClientError, "idempotency_conflict"
+            ):
+                client.admit_job(
+                    {"purpose": "qualification", "idempotency_key": "guarded-job"},
+                    alias="guarded-job",
+                )
             self.assertEqual(
                 json.loads(base64.b64decode(saved))["lease_id"],
                 "fixture-lease-guarded_merge",
@@ -377,6 +402,7 @@ class OrdinaryAgentClientTests(TestCase):
                     "sessions": {
                         "initial": {
                             "canonical_operation_id": "fixture-session-operation",
+                            "credential_key": "fixture",
                             "session_id": "fixture-session",
                             "lease_selectors": RESPONSES["session_issued"]["operation"][
                                 "lease_selectors"
@@ -401,6 +427,53 @@ class OrdinaryAgentClientTests(TestCase):
             self.assertEqual(
                 store.load()["sessions"]["initial"]["lease_selectors"][0]["revoked_at"],
                 2_000_000_030,
+            )
+
+    def test_initial_session_follows_active_claimed_enrollment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
+            store.update(
+                lambda state: {
+                    **state,
+                    "credentials": {"credential-two": "ordinary-two"},
+                    "current_credential": "credential-two",
+                    "enrollments": {
+                        "first-enrollment": {
+                            "status": "claimed",
+                            "credential_key": "credential-one",
+                            "canonical_operation_id": "fixture-one",
+                        },
+                        "second-enrollment": {
+                            "status": "claimed",
+                            "credential_key": "credential-two",
+                            "canonical_operation_id": "fixture-two",
+                        },
+                    },
+                    "current_enrollment": "first-enrollment",
+                    "sessions": {
+                        "initial-first-enrollment": {
+                            "canonical_operation_id": "fixture-one",
+                            "credential_key": "credential-one",
+                        }
+                    },
+                    "current_session": "initial-first-enrollment",
+                }
+            )
+            observed: list[urllib.request.Request] = []
+            with patch.object(
+                urllib.request,
+                "build_opener",
+                return_value=Opener([response("initial_session_issued")], observed),
+            ):
+                client.session_status()
+            self.assertTrue(
+                observed[0].full_url.endswith(
+                    "/v1/agent/ordinary-agent-session-proposals/fixture-two"
+                )
+            )
+            self.assertEqual(
+                store.load()["current_session"], "initial-second-enrollment"
             )
 
     def test_real_local_redirect_is_rejected(self) -> None:

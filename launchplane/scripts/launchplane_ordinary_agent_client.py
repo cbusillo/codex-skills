@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import fcntl
 import hashlib
 import http.client
 import json
@@ -32,6 +31,11 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no POSIX flock
+    fcntl = None  # type: ignore[assignment]
 
 try:  # Direct execution and import from the skill's scripts directory.
     from launchplane_contract import operation_path
@@ -76,13 +80,11 @@ class OrdinaryAgentClientError(RuntimeError):
 
 
 def _private_root_default() -> Path:
+    if os.name == "nt":
+        raise OrdinaryAgentClientError("unsupported_private_state_platform")
     configured = os.environ.get("LAUNCHPLANE_ORDINARY_AGENT_STATE_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA", "").strip()
-        if base:
-            return Path(base) / "Launchplane" / "ordinary-agent"
     if os.environ.get("XDG_STATE_HOME", "").strip():
         return Path(os.environ["XDG_STATE_HOME"]) / "launchplane" / "ordinary-agent"
     if sys_platform_is_macos():
@@ -162,7 +164,7 @@ class PrivateStateStore:
     """Owner-only JSON store with bounded serialization and durable replace."""
 
     def __init__(self, root: str | os.PathLike[str] | None = None) -> None:
-        if os.name == "nt" or not hasattr(fcntl, "flock"):
+        if os.name == "nt" or fcntl is None or not hasattr(fcntl, "flock"):
             raise OrdinaryAgentClientError("unsupported_private_state_platform")
         self.root = (
             Path(root).expanduser() if root is not None else _private_root_default()
@@ -334,7 +336,7 @@ class PrivateStateStore:
             encoded = json.dumps(
                 state, sort_keys=True, separators=(",", ":"), ensure_ascii=True
             ).encode("utf-8")
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, UnicodeError):
             raise OrdinaryAgentClientError("private_state_unavailable") from None
         if len(encoded) > MAX_RESPONSE_BYTES:
             raise OrdinaryAgentClientError("private_state_unavailable")
@@ -453,12 +455,13 @@ class OrdinaryAgentClient:
 
     @staticmethod
     def _validate_credential(credential: str) -> str:
-        if (
-            not isinstance(credential, str)
-            or not credential
-            or len(credential) > 512
-            or any(char in credential for char in "\r\n")
-        ):
+        if not isinstance(credential, str) or not credential or len(credential) > 512:
+            raise OrdinaryAgentClientError("credential_unavailable")
+        try:
+            encoded = credential.encode("ascii")
+        except UnicodeEncodeError:
+            raise OrdinaryAgentClientError("credential_unavailable") from None
+        if any(byte < 0x21 or byte > 0x7E for byte in encoded):
             raise OrdinaryAgentClientError("credential_unavailable")
         return credential
 
@@ -539,6 +542,8 @@ class OrdinaryAgentClient:
                 urllib.error.URLError,
                 TimeoutError,
                 OSError,
+                ValueError,
+                UnicodeError,
             ):
                 if attempt + 1 >= self.attempts:
                     raise OrdinaryAgentClientError("transport_unavailable") from None
@@ -680,12 +685,15 @@ class OrdinaryAgentClient:
 
     @staticmethod
     def _auth_from_state(state: Mapping[str, Any]) -> str:
-        credential = state.get("credential")
-        if not isinstance(credential, str) or not credential:
-            credentials = state.get("credentials")
-            current = state.get("current_credential")
-            if isinstance(credentials, dict) and isinstance(current, str):
-                credential = credentials.get(current)
+        credential = None
+        credentials = state.get("credentials")
+        current = state.get("current_credential")
+        if isinstance(credentials, dict) and isinstance(current, str):
+            credential = credentials.get(current)
+            if credential is None:
+                raise OrdinaryAgentClientError("credential_unavailable")
+        if credential is None:
+            credential = state.get("credential")
         if not isinstance(credential, str) or not credential:
             raise OrdinaryAgentClientError("credential_unavailable")
         return OrdinaryAgentClient._validate_credential(credential)
@@ -919,6 +927,7 @@ class OrdinaryAgentClient:
             # Keep the old top-level value only for a controlled migration
             # read; new records use the keyed credential collection.
             enrollment["status"] = "claimed"
+            enrollment["credential_key"] = credential_key
         return {"status": "ready"}
 
     def propose_session(
@@ -958,6 +967,7 @@ class OrdinaryAgentClient:
                     "retry_key": operation_id,
                     "request_bytes_b64": base64.b64encode(body).decode("ascii"),
                     "canonical_operation_id": operation_id,
+                    "credential_key": state.get("current_credential"),
                 }
                 sessions[session_alias] = existing
                 self.state.checkpoint(state)
@@ -981,30 +991,49 @@ class OrdinaryAgentClient:
         sessions = state.setdefault("sessions", {})
         if not isinstance(sessions, dict):
             raise OrdinaryAgentClientError("private_state_unavailable")
-        enrollment_alias = state.get("current_enrollment")
-        if not isinstance(enrollment_alias, str):
-            raise OrdinaryAgentClientError("session_unavailable")
         enrollments = state.get("enrollments")
-        enrollment = (
-            enrollments.get(enrollment_alias) if isinstance(enrollments, dict) else None
-        )
-        if (
-            not isinstance(enrollment, dict)
-            or enrollment.get("status") != "claimed"
-            or not enrollment.get("canonical_operation_id")
-        ):
+        current_credential = state.get("current_credential")
+        if not isinstance(enrollments, dict) or not isinstance(current_credential, str):
             raise OrdinaryAgentClientError("session_unavailable")
+        candidates = [
+            (name, record)
+            for name, record in enrollments.items()
+            if isinstance(name, str)
+            and isinstance(record, dict)
+            and record.get("status") == "claimed"
+            and record.get("credential_key") == current_credential
+            and record.get("canonical_operation_id")
+        ]
+        if len(candidates) != 1:
+            raise OrdinaryAgentClientError("session_unavailable")
+        enrollment_alias, enrollment = candidates[0]
+        session_alias = _alias(
+            f"initial-{enrollment_alias}", fallback="initial-session"
+        )
         record = sessions.setdefault(
-            "initial", {"canonical_operation_id": enrollment["canonical_operation_id"]}
+            session_alias,
+            {
+                "canonical_operation_id": enrollment["canonical_operation_id"],
+                "credential_key": current_credential,
+            },
         )
         if not isinstance(record, dict) or not record.get("canonical_operation_id"):
             raise OrdinaryAgentClientError("session_unavailable")
-        state["current_session"] = "initial"
+        if record.get("credential_key") not in (None, current_credential):
+            raise OrdinaryAgentClientError("session_stale")
+        record["credential_key"] = current_credential
+        state["current_session"] = session_alias
         return record
 
     def _refresh_session_state(
         self, state: dict[str, Any], session: dict[str, Any]
     ) -> dict[str, Any]:
+        current_credential = state.get("current_credential")
+        if (
+            current_credential is not None
+            and session.get("credential_key") != current_credential
+        ):
+            raise OrdinaryAgentClientError("session_stale")
         payload, _ = self._request(
             "read_ordinary_agent_session_operation",
             method="GET",
@@ -1031,15 +1060,21 @@ class OrdinaryAgentClient:
             session = (
                 sessions.get(session_alias) if isinstance(sessions, dict) else None
             )
+            current_credential = state.get("current_credential")
+            if (
+                isinstance(session, dict)
+                and current_credential is not None
+                and session.get("credential_key") != current_credential
+            ):
+                if alias is not None:
+                    raise OrdinaryAgentClientError("session_stale")
+                session = None
             if not isinstance(session, dict):
                 if alias is not None:
                     raise OrdinaryAgentClientError("session_unavailable")
                 session = self._initial_session_state(state)
-            state["current_session"] = (
-                session_alias
-                if isinstance(sessions, dict) and session_alias in sessions
-                else "initial"
-            )
+                session_alias = str(state["current_session"])
+            state["current_session"] = session_alias
             return self._refresh_session_state(state, session)
 
     def cancel_session(self, *, alias: str | None = None) -> dict[str, Any]:
@@ -1055,6 +1090,10 @@ class OrdinaryAgentClient:
                 "canonical_operation_id"
             ):
                 raise OrdinaryAgentClientError("session_unavailable")
+            if state.get("current_credential") is not None and session.get(
+                "credential_key"
+            ) != state.get("current_credential"):
+                raise OrdinaryAgentClientError("session_stale")
             payload, _ = self._request(
                 "cancel_ordinary_agent_session",
                 method="POST",
@@ -1121,6 +1160,15 @@ class OrdinaryAgentClient:
             raise OrdinaryAgentClientError("invalid_job")
         return body
 
+    @staticmethod
+    def _encode_json(value: Mapping[str, Any], *, error: str) -> bytes:
+        try:
+            return json.dumps(
+                dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            raise OrdinaryAgentClientError(error) from None
+
     def admit_job(
         self, request: Mapping[str, Any] | None = None, *, alias: str | None = None
     ) -> dict[str, Any]:
@@ -1143,9 +1191,16 @@ class OrdinaryAgentClient:
                     raise OrdinaryAgentClientError("job_unavailable")
                 encoded = self._decode_state_bytes(encoded_value)
             elif isinstance(existing, dict):
-                if not isinstance(request, Mapping) or request.get(
+                if not isinstance(request, Mapping):
+                    raise OrdinaryAgentClientError("idempotency_conflict")
+                incoming = self._validate_job_intent(request)
+                incoming["schema_version"] = 2
+                incoming_bytes = self._encode_json(incoming, error="invalid_job")
+                if request.get("idempotency_key") != existing.get(
                     "idempotency_key"
-                ) != existing.get("idempotency_key"):
+                ) or existing.get("intent_bytes_b64") != base64.b64encode(
+                    incoming_bytes
+                ).decode("ascii"):
                     raise OrdinaryAgentClientError("idempotency_conflict")
                 encoded = self._decode_state_bytes(existing.get("request_bytes_b64"))
                 # Replaying an alias always uses the immutable saved body; do
@@ -1190,6 +1245,7 @@ class OrdinaryAgentClient:
                 ):
                     raise OrdinaryAgentClientError("lease_stale")
                 body["schema_version"] = 2
+                intent_bytes = self._encode_json(body, error="invalid_job")
                 body["session_id"] = session["session_id"]
                 body["lease_id"] = self._selector_from_session(session, action)
                 try:
@@ -1200,6 +1256,7 @@ class OrdinaryAgentClient:
                     raise OrdinaryAgentClientError("invalid_job") from None
                 existing = {
                     "idempotency_key": body["idempotency_key"],
+                    "intent_bytes_b64": base64.b64encode(intent_bytes).decode("ascii"),
                     "request_bytes_b64": base64.b64encode(encoded).decode("ascii"),
                 }
                 jobs[job_alias] = existing
