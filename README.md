@@ -29,6 +29,12 @@ verify that host's current discovery rules before adding a new binding.
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
 
+The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
+`$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
+`~/.agents/skills`-only installation. For that installation, verify and refresh
+the clean default-branch checkout through the normal GitHub post-merge checkout
+workflow. A reconciler `not_applicable` result does not prove it is current.
+
 Treat the checkout behind the active `skills` path as a runtime checkout: keep
 it clean, on `main`, and current with `origin/main`. Use linked task worktrees
 for skill development. After a skills PR lands, reconcile the runtime checkout
@@ -110,7 +116,7 @@ Examples:
 
 Use repo-local `.local/people.yaml` only for project-specific people context or
 overrides. Durable identity context for the person using the agent should live
-in the shared catalog's `.local/people.yaml` so it follows agents across repos.
+in the `codex-skills` checkout's `.local/people.yaml` so it follows agents across repos.
 
 When a skill needs local context, it should treat the local file as optional and
 continue to work without it. Commit `*.example.md` files when a template would

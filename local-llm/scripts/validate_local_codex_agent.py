@@ -21,7 +21,8 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import Mock, patch
 
 
 SCRIPT = Path(__file__).with_name("local_codex_agent.py")
@@ -45,6 +46,7 @@ options = OPTIONS
 record = Path(options["record"])
 stage = "version" if sys.argv[1:] == ["--version"] else "help" if sys.argv[1:] == ["exec", "--help"] else "exec"
 snapshot = {"argv": sys.argv[1:], "env": dict(os.environ), "pid": os.getpid()}
+snapshot["blocked_signals"] = list(signal.pthread_sigmask(signal.SIG_BLOCK, []))
 if stage == "version":
     record.with_suffix(".version.json").write_text(json.dumps(snapshot))
     print(options.get("version", "codex-cli synthetic-test"))
@@ -111,6 +113,59 @@ raise SystemExit(7 if mode == "nonzero" else 0)
 '''
 
 
+SIGNAL_BOUNDARY_DRIVER = r'''
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+options = OPTIONS
+sys.path.insert(0, options["script_dir"])
+import local_codex_agent as agent
+
+real_popen = agent.subprocess.Popen
+real_killpg = agent.os.killpg
+active_pid = None
+injected = False
+
+def inject():
+    global injected
+    injected = True
+    Path(options["boundary_marker"]).write_text(options["boundary"])
+    os.kill(os.getpid(), options["signum"])
+    # A second, different signal must not interrupt cleanup either.
+    other = signal.SIGINT if options["signum"] == signal.SIGTERM else signal.SIGTERM
+    os.kill(os.getpid(), other)
+
+def spawn(*args, **kwargs):
+    global active_pid
+    process = real_popen(*args, **kwargs)
+    if "-C" in args[0]:
+        active_pid = process.pid
+        if options["boundary"] == "spawn":
+            deadline = time.monotonic() + 5
+            while not Path(options["child_marker"]).exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("synthetic child did not start")
+                time.sleep(0.01)
+            # Deliver after a real spawn but before Popen returns to run_process.
+            inject()
+    return process
+
+def killpg(pgid, signum):
+    result = real_killpg(pgid, signum)
+    if options["boundary"] == "cleanup" and pgid == active_pid and signum == signal.SIGTERM and not injected:
+        # Deliver while real cleanup still has a TERM-resistant child to stop.
+        inject()
+    return result
+
+agent.subprocess.Popen = spawn
+agent.os.killpg = killpg
+raise SystemExit(agent.main(sys.argv[1:]))
+'''
+
+
 class LocalCodexAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="test-local-codex-agent-")
@@ -119,6 +174,7 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.workdir = self.root / "work"
         self.workdir.mkdir()
         self.config = self.root / "local-llm.yaml"
+        self.config.write_text("{}", encoding="utf-8")
         self.record = self.root / "record"
         self.host = self.root / "synthetic-host"
         self.write_host()
@@ -144,11 +200,11 @@ class LocalCodexAgentTests(unittest.TestCase):
             capture_output=True, text=True, timeout=15, env=env,
         )
 
-    def observed(self, stage: str = "exec") -> dict[str, object]:
+    def observed(self, stage: str = "exec") -> dict[str, Any]:
         return json.loads(self.record.with_suffix(f".{stage}.json").read_text())
 
     def endpoint_config(self, **changes: object) -> None:
-        endpoint = {
+        endpoint: dict[str, Any] = {
             "provider": "lm_studio", "base_url": "http://127.0.0.1:1234/v1",
             "locality": "localhost", "trust": "private_local", "enabled": True,
         }
@@ -158,11 +214,17 @@ class LocalCodexAgentTests(unittest.TestCase):
     def assert_stopped(self, pid: int) -> None:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            status = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], text=True, capture_output=True, check=False)
+            status = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], text=True, capture_output=True)
             if status.returncode or not status.stdout.strip() or status.stdout.strip().startswith("Z"):
                 return
             time.sleep(0.025)
         self.fail(f"owned synthetic process {pid} is still running")
+
+    def assert_cleaned_run(self) -> None:
+        observed = self.observed()
+        self.assert_stopped(observed["pid"])
+        self.assert_stopped(int(self.record.with_suffix(".child").read_text()))
+        self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
 
     def test_explicit_model_exec_uses_stdin_and_a_unique_responses_provider(self) -> None:
         result = self.invoke()
@@ -184,6 +246,8 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertEqual(settings, tomllib.loads(observed["config_text"]))
         self.assertEqual(observed["config_mode"], 0o600)
         self.assertFalse(observed["auth_exists"])
+        self.assertNotIn(signal.SIGINT, observed["blocked_signals"])
+        self.assertNotIn(signal.SIGTERM, observed["blocked_signals"])
         summary = json.loads(result.stderr.splitlines()[0])["local_codex_agent"]
         self.assertEqual(summary["host_version"], "codex-cli synthetic-test")
         self.assertIsNone(summary["served_model"])
@@ -278,12 +342,47 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertIn("unknown model role", result.stderr)
         self.assertFalse(self.record.with_suffix(".version.json").exists())
 
+    def test_missing_explicit_config_fails_before_any_host_probe(self) -> None:
+        self.config.unlink()
+        output = self.root / "last.txt"
+        output.write_text("previous result")
+        result = self.invoke("--output-last-message", str(output))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicit --config", result.stderr)
+        self.assertFalse(self.record.with_suffix(".version.json").exists())
+        self.assertEqual(output.read_text(), "previous result")
+
+    def test_omitted_default_config_can_be_absent(self) -> None:
+        arguments = agent.parse_args(["--host", "codex", "--model", "synthetic-local-model"])
+        with patch.dict(vars(agent), {"DEFAULT_CONFIG": self.root / "absent-default.yaml"}):
+            settings, _, _ = agent.build_settings(arguments)
+        self.assertEqual(settings["model"], "synthetic-local-model")
+
+    def test_invalid_output_directory_fails_before_any_host_probe(self) -> None:
+        parent_file = self.root / "parent-file"
+        parent_file.write_text("preserved parent file")
+        output_directory = self.root / "existing-directory"
+        output_directory.mkdir()
+        sentinel = output_directory / "preserved.txt"
+        sentinel.write_text("preserved directory content")
+        for output in (self.root / "absent-directory" / "last.txt", parent_file / "last.txt", output_directory):
+            with self.subTest(output=output):
+                result = self.invoke("--output-last-message", str(output))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--output-last-message", result.stderr)
+                self.assertFalse(self.record.with_suffix(".version.json").exists())
+                self.assertEqual(parent_file.read_text(), "preserved parent file")
+                self.assertEqual(sentinel.read_text(), "preserved directory content")
+
     def test_rejects_unsafe_endpoint_before_starting_host(self) -> None:
+        # Build the intentionally invalid synthetic URL, as the public-safety
+        # validator's own fixtures do; no real credential is used here.
+        credentialed_url = "http://" + "name:synthetic-secret" + "@127.0.0.1:1234/v1"
         cases = (
             {"locality": "cloud", "base_url": "https://cloud.example.invalid/v1"},
             {"locality": "mistyped"}, {"locality": []}, {"enabled": False}, {"enabled": "yes"},
             {"base_url": "https://cloud.example.invalid/v1"},
-            {"base_url": "http://name:synthetic-secret@127.0.0.1:1234/v1"},
+            {"base_url": credentialed_url},
             {"base_url": "http://127.0.0.1:1234/v1?token=synthetic-secret"},
             {"base_url": "file:///tmp/model"}, {"base_url": "http://127.0.0.1:70000/v1"},
             {"base_url": None}, {"base_url": ""}, {"base_url": "http://127.0.0.1:1234/invalid path"},
@@ -348,9 +447,7 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("timed out", result.stderr)
         self.assertEqual(output.read_text(), "previous result")
-        self.assert_stopped(self.observed()["pid"])
-        self.assert_stopped(int(self.record.with_suffix(".child").read_text()))
-        self.assertFalse(Path(self.observed()["env"]["CODEX_HOME"]).exists())
+        self.assert_cleaned_run()
 
     def test_success_cleans_up_a_descendant_that_outlived_the_host(self) -> None:
         self.write_host(mode="surviving_child")
@@ -377,12 +474,59 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assert_stopped(self.observed()["pid"])
         self.assert_stopped(int(self.record.with_suffix(".child").read_text()))
 
+    def test_interrupts_at_spawn_and_cleanup_boundaries_do_not_orphan_processes(self) -> None:
+        for boundary in ("spawn", "cleanup"):
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(boundary=boundary, signum=signum):
+                    self.record = self.root / f"record-{boundary}-{signum}"
+                    self.write_host(mode="interrupt" if boundary == "spawn" else "surviving_child")
+                    output = self.root / "last.txt"
+                    output.write_text("previous result")
+                    driver = self.root / "signal-boundary-driver.py"
+                    options = {
+                        "script_dir": str(SCRIPT.parent.resolve()), "boundary": boundary,
+                        "signum": int(signum), "child_marker": str(self.record.with_suffix(".child")),
+                        "boundary_marker": str(self.record.with_suffix(".boundary")),
+                    }
+                    driver.write_text(textwrap.dedent(SIGNAL_BOUNDARY_DRIVER).replace("OPTIONS", repr(options), 1))
+                    try:
+                        result = subprocess.run(
+                            [sys.executable, str(driver), *self.command("--output-last-message", str(output), "synthetic prompt")[2:]],
+                            text=True, capture_output=True, timeout=12,
+                        )
+                        self.assertEqual(result.returncode, 128 + signum, result.stderr)
+                        self.assertIn("interrupted", result.stderr)
+                        self.assertEqual(self.record.with_suffix(".boundary").read_text(), boundary)
+                        self.assertEqual(output.read_text(), "previous result")
+                        self.assert_cleaned_run()
+                    finally:
+                        # Keep a failed regression test from leaving its synthetic child.
+                        if self.record.with_suffix(".exec.json").exists() and self.record.with_suffix(".child").exists():
+                            pgid = self.observed()["pid"]
+                            child_pid = int(self.record.with_suffix(".child").read_text())
+                            try:
+                                if os.getpgid(child_pid) == pgid:
+                                    os.killpg(pgid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
     def test_output_limit_fails_without_publishing_output(self) -> None:
         self.write_host(mode="output_limit")
         result = self.invoke()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("output limit", result.stderr)
         self.assertFalse(result.stdout)
+
+    def test_unconfirmed_process_exit_is_a_cleanup_failure(self) -> None:
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = subprocess.TimeoutExpired("synthetic-host", 0.5)
+        with patch.object(agent.os, "killpg") as kill_group:
+            with self.assertRaises(agent.LocalCodexAgentError):
+                agent.stop_process_group(process)
+        self.assertEqual(kill_group.call_args.args[1], signal.SIGKILL)
+        self.assertGreater(process.wait.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 1)
 
     def test_wrong_host_and_missing_capabilities_fail_before_exec(self) -> None:
         for options in ({"version": "code 1.0 Every Code"}, {"help": "--json --output-last-message"}):

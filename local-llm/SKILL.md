@@ -83,8 +83,10 @@ commands:
         "codex",
         "--model",
         "<verified-local-model-id>",
+        "--workdir",
+        "<fixture-directory>",
         "--json",
-        "Reply with exactly: OK",
+        "Read proof.txt with a tool and report the requested value.",
       ]
     purpose: Runs the selected current host with a local Responses provider and a bounded isolated child session.
 workflow_defaults:

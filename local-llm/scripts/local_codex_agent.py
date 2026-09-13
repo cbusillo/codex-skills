@@ -26,6 +26,8 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -69,7 +71,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("prompt", nargs="?", help="Prompt text; omitted or '-' reads stdin.")
     parser.add_argument("--host", required=True, choices=tuple(HOST_VERSION_PREFIXES))
     parser.add_argument("--host-bin", help="Executable for the selected host (default: its name on PATH).")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Private local-llm YAML config.")
+    parser.add_argument("--config", type=Path, help="Existing private YAML config; omitted uses optional .local/local-llm.yaml.")
     endpoint = parser.add_mutually_exclusive_group()
     endpoint.add_argument("--endpoint", help="Endpoint id in private config.")
     endpoint.add_argument("--base-url", help="Explicit loopback Responses API base URL; LAN URLs require config.")
@@ -92,8 +94,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    if args.config is not None and not args.config.is_file():
+        raise LocalCodexAgentError("explicit --config must name an existing YAML file")
     try:
-        config = load_yaml(args.config)
+        config = load_yaml(args.config if args.config is not None else DEFAULT_CONFIG)
     except (LocalLLMError, OSError) as exc:
         # YAML parser diagnostics may contain config values, including secrets.
         raise LocalCodexAgentError("unable to read local LLM config as a YAML mapping") from exc
@@ -253,7 +257,8 @@ def isolated_environment(run_dir: Path, token: str | None = None) -> dict[str, s
 
 
 def resolve_host_binary(args: argparse.Namespace) -> str:
-    resolved = shutil.which(args.host_bin or args.host)
+    host_command: str = args.host_bin or args.host
+    resolved = shutil.which(host_command)
     if resolved is None:
         raise LocalCodexAgentError("selected Codex host is unavailable; provide its installed executable with --host-bin")
     return str(Path(resolved).absolute())
@@ -292,7 +297,7 @@ def stop_process_group(process: subprocess.Popen[bytes]) -> None:
         except ProcessLookupError:
             return
     except ProcessLookupError:
-        process.wait()
+        wait_for_exit(process)
         return
     deadline = time.monotonic() + CLEANUP_SECONDS
     while time.monotonic() < deadline:
@@ -306,7 +311,44 @@ def stop_process_group(process: subprocess.Popen[bytes]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.wait()
+    wait_for_exit(process)
+
+
+def wait_for_exit(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait(timeout=CLEANUP_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise LocalCodexAgentError("host exit could not be confirmed after termination; process cleanup is incomplete") from exc
+
+
+@contextmanager
+def deferred_interrupts() -> Iterator[Callable[[], None]]:
+    """Record interrupts until the caller can safely unwind an owned process.
+
+    Deferring Python exceptions, rather than blocking OS signals, avoids leaving
+    the child with an inherited blocked signal mask.
+    """
+    pending: int | None = None
+
+    def record(signum: int, _frame: Any) -> None:
+        nonlocal pending
+        if pending is None:
+            pending = signum
+
+    def check() -> None:
+        if pending is not None:
+            raise RunInterrupted(pending)
+
+    previous: dict[int, Any] = {}
+    try:
+        for registered_signal in (signal.SIGINT, signal.SIGTERM):
+            previous[registered_signal] = signal.signal(registered_signal, record)
+        yield check
+    finally:
+        for restored_signal, handler in previous.items():
+            signal.signal(restored_signal, handler)
+    # A signal received during successful cleanup must still prevent success.
+    check()
 
 
 def run_process(
@@ -315,32 +357,37 @@ def run_process(
 ) -> tuple[int, str, str]:
     """Use bounded file captures so a noisy host cannot fill wrapper memory."""
     with tempfile.TemporaryFile(dir=run_dir) as stdin, tempfile.TemporaryFile(dir=run_dir) as stdout, tempfile.TemporaryFile(dir=run_dir) as stderr:
-        stdin.write(input_text.encode("utf-8"))
+        stdin.write(input_text.encode())
         stdin.seek(0)
-        process = subprocess.Popen(
-            command, stdin=stdin, stdout=stdout, stderr=stderr,
-            cwd=run_dir, env=env, start_new_session=True,
-        )
-        deadline = time.monotonic() + seconds
-        try:
-            while True:
-                capture_size = os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size
-                if extra_output is not None and extra_output.exists():
-                    capture_size += extra_output.stat().st_size
-                if capture_size > MAX_CAPTURE_BYTES:
-                    raise LocalCodexAgentError("host exceeded the 16 MiB output limit")
-                returncode = process.poll()
-                if returncode is not None:
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise LocalCodexAgentError(f"host timed out after {seconds:g}s; owned process group stopped")
-                time.sleep(min(0.025, remaining))
-        finally:
-            stop_process_group(process)
+        with deferred_interrupts() as check_interrupted:
+            check_interrupted()
+            process = None
+            try:
+                process = subprocess.Popen(
+                    command, stdin=stdin, stdout=stdout, stderr=stderr,
+                    cwd=run_dir, env=env, start_new_session=True,
+                )
+                deadline = time.monotonic() + seconds
+                while True:
+                    check_interrupted()
+                    capture_size = os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size
+                    if extra_output is not None and extra_output.exists():
+                        capture_size += extra_output.stat().st_size
+                    if capture_size > MAX_CAPTURE_BYTES:
+                        raise LocalCodexAgentError("host exceeded the 16 MiB output limit")
+                    returncode = process.poll()
+                    if returncode is not None:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LocalCodexAgentError(f"host timed out after {seconds:g}s; owned process group stopped")
+                    time.sleep(min(0.025, remaining))
+            finally:
+                if process is not None:
+                    stop_process_group(process)
         stdout.seek(0)
         stderr.seek(0)
-        return returncode, stdout.read(MAX_CAPTURE_BYTES).decode("utf-8", errors="replace"), stderr.read(MAX_CAPTURE_BYTES).decode("utf-8", errors="replace")
+        return returncode, stdout.read(MAX_CAPTURE_BYTES).decode(errors="replace"), stderr.read(MAX_CAPTURE_BYTES).decode(errors="replace")
 
 
 def verify_host(args: argparse.Namespace, executable: str, env: dict[str, str], run_dir: Path) -> str:
@@ -418,6 +465,15 @@ def write_final(path: Path, text: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def validate_output_path(path: Path | None) -> None:
+    if path is None:
+        return
+    if not path.parent.is_dir():
+        raise LocalCodexAgentError("--output-last-message parent must be an existing directory")
+    if path.exists() and not path.is_file():
+        raise LocalCodexAgentError("--output-last-message must name a file")
+
+
 def interrupt(signum: int, _frame: Any) -> None:
     raise RunInterrupted(signum)
 
@@ -431,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
             raise LocalCodexAgentError("this wrapper requires POSIX process-group cleanup")
         if not args.workdir.is_dir():
             raise LocalCodexAgentError("--workdir must be an existing directory")
+        validate_output_path(args.output_last_message)
         settings, summary, token = build_settings(args)
         executable = resolve_host_binary(args)
         with tempfile.TemporaryDirectory(prefix="local-codex-agent-") as temporary:
@@ -445,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt = args.prompt if args.prompt is not None and args.prompt != "-" else sys.stdin.read(MAX_PROMPT_BYTES + 1)
             if not prompt.strip():
                 raise LocalCodexAgentError("prompt is empty")
-            if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+            if len(prompt.encode()) > MAX_PROMPT_BYTES:
                 raise LocalCodexAgentError("prompt exceeds the 4 MiB input limit")
             final_path = run_dir / "last-message.txt"
             command = build_command(args, executable, settings, final_path)
