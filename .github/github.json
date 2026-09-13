@@ -35,13 +35,8 @@
         "python": {
           "version": "3.12",
           "moduleName": "codex-skills",
-          "testRoots": [
-            "jetbrains-inspection/tests"
-          ],
-          "requiredGeneratedState": [
-            ".venv",
-            ".idea"
-          ]
+          "testRoots": ["jetbrains-inspection/tests"],
+          "requiredGeneratedState": [".venv", ".idea"]
         }
       },
       "profile": "Codex Skills Readiness",

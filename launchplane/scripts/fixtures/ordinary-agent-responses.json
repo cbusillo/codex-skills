@@ -370,5 +370,11 @@
       "completed_effects": 0,
       "total_effects": 0
     }
+  },
+  "receiver_claim_vector": {
+    "description": "Public synthetic interoperability vector produced by the LP receiver authentication implementation. Not a runtime credential.",
+    "random_byte_ascii": "x",
+    "proof": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg",
+    "receiver_claim_sha256": "437fe053620fe3e538a4956bfde774c647fe3e398f539ef9c74af2e287d35985"
   }
 }

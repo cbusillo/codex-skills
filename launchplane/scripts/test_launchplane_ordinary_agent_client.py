@@ -334,8 +334,12 @@ class OrdinaryAgentClientTests(TestCase):
             with patch.object(
                 urllib.request, "build_opener", return_value=Opener(responses, observed)
             ):
+                proposal = enrollment()
+                proposal["session_attenuation"] = RESPONSES["initial_session_issued"][
+                    "operation"
+                ]["attenuation"]
                 client.prepare_enrollment(
-                    enrollment(), random_bytes=lambda size: b"p" * size
+                    proposal, random_bytes=lambda size: b"p" * size
                 )
                 client.propose_enrollment()
                 self.assertEqual(client.claim(), {"status": "ready"})
@@ -684,12 +688,13 @@ class OrdinaryAgentClientTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = PrivateStateStore(directory)
             client = OrdinaryAgentClient("http://127.0.0.1:8123", state=store)
-            errors = [provider_wait_error(code="ghp_poison") for _ in range(3)]
+            errors = [provider_wait_error(code="ghp_poison")]
+            observed: list[urllib.request.Request] = []
             with (
                 patch.object(
                     urllib.request,
                     "build_opener",
-                    return_value=Opener(errors, []),
+                    return_value=Opener(errors, observed),
                 ),
                 self.assertRaisesRegex(OrdinaryAgentClientError, "http_503") as caught,
             ):
@@ -698,7 +703,8 @@ class OrdinaryAgentClientTests(TestCase):
                     method="GET",
                     parts={"request_id": "job"},
                 )
-            self.assertIsNone(caught.exception.retry_after_seconds)
+            self.assertEqual(caught.exception.retry_after_seconds, 12)
+            self.assertEqual(len(observed), 1)
             self.assertIsNone(caught.exception.trace_id)
             self.assertNotIn("ghp_poison", str(caught.exception))
 

@@ -18,6 +18,13 @@ provenance nor a matching contract grants runtime authority. Private claims are
 consumed only by the private ordinary-agent adapter, outside the generic
 agent-visible operator helper.
 
+The refresh also carries upstream schema-fingerprint changes for
+`apply_change_impact_policy`, `read_change_impact_policy`,
+`reconcile_managed_authz_policy` and `read_governance_projection`. Existing
+operator consumers remain covered by their helper/contract tests. The earlier
+bearer-identity contract for `reconcile_managed_authz_policy` remains intact;
+this refresh does not reinterpret or widen that operation.
+
 Run the offline conformance gate with:
 
 ```bash

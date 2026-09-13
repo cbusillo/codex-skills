@@ -516,29 +516,32 @@ class OrdinaryAgentClient:
         retry_after = int(retry_value.strip())
         if retry_after > 86_400:
             return None
+        fallback = ("http_503", retry_after, None)
         try:
             raw = error.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
-                return None
+                return fallback
             payload = json.loads(raw.decode("utf-8"))
             detail = payload.get("error") if isinstance(payload, dict) else None
             code = public_code(detail.get("code")) if isinstance(detail, dict) else None
             assert_public_safe_shape(code)
             if not code:
-                return None
-            trace = (
-                public_trace_id(payload.get("trace_id"))
-                if isinstance(payload, dict)
-                else ""
-            )
+                return fallback
         except (
             AttributeError,
+            TypeError,
+            OSError,
+            http.client.HTTPException,
             UnicodeDecodeError,
             json.JSONDecodeError,
             LaunchplaneSafetyError,
             ValueError,
         ):
-            return None
+            return fallback
+        try:
+            trace = public_trace_id(payload.get("trace_id"))
+        except (LaunchplaneSafetyError, TypeError):
+            trace = ""
         return code, retry_after, trace or None
 
     def _request(
