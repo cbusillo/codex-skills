@@ -275,10 +275,13 @@ when an inspection would be disproportionate.
 ## Scope Selection
 
 Start narrow while iterating: changed files, touched files, or touched directory.
-Before readiness, broaden when the changed behavior, findings, or an explicit
-repo requirement warrant it. Otherwise reuse a current clean result covering
-the affected surface. Complete every required repo gate; an ordered scope
-preference is not by itself a requirement to run each scope in succession.
+For final readiness, apply repository requirements and the whole-project
+inspection default and exceptions in
+[repo-readiness Gate Selection](../repo-readiness/SKILL.md#gate-selection).
+Broaden when required coverage, changed behavior, or findings warrant it. Reuse
+a current clean result covering the required scope for the same revision and
+environment. Complete every required repo gate; an ordered scope preference is
+not by itself a requirement to run each scope in succession.
 Before defining or diagnosing lane routing, preparation configuration, receipts,
 or preparation override flags, read [inspection configuration](references/inspection-config.md).
 
