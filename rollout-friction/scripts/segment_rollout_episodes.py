@@ -156,7 +156,7 @@ def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thres
             event.failed, event.succeeded, event.retry, event.exit_code,
             event.expected_nonzero, event.outcome_basis, event.kind, event.file_id,
         ))
-    return sorted(hits, key=lambda hit: hit.line), trace_lines
+    return sorted(hits, key=lambda candidate: candidate.line), trace_lines
 
 
 def build_episodes(
@@ -278,7 +278,7 @@ def episode_fingerprint(episode: Episode) -> str:
         "end_line": episode.end_line,
         "signals": sorted({hit.signal for hit in episode.hits}),
     }
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
     return f"ep_{digest}"
 
 

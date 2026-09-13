@@ -330,7 +330,7 @@ def test_cli_read_diagnostics_remain_separate_from_episodes(module: ModuleType) 
         for json_mode in (False, True):
             argv = [str(SCRIPT), str(missing), "--since", "2026-09-12T00:00:00Z"] + (["--json"] if json_mode else [])
             stdout, stderr = io.StringIO(), io.StringIO()
-            with mock.patch.object(sys, "argv", argv), mock.patch.object(module, "scan_targets", return_value=([scan_target], [])), redirect_stdout(stdout), redirect_stderr(stderr):
+            with mock.patch.object(sys, "argv", argv), mock.patch.dict(vars(module), {"scan_targets": mock.Mock(return_value=([scan_target], []))}), redirect_stdout(stdout), redirect_stderr(stderr):
                 module.main()
             if json_mode:
                 payload = json.loads(stdout.getvalue())

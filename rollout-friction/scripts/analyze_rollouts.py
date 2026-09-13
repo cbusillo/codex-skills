@@ -40,7 +40,6 @@ SECRET_RE = re.compile(
     r"(?:export\s+)?(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*[^\s,'\"]+)"
 )
 PATH_RE = re.compile(
-    r"(?:"
     r"~(?:/[^\s,'\"]+)?|"
     r"/(?:"
     r"Users|home|var|tmp|private|Volumes|opt|etc|usr|bin|sbin|lib|lib64|"
@@ -49,9 +48,8 @@ PATH_RE = re.compile(
     r"(?:\.\.?/)+[^\s,'\"]+|"
     r"(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
     r"[A-Za-z]:\\[^\s,'\"]+"
-    r")"
 )
-URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@[^\s]+", re.I)
+URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@\S+", re.I)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
 LOCAL_HOST_RE = re.compile(
     r"\b(?:localhost|host\.docker\.internal|[a-z0-9-]+\.(?:local|localhost|internal|test))\b",
@@ -65,7 +63,7 @@ META_ECHO_RE = re.compile(
     r"^exit_code=(?:1|2|128)$|"
     r"^\u274c Validate New Code:|"
     r"^Traceback \(most recent call last\):|"
-    r"\"findings\"\s*:\s*\[\s*\{\s*\"title\"\s*:\s*\"\[P\d\]|"
+    r"\"findings\"\s*:\s*\[\s*\{\s*\"title\"\s*:\s*\"\[P\d]|"
     r"\b(recommended_destination|likely_cause|scanned_files)\b|"
     r"\b(signal|severity|category|evidence)\b[^\n]{0,160}\b(recommended_destination|likely_cause)\b|"
     r"\b(GitHub REST or GraphQL rate-limit pressure|GitHub REST usage also hit quota|"
@@ -121,16 +119,16 @@ RATE_LIMIT_GUIDANCE_RE = re.compile(
     re.I,
 )
 RATE_LIMIT_PLACEHOLDER_RE = re.compile(
-    r"\b(?:GITHUB|TOKEN|SECRET|API[_-]?KEY|PASSWORD)[A-Z0-9_\-]*\[REDACTED_SECRET\]"
-    r"|\[REDACTED_SECRET\][A-Z0-9_\-]*(?:LIMIT|QUOTA|RATE)",
+    r"\b(?:GITHUB|TOKEN|SECRET|API[_-]?KEY|PASSWORD)[A-Z0-9_\-]*\[REDACTED_SECRET]"
+    r"|\[REDACTED_SECRET][A-Z0-9_\-]*(?:LIMIT|QUOTA|RATE)",
     re.I,
 )
 DIFF_OR_STATIC_CONTEXT_RE = re.compile(
-    r"\bdiff --git\b|(?:^|\n)\s*(?:[A-Za-z_]+\=)?@@\s+-\d|"
-    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?index [0-9a-f]{7,}\.{2}[0-9a-f]{7,}\b|"
-    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?--- [ab]/|(?:^|\n)\s*(?:[A-Za-z_]+\=)?\+\+\+ [ab]/|"
-    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?name:\s+[^\n]{0,80}\n\s*on:\s*[^\n]*(?:\n|$)|"
-    r"(?:^|\n)\s*(?:[A-Za-z_]+\=)?push:\s*\n\s*branches:\b",
+    r"\bdiff --git\b|(?:^|\n)\s*(?:[A-Za-z_]+=)?@@\s+-\d|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+=)?index [0-9a-f]{7,}\.{2}[0-9a-f]{7,}\b|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+=)?--- [ab]/|(?:^|\n)\s*(?:[A-Za-z_]+=)?\+\+\+ [ab]/|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+=)?name:\s+[^\n]{0,80}\n\s*on:\s*[^\n]*(?:\n|$)|"
+    r"(?:^|\n)\s*(?:[A-Za-z_]+=)?push:\s*\n\s*branches:\b",
     re.I,
 )
 AUTO_REVIEW_TEXT_RE = re.compile(r"\bauto[-\s]?review\b", re.I)
@@ -576,7 +574,7 @@ def load_paths_file(path: Path, parser: argparse.ArgumentParser) -> list[Path]:
     parts = content.split(b"\0") if b"\0" in content else content.splitlines()
     paths: list[Path] = []
     for raw in parts:
-        text = raw.decode("utf-8", errors="surrogateescape").strip()
+        text = raw.decode(errors="surrogateescape").strip()
         if text:
             paths.append(Path(text))
     return paths
@@ -895,7 +893,7 @@ def iter_records(path: Path, max_bytes: int) -> Iterable[tuple[int, Any]]:
 
     if len(data) > max_bytes:
         data = data[:max_bytes]
-    text = data.decode("utf-8", errors="replace")
+    text = data.decode(errors="replace")
     if path.suffix.lower() == ".json":
         try:
             parsed = json.loads(text)
@@ -1027,8 +1025,8 @@ def output_error_hint(payload: Any) -> bool:
                          fragment.text, re.I) for value in values for fragment in json_fragments(value))
 
 
-def terminal_text_header(fragments: list[Fragment]) -> int | None:
-    """Read the tool's leading terminal header, before any printed Output body."""
+def terminal_text_header(fragments: list[Fragment]) -> tuple[int | None, bool]:
+    """Return a leading status or an Output boundary that forbids body fallback."""
     for fragment in fragments:
         if fragment.summary or fragment.text.lower().startswith("command="):
             continue
@@ -1037,22 +1035,31 @@ def terminal_text_header(fragments: list[Fragment]) -> int | None:
             if text.lower().startswith(prefix):
                 text = text[len(prefix):]
                 break
+        header_possible = True
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
+            if re.fullmatch(r"(?:Final )?Output:", line, re.I):
+                return None, True
+            if not header_possible:
+                continue
             match = EXIT_STATUS_RE.fullmatch(line)
             if match is not None:
-                return int(match.group(1))
+                return int(match.group(1)), False
             if not re.match(r"(?:Chunk ID|Wall time):", line, re.I):
-                break
-    return None
+                header_possible = False
+    return None, False
 
 
 def text_outcome(fragments: list[Fragment], *, typed_result: bool = False) -> tuple[int | None, bool, bool]:
     """Read tool-result text or, without result provenance, legacy text hints."""
-    if typed_result and (terminal_code := terminal_text_header(fragments)) is not None:
-        return terminal_code, terminal_code != 0, terminal_code == 0
+    if typed_result:
+        terminal_code, output_started = terminal_text_header(fragments)
+        if terminal_code is not None:
+            return terminal_code, terminal_code != 0, terminal_code == 0
+        if output_started:
+            return None, False, False
     failure_signal = next(signal for signal in SIGNALS if signal.name == "repeated_command_failure")
     failed = False
     succeeded = False
@@ -1116,8 +1123,8 @@ def normalize_events(
     events: dict[str, TraceEvent] = {}
     session_id = ""
 
-    def identity(value: str) -> str:
-        return hashlib.sha256(f"{stable_file_id(path)}:{session_id}:{value}".encode()).hexdigest()[:20]
+    def identity(event_key: str) -> str:
+        return hashlib.sha256(f"{stable_file_id(path)}:{session_id}:{event_key}".encode()).hexdigest()[:20]
 
     for line, record in iter_records(path, max_bytes):
         if isinstance(record, dict) and record.get("type") in {"session_meta", "thread.started"}:
@@ -1190,7 +1197,7 @@ def normalize_events(
             priority = {None: 0, "text_hint": 1, "result_text": 2, "result_status": 3}
             if previous is None or (priority[event.outcome_basis], event.exit_code is not None) > (priority[previous.outcome_basis], previous.exit_code is not None):
                 events[event_id] = event
-    return sorted(events.values(), key=lambda event: event.line)
+    return sorted(events.values(), key=lambda candidate: candidate.line)
 
 
 def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
@@ -1255,7 +1262,7 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
 
 
 def scan(
-    files: list[Path] | list[ScanTarget],
+    files: Iterable[Path | ScanTarget],
     max_bytes: int,
     context_chars: int,
     since_ts: float | None = None,
@@ -1263,16 +1270,18 @@ def scan(
     after_file: Path | None = None,
     after_line: int | None = None,
     suppress_investigation_noise: bool = False,
-) -> dict[str, Finding]:
+) -> ScanFindings:
     findings = {signal.name: Finding(signal) for signal in SIGNALS}
     all_events: list[TraceEvent] = []
     seen_paths: set[Path] = set()
     for file_or_target in files:
-        path = file_or_target.path if isinstance(file_or_target, ScanTarget) else file_or_target
+        if isinstance(file_or_target, ScanTarget):
+            path, read_bytes = file_or_target.path, file_or_target.read_bytes
+        else:
+            path, read_bytes = file_or_target, max_bytes
         if path in seen_paths:
             continue
         seen_paths.add(path)
-        read_bytes = file_or_target.read_bytes if isinstance(file_or_target, ScanTarget) else max_bytes
         events = normalize_events(path, read_bytes, since_ts, until_ts, after_file, after_line)
         all_events.extend(events)
         for name, finding in collect_event_hits(path, events, context_chars, suppress_investigation_noise).items():
@@ -1354,7 +1363,7 @@ def looks_like_flattened_static_payload(text: str) -> bool:
         or re.search(r"\b(purpose|description|match|argv_prefix):\b", text, re.I)
         or re.search(r"\bUse only when the user explicitly requests\b", text, re.I)
         or re.search(r"\busage:\s+[^\n]{0,160}\brate-limit\b", text, re.I)
-        or re.search(r"\bconfig\.toml\b|\[\[agents\]\]", text, re.I)
+        or re.search(r"\bconfig\.toml\b|\[\[agents]]", text, re.I)
         or re.search(r"(?:^|\n|\s)#\s+[^\n]{0,160}\b(heuristics|checklist|guidance)\b", text, re.I)
         or re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:dict|list|tuple|set)\[", text)
     )
@@ -1444,7 +1453,7 @@ def is_suppressed_noise(text: str) -> bool:
 
 
 def stable_file_id(path: Path) -> str:
-    return hashlib.sha256(str(path).encode("utf-8", errors="replace")).hexdigest()[:12]
+    return hashlib.sha256(str(path).encode(errors="replace")).hexdigest()[:12]
 
 
 def finding_to_json(finding: Finding) -> dict[str, Any]:

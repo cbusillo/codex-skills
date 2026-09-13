@@ -16,6 +16,7 @@ import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest import mock
 
 
@@ -370,13 +371,7 @@ def test_local_llm_scout_misuse_risk_signal() -> None:
 
 
 def test_lm_studio_scout_strips_channel_wrappers() -> None:
-    scout_script = Path(__file__).with_name("lm_studio_scout.py")
-    spec = importlib.util.spec_from_file_location("lm_studio_scout", scout_script)
-    if spec is None or spec.loader is None:
-        raise AssertionError("unable to load lm_studio_scout.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    module = load_scout_module()
 
     normalized = module.normalize_content(
         '<|channel|>final <|constrain|>JSON<|message|>{"ok":true}'
@@ -416,16 +411,16 @@ def test_lm_studio_scout_delegates_to_local_llm_chat() -> None:
             ),
             stderr="",
         )
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
-        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            captured["command"] = command
+        def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured["command"] = argv
             captured["input"] = kwargs.get("input")
             captured["timeout"] = kwargs.get("timeout")
             return completed
 
         stdout = io.StringIO()
-        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", "--json", "--warmup", "--load-policy", "jit_chat", str(report)]
         ), redirect_stdout(stdout):
             exit_code = module.main()
@@ -460,14 +455,14 @@ def test_lm_studio_scout_deep_forwards_timeout() -> None:
             stdout=json.dumps({"ok": True, "model": "test/model", "content": "analysis text"}),
             stderr="",
         )
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
-        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            captured["command"] = command
+        def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured["command"] = argv
             captured["timeout"] = kwargs.get("timeout")
             return completed
 
-        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", "--deep", str(report)]
         ), redirect_stdout(io.StringIO()):
             exit_code = module.main()
@@ -494,7 +489,7 @@ def test_lm_studio_scout_reports_chat_errors() -> None:
             stderr="",
         )
         stdout = io.StringIO()
-        with mock.patch.object(module.subprocess, "run", return_value=completed), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": mock.Mock(return_value=completed)}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", str(report)]
         ), redirect_stdout(stdout):
             exit_code = module.main()
@@ -508,7 +503,8 @@ def test_lm_studio_scout_rejects_null_byte_report() -> None:
         report = Path(tmp) / "report.md"
         report.write_bytes(b"redacted\x00summary")
         stderr = io.StringIO()
-        with mock.patch.object(module.subprocess, "run") as fake_run, mock.patch.object(
+        fake_run = mock.Mock()
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", str(report)]
         ), redirect_stderr(stderr):
             exit_code = module.main()
@@ -618,7 +614,6 @@ def test_explicit_files_are_not_capped_by_directory_limit() -> None:
 
 
 def test_paths_file_supplies_many_explicit_files() -> None:
-    module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first = root / "first-session.jsonl"
@@ -1539,7 +1534,7 @@ def test_typed_terminal_text_survives_without_promoting_echoes() -> None:
 
 def test_native_codex_command_items_use_identity_and_terminal_status() -> None:
     module = load_module()
-    records = [
+    records: list[dict[str, object]] = [
         {"type": "thread.started", "thread_id": "synthetic-thread"},
         {"type": "item.completed", "item": {"id": "message", "type": "agent_message", "text": "error: Command failed exit_code=1"}},
         {"type": "item.completed", "item": {"id": "reason", "type": "reasoning", "text": "error: Command failed exit_code=2"}},
@@ -1645,6 +1640,34 @@ def test_scanner_diagnostics_survive_record_filters_without_friction() -> None:
                 raise AssertionError("read diagnostics must be separate and redacted")
 
 
+def test_split_output_bodies_cannot_supply_terminal_headers() -> None:
+    module = load_module()
+    cases: list[tuple[list[str], int | None]] = [
+        (["Output:\n", "Process exited with code 1\n"], None),
+        (["Output:\nProcess exited with code 1\n"], None),
+        (["Final output:\n", "Command failed\nerror: example\nProcess exited with code 1\n"], None),
+        (["Unrecognized preamble\nOutput:\n", "Process exited with code 1\n"], None),
+        (["Chunk ID: example\n", "Wall time: 0.1 seconds\n", "Process exited with code 0\n", "Output:\nProcess exited with code 1\n"], 0),
+        (["Chunk ID: example\nWall time: 0.1 seconds\n", "Process exited with code 1\n", "Output:\nProcess exited with code 0\n"], 1),
+        (["Process exited with code 0\nOutput:\n", "Process exited with code 1\nanalyze_rollouts.py failed\n"], 0),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for fragments, expected_code in cases:
+            trace = write_trace(Path(tmp), [{
+                "type": "function_call_output", "call_id": "split-result",
+                "content": [{"text": text} for text in fragments],
+            }])
+            events = module.normalize_events(trace, 100_000)
+            if len(events) != 1:
+                raise AssertionError("content fragments must remain one result event")
+            event = events[0]
+            if expected_code is None:
+                if event.exit_code is not None or event.failed or event.succeeded or event.outcome_basis is not None:
+                    raise AssertionError("printed Output content must not create an outcome through either parser path")
+            elif (event.exit_code, event.failed, event.succeeded, event.outcome_basis) != (expected_code, expected_code != 0, expected_code == 0, "result_text"):
+                raise AssertionError("a real split preamble/header must retain its authoritative status")
+
+
 def main() -> int:
     test_result_statuses_survive_noise_filters_and_mirrors()
     test_successful_commands_prompts_and_source_dumps_are_not_failures()
@@ -1657,6 +1680,7 @@ def main() -> int:
     test_terminal_headers_precede_investigation_noise_and_printed_statuses()
     test_session_metadata_and_native_progress_are_not_terminal_outcomes()
     test_scanner_diagnostics_survive_record_filters_without_friction()
+    test_split_output_bodies_cannot_supply_terminal_headers()
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
     test_command_and_shell_friction_signals()

@@ -24,6 +24,8 @@ Typed textual tool results such as `function_call_output` containing exactly
 or untyped copied snippet does not gain that provenance. A recognized leading
 terminal header is read before filtering investigation chatter. Printed `Output`
 content cannot override that header, including a successful zero exit.
+That boundary persists across content fragments; a body without a preceding
+terminal header cannot supply an outcome through fallback text matching.
 Native Codex exec JSONL
 `item.started`/`item.updated`/`item.completed` records whose `item.type` is
 `command_execution` share `item.id` as their invocation identity and use the

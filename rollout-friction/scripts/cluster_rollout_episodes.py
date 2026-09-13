@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -113,10 +112,10 @@ def cluster_key(episode: dict[str, Any]) -> tuple[str, ...]:
     signals = tuple(sorted(str(signal) for signal in episode.get("signals", []) if signal))
     cause = command_failure_cause(episode)
     if cause:
-        return (*prefix, "repeated_command_failure", f"cause:{cause}")
+        return *prefix, "repeated_command_failure", f"cause:{cause}"
     category = str(episode.get("category") or "unknown")
     destination = str(episode.get("recommended_destination") or "unknown")
-    return (*prefix, *signals, f"category:{category}", f"destination:{destination}")
+    return *prefix, *signals, f"category:{category}", f"destination:{destination}"
 
 
 def command_failure_cause(episode: dict[str, Any]) -> str | None:
@@ -147,7 +146,7 @@ def command_failure_cause(episode: dict[str, Any]) -> str | None:
 
 
 def cluster_id_for(key: tuple[str, ...]) -> str:
-    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
     return f"cl_{digest}"
 
 
@@ -281,7 +280,7 @@ def skeleton_for(
             }
         )
     compacted, elided_count = compact_steps(steps, max_steps)
-    skeleton_id = f"sk_{hashlib.sha256(str(episode.get('episode_id')).encode('utf-8')).hexdigest()[:16]}"
+    skeleton_id = f"sk_{hashlib.sha256(str(episode.get('episode_id')).encode()).hexdigest()[:16]}"
     return {
         "schema_version": 2 if semantics == EVENT_COUNT_SEMANTICS else 1,
         "count_semantics": semantics,

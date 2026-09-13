@@ -180,7 +180,6 @@ def run_chat(report: str, args: argparse.Namespace, timeout: float | None) -> di
             capture_output=True,
             text=True,
             timeout=parent_timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         limit = timeout + 10 if timeout is not None else FALLBACK_PARENT_TIMEOUT
