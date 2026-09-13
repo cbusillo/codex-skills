@@ -35,7 +35,6 @@ def git(repo: Path, *args: str) -> str:
         },
         text=True,
         capture_output=True,
-        check=False,
         timeout=30,
     )
     if result.returncode:
@@ -132,8 +131,7 @@ class RuntimeCleanupFixtureTests(unittest.TestCase):
                 env=environment,
                 text=True,
                 capture_output=True,
-                check=False,
-                timeout=30,
+                    timeout=30,
             )
             self.assertEqual(first.returncode, 0, first.stderr)
             receipt = json.loads(first.stdout)
@@ -149,8 +147,7 @@ class RuntimeCleanupFixtureTests(unittest.TestCase):
                 env=environment,
                 text=True,
                 capture_output=True,
-                check=False,
-                timeout=30,
+                    timeout=30,
             )
             self.assertEqual(second.returncode, 0, second.stderr)
             second_receipt = json.loads(second.stdout)

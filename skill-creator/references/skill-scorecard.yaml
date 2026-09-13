@@ -1331,7 +1331,7 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: work/cleanup-integration-617-618
+          last_validated_ref: aea506156836b04611351d24815b786b625d31b0
           notes: >-
             Offline fixtures, native-runner failure handling, and independent
             mutation-based scoring are covered by the repository gate. These
@@ -1367,7 +1367,7 @@ skills:
         baseline:
           outcome: pass
           score: 1000
-          last_validated_ref: work/cleanup-inventory-616
+          last_validated_ref: 050cf09c9e1f741587b81aa4916aa1b1da082de4
           notes: >-
             Synthetic filesystem and Git fixtures exercise ignored private
             contents, bounded coverage, freshness and post-action byte verification.
@@ -1377,3 +1377,7 @@ skills:
         Astra behavior. The opt-in native qualification procedure is documented
         in work-closeout/evaluations/README.md; its bounded observations do not
         establish population performance or untested host behavior.
+      - >-
+        The native suite tests authorized force cleanup and several refusal
+        boundaries; conclusive supersession without any disposal authorization
+        is not yet a separately exercised native case.

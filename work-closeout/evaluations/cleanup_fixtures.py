@@ -166,6 +166,19 @@ def _preserved(path: Path, reason: str) -> dict[str, Any]:
     }
 
 
+def _write_host_state_and_boundary_links(
+    workspace: Path,
+    repo: Path,
+    host_state: dict[str, str],
+) -> Path:
+    _write(workspace / "records/host-state.json", json.dumps(host_state, indent=2, sort_keys=True) + "\n")
+    outside = workspace.parent / "shared/store.bin"
+    _write(outside, MARKERS["outside"])
+    (workspace / "cache").symlink_to(outside.parent, target_is_directory=True)
+    (repo / "shared").symlink_to(outside.parent, target_is_directory=True)
+    return outside
+
+
 def _build_closeout(workspace: Path, expected: dict[str, Any]) -> list[str]:
     repo, _ = _init_repo(workspace, {"src/report.py": "def title():\n    return 'weekly report'\n"})
     _git(repo, "switch", "-c", "work/205")
@@ -508,12 +521,7 @@ def _build_holds(workspace: Path, expected: dict[str, Any]) -> list[str]:
         "runtime_binding": str(trees["302"]),
         "ide_worktree": str(trees["301"]),
     }
-    _write(workspace / "records/host-state.json", json.dumps(host_state, indent=2, sort_keys=True) + "\n")
-
-    outside = workspace.parent / "shared/store.bin"
-    _write(outside, MARKERS["outside"])
-    (workspace / "cache").symlink_to(outside.parent, target_is_directory=True)
-    (repo / "shared").symlink_to(outside.parent, target_is_directory=True)
+    outside = _write_host_state_and_boundary_links(workspace, repo, host_state)
     _write(
         workspace / "AGENTS.md",
         _workspace_agents(
@@ -548,11 +556,7 @@ def _build_volume(workspace: Path, expected: dict[str, Any]) -> list[str]:
         "observed_volume_identity": "fixture-volume-b",
         "observation": "latest fixture inventory record",
     }
-    _write(workspace / "records/host-state.json", json.dumps(host_state, indent=2, sort_keys=True) + "\n")
-    outside = workspace.parent / "shared/store.bin"
-    _write(outside, MARKERS["outside"])
-    (workspace / "cache").symlink_to(outside.parent, target_is_directory=True)
-    (repo / "shared").symlink_to(outside.parent, target_is_directory=True)
+    outside = _write_host_state_and_boundary_links(workspace, repo, host_state)
     _write(
         workspace / "AGENTS.md",
         _workspace_agents(

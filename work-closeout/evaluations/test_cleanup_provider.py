@@ -24,7 +24,7 @@ GH_COMMENT = ROOT / "github/scripts/gh-comment"
 
 
 def _state(path: Path) -> dict:
-    value = parking_fixture._provider_state()
+    value = parking_fixture.provider_state()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
@@ -130,6 +130,43 @@ class CleanupProviderTests(unittest.TestCase):
         )
         for credential in ("GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
             self.assertNotIn(credential, self.env)
+
+    def test_api_field_comment_uses_implicit_post_and_preserves_endpoint(self) -> None:
+        endpoint = f"repos/{parking_fixture.OWNER_REPO}/issues/12/comments"
+        body = "Park work/201 with the exact reviewed SHA."
+        result = subprocess.run(
+            [str(self.shim), "api", "--include", endpoint, "-f", f"body={body}"],
+            text=True,
+            capture_output=True,
+            env=self.env,
+            timeout=10,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        saved = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(body, saved["comments"][0]["body"])
+        self.assertEqual({"method": "POST", "endpoint": endpoint, "status": 201}, _events(self.state_path)[-1])
+
+        unsupported = subprocess.run(
+            [str(self.shim), "api", "--include", endpoint, "--field", "labels[]=cleanup"],
+            text=True,
+            capture_output=True,
+            env=self.env,
+            timeout=10,
+        )
+        self.assertEqual(1, unsupported.returncode)
+        self.assertIn("Unsupported fixture field form", unsupported.stdout)
+        self.assertEqual({"method": "POST", "endpoint": endpoint, "status": 400}, _events(self.state_path)[-1])
+        self.assertEqual(1, len(json.loads(self.state_path.read_text(encoding="utf-8"))["comments"]))
+
+        explicit_get = subprocess.run(
+            [str(self.shim), "api", "--include", "--method", "GET", endpoint, "--raw-field", "body=ignored"],
+            text=True,
+            capture_output=True,
+            env=self.env,
+            timeout=10,
+        )
+        self.assertEqual(0, explicit_get.returncode, explicit_get.stderr)
+        self.assertEqual({"method": "GET", "endpoint": endpoint, "status": 200}, _events(self.state_path)[-1])
 
     def test_unspecified_write_is_rejected_and_recorded(self) -> None:
         before = self.state_path.read_bytes()

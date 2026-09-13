@@ -60,7 +60,8 @@ class CleanupRunnerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def fake_cli_source(self) -> str:
+    @staticmethod
+    def fake_cli_source() -> str:
         return textwrap.dedent(
             """\
             #!/usr/bin/env python3
@@ -92,9 +93,10 @@ class CleanupRunnerTests(unittest.TestCase):
             session.parent.mkdir(parents=True, exist_ok=True)
             cwd = args[args.index("-C") + 1] if "-C" in args else str(pathlib.Path.cwd())
             marker = json.loads((pathlib.Path(os.environ["CODEX_HOME"]) / "auth.json").read_text())["fixture_marker"]
+            network_access = mode == "network-enabled"
             lines = [
                 {"type":"session_meta","payload":{"id":thread,"cli_version":"9.9.9-test","model_provider":"openai","source":"exec"}},
-                {"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"high","approval_policy":"never","sandbox_policy":{"type":"workspace-write","network_access":False,"exclude_slash_tmp":True,"exclude_tmpdir_env_var":True},"workspace_roots":[cwd]}},
+                {"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"high","approval_policy":"never","sandbox_policy":{"type":"workspace-write","network_access":network_access,"exclude_slash_tmp":True,"exclude_tmpdir_env_var":True},"workspace_roots":[cwd]}},
                 {"type":"response_item","payload":{"type":"reasoning","summary":[{"text":"hidden-analysis-must-not-be-retained"}]}},
                 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hidden-prompt-must-not-be-retained"}]}},
                 {"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":json.dumps({"cmd":"printf %s " + marker}),"call_id":"call-1"}},
@@ -229,6 +231,19 @@ class CleanupRunnerTests(unittest.TestCase):
             self.fail("owned child process survived timeout cleanup")
         self.assertFalse(any(self.private.iterdir()))
 
+    def test_network_enabled_native_context_fails_attribution(self) -> None:
+        case, outcome = self.write_case(
+            name="cleanup-network-enabled",
+            prompts=["Inspect."],
+            environment={"CODEX_CLEANUP_FIXTURE_MODE": "network-enabled"},
+        )
+        result = self.run_case(case)
+        self.assertEqual(1, result.returncode, result.stderr)
+        report = json.loads(outcome.read_text(encoding="utf-8"))
+        self.assertFalse(report["attribution_matches_request"])
+        self.assertIs(report["attribution"]["turn_context"]["sandbox_policy"]["network_access"], True)
+        self.assertFalse(any(self.private.iterdir()))
+
     def test_oversized_and_malformed_output_leave_no_raw_capture(self) -> None:
         for mode in ("oversized", "oversized-native", "malformed"):
             with self.subTest(mode=mode):
@@ -272,6 +287,12 @@ class CleanupRunnerTests(unittest.TestCase):
             self.assertIn("under the artifact root", result.stderr)
             self.assertEqual("unchanged\n", sentinel.read_text(encoding="utf-8"))
             self.assertFalse((outside / "forbidden.json").exists())
+        (self.catalog / "linked-skill").symlink_to(self.catalog / "work-closeout")
+        case, _ = self.write_case(name="cleanup-catalog-symlink", prompts=["noop"])
+        result = self.run_case(case)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("catalog contains a symlink", result.stderr)
+        self.assertFalse(any(self.private.iterdir()))
 
     def test_private_auth_cleanup_failure_is_reported(self) -> None:
         case, _ = self.write_case(name="cleanup-cleanup-failure", prompts=["noop"])
@@ -290,8 +311,8 @@ class CleanupRunnerTests(unittest.TestCase):
         }
         with (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.dict(os.environ, environment, clear=False),
-            mock.patch.object(module.shutil, "rmtree", side_effect=OSError("fixture denial")),
+            mock.patch.dict(os.environ, environment),
+            mock.patch("shutil.rmtree", side_effect=OSError("fixture denial")),
             self.assertRaisesRegex(module.RunnerError, "private auth home cleanup failed"),
         ):
             module.main()

@@ -96,15 +96,16 @@ def absolute_dir(value: Any, label: str) -> Path:
 
 
 def under(path: Path, root: Path) -> bool:
-    return path == root or root in path.parents
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def tree_hash(root: Path) -> str:
@@ -179,7 +180,10 @@ def load_case(path: Path, artifact_root: Path) -> dict[str, Any]:
         raise RunnerError("environment values must be single-line strings")
     value["workspace"] = absolute_dir(value.get("workspace"), "workspace")
     value["catalog"] = absolute_dir(value.get("catalog"), "catalog")
-    outcome = Path(str(value.get("outcome"))).expanduser()
+    outcome_name = value.get("outcome")
+    if not isinstance(outcome_name, str):
+        raise RunnerError("outcome must be a path string")
+    outcome = Path(outcome_name).expanduser()
     if not outcome.is_absolute() or outcome.exists() and not outcome.is_file():
         raise RunnerError("outcome must be an absolute file path")
     value["outcome"] = outcome.resolve()
@@ -248,11 +252,15 @@ def sanitized_env(run_root: Path, workspace: Path, injected: dict[str, str]) -> 
     if not configured_uv:
         uv = shutil.which("uv")
         if uv:
-            result = subprocess.run(
-                [uv, "python", "dir"], text=True, capture_output=True,
-                check=False, timeout=10
-            )
-            configured_uv = result.stdout.strip() if result.returncode == 0 else None
+            try:
+                result = subprocess.run(
+                    [uv, "python", "dir"], text=True, capture_output=True,
+                    check=True, timeout=10
+                )
+            except subprocess.CalledProcessError:
+                configured_uv = None
+            else:
+                configured_uv = result.stdout.strip()
     if not configured_uv or not Path(configured_uv).is_absolute() or not Path(configured_uv).is_dir():
         raise RunnerError("an existing UV_PYTHON_INSTALL_DIR is required for offline helpers")
     env["UV_PYTHON_INSTALL_DIR"] = str(Path(configured_uv).resolve())
@@ -393,6 +401,8 @@ def apply_between_turn_files(workspace: Path, changes: dict[str, str]) -> list[d
 
 def rollout_attribution(home: Path, thread_id: str | None) -> dict[str, Any]:
     attribution: dict[str, Any] = {"served_model": None, "served_model_evidence": "not exposed by codex exec or rollout"}
+    if not thread_id:
+        return attribution
     for path in home.glob("sessions/**/*.jsonl"):
         items = []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -498,7 +508,8 @@ def main() -> int:
     if not under(artifacts.resolve(), artifact_root) or under(artifacts.resolve(), case["workspace"]):
         raise RunnerError("artifacts must be outside the workspace and under the artifact root")
     artifacts.mkdir(parents=True, exist_ok=False, mode=0o700)
-    binary = Path(shutil.which(args.codex_bin) or args.codex_bin).resolve()
+    binary_name = str(args.codex_bin)
+    binary = Path(shutil.which(binary_name) or binary_name).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise RunnerError("--codex-bin must resolve to an executable file")
     catalog_before = tree_hash(case["catalog"])
@@ -632,6 +643,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (RunnerError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-        print(f"cleanup-runner: {exc}", file=sys.stderr)
+    except (RunnerError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as error:
+        print(f"cleanup-runner: {error}", file=sys.stderr)
         raise SystemExit(2)

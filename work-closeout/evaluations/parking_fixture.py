@@ -64,7 +64,7 @@ def _init_library(workspace: Path) -> tuple[Path, Path]:
     return library, remote
 
 
-def _provider_state() -> dict[str, Any]:
+def provider_state() -> dict[str, Any]:
     issue_url = f"https://example.invalid/{OWNER_REPO}/issues/{ISSUE_NUMBER}"
     return {
         "schema_version": 1,
@@ -190,7 +190,7 @@ Review status: {REVIEW_STATUS}
         provider_dir = workspace / ".provider"
         provider_dir.mkdir(mode=0o700)
         state_path = provider_dir / "state.json"
-        _write(state_path, json.dumps(_provider_state(), indent=2, sort_keys=True) + "\n", mode=0o600)
+        _write(state_path, json.dumps(provider_state(), indent=2, sort_keys=True) + "\n", mode=0o600)
         shim = _write_provider_shim(root)
         _write(workspace / "AGENTS.md", _workspace_instructions(case_name, task_worktree, remote))
 

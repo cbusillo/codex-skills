@@ -31,6 +31,10 @@ def response(argv: list[str], state: dict, body: dict) -> tuple[int, object, str
     if not argv or argv[0] != "api":
         return 400, {"message": "Unsupported fixture operation"}, "UNKNOWN", "unsupported"
     method, endpoint = "GET", ""
+    method_explicit = False
+    field_supplied = False
+    fields: dict[str, str] = {}
+    field_error: str | None = None
     index = 1
     while index < len(argv):
         arg = argv[index]
@@ -39,13 +43,34 @@ def response(argv: list[str], state: dict, body: dict) -> tuple[int, object, str
                 return 400, {"message": "Missing argument"}, method, endpoint
             if arg in ("-X", "--method"):
                 method = argv[index + 1].upper()
+                method_explicit = True
+            index += 2
+        elif arg in ("-f", "-F", "--field", "--raw-field"):
+            field_supplied = True
+            if index + 1 >= len(argv):
+                return 400, {"message": "Missing argument"}, method, endpoint
+            field = argv[index + 1]
+            key, separator, value = field.partition("=")
+            simple_key = key and (key[0].isalpha() or key[0] == "_") and all(
+                character.isalnum() or character in "_-" for character in key
+            )
+            typed_complex = arg in ("-F", "--field") and value.startswith("@")
+            if not separator or not simple_key or typed_complex:
+                field_error = "Unsupported fixture field form"
+            else:
+                fields[key] = value
             index += 2
         elif arg.startswith("-"):
             index += 1
         else:
             endpoint = arg
             index += 1
-    endpoint = urlsplit(endpoint).path.lstrip("/")
+    endpoint = str(urlsplit(str(endpoint)).path).lstrip("/")
+    if field_supplied and not method_explicit:
+        method = "POST"
+    if field_error is not None:
+        return 400, {"message": field_error}, method, endpoint
+    body.update(fields)
     if method == "GET" and endpoint == "user":
         return 200, {"login": "fixture-bot"}, method, endpoint
     if method == "GET" and endpoint == "rate_limit":

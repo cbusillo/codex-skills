@@ -64,7 +64,6 @@ def _git(cwd: Path, *args: str) -> str:
         env=_git_environment(),
         text=True,
         capture_output=True,
-        check=False,
         timeout=30,
     )
     if result.returncode:

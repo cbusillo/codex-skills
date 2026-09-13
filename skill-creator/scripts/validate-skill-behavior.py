@@ -2205,8 +2205,9 @@ def test_ide_configuration_policy_is_shared() -> None:
     require(
         "ide-configuration-policy.md" in inspection
         and "ide-configuration-policy.md" in readiness
-        and "ide-configuration-policy.md" in closeout,
-        "inspection, readiness, and closeout must share one IDE configuration policy",
+        and "ide-configuration-policy.md" in closeout
+        and "../references/repo-cleanup.md" in closeout,
+        "inspection, readiness, and closeout must share IDE policy and closeout must route cleanup",
     )
     require(
         metadata.get("docs", {}).get("ideConfigurationPolicy")
