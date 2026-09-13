@@ -1,7 +1,8 @@
 # Codex Skills
 
-Reusable skills for Codex-style coding agents, including OpenAI Codex CLI and
-Every Code.
+Reusable skills for OpenAI Codex and compatible hosts such as Codex Lab.
+Every Code is retired; retained traces, fixtures, and artifact readers describe
+historical behavior rather than a supported execution path.
 
 Each skill lives in its own directory with a `SKILL.md` file. Skills can include
 supporting references, scripts, agents, assets, and examples when the workflow
@@ -9,15 +10,30 @@ benefits from more than a single instruction file.
 
 ## Install
 
-Clone this repository somewhere durable, then symlink it into the agent config
-directory:
+Clone this repository somewhere durable. For a new personal Codex installation,
+use the current user-skill discovery location:
 
 ```sh
 git clone git@github.com:OWNER/codex-skills.git ~/Developer/codex-skills
-ln -s ~/Developer/codex-skills ~/.code/skills
+mkdir -p ~/.agents
+ln -s ~/Developer/codex-skills ~/.agents/skills
 ```
 
-If `~/.code/skills` already exists, move it aside before creating the symlink.
+Inspect an existing destination before changing it; do not replace an existing
+directory or symlink automatically. Established installations may still resolve
+the catalog through `~/.code/skills`, `$CODE_HOME/skills`, or
+`$CODEX_HOME/skills`. Preserve working bindings. Retiring Every Code does not
+require renaming those paths or moving their data. For Codex Lab or another host,
+verify that host's current discovery rules before adding a new binding.
+
+See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
+current Codex locations and plugin-owned alternatives.
+
+The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
+`$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
+`~/.agents/skills`-only installation. For that installation, verify and refresh
+the clean default-branch checkout through the normal GitHub post-merge checkout
+workflow. A reconciler `not_applicable` result does not prove it is current.
 
 Treat the checkout behind the active `skills` path as a runtime checkout: keep
 it clean, on `main`, and current with `origin/main`. Use linked task worktrees
@@ -53,16 +69,16 @@ files instead of committing it.
 
 ### System Skill Overrides
 
-Every Code recreates bundled system skills under the runtime skills directory during
-startup: `$CODE_HOME/skills/.system` for Every Code, with
-`$CODEX_HOME/skills/.system` kept for compatibility. Treat `.system/` in this
-repository as generated/vendor cache state, not as maintained source. Edit the
-top-level skill directories instead.
+Hosts may expose bundled system skills or generate installation caches. Treat
+`.system/` in this repository and installed plugin caches as generated/vendor
+state, not as maintained source. Edit the top-level skill directories instead.
+Cache locations and refresh behavior belong to the selected host; do not assume
+the retired Every Code startup mechanism applies to Codex or Codex Lab.
 
 Some top-level skills intentionally use the same names as bundled system skills
-as deliberate user-maintained overrides. Every Code selects them by its skill
-precedence; hosts that expose both copies should select the maintained top-level
-source by its full path rather than combine conflicting workflows:
+as deliberate user-maintained overrides. Verify the current host's selection
+behavior; when both copies are exposed, select the maintained top-level source
+by its full path rather than combine conflicting workflows:
 
 - `openai-docs`
 - `plan`
@@ -70,8 +86,8 @@ source by its full path rather than combine conflicting workflows:
 - `skill-creator`
 
 Keep that override allowlist explicit in the repo validator. Runtime `.system`
-caches can differ by Every Code build, so validation fails only when an active
-top-level skill overrides a bundled system skill that is not allowlisted. If Code
+caches can differ by host and build, so validation fails only when an active
+top-level skill overrides a bundled system skill that is not allowlisted. If a host
 adds a new bundled system skill with the same name as a top-level skill, update
 the top-level override skill or the validator allowlist intentionally instead of
 editing `.system/` directly.
@@ -99,8 +115,8 @@ Examples:
 ```
 
 Use repo-local `.local/people.yaml` only for project-specific people context or
-overrides. Durable identity context for the person using Every Code should live
-under `$CODE_HOME/skills/.local/people.yaml` so it follows agents across repos.
+overrides. Durable identity context for the person using the agent should live
+in the `codex-skills` checkout's `.local/people.yaml` so it follows agents across repos.
 
 When a skill needs local context, it should treat the local file as optional and
 continue to work without it. Commit `*.example.md` files when a template would
