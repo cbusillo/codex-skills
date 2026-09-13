@@ -880,17 +880,20 @@ invocation rules.
   pick a canonical PR, ensure stale PRs use `Refs` instead of closing keywords,
   comment with the winning PR, and close superseded PRs with
   `scripts/gh-pr.py supersede` when appropriate. Clean up unused remote task
-  branches and clean local worker/review worktrees only after confirming no
-  active issue, PR, or uncommitted work still depends on them.
+  branches and local worker/review worktrees only under the shared repository
+  cleanup policy after confirming the exact work disposition and that no active
+  issue, PR, owner, or runtime still depends on them.
 
 ## Diagnostics & Hygiene
 
 - **CI Failure**: Use the `github-ci-diagnose.py` helper to classify and fix
   failures when available. Raw `gh run view` / `gh api` log commands are
   fallback diagnostics or watcher-specific probes, not the preferred path.
-- **Hygiene**: Use `github-repo-snapshot.sh` for situational snapshots and clean
-  up merged task branches/worktrees only when doing so cannot remove unrelated
-  user work.
+- **Hygiene**: Use `github-repo-snapshot.sh` for situational snapshots. For
+  ordinary task branch/worktree cleanup, an explicit bulk cleanup audit, or
+  repository retirement, read
+  [repository cleanup and preservation](../references/repo-cleanup.md) and apply
+  its evidence, disposition, preservation, authorization, and reporting contract.
 
 ## Tools & Scripts
 

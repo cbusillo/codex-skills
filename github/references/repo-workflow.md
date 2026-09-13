@@ -4,6 +4,12 @@ Use this reference for repository operations that need current GitHub and local
 state: PRs, issues, Actions, reviews, merge/deploy state, QA handoff, recent
 merges, branch cleanup, or worktree cleanup.
 
+For ordinary task cleanup, an explicit bulk repository/worktree audit, or
+repository retirement, read the shared
+[repository cleanup and preservation](../../references/repo-cleanup.md). It owns
+the evidence, disposition, preservation, authorization, and result-reporting
+contract; this reference continues to own GitHub execution and remote actions.
+
 ## Orientation
 
 Start with a factual snapshot before making claims about readiness, PR state,
@@ -322,12 +328,14 @@ review still depends on it. `gh-pr.py supersede --delete-branch` performs this
 same-repo/base-branch safety check for the remote ref; otherwise report the
 branch as a cleanup candidate.
 
-Clean local worker and review worktrees for completed or superseded PRs can be
-removed when they have no uncommitted work, no unpushed commits, and no active
-issue or PR still depends on them. Remove the associated local branch with
-`git branch -d <branch>` after the worktree is gone and Git can prove the
-branch is merged or otherwise unnecessary. Ask before deleting any dirty
-worktree, branch with unmerged commits, or ambiguous review/automation worktree.
+Evaluate local worker and review worktrees for completed or superseded PRs under
+the shared cleanup policy. Dirt or unmerged commits require further read-only
+investigation; they are not by themselves a reason to stop and ask. Preserve
+unique or ambiguous work by default. Remove an exact worktree or branch only
+when current evidence establishes its disposition and existing authorization
+covers that same action and scope; ask only for a missing disposal/preservation
+choice or an expanded scope. Prefer `git branch -d <branch>` after worktree
+removal when Git can prove the branch is merged.
 
 Issue closeout belongs to the winning PR. After the canonical PR merges, sweep
 every issue referenced by that PR body or its closing comments. For each issue:
@@ -518,8 +526,10 @@ operations are unsupported, and status reads route through the sanitized helper.
 
 ## Safe Hygiene
 
-Automatic cleanup is only for unambiguous cases. Ask before deleting when more
-than one PR, branch, or worktree plausibly matches the task.
+Apply the shared repository cleanup policy to resolve exact targets. When more
+than one PR, branch, or worktree plausibly matches, continue read-only evidence
+collection and preserve ambiguous candidates rather than turning ambiguity into
+an automatic permission prompt.
 
 Allowed without asking when safe:
 
@@ -533,11 +543,14 @@ Allowed without asking when safe:
   reconciler instead
 - report unsafe cleanup candidates instead of touching them
 
-Never include Codex Desktop or Every Code auto-review worktrees under
-`~/.code/working/<repo>/branches/auto-review*` in automatic cleanup.
+Exclude Codex Desktop or Every Code auto-review worktrees under
+`~/.code/working/<repo>/branches/auto-review*` from ordinary cleanup. An explicit
+bulk or retirement scope still requires the shared policy's current owner/job,
+lock, runtime, content, and disposition evidence.
 
-Use `git branch -d <branch>` before considering `-D`; do not force-delete unless
-the user explicitly approves.
+Use `git branch -d <branch>` when Git can prove the exact branch is merged.
+Consider `-D` only when the shared policy establishes the exact already
+authorized disposition; force syntax never substitutes for missing evidence.
 
 ## Authorization For Gated Actions
 
