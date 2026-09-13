@@ -1,6 +1,6 @@
 ---
 name: design-collaboration
-description: Use when the user wants UI/UX design collaboration, Claude Design, Codex or Every Code design tools, first/second design passes, mockups, visual direction, critique, or an outside collaborator to draft or review UI before implementation. Use github-plan issues as the durable design record.
+description: Use when the user wants UI/UX design collaboration, Claude Design, Codex design tools, first/second design passes, mockups, visual direction, critique, or an outside collaborator to draft or review UI before implementation. Use github-plan issues as the durable design record.
 metadata:
   short-description: Issue-backed UI design collaboration
 ---
@@ -33,7 +33,7 @@ External design collaborator owns:
 - interaction feel and polish
 - making the surface not ugly
 
-The Every Code harness owns:
+The coding agent owns:
 
 - product context and user workflow
 - required states and acceptance criteria
@@ -76,7 +76,7 @@ content inside them:
 
 ## Design Request Content
 
-When asking Claude Design, Every Code, Codex, or another collaborator for a pass,
+When asking Claude Design, Codex, or another collaborator for a pass,
 place the request in the canonical issue or an issue comment. Include only the
 sections needed for the task:
 

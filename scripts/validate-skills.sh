@@ -69,6 +69,7 @@ helper_tests=(
 	launchplane/scripts/test_launchplane_contract_freshness.py
 	launchplane/scripts/test_launchplane_helpers.py
 	local-llm/scripts/validate_local_code_agent.py
+	local-llm/scripts/validate_local_codex_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
 	openai-docs/scripts/test_resolve_latest_model_info.py
 	openai-docs/scripts/test_fetch_codex_manual.py

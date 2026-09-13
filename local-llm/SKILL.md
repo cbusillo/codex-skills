@@ -22,9 +22,12 @@ resources:
   - path: scripts/lm_studio_benchmark.py
     kind: script
     description: Benchmark configured or explicit local models with short cold/fast response probes.
-  - path: scripts/local_code_agent.py
+  - path: scripts/local_codex_agent.py
     kind: script
-    description: Run Every Code `code exec` through an isolated LM Studio-backed CODE_HOME.
+    description: Run an isolated Codex or Codex Lab agent against an explicitly selected trusted local model.
+  - path: references/local-agent.md
+    kind: reference
+    description: Select and qualify current local agent execution, including host isolation and evidence limits.
   - path: scripts/validate_lm_studio_api.py
     kind: script
     description: Offline validation for LM Studio API URL, redaction, and unload guard semantics.
@@ -68,22 +71,22 @@ commands:
         "--json",
       ]
     purpose: Benchmarks one or more role/model candidates before changing model defaults.
-  - name: local-code-agent
+  - name: local-codex-agent
     source: skill
-    resource_path: scripts/local_code_agent.py
+    resource_path: scripts/local_codex_agent.py
     example_argv:
       [
         "uv",
         "run",
-        "local-llm/scripts/local_code_agent.py",
-        "--role",
-        "rollout_scout",
+        "local-llm/scripts/local_codex_agent.py",
+        "--host",
+        "codex",
         "--model",
-        "openai/gpt-oss-20b",
+        "<verified-local-model-id>",
         "--json",
         "Reply with exactly: OK",
       ]
-    purpose: Runs Every Code itself through a local LM Studio chat provider for agent-route smoke tests and comparisons.
+    purpose: Runs the selected current host with a local Responses provider and a bounded isolated child session.
 workflow_defaults:
   - name: default_endpoint
     value: http://127.0.0.1:1234/v1
@@ -197,48 +200,19 @@ retry after the local endpoint is healthy, switch to another configured trusted
 local/private endpoint, or ask for explicit approval for the exact cloud
 destination and input scope.
 
-## Local Code Agent
+## Local Agent Execution
 
-Direct local LLM calls and local Code-agent calls are different products:
+Use `lm_studio_chat.py` for direct local-model inference. When a task needs an
+agent to use tools, read [local agent execution](references/local-agent.md) and
+use `local_codex_agent.py` with the selected Codex or Codex Lab host and a
+verified local model. Reuse a host/model already established by the task;
+ordinary implementation choices do not require a new user question.
 
-- Use `lm_studio_chat.py` when a domain skill needs prompt-pure local inference
-  with its exact system prompt and no Every Code/Code agent behavior layered in.
-- Use `local_code_agent.py` when you intentionally want the Every Code agent
-  harness itself to run through a local LM Studio chat model for smoke tests,
-  comparison runs, or command-backed local agent registration.
-
-`local_code_agent.py` builds an isolated temporary `CODE_HOME/config.toml` from
-`.local/local-llm.yaml`, forces the LM Studio provider to `wire_api = "chat"`,
-and then invokes `code exec`. This avoids depending on the operator's normal
-Every Code config and avoids stale local settings such as `wire_api =
-"responses"` for LM Studio chat endpoints.
-
-Example smoke test:
-
-```bash
-uv run local-llm/scripts/local_code_agent.py \
-  --role rollout_scout \
-  --model openai/gpt-oss-20b \
-  --json \
-  --output-last-message .local/local-code-agent-smoke.txt \
-  'Reply with exactly: LOCAL_AGENT_OK'
-```
-
-Command-backed Every Code agent example for private `~/.code/config.local.toml`:
-
-```toml
-[[agents]]
-name = "local-code"
-command = "uv run /path/to/codex-skills/local-llm/scripts/local_code_agent.py --role rollout_scout --model openai/gpt-oss-20b --json"
-enabled = true
-description = "Every Code agent running through local LM Studio"
-```
-
-Test candidate models before relying on them as local agents. Some local models
-work well for direct chat but return no final `agent_message` through the Code
-harness because of reasoning/output-format or model-metadata compatibility. In
-local smoke testing, `openai/gpt-oss-20b` returned a final agent message, while a
-larger Qwen model reached the provider but returned no final message.
+Every Code is retired. `local_code_agent.py` is a retirement guard for old
+callers; do not restore that runtime or rename its executable to make old
+configuration work. Current hosts use different homes, arguments, and provider
+contracts. Direct model replies, isolated local agent runs, and the user's
+ordinary configured host session provide different evidence.
 
 ## Related Skills
 
