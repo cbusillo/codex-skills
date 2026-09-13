@@ -1346,7 +1346,20 @@ skills:
           score: 1000
           last_validated_ref: main
           notes: Closeout handoff contract covered by behavior validation.
+      - check_id: repo-cleanup-helper-contract
+        kind: script_test
+        mode: ci
+        dimension: public_safety
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: work/cleanup-inventory-616
+          notes: >-
+            Synthetic filesystem and Git fixtures exercise ignored private
+            contents, bounded coverage, freshness and post-action byte verification.
     known_gaps:
       - >-
-        Closeout helper behavior is validated statically; local-model judgment
-        coverage lives in the advisory local-llm scorecard checks.
+        Helper fixtures do not establish ordinary-agent selection or Astra
+        closeout behavior. Local-model review is advisory; integration and
+        execution qualification remain separate evidence.
