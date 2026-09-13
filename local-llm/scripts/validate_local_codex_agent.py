@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
+from urllib.parse import urlunsplit
 
 
 SCRIPT = Path(__file__).with_name("local_codex_agent.py")
@@ -377,7 +378,7 @@ class LocalCodexAgentTests(unittest.TestCase):
     def test_rejects_unsafe_endpoint_before_starting_host(self) -> None:
         # Build the intentionally invalid synthetic URL, as the public-safety
         # validator's own fixtures do; no real credential is used here.
-        credentialed_url = "http://" + "name:synthetic-secret" + "@127.0.0.1:1234/v1"
+        credentialed_url = urlunsplit(("http", "name:synthetic-secret@127.0.0.1:1234", "/v1", "", ""))
         cases = (
             {"locality": "cloud", "base_url": "https://cloud.example.invalid/v1"},
             {"locality": "mistyped"}, {"locality": []}, {"enabled": False}, {"enabled": "yes"},
@@ -521,7 +522,8 @@ class LocalCodexAgentTests(unittest.TestCase):
         process = Mock()
         process.poll.return_value = None
         process.wait.side_effect = subprocess.TimeoutExpired("synthetic-host", 0.5)
-        with patch.object(agent.os, "killpg") as kill_group:
+        kill_group = Mock()
+        with patch.dict(vars(agent.os), {"killpg": kill_group}):
             with self.assertRaises(agent.LocalCodexAgentError):
                 agent.stop_process_group(process)
         self.assertEqual(kill_group.call_args.args[1], signal.SIGKILL)
