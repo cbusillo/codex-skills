@@ -25,7 +25,8 @@ import cleanup_probe
 import repo_cleanup as cleanup
 
 
-SECRET = "SYNTHETIC-PRIVATE-CONTENT-47129"
+# Public canary text for temporary fixtures; never real credentials.
+FIXTURE_MARKER = "SYNTHETIC-PRIVATE-CONTENT-47129"
 
 
 def no_use(_root):
@@ -74,8 +75,8 @@ class CleanupContracts(unittest.TestCase):
     def private_files(root):
         nested = root / "nested"
         nested.mkdir(parents=True)
-        (nested / ".env.production").write_text(SECRET)
-        (nested / "private.db").write_bytes(SECRET.encode())
+        (nested / ".env.production").write_text(FIXTURE_MARKER)
+        (nested / "private.db").write_bytes(FIXTURE_MARKER.encode())
         return nested
 
     def generated(self):
@@ -93,14 +94,14 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(root["entries"]["out/nested/private.db"]["category"], "protected_private")
         self.assertEqual(root["entries"][".env.example"]["category"], "tracked_source")
         self.assertIn("protected_contents", root["holds"])
-        self.assertEqual((nested / ".env.production").read_text(), SECRET)
+        self.assertEqual((nested / ".env.production").read_text(), FIXTURE_MARKER)
         self.assertFalse(result["policy"]["may_delete"])
 
     def test_public_output_never_contains_contents_or_keyed_fingerprints(self):
         self.private_files(self.output)
         result = self.inventory()
         public = json.dumps(cleanup.public(result))
-        self.assertNotIn(SECRET, public)
+        self.assertNotIn(FIXTURE_MARKER, public)
         self.assertNotIn(result["_key"], public)
         for item in result["roots"][0]["entries"].values():
             if "_content_tag" in item:
@@ -142,14 +143,14 @@ class CleanupContracts(unittest.TestCase):
     def test_symlink_escape_is_not_followed(self):
         external = self.base / "external"
         external.mkdir()
-        (external / "secret.key").write_text(SECRET)
+        (external / "secret.key").write_text(FIXTURE_MARKER)
         (self.output / "escape").symlink_to(external, target_is_directory=True)
         result = self.inventory()
         root = result["roots"][0]
         self.assertEqual(list(root["entries"]), ["escape"])
         self.assertEqual(root["entries"]["escape"]["kind"], "symlink")
         self.assertIn("filesystem_boundary", root["holds"])
-        self.assertNotIn(SECRET, json.dumps(cleanup.public(result)))
+        self.assertNotIn(FIXTURE_MARKER, json.dumps(cleanup.public(result)))
 
     def test_nested_repositories_and_bare_repositories_are_excluded(self):
         nested = self.output / "nested"
@@ -320,7 +321,7 @@ class CleanupContracts(unittest.TestCase):
         result = cleanup.check_manifest(before, moved=[[str(self.output), str(destination)]])
         self.assertTrue(result["ok"], result["errors"])
         self.assertIsNone(result["policy"]["space_reclaimed_bytes"])
-        self.assertEqual((destination / "nested" / "private.db").read_text(), SECRET)
+        self.assertEqual((destination / "nested" / "private.db").read_text(), FIXTURE_MARKER)
 
     def test_tampered_recovery_or_trash_is_not_durable_preservation(self):
         self.private_files(self.output)
@@ -365,12 +366,12 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(result["repository"]["remotes"][0]["coverage"], "unavailable")
 
     def test_remote_urls_and_errors_do_not_echo_credentials(self):
-        credentialed_url = "https://" + "synthetic:" + SECRET + "@example.invalid/repo"
+        credentialed_url = "https://" + "synthetic:" + FIXTURE_MARKER + "@example.invalid/repo"
         run_git(self.repo, "remote", "set-url", "origin", credentialed_url)
         result = self.inventory(offline=True)
         self.assertFalse(result["complete"])
         output = json.dumps(cleanup.public(result))
-        self.assertNotIn(SECRET, output)
+        self.assertNotIn(FIXTURE_MARKER, output)
         self.assertNotIn("https://", output)
 
     def test_old_or_unlisted_manifest_targets_are_rejected(self):
@@ -411,7 +412,7 @@ class CleanupContracts(unittest.TestCase):
                    "--purpose", "synthetic CLI round trip", "--json"]
         first = subprocess.run(command, capture_output=True, cwd=self.base, timeout=30)
         self.assertEqual(first.returncode, 0, first.stdout.decode())
-        self.assertNotIn(SECRET.encode(), first.stdout + first.stderr)
+        self.assertNotIn(FIXTURE_MARKER.encode(), first.stdout + first.stderr)
         self.assertFalse(json.loads(first.stdout)["policy"]["may_delete"])
         second = subprocess.run([sys.executable, str(script), "revalidate", "--before", str(manifest), "--json"],
                                 capture_output=True, cwd=self.base, timeout=30)
@@ -442,12 +443,12 @@ class CleanupContracts(unittest.TestCase):
 
     def test_malformed_manifest_roots_fail_without_echoing_input(self):
         path = self.base / "malformed.json"
-        path.write_text(json.dumps({"schema_version": 1, "roots": [SECRET]}))
+        path.write_text(json.dumps({"schema_version": 1, "roots": [FIXTURE_MARKER]}))
         path.chmod(0o600)
         result = subprocess.run([sys.executable, str(Path(cleanup.__file__)), "revalidate", "--before", str(path), "--json"],
                                 capture_output=True, cwd=self.base, timeout=5)
         self.assertEqual(result.returncode, 2)
-        self.assertNotIn(SECRET.encode(), result.stdout + result.stderr)
+        self.assertNotIn(FIXTURE_MARKER.encode(), result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["error"], "manifest_invalid")
 
 
