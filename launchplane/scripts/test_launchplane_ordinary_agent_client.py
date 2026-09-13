@@ -18,7 +18,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Self
-from unittest import TestCase
+from unittest import TestCase, main
 from unittest.mock import patch
 
 from launchplane_ordinary_agent_client import (
@@ -810,3 +810,7 @@ class OrdinaryAgentClientTests(TestCase):
         finally:
             server.shutdown()
             thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    main()
