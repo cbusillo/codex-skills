@@ -98,11 +98,14 @@ inspection, browser, CI, deployment, or security gates.
    auto-review worktrees are not dirty active state; only matching review
    findings and lifecycle evidence matter.
 
-5. Run the required repo gates and the narrowest additional checks that cover
-   the change and risk. Before saying code is ready, confirm all required
-   evidence is current. Broaden or repeat checks only for changed behavior,
-   failures, unresolved concerns, or an explicit repo requirement; do not rerun
-   passing checks for an unchanged revision and environment merely for closeout.
+5. Apply [Gate Selection](#gate-selection) for the required breadth at this stage,
+   including the final-readiness defaults for lint/static analysis and IDE
+   inspection. Run the required repo gates and the narrowest additional checks
+   that cover the change and risk. Before saying code is ready, confirm current
+   evidence covers the required scope. Broaden for missing coverage, changed
+   behavior, failures, unresolved concerns, or an explicit repo requirement; do
+   not rerun passing checks that cover the required scope for an unchanged
+   revision and environment merely for closeout.
 6. If GitHub state matters, use `github` for PR checks, Actions,
    review status, labels, deploy health, and mergeability.
    Use `github-plan` for planning issue indexes, Project state, blocker graphs,
