@@ -16,6 +16,12 @@ resources:
   - path: scripts/check-agent-operator-contract-freshness.py
     kind: script
     description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
+  - path: scripts/launchplane_ordinary_agent_client.py
+    kind: script
+    description: Use a private ordinary-agent credential with durable proof and handle custody.
+  - path: scripts/launchplane-ordinary-agent.py
+    kind: script
+    description: Thin CLI for resuming the private ordinary-agent lifecycle.
   - path: references/agent-operator-contract.json
     kind: reference
     description: Vendored public Launchplane agent/operator contract artifact.
@@ -59,6 +65,19 @@ commands:
     example_argv:
       ["uv", "run", "scripts/check-agent-operator-contract-freshness.py", "compare"]
     purpose: Emits advisory current, known-stale, or unknown semantic-freshness evidence.
+  - name: launchplane-ordinary-agent
+    source: skill
+    resource_path: scripts/launchplane-ordinary-agent.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-ordinary-agent.py",
+        "--url",
+        "<service-url>",
+        "session-status",
+      ]
+    purpose: Resume one private ordinary-agent enrollment, session, or finite job alias with redacted output.
   - name: launchplane-context
     source: skill
     resource_path: scripts/launchplane-context.py

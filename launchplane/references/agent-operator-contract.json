@@ -45,6 +45,197 @@
     },
     "operations": [
       {
+        "idempotency": "body",
+        "identity_dependencies": [
+          "read_ordinary_agent_proof"
+        ],
+        "method": "POST",
+        "modes": [
+          "finite-admission"
+        ],
+        "operation_id": "admit_ordinary_agent_job",
+        "path": "/v1/agent/ordinary-agent-jobs",
+        "purpose": "Admit one finite qualification or guarded-delivery job from authenticated caller intent.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "purpose_specific_readiness",
+          "idempotent_replay"
+        ],
+        "schema_fingerprint_sha256": "16e155d93c63fe1f4b71011132b4cd2d371ace2fc7ad26bd906da0b6974e32a7",
+        "supported_surfaces": [
+          "ordinary_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_ordinary_agent_proof"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_ordinary_agent_job",
+        "path": "/v1/agent/ordinary-agent-jobs/{request_id}",
+        "purpose": "Read this ordinary principal's finite job state.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "75eafec75f46cb1517923d1765f49e98f4fa88e5643e5cbf9ecc7cb309fdad03",
+        "supported_surfaces": [
+          "ordinary_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_ordinary_agent_proof"
+        ],
+        "method": "POST",
+        "modes": [
+          "cancel"
+        ],
+        "operation_id": "cancel_ordinary_agent_session",
+        "path": "/v1/agent/ordinary-agent-session-proposals/{operation_id}/cancel",
+        "purpose": "Cancel this ordinary principal's issued session.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "ba26a97805990fd1b143b022a57b0b600b3da091387e3fc889d4d47e371672ee",
+        "supported_surfaces": [
+          "ordinary_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_terminal_enrollment_requester"
+        ],
+        "method": "POST",
+        "modes": [
+          "plan"
+        ],
+        "operation_id": "propose_ordinary_agent_enrollment",
+        "path": "/v1/agent/ordinary-agent-enrollments",
+        "purpose": "Propose an exact agent connection for signed administrator review.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "7979ba91b02ba78216fb44d07ad8acc1573325e38ee248bf340a21ffe8ca4161",
+        "supported_surfaces": [
+          "terminal_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_terminal_enrollment_requester"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_proposed_ordinary_agent_enrollment",
+        "path": "/v1/agent/ordinary-agent-enrollments/{principal_id}/{operation_id}",
+        "purpose": "Read the authenticated terminal client's connection request.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "8502e37a221d8c3de47b2f8611fa15052d108faa107784df28d94633159a5588",
+        "supported_surfaces": [
+          "terminal_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_ordinary_agent_proof"
+        ],
+        "method": "POST",
+        "modes": [
+          "plan"
+        ],
+        "operation_id": "propose_ordinary_agent_session",
+        "path": "/v1/agent/ordinary-agent-session-proposals",
+        "purpose": "Propose a bounded session using the current ordinary credential.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "a13842726146311c5872eba494714e3ded3c6b1b105a0445198801977a1113ce",
+        "supported_surfaces": [
+          "ordinary_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_ordinary_agent_proof"
+        ],
+        "method": "GET",
+        "modes": [
+          "read"
+        ],
+        "operation_id": "read_ordinary_agent_session_operation",
+        "path": "/v1/agent/ordinary-agent-session-proposals/{operation_id}",
+        "purpose": "Read this ordinary principal's session request.",
+        "response_statuses": [
+          "200",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [],
+        "schema_fingerprint_sha256": "ba26a97805990fd1b143b022a57b0b600b3da091387e3fc889d4d47e371672ee",
+        "supported_surfaces": [
+          "ordinary_agent_client"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_ordinary_agent_receiver_claim"
+        ],
+        "method": "POST",
+        "modes": [
+          "claim"
+        ],
+        "operation_id": "claim_ordinary_agent_credential",
+        "path": "/v1/agent/ordinary-agent-enrollments/{operation_id}/claim",
+        "purpose": "Recover a receiver-bound credential directly into private client custody.",
+        "response_statuses": [
+          "200",
+          "401",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "receiver_bound_delivery",
+          "private_response_custody"
+        ],
+        "schema_fingerprint_sha256": "d752b1ea42fb3432eccdc727fe94966195fa179971d18d460ae1cfa4fbc45c91",
+        "supported_surfaces": [
+          "private_agent_client"
+        ]
+      },
+      {
         "idempotency": "none",
         "identity_dependencies": [
           "read_identity"
@@ -151,7 +342,7 @@
           "reviewed_dry_run",
           "expected_policy_digest"
         ],
-        "schema_fingerprint_sha256": "56d45106f7ec59d196201e101da8e74a63e2c697cc145200325fec68466e14b8",
+        "schema_fingerprint_sha256": "92ffceffe42ea64c829e71e69eb405fa452fb34fb7e54f469c6d5606c8eb458a",
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
@@ -177,7 +368,7 @@
           "503"
         ],
         "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "5aaa63991adeec924cd6ad00b45e79f0ad9813bcc541dfe512d2ad78a5c34911",
+        "schema_fingerprint_sha256": "7626b4b974ffe0b822553785fed15acfd2acff2c89bddb7d27c2788e6336b0c7",
         "supported_surfaces": [
           "agent_helper",
           "read_only_service"
@@ -332,7 +523,7 @@
         "reviewed_evidence": [
           "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "cceb3475fadd7ffc8a9075a1a770b665cc347f06da5c56cb7533067d797cf6b2",
+        "schema_fingerprint_sha256": "9d473f48936f5bdc245a9da6abd292fc8c2e66ed3aee4a8b63d0302b237d1cd4",
         "supported_surfaces": [
           "protected_workflow",
           "operator_ui",
@@ -392,7 +583,7 @@
           "503"
         ],
         "reviewed_evidence": [],
-        "schema_fingerprint_sha256": "28daa2b5e8010b8460a67bc7e4ea45f12cc8be3fb3d3d76e075222eef9226b8c",
+        "schema_fingerprint_sha256": "307d75395a629e567e20ff42c1aaf6bef158cd305433b33e574a478bac94eb0b",
         "supported_surfaces": [
           "read_only_service",
           "operator_ui"
@@ -423,8 +614,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "2494668205388a7d70f1a9e74bd4af300854fd20"
+    "source_commit_sha": "88a912940df197fc839180681c5970aba206592e"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5"
+  "semantic_digest_sha256": "a6dad1fcf4fe6ee709f6c3fb0c6b9d40688f3b7eed443add30cbd65ce745bf8d"
 }
