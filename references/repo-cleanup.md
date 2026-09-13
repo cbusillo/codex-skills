@@ -1,10 +1,120 @@
-# Repository cleanup evidence
+# Repository cleanup and preservation
 
-Read this reference when collecting or implementing structured cleanup evidence.
-It defines the helper contract; the owning GitHub and closeout policies still
-decide authorization, ownership, readiness, and whether an action is appropriate.
+Read when closing out task artifacts, auditing repositories/worktrees for cleanup,
+or retiring a checkout. This is the shared cleanup policy for `github` and
+`work-closeout`, followed by the inventory helper contract. GitHub helpers still
+own remote actions; readiness and closeout skills retain their quality and output
+requirements.
 Apply [task scope and authorization](execution-scope.md). Reuse approval already
-given for the same action and scope.
+given for the same action and scope. Fresh evidence does not require renewed
+approval by itself.
+
+## Scope and authority
+
+| Request | Scope of work |
+| --- | --- |
+| Ordinary task closeout | Account for this task's outputs, branch and worktree. Remove authorized disposable output and eligible completed task checkouts; retain unrelated work. |
+| Explicit bulk audit/cleanup | Inventory the requested repositories/directories, investigate possible supersession, and act only within the authorized disposal scope. A read-only audit stays read-only. |
+| Repository retirement | Inventory the entire named checkout, including ignored/private files and installed consumers; preserve valuable state and resolve active ownership before the separately authorized removal. |
+
+Inventory is not a deletion-candidate list. The helper always reports
+`policy.may_delete: false`; neither `Possible cleanup` nor exit zero grants
+authority. Local removal, publishing local work, deleting a remote branch, and
+archiving/deleting a remote repository are separate actions. Reuse authorization
+that covers each action; do not infer one from another. Ordinary development
+does not trigger a global repository scan, cache sweep, or retirement workflow.
+
+## Establish the disposition
+
+1. Identify the exact targets and their owners. Preserve the primary/default
+   checkout, installed runtime checkouts, active worktrees, review/automation
+   worktrees, and shared caches unless a separate applicable lifecycle explicitly
+   permits the intended action. A clean status, no agent session, or an old lock
+   does not establish inactivity. Check current jobs, IDE leases and runtime
+   bindings; unresolved ownership remains a hold. Release a known task-owned
+   worktree lock only when its job has ended and removal is authorized, then
+   collect fresh evidence. Never unlock merely because a lock looks stale.
+2. Establish current Git evidence. Resolve the live default branch and pin its
+   advertised SHA (`git ls-remote --symref`); obtain missing objects through an
+   authorized fetch, rather than trusting a stale tracking ref. Check ancestry
+   against that commit, local refs/stashes, unpublished commits, staged and
+   unstaged diffs, and PR/issue provenance. Do not stop investigating merely
+   because a branch is unmerged or a checkout is dirty.
+3. Explain what happened to the work. Ancestry can prove committed history is
+   present; it says nothing about dirty files. For squash/rebase/replacement
+   cases, inspect patch equivalence (`git cherry` or stable patch IDs), tree
+   differences, unique commits/hunks, original intent and the replacement's
+   behavior or relevant checks. Patch similarity alone is not semantic
+   supersession. Record which changes landed, were replaced, remain valuable,
+   or are unresolved. Preserve unique or ambiguous work by default. Existing
+   informed disposal authorization may cover known unwanted work; an uncertain
+   interpretation of that authority does not.
+4. Inventory filesystem contents, including ignored files, before removing a
+   whole checkout. Use the helper below for structured inventory and preservation
+   verification, with explicit roots matching this task. Review environment
+   files, credentials, databases, recovery copies and IDE state even when Git
+   says clean. Follow [IDE configuration policy](ide-configuration-policy.md):
+   shared tracked settings remain durable; inspect mixed hunks individually.
+   Ignored `.idea/` or `.vscode/` data is not automatically disposable. Whole-tree
+   retirement needs a protected-file disposition, not just a merged branch.
+5. Before removal, verify durable preservation of valuable local-only work, or
+   confirm that existing informed authorization covers its disposal. Use
+   [parking procedures](../work-closeout/references/parking-and-handoff.md) when
+   work must survive: a verified pushed branch and owning issue, or an authorized
+   durable local destination with reconstructable Git state, dirty patches and
+   local files as needed. Record intent and the next adopt/discard step. A patch
+   without needed base objects/files, a temporary manifest, reflog or Trash is
+   not sufficient recovery. If no authorized durable route exists, retain the
+   work and name the missing choice; continue independent authorized cleanup.
+6. Immediately before each mutation, recheck exact path/device identity, current
+   Git/filesystem state, ownership and live use. Honor the host's volume-identity
+   and worktree-location policy; missing/wrong volumes, symlink escapes,
+   unexamined boundaries and just-in-time changes remain holds. Do not substitute
+   an internal-drive destination or follow a symlink to make a check succeed.
+   Prefer non-force Git removal. Force syntax never substitutes for resolving a
+   hold; use it only when necessary for the exact already-authorized disposition
+   after preservation and ownership evidence is complete.
+7. Verify the intended effect and preservation of the remaining state. Use the
+   helper's revalidation/postcondition commands where its contract applies. A
+   helper hold or failed verification is not a successful result. If a separately
+   authorized action falls outside its contract (for example, deleting a branch
+   or retiring a checkout after separately preserving private files), verify the
+   exact refs/files independently and report the material limit. Never relabel a
+   failed helper result as passed or suppress its protection evidence.
+
+This procedure does not relax protected-branch rules, the pinned fast-forward
+procedure, or the landed runtime-checkout reconciler. Merge success and runtime
+reconciliation remain separate outcomes.
+
+## Task artifacts and retention
+
+When creating a task output directory, choose its purpose and expected lifetime
+once for the group. At closeout, account for the actual files the task created;
+a brief list in the existing task record is enough. No per-file issue, running
+ledger, manifest or retention service is required.
+
+| Class | Disposition |
+| --- | --- |
+| Disposable | Task-owned scratch or generated output whose purpose is complete; remove within existing authority after checking contents and live use. |
+| Acceptance evidence | Keep what is still needed to substantiate review/acceptance; publish a redacted conclusion or suitable durable artifact before discarding the only evidence. |
+| Recovery | Keep until the preserved work is adopted, explicitly discarded, or another verified durable copy replaces it. |
+| Private configuration | Preserve; an ignored/generated name does not grant disposal authority. |
+| Ambiguous | Retain until ownership, contents and intended use are resolved. |
+
+For each retained group, record an owner, reason and review/disposal trigger
+(such as acceptance recorded or owner adopts the parked change), not an arbitrary
+expiration. Use the existing issue/PR for public-safe summaries. A necessary
+private record belongs in an owner-only local location outside removal targets,
+with mode 0600; never commit or publish private paths, contents or raw manifests.
+Temporary helper-manifest validity below is independent of valuable-artifact
+retention. Do not gate routine disposable-output removal on issue capability,
+remote publication, or parking checks.
+
+Report what was **removed**, **retained** (with reason/trigger), **blocked**
+(specific evidence or authority missing), and **unexamined** (coverage limits).
+Keep the report proportional; omit empty detail. A completed local cleanup does
+not establish a full scan or release readiness. Excluded backups, inaccessible
+roots, interruptions and timeouts must remain visible; none means "all clean."
 
 ## Outcome and limits
 

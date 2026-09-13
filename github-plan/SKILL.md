@@ -525,6 +525,14 @@ for offline/private handoff. If a session created `handoff*.md` or similar
 scratch files, migrate recovery-critical content into the owning GitHub issue or
 PR comment before closeout and then delete or explicitly preserve the file.
 
+When repository cleanup finds valuable local work that needs parking, read the
+shared [repository cleanup and preservation](../references/repo-cleanup.md) and
+[parking and handoff procedures](../work-closeout/references/parking-and-handoff.md).
+Do not create planning state for routine disposable artifacts. For bulk cleanup
+or repository retirement, use a GitHub issue only after its capability, canonical
+ownership, publication authorization, and durable recovery contents satisfy
+those policies.
+
 ## Projects And Surfaces
 
 Planning surfaces are optional views over GitHub issue-backed plan data. They

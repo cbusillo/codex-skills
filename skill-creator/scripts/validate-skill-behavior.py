@@ -2220,15 +2220,11 @@ def test_ide_configuration_policy_is_shared() -> None:
         "jetbrains-inspection must fail closed on ambiguous untracked IDE configuration",
     )
     require(
-        "unresolved tracked ide diff is not clean" in readiness
-        and "tracked ide configuration is durable repository state" in closeout
-        and "ignored generated ide state is local state to preserve" in closeout
-        and "do not delete ignored generated ide state merely because the workstream is closing within a checkout that is being retained"
-        in closeout
-        and "removing a merged, clean worktree under repository cleanup policy is not standalone ide-state deletion"
-        in closeout,
-        "readiness and closeout must distinguish durable IDE config from local generated state",
+        "unresolved tracked ide diff is not clean" in readiness,
+        "readiness must not treat unresolved tracked IDE state as clean",
     )
+    # Closeout routes to the shared policy above. Do not require duplicating its
+    # prose in SKILL.md; the cleanup qualification cases check file preservation.
 
 
 def test_work_closeout_requires_issue_aware_safe_exit() -> None:

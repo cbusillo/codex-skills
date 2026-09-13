@@ -10,9 +10,11 @@ Classify each IDE path before staging, editing, reverting, or deleting it:
 
 - **Tracked:** inspect the exact diff and preserve the repository's intended
   shared form.
-- **Untracked and ignored:** leave generated local state untracked; do not
-  force-add or delete it as routine cleanup. Preserve it unless the user
-  explicitly requests deletion of that specific known local artifact.
+- **Untracked and ignored:** leave generated local state untracked and preserve
+  it in a retained checkout; do not force-add or delete it as routine cleanup.
+  For whole-worktree retirement, apply the shared
+  [repository cleanup and preservation](repo-cleanup.md) policy instead of
+  assuming an ignored name makes the state disposable.
 - **Untracked and not ignored:** do not stage automatically. Check repository
   policy and propose an ignore or sharing decision when needed.
 
@@ -54,4 +56,7 @@ Resolve it into shared configuration, preserved local state, or an explicit
 blocker before declaring the work ready. During closeout, tracked IDE
 configuration is durable repository state, while ignored generated IDE state is
 local state to preserve rather than a transient artifact to delete. Do not
-delete ignored IDE state merely because the workstream is closing.
+delete ignored IDE state merely because the workstream is closing or treat
+`.idea/` as blanket-disposable. Removing an entire retired worktree requires a
+protected-file inventory, preservation of valuable private state, evidence that
+the known owner/job is complete, and existing authorization for that retirement.

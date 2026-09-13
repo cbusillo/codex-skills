@@ -24,10 +24,9 @@ Use this skill to leave a workstream tidy and understandable. It is about
 cleanup and handoff, not proving readiness; use `repo-readiness` when the main
 question is whether checks pass or a PR can ship.
 
-For structured repository cleanup inventory or verification, read
-[repository cleanup evidence](../references/repo-cleanup.md). Its helper is
-read-only; a complete snapshot does not establish disposal authority or live-use
-clearance. Preserve the existing approval and cleanup policies below.
+For task cleanup, a bulk audit, or repository retirement, read [repository
+cleanup and preservation](../references/repo-cleanup.md), which owns shared
+evidence, disposition, preservation, and reporting. Its helper remains read-only.
 
 When the user asks whether work is done, ready to hand off, or safe to exit,
 compose the skills in order: use `repo-readiness` first for gates and evidence,
@@ -213,23 +212,20 @@ preserved, or intentionally left in place.
 6. If design collaboration was part of the work, make sure accepted direction,
    browser QA evidence, tradeoffs, and remaining design work are captured in the
    relevant GitHub planning issue or PR.
-7. Clean only artifacts clearly created by the current work: transient logs,
+7. Classify this task's artifacts under the shared repository cleanup policy.
+   Clean only task-owned disposable output whose purpose is complete: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
    If the repo still has legacy `handoff*.md` files or files matching
    `cleanup.handoffArtifacts.temporaryGlobs`, delete or migrate them once their
    content is captured in the owning GitHub issue or PR comment unless they are
    intentionally preserved as committed docs.
-   IDE paths follow `../references/ide-configuration-policy.md`: tracked IDE
-   configuration is durable repository state, not a transient artifact, and
-   ignored generated IDE state is local state to preserve. Inspect mixed tracked
-   files hunk by hunk, retain the canonical shared form plus only safe hunks,
-   and never blanket-revert, clean, stash, or overwrite unrelated local IDE
-   changes during closeout. Do not delete ignored generated IDE state merely
-   because the workstream is closing within a checkout that is being retained;
-   removing a merged, clean worktree under repository cleanup policy is not
-   standalone IDE-state deletion. Remove a specific known local artifact from a
-   retained checkout only when the user explicitly requests that cleanup.
+   IDE paths follow `../references/ide-configuration-policy.md`: preserve ignored
+   IDE state in retained checkouts; inspect mixed tracked files hunk by hunk and
+   retain the canonical shared form plus safe hunks. Never blanket-revert, clean,
+   stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
+   the shared cleanup policy's protected-file, preservation, ownership, and
+   authorization evidence.
 8. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
 9. Report final state concisely.
@@ -360,8 +356,9 @@ inferred route with `changed_files` scope and report the assumption.
 Before parking unfinished work or migrating a local handoff, read
 [parking and handoff procedures](references/parking-and-handoff.md). Preserve
 one current durable owner with its blocker, next action, and verification state.
-For GitHub-backed work, use the owning issue or PR; local-only handoffs require
-explicit offline/private scope. Apply the plan hygiene checks below as relevant.
+Use an authorized owning issue or PR when available; valuable local work may use
+a known, approved, reconstructable durable location. Apply the plan hygiene
+checks below as relevant.
 
 ## Plan Hygiene
 
@@ -405,8 +402,11 @@ explicit offline/private scope. Apply the plan hygiene checks below as relevant.
 ## Git And Worktree Hygiene
 
 - Preserve unrelated user changes.
-- Do not run destructive git commands.
-- Do not force-delete branches or worktrees.
+- Do not use destructive Git commands to bypass required evidence or authorization.
+- For task cleanup, bulk audits, or repository retirement, apply the shared
+  [repository cleanup and preservation](../references/repo-cleanup.md). Preserve
+  unique or ambiguous state while investigating; reuse same-action/scope
+  authorization and ask only for a missing choice or expanded scope.
 - If `git status --short --branch` shows a clean non-runtime-bound branch behind
   its upstream, use the pinned fetched-upstream flow above before saying the
   checkout is tidy. Runtime-bound checkouts must use the landed repo-local
@@ -414,9 +414,9 @@ explicit offline/private scope. Apply the plan hygiene checks below as relevant.
   fast-forward states as report-only by default. An explicit user request permits
   only the bounded untracked-only exception above; it is not blanket approval to
   overwrite, stash, clean, or include unrelated files.
-- When the user asks to delete or remove a worktree, first preserve or confirm
-  disposal of any uncommitted changes. Removing a worktree is not approval to
-  lose its branch or local edits.
+- When asked to remove a worktree, establish uncommitted changes' disposition
+  under the shared policy and retain unresolved or unpreserved state.
+  Removing a worktree is not approval to lose its branch or local edits.
 - Use `github` for PR-backed branch/worktree cleanup and GitHub
   state.
 - After merged PRs, include relevant post-merge Actions and GitHub
@@ -426,7 +426,8 @@ explicit offline/private scope. Apply the plan hygiene checks below as relevant.
 - Concrete reproducible broad-gate findings that are not fixed now should be
   tracked after a duplicate search. Group speculative or huge-baseline findings
   into a cleanup plan/report instead of opening many issues.
-- If cleanup safety is ambiguous, report the candidate and ask before acting.
+- If cleanup safety remains ambiguous after the available investigation,
+  preserve the candidate and name the exact missing evidence or choice.
 
 ## Auto Review Worktrees
 
@@ -441,8 +442,9 @@ Treat these as external review context, not the active workstream.
 
 - Ignore them for normal safe-to-exit and dirty-worktree decisions.
 - Do not treat their files as blocking the current repo closeout.
-- Do not clean, prune, delete, or modify them unless the user explicitly asks
-  about that review worktree.
+- Exclude them from ordinary cleanup. In an authorized bulk or retirement scope,
+  preserve them unless the shared policy establishes owner/job completion, lock
+  and runtime state, valuable contents, and exact disposition.
 - Mention them only when relevant, for example: "Ignored detached auto-review
   worktrees."
 - If the user asks about a review result or review worktree specifically, switch

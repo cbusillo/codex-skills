@@ -22,6 +22,39 @@ For conditional safe-to-exit, at least one durable place must hold the next
 step. Avoid duplicating every detail everywhere; link PRs, issues, and plans
 when that improves continuity.
 
+### Cleanup preservation routes
+
+Use this route only when cleanup finds valuable retained work that needs to
+survive its current branch, worktree, or checkout. Routine disposable output
+does not require a parking issue or remote publication.
+
+Before publishing cleanup recovery state, preflight the repository's live Issues
+capability and identify the canonical owner. Create or update that owner only
+when the valuable work needs the durable parking surface and the same action and
+publication scope are already authorized.
+If Issues are disabled, use an already authorized owner or consumer tracker when
+one exists. Ask only when the scope or publication surface would expand, or when
+no authorized durable owner can be selected.
+
+A cleanup request or local cleanup authority does not authorize pushing a branch,
+opening a PR, merging, deleting a remote branch, or archiving or deleting a
+remote repository. Perform those actions only under their existing GitHub
+authorization rules.
+
+For a pushed-branch parking route, record the exact branch and SHA, original
+intent, review and validation status, why the work was excluded from cleanup or
+how another implementation superseded it, and the next adopt-or-discard action.
+Before calling it parked, verify the pushed SHA at the remote and verify the
+durable issue link that owns the recovery state; link any related PR from that
+owner.
+
+A local-only route is valid when it uses a known, already approved durable
+location outside the removal target and verification shows the Git state, dirty
+patches, and needed local files are reconstructable. Trash, a reflog, or a
+temporary cleanup manifest alone is not durable parking. If no authorized route
+exists, retain the original work, name the missing choice, and continue any
+independent authorized cleanup.
+
 When configured Focus lanes are part of the durable planning surface, make sure
 the owning item's lane reflects the closeout state: `Now` for the active finish,
 `Waiting` for blocked work or work awaiting an external decision/event,
