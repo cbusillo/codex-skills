@@ -3,6 +3,16 @@ name: work-closeout
 description: Use when the user asks to wrap up, clean up, close out, pause, park, hand off, determine what remains before stopping, preserve plan direction for the next session, update or remove stale plans/handoffs, reconcile issue graph state, remove transient artifacts, or asks whether they can exit. Coordinates GitHub plan cleanup, safe git/worktree hygiene, artifact cleanup, and final state summaries. Safe-to-exit and closeout final answers must include a Love Gate section with explicit `Love:` and `Do not love:` entries before the safe-to-exit verdict.
 metadata:
   short-description: Close out workstreams cleanly
+resources:
+  - path: scripts/repo_cleanup.py
+    kind: script
+    description: Read-only cleanup inventory, private snapshot revalidation, and post-action verification.
+commands:
+  - name: repo-cleanup-inventory
+    source: skill
+    resource_path: scripts/repo_cleanup.py
+    example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "inventory", "--repo", "/path/to/repo", "--json"]
+    purpose: Reports scoped cleanup evidence without authorizing or performing deletion.
 ---
 
 # Work Closeout
@@ -13,6 +23,11 @@ using this workflow; it defines how existing approval and task boundaries apply.
 Use this skill to leave a workstream tidy and understandable. It is about
 cleanup and handoff, not proving readiness; use `repo-readiness` when the main
 question is whether checks pass or a PR can ship.
+
+For structured repository cleanup inventory or verification, read
+[repository cleanup evidence](../references/repo-cleanup.md). Its helper is
+read-only; a complete snapshot does not establish disposal authority or live-use
+clearance. Preserve the existing approval and cleanup policies below.
 
 When the user asks whether work is done, ready to hand off, or safe to exit,
 compose the skills in order: use `repo-readiness` first for gates and evidence,

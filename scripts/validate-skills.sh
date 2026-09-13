@@ -74,6 +74,7 @@ helper_tests=(
 	openai-docs/scripts/test_resolve_latest_model_info.py
 	openai-docs/scripts/test_fetch_codex_manual.py
 	people/scripts/test_resolve_person.py
+	work-closeout/scripts/test_repo_cleanup.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
 	scripts/test_update_pep723_dependencies.py

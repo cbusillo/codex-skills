@@ -24,6 +24,7 @@
     "inspectionConfiguration": "jetbrains-inspection/references/inspection-config.md",
     "inspectionOutcomeQualification": "jetbrains-inspection/references/outcome-qualification.md",
     "workCloseout": "work-closeout/SKILL.md",
+    "repoCleanup": "references/repo-cleanup.md",
     "publicSafety": "launchplane/references/public-safety.md"
   },
   "qualityGate": {
