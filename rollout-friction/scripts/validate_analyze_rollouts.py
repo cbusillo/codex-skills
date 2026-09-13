@@ -16,6 +16,7 @@ import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest import mock
 
 
@@ -370,13 +371,7 @@ def test_local_llm_scout_misuse_risk_signal() -> None:
 
 
 def test_lm_studio_scout_strips_channel_wrappers() -> None:
-    scout_script = Path(__file__).with_name("lm_studio_scout.py")
-    spec = importlib.util.spec_from_file_location("lm_studio_scout", scout_script)
-    if spec is None or spec.loader is None:
-        raise AssertionError("unable to load lm_studio_scout.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    module = load_scout_module()
 
     normalized = module.normalize_content(
         '<|channel|>final <|constrain|>JSON<|message|>{"ok":true}'
@@ -416,16 +411,16 @@ def test_lm_studio_scout_delegates_to_local_llm_chat() -> None:
             ),
             stderr="",
         )
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
-        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            captured["command"] = command
+        def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured["command"] = argv
             captured["input"] = kwargs.get("input")
             captured["timeout"] = kwargs.get("timeout")
             return completed
 
         stdout = io.StringIO()
-        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", "--json", "--warmup", "--load-policy", "jit_chat", str(report)]
         ), redirect_stdout(stdout):
             exit_code = module.main()
@@ -460,14 +455,14 @@ def test_lm_studio_scout_deep_forwards_timeout() -> None:
             stdout=json.dumps({"ok": True, "model": "test/model", "content": "analysis text"}),
             stderr="",
         )
-        captured: dict[str, object] = {}
+        captured: dict[str, Any] = {}
 
-        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            captured["command"] = command
+        def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured["command"] = argv
             captured["timeout"] = kwargs.get("timeout")
             return completed
 
-        with mock.patch.object(module.subprocess, "run", side_effect=fake_run), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", "--deep", str(report)]
         ), redirect_stdout(io.StringIO()):
             exit_code = module.main()
@@ -494,7 +489,7 @@ def test_lm_studio_scout_reports_chat_errors() -> None:
             stderr="",
         )
         stdout = io.StringIO()
-        with mock.patch.object(module.subprocess, "run", return_value=completed), mock.patch.object(
+        with mock.patch.dict(vars(module.subprocess), {"run": mock.Mock(return_value=completed)}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", str(report)]
         ), redirect_stdout(stdout):
             exit_code = module.main()
@@ -508,7 +503,8 @@ def test_lm_studio_scout_rejects_null_byte_report() -> None:
         report = Path(tmp) / "report.md"
         report.write_bytes(b"redacted\x00summary")
         stderr = io.StringIO()
-        with mock.patch.object(module.subprocess, "run") as fake_run, mock.patch.object(
+        fake_run = mock.Mock()
+        with mock.patch.dict(vars(module.subprocess), {"run": fake_run}), mock.patch.object(
             sys, "argv", ["lm_studio_scout.py", str(report)]
         ), redirect_stderr(stderr):
             exit_code = module.main()
@@ -556,16 +552,18 @@ def test_pretty_json_object_counts_as_one_record() -> None:
         raise AssertionError("one pretty JSON object should count as one logical record")
 
 
-def test_structured_json_record_counts_distinct_repeated_hits() -> None:
+def test_structured_json_record_counts_distinct_child_results() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         trace = Path(tmp) / "session-distinct.json"
         trace.write_text(
             json.dumps(
                 {
-                    "message": "Process exited with code 1",
-                    "payload": {"aggregated_output": "Command failed in build"},
-                    "nested": [{"stderr": "error: lint failed"}],
+                    "results": [
+                        {"call_id": "first", "exit_code": 1, "stderr": "error: build failed"},
+                        {"call_id": "second", "exit_code": 1, "stderr": "error: build failed"},
+                        {"call_id": "third", "exit_code": 1, "stderr": "error: build failed"},
+                    ],
                 },
                 indent=2,
             ),
@@ -573,7 +571,9 @@ def test_structured_json_record_counts_distinct_repeated_hits() -> None:
         )
         findings = module.scan([trace], max_bytes=100_000, context_chars=240)
     if "repeated_command_failure" not in findings:
-        raise AssertionError("distinct repeated failures inside one JSON record should satisfy threshold")
+        raise AssertionError("three child results inside one JSON record should satisfy threshold")
+    if findings["repeated_command_failure"].count != 3:
+        raise AssertionError("child result fields and summaries must not multiply result counts")
 
 
 def test_pretty_json_array_counts_top_level_records() -> None:
@@ -614,7 +614,6 @@ def test_explicit_files_are_not_capped_by_directory_limit() -> None:
 
 
 def test_paths_file_supplies_many_explicit_files() -> None:
-    module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first = root / "first-session.jsonl"
@@ -1344,7 +1343,344 @@ def test_status_wrapper_does_not_make_discussion_structured() -> None:
             raise AssertionError(f"status-only wrapper should not mark discussion as structured: {fragments}")
 
 
+def tool_result(call_id: str, value: object) -> dict[str, object]:
+    return {"type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": call_id, "output": json.dumps(value),
+    }}
+
+
+def tool_call(call_id: str, command: str | list[str]) -> dict[str, object]:
+    return {"type": "response_item", "payload": {
+        "type": "function_call", "call_id": call_id, "name": "functions.exec_command",
+        "arguments": json.dumps({"cmd": command}),
+    }}
+
+
+def test_result_statuses_survive_noise_filters_and_mirrors() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        for code in (1, 2, 128, -9):
+            records = []
+            for index in range(3):
+                call_id = f"call-{index}"
+                records.extend([
+                    tool_result(call_id, {"exit_code": code, "output": "validation reported differences"}),
+                    {"type": "event_msg", "payload": {"type": "exec_command_end", "call_id": call_id,
+                     "exit_code": code, "aggregated_output": "validation reported differences"}},
+                ])
+            trace = write_trace(Path(tmp), records)
+            findings = module.scan([trace, trace], 100_000, 240, suppress_investigation_noise=True)
+            finding = findings.get("repeated_command_failure")
+            if finding is None or finding.count != 3 or finding.structured_count != 3:
+                raise AssertionError(f"three mirrored results with exit {code} must count exactly three times")
+            summary = module.outcome_summary(findings.events)
+            if summary["nonzero_exit_count"] != 3 or summary["failed_result_count"] != 3:
+                raise AssertionError(f"raw result statuses must remain visible: {summary}")
+
+
+def test_successful_commands_prompts_and_source_dumps_are_not_failures() -> None:
+    module = load_module()
+    literal = "error:|Command failed|exit_code=1"
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), [
+            tool_call("search", f"rg --count '{literal}' sample.txt"),
+            tool_result("search", {"exit_code": 0, "output": "3"}),
+            tool_call("source", "cat examples.json"),
+            tool_result("source", {"exit_code": 0, "output": json.dumps({"exit_code": 1, "error": literal})}),
+            tool_call("batch-source", "cat batch-examples.json"),
+            tool_result("batch-source", {"exit_code": 0, "stdout": json.dumps({"results": [
+                {"exit_code": 1, "error": literal}, {"exit_code": 2, "error": literal},
+            ]})}),
+            {"type": "response_item", "payload": {"type": "message", "role": "user",
+             "content": [{"type": "input_text", "text": json.dumps({"exit_code": 2, "error": literal})}]}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": literal}]}},
+            {"type": "response_item", "role": "user", "payload": {"exit_code": 1, "error": literal}},
+        ])
+        for suppress in (False, True):
+            findings = module.scan([trace], 100_000, 240, suppress_investigation_noise=suppress)
+            summary = module.outcome_summary(findings.events)
+            if "repeated_command_failure" in findings or summary["failed_result_count"] or summary["nonzero_exit_count"]:
+                raise AssertionError(f"input literals and successful source dumps are not outcomes: {summary}")
+
+
+def test_failure_diagnostics_are_one_event_and_batches_keep_children() -> None:
+    module = load_module()
+    verbose = {"exit_code": 1, "stdout": "error: first\nerror: second\nProcess exited with code 1",
+               "stderr": "error: second", "message": "Command failed"}
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), [tool_result("one", verbose)])
+        findings = module.scan([trace], 100_000, 240)
+        if "repeated_command_failure" in findings or module.outcome_summary(findings.events)["failed_result_count"] != 1:
+            raise AssertionError("one verbose failure must not cross the repeated-failure threshold")
+        trace = write_trace(Path(tmp), [tool_result("batch", [verbose, verbose, verbose])])
+        finding = module.scan([trace], 100_000, 240).get("repeated_command_failure")
+        if finding is None or finding.count != 3 or len({hit.event_id for hit in finding.hits}) != 3:
+            raise AssertionError("identical child results need separate identities")
+        trace = write_trace(Path(tmp), [
+            {"results": [{"call_id": "child", **verbose}]}, tool_result("child", verbose),
+        ])
+        findings = module.scan([trace], 100_000, 240)
+        if module.outcome_summary(findings.events)["failed_result_count"] != 1:
+            raise AssertionError("an explicitly identified batch child and its standalone mirror are one result")
+        children = [tool_result(f"child-{index}", verbose)["payload"] for index in range(3)]
+        trace = write_trace(Path(tmp), [tool_result("wrapper", children), tool_result("child-0", verbose)])
+        finding = module.scan([trace], 100_000, 240).get("repeated_command_failure")
+        if finding is None or finding.count != 3:
+            raise AssertionError("unwrapping batched tool envelopes must preserve each child's call id")
+
+
+def test_expected_search_nonzero_statuses_keep_raw_evidence() -> None:
+    module = load_module()
+    cases = [
+        ("rg needle sample.txt", 1, False, True),
+        (["grep", "needle", "sample.txt"], 1, False, True),
+        ("/usr/bin/grep needle sample.txt", 1, False, True),
+        ("rg needle sample.txt", 2, False, False),
+        ("rg needle sample.txt", 1, True, False),
+        ("rg needle sample.txt | sort", 1, False, False),
+        ("rg needle sample.txt; false", 1, False, False),
+        ("rg needle sample.txt && build", 1, False, False),
+        ("rg needle sample.txt > result.txt", 1, False, False),
+        ("sh -c 'rg needle sample.txt'", 1, False, False),
+        (["sh", "-c", "rg needle sample.txt"], 1, False, False),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for command, code, tool_error, expected in cases:
+            trace = write_trace(Path(tmp), [tool_call("search", command), tool_result("search", {
+                "exit_code": code, "isError": tool_error, "output": "permission denied" if tool_error else "",
+            })])
+            findings = module.scan([trace], 100_000, 240)
+            summary = module.outcome_summary(findings.events)
+            if (summary["nonzero_exit_count"], summary["expected_nonzero_count"], summary["failed_result_count"]) != (1, int(expected), int(not expected)):
+                raise AssertionError(f"incorrect expected-status classification for {command!r}: {summary}")
+            if expected and summary["expected_nonzero_evidence"][0]["exit_code"] != 1:
+                raise AssertionError("expected results must still export their raw exit status")
+        trace = write_trace(Path(tmp), [tool_call("search", "rg needle sample.txt"), tool_result("search", {
+            "exit_code": 1, "stderr": "rg: sample.txt: Permission denied",
+        })])
+        summary = module.outcome_summary(module.normalize_events(trace, 100_000))
+        if summary["expected_nonzero_count"] or summary["failed_result_count"] != 1:
+            raise AssertionError("an explicit tool-error diagnostic must prevent the no-match exception")
+
+
+def test_retries_require_execution_and_checkpoint_keeps_call_context() -> None:
+    module = load_module()
+    records = [
+        tool_call("first", "build --check"), tool_result("first", {"exit_code": 1}),
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": "retry again"}},
+        tool_call("second", "build --check"), tool_result("second", {"exit_code": 0}),
+        tool_call("search", "rg needle sample.txt"), tool_result("search", {"exit_code": 1}),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        events = module.normalize_events(trace, 100_000)
+        retries = {event.tool_id for event in events if event.retry}
+        if len(retries) != 1:
+            raise AssertionError("only the executed second build should count as a retry")
+        checkpoint = module.normalize_events(trace, 100_000, after_file=trace, after_line=6)
+        if len(checkpoint) != 1 or not checkpoint[0].expected_nonzero:
+            raise AssertionError("excluded invocation context must still classify the visible result")
+
+
+def test_pending_results_sessions_and_truncated_records() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), [
+            tool_result("pending", {"exit_code": None, "session_id": 7, "output": "error: first\nCommand failed\nerror: second"}),
+        ])
+        if module.outcome_summary(module.normalize_events(trace, 100_000))["failed_result_count"]:
+            raise AssertionError("an explicitly unfinished result is not a terminal failure")
+        records = []
+        for index in range(3):
+            records.extend([{"type": "session_meta", "payload": {"id": f"session-{index}"}}, tool_result("reused-id", {"exit_code": 1})])
+        trace = write_trace(Path(tmp), records)
+        finding = module.scan([trace], 100_000, 240).get("repeated_command_failure")
+        if finding is None or finding.count != 3:
+            raise AssertionError("call ids reused in different sessions must stay independent")
+        trace = write_trace(Path(tmp), [tool_call("cut", "rg 'error:|Command failed|exit_code=1' source.txt")])
+        findings = module.scan([trace], trace.stat().st_size - 5, 240)
+        if module.outcome_summary(findings.events)["failed_result_count"]:
+            raise AssertionError("a truncated structured record must not turn arguments into outcomes")
+
+
+def test_typed_terminal_text_survives_without_promoting_echoes() -> None:
+    module = load_module()
+    records = []
+    for code in (1, 2, 128):
+        records.extend([
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": f"call-{code}", "output": f"exit_code={code}"}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": f"exit_code={code}"}},
+            {"message": f"exit_code={code}"},
+            tool_result(f"printed-{code}", {"exit_code": 0, "stdout": f"exit_code={code}"}),
+        ])
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        findings = module.scan([trace], 100_000, 240, suppress_investigation_noise=True)
+        finding = findings.get("repeated_command_failure")
+        if finding is None or finding.count != 3 or finding.structured_count != 3:
+            raise AssertionError("only the three explicit textual tool results should count")
+        if {hit.outcome_basis for hit in finding.hits} != {"result_text"}:
+            raise AssertionError("typed result text must retain its provenance")
+        summary = module.outcome_summary(findings.events)
+        if summary["nonzero_exit_count"] != 3 or summary["text_hint_failure_count"]:
+            raise AssertionError(f"typed statuses and context echoes were conflated: {summary}")
+        children = [{"type": "function_call_output", "call_id": f"child-{code}", "output": f"exit_code={code}"} for code in (1, 2, 128)]
+        trace = write_trace(Path(tmp), [tool_result("batch", children)])
+        finding = module.scan([trace], 100_000, 240).get("repeated_command_failure")
+        if finding is None or finding.count != 3:
+            raise AssertionError("a typed-text result batch must preserve three child outcomes")
+
+
+def test_native_codex_command_items_use_identity_and_terminal_status() -> None:
+    module = load_module()
+    records: list[dict[str, object]] = [
+        {"type": "thread.started", "thread_id": "synthetic-thread"},
+        {"type": "item.completed", "item": {"id": "message", "type": "agent_message", "text": "error: Command failed exit_code=1"}},
+        {"type": "item.completed", "item": {"id": "reason", "type": "reasoning", "text": "error: Command failed exit_code=2"}},
+        {"type": "item.completed", "item": {"id": "warning", "type": "error", "message": "error: model metadata fallback"}},
+    ]
+    for index, code in enumerate((1, 2, 128, 0)):
+        item = {"id": f"command-{index}", "type": "command_execution", "command": "/bin/zsh -c 'cat proof.txt'"}
+        records.extend([
+            {"type": "item.started", "item": {**item, "status": "in_progress", "exit_code": None, "aggregated_output": ""}},
+            {"type": "item.updated", "item": {**item, "status": "in_progress", "exit_code": None, "aggregated_output": "error: incomplete output"}},
+            {"type": "item.completed", "item": {**item, "status": "completed", "exit_code": code,
+             "aggregated_output": json.dumps({"exit_code": 1, "error": "error: Command failed"}) if code == 0 else ""}},
+        ])
+        records.append(records[-1])
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        findings = module.scan([trace], 100_000, 240)
+        finding = findings.get("repeated_command_failure")
+        if finding is None or finding.count != 3:
+            raise AssertionError("native command results must count once; agent/reasoning/error items stay context")
+        if len({event.tool_id for event in findings.events if event.tool_id}) != 4:
+            raise AssertionError("started/completed/updated items must share their command identity")
+        if module.outcome_summary(findings.events)["nonzero_exit_count"] != 3:
+            raise AssertionError("native stdout JSON must not override the outer command status")
+
+
+def test_terminal_headers_precede_investigation_noise_and_printed_statuses() -> None:
+    module = load_module()
+    body = "analyze_rollouts.py failed: error in input"
+
+    def textual_result(call_id: str, text: str) -> dict[str, object]:
+        return {"type": "function_call_output", "call_id": call_id, "output": text}
+
+    records = [textual_result(str(code), f"Process exited with code {code}\nOutput:\n{body}") for code in (1, 2, 128)]
+    copied = f"Process exited with code 1\n{body}"
+    records.extend([
+        textual_result("successful-source", f"Process exited with code 0\nOutput:\n{copied}"),
+        textual_result("successful-rendered", f"Chunk ID: test\nWall time: 0.1 seconds\nProcess exited with code 0\nFinal output:\n{copied}"),
+        tool_result("structured-source", {"exit_code": 0, "stdout": copied}),
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": copied}},
+        {"message": copied},
+        textual_result("source-code", f"```text\n{copied}\n```"),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        for suppress in (False, True):
+            findings = module.scan([trace], 100_000, 240, suppress_investigation_noise=suppress)
+            finding = findings.get("repeated_command_failure")
+            summary = module.outcome_summary(findings.events)
+            if finding is None or finding.count != 3 or summary["nonzero_exit_count"] != 3:
+                raise AssertionError(f"terminal headers were hidden or printed statuses were promoted: {summary}")
+            if sum(event.succeeded for event in findings.events) != 3:
+                raise AssertionError("successful outer statuses must override printed failure text")
+            if {hit.outcome_basis for hit in finding.hits} != {"result_text"}:
+                raise AssertionError("terminal text must retain explicit result provenance")
+
+
+def test_session_metadata_and_native_progress_are_not_terminal_outcomes() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        uuid_result = {"type": "function_call_output", "session_id": "12345678-1234-1234-1234-123456789abc",
+                       "output": "Process exited with code 1"}
+        trace = write_trace(Path(tmp), [uuid_result])
+        summary = module.outcome_summary(module.normalize_events(trace, 100_000))
+        if summary["failed_result_count"] != 1 or summary["nonzero_exit_count"] != 1:
+            raise AssertionError("an opaque session id is not proof that a result is still running")
+        records = [
+            {"type": "thread.started", "thread_id": "thread-context", "error": "Command failed example"},
+            {"type": "function_call_output", "call_id": "direct", "session_id": 7, "output": "error: pending diagnostic"},
+            tool_result("nested", {"session_id": 8, "output": "error: pending diagnostic"}),
+            {"type": "item.updated", "item": {"id": "no-status", "type": "command_execution", "aggregated_output": "error: pending diagnostic"}},
+            {"type": "item.updated", "item": {"id": "terminal-looking", "type": "command_execution", "exit_code": 1, "status": "completed"}},
+        ]
+        trace = write_trace(Path(tmp), records)
+        events = module.normalize_events(trace, 100_000)
+        if any(event.outcome_basis is not None for event in events):
+            raise AssertionError("numeric live sessions, native updates, and thread metadata must not create terminal outcomes")
+        records.append({"type": "item.completed", "item": {"id": "no-status", "type": "command_execution", "exit_code": 2, "status": "completed"}})
+        trace = write_trace(Path(tmp), records)
+        completed_events = module.normalize_events(trace, 100_000)
+        summary = module.outcome_summary(completed_events)
+        if len(completed_events) != len(events) or summary["failed_result_count"] != 1 or summary["nonzero_exit_count"] != 1:
+            raise AssertionError("the completed native result must still establish its terminal status")
+
+
+def test_scanner_diagnostics_survive_record_filters_without_friction() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "missing-private-trace.jsonl"
+        target = module.ScanTarget(missing, 1000, 1000, False)
+        for filters in ({"since_ts": module.parse_timestamp("2026-09-12T00:00:00Z")}, {"after_file": missing, "after_line": 1}):
+            fragments = list(module.iter_lines(missing, 1000, **filters))
+            findings = module.scan([target], 1000, 240, **filters)
+            if len(fragments) != 1 or fragments[0][0] != 0 or findings:
+                raise AssertionError("scanner diagnostics must survive filters without becoming friction findings")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                module.emit_json([target], findings, [])
+            payload = json.loads(stdout.getvalue())
+            if not payload["scan_summary"]["scan_degraded"] or payload["scan_summary"]["limitation_counts"] != {"scanner_io_error": 1}:
+                raise AssertionError("a read failure must be visible as a degraded scan")
+            if payload["scan_limitations"][0]["kind"] != "scanner_io_error" or str(missing) in stdout.getvalue():
+                raise AssertionError("read diagnostics must be separate and redacted")
+
+
+def test_split_output_bodies_cannot_supply_terminal_headers() -> None:
+    module = load_module()
+    cases: list[tuple[list[str], int | None]] = [
+        (["Output:\n", "Process exited with code 1\n"], None),
+        (["Output:\nProcess exited with code 1\n"], None),
+        (["Final output:\n", "Command failed\nerror: example\nProcess exited with code 1\n"], None),
+        (["Unrecognized preamble\nOutput:\n", "Process exited with code 1\n"], None),
+        (["Chunk ID: example\n", "Wall time: 0.1 seconds\n", "Process exited with code 0\n", "Output:\nProcess exited with code 1\n"], 0),
+        (["Chunk ID: example\nWall time: 0.1 seconds\n", "Process exited with code 1\n", "Output:\nProcess exited with code 0\n"], 1),
+        (["Process exited with code 0\nOutput:\n", "Process exited with code 1\nanalyze_rollouts.py failed\n"], 0),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for fragments, expected_code in cases:
+            trace = write_trace(Path(tmp), [{
+                "type": "function_call_output", "call_id": "split-result",
+                "content": [{"text": text} for text in fragments],
+            }])
+            events = module.normalize_events(trace, 100_000)
+            if len(events) != 1:
+                raise AssertionError("content fragments must remain one result event")
+            event = events[0]
+            if expected_code is None:
+                if event.exit_code is not None or event.failed or event.succeeded or event.outcome_basis is not None:
+                    raise AssertionError("printed Output content must not create an outcome through either parser path")
+            elif (event.exit_code, event.failed, event.succeeded, event.outcome_basis) != (expected_code, expected_code != 0, expected_code == 0, "result_text"):
+                raise AssertionError("a real split preamble/header must retain its authoritative status")
+
+
 def main() -> int:
+    test_result_statuses_survive_noise_filters_and_mirrors()
+    test_successful_commands_prompts_and_source_dumps_are_not_failures()
+    test_failure_diagnostics_are_one_event_and_batches_keep_children()
+    test_expected_search_nonzero_statuses_keep_raw_evidence()
+    test_retries_require_execution_and_checkpoint_keeps_call_context()
+    test_pending_results_sessions_and_truncated_records()
+    test_typed_terminal_text_survives_without_promoting_echoes()
+    test_native_codex_command_items_use_identity_and_terminal_status()
+    test_terminal_headers_precede_investigation_noise_and_printed_statuses()
+    test_session_metadata_and_native_progress_are_not_terminal_outcomes()
+    test_scanner_diagnostics_survive_record_filters_without_friction()
+    test_split_output_bodies_cannot_supply_terminal_headers()
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
     test_command_and_shell_friction_signals()
@@ -1360,7 +1696,7 @@ def main() -> int:
     test_redacted_live_rate_limit_evidence_still_counts()
     test_nested_json_fragments_count_once_per_line()
     test_pretty_json_object_counts_as_one_record()
-    test_structured_json_record_counts_distinct_repeated_hits()
+    test_structured_json_record_counts_distinct_child_results()
     test_pretty_json_array_counts_top_level_records()
     test_explicit_files_are_not_capped_by_directory_limit()
     test_paths_file_supplies_many_explicit_files()

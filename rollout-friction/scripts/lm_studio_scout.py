@@ -41,6 +41,10 @@ SCOUT_SYSTEM_PROMPT = (
     "Do not propose credential-leakage, brute-force, IP-rate, "
     "bot-traffic, or security-audit work. "
     "Use only the redacted report. Do not ask for raw traces. "
+    "Respect count_semantics and outcome_basis: legacy counts are fragment hits; "
+    "v2 command counts are normalized results and other signal counts remain text matches. "
+    "Do not compare costs across those versions or treat nonzero exits or text hints "
+    "as proof of unexpected friction, executed retries, or measured performance. "
     "Give concise, implementation-oriented hypotheses."
 )
 SCOUT_USER_PREAMBLE = (
@@ -176,7 +180,6 @@ def run_chat(report: str, args: argparse.Namespace, timeout: float | None) -> di
             capture_output=True,
             text=True,
             timeout=parent_timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         limit = timeout + 10 if timeout is not None else FALLBACK_PARENT_TIMEOUT

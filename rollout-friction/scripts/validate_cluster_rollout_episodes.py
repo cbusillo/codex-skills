@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -197,6 +199,41 @@ def test_compacts_long_skeleton(module: ModuleType) -> None:
         raise AssertionError(f"max_steps=2 should stay capped with one real step and elision, got {compacted_two}")
 
 
+def test_count_versions_are_explicit_and_cannot_be_mixed(module: ModuleType) -> None:
+    legacy = episode("legacy", 10, "Process exited with code 1")
+    current = episode("current", 12, "exit_code=1")
+    current.update(schema_version=2, count_semantics="normalized_events_v2")
+    for record, expected in ((legacy, "legacy_fragment_hits_v1"), (current, "normalized_events_v2")):
+        payload = module.build_clusters([record], 10, 8, False)
+        if {payload["count_semantics"], payload["clusters"][0]["count_semantics"], payload["skeletons"][0]["count_semantics"]} != {expected}:
+            raise AssertionError("cluster reports and model skeletons must preserve their count interpretation")
+        if expected == "normalized_events_v2" and payload["skeletons"][0]["steps"][0]["kind"] != "failure":
+            raise AssertionError("a normalized failed result must remain a failure in the model skeleton")
+    try:
+        module.build_clusters([legacy, current], 10, 8, False)
+    except SystemExit as exc:
+        if "regenerate" not in str(exc):
+            raise AssertionError("a mixed report needs actionable migration guidance") from exc
+    else:
+        raise AssertionError("fragment costs and result-event costs cannot share a ranking")
+    unsupported = dict(current, count_semantics="future_counts")
+    try:
+        module.build_clusters([unsupported], 10, 8, False)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("unknown count meanings must not be silently accepted")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "episodes.json"
+        path.write_text(json.dumps({"schema_version": 2, "count_semantics": "normalized_events_v2", "episodes": [legacy]}), encoding="utf-8")
+        try:
+            module.load_episodes(path)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("relabeling a legacy report envelope must not reinterpret its child costs")
+
+
 def main() -> int:
     module = load_module()
     test_clusters_by_signal_signature(module)
@@ -208,6 +245,7 @@ def main() -> int:
     test_step_kind_matches_success_as_word(module)
     test_step_kind_rejects_false_success_flags(module)
     test_compacts_long_skeleton(module)
+    test_count_versions_are_explicit_and_cannot_be_mixed(module)
     print("ok validate-cluster-rollout-episodes")
     return 0
 
