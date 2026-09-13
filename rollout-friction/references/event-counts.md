@@ -21,10 +21,15 @@ multiply one result.
 
 Typed textual tool results such as `function_call_output` containing exactly
 `exit_code=1` carry `outcome_basis: result_text`; the same text in a user message
-or untyped copied snippet does not gain that provenance. Native Codex exec JSONL
+or untyped copied snippet does not gain that provenance. A recognized leading
+terminal header is read before filtering investigation chatter. Printed `Output`
+content cannot override that header, including a successful zero exit.
+Native Codex exec JSONL
 `item.started`/`item.updated`/`item.completed` records whose `item.type` is
 `command_execution` share `item.id` as their invocation identity and use the
-terminal command status. Other native item kinds, including agent messages,
+terminal command status. `item.updated` remains progress until `item.completed`,
+even if an update contains error prose or terminal-looking fields.
+Other native item kinds, including agent messages,
 reasoning, and model metadata warnings, remain context.
 
 Mirrors with the same call identity in one source session count once. Separate
@@ -35,10 +40,15 @@ text logs remain supported. Untyped text outcomes carry `outcome_basis: text_hin
 and cannot establish tool provenance. Malformed or truncated structured records
 do not fall back to executing-result interpretations of their text.
 
-An explicit unfinished result, such as a null exit status or a running session,
-does not establish a terminal failure. Earlier invocation context within the
+An explicit unfinished result, such as a null exit status or a numeric live exec
+`session_id`, does not establish a terminal failure. An opaque session UUID alone
+does not indicate an unfinished command. Earlier invocation context within the
 bounded input can associate a result with its command even when a timestamp or
 line checkpoint excludes that invocation from reported counts.
+
+Scanner read errors survive timestamp and line filters as redacted
+`scan_limitations`, without becoming friction events. The segmenter's JSONL mode
+reports read diagnostics on stderr so stdout remains an episode-only stream.
 
 ## Episode costs
 

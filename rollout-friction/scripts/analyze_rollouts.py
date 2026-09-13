@@ -929,14 +929,14 @@ def iter_lines(
 ) -> Iterable[tuple[int, str, bool, bool]]:
     """Compatibility fragment view; consumers must not count these as events."""
     for line, record in iter_records(path, max_bytes):
-        if after_checkpoint(path, line, after_file, after_line) and in_time_window(record, since_ts, until_ts):
+        if line == 0 or (after_checkpoint(path, line, after_file, after_line) and in_time_window(record, since_ts, until_ts)):
             for fragment in json_fragments(record):
                 yield line, fragment.text, fragment.summary, fragment.structured
 
 
 CALL_TYPES = {"function_call", "custom_tool_call", "tool_call", "tool_use", "exec_command_begin"}
 RESULT_TYPES = {"function_call_output", "custom_tool_call_output", "tool_result", "tool_call_end", "exec_command_end"}
-CONTEXT_TYPES = {"user_message", "agent_message", "assistant_message", "reasoning", "session_meta", "turn_context", "compacted"}
+CONTEXT_TYPES = {"user_message", "agent_message", "assistant_message", "reasoning", "session_meta", "thread.started", "turn_context", "compacted"}
 ERROR_STATUSES = {"error", "failed", "failure", "timeout", "timed_out", "cancelled"}
 SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed"}
 EXIT_STATUS_RE = re.compile(r"\b(?:exit[_ -]?code\s*[:=]?\s*|process exited with code\s+)(-?\d+)\b", re.I)
@@ -944,10 +944,16 @@ SUCCESS_TEXT_RE = re.compile(r"\b(passed|succeeded|success|green|mergeable)\b", 
 FALSE_SUCCESS_RE = re.compile(r"(?:\bsuccess\b|['\"]success['\"])\s*[:=]\s*(?:false|0|null|no)\b", re.I)
 
 
+def live_exec_session(value: Any) -> bool:
+    session = value.get("session_id") if isinstance(value, dict) else None
+    return isinstance(session, int) and not isinstance(session, bool)
+
+
 def explicit_outcome(value: Any) -> bool:
     return isinstance(value, dict) and bool(
         {"exit_code", "error", "error_reason", "isError", "is_error", "success"} & value.keys()
         or str(value.get("status", "")).lower() in ERROR_STATUSES | SUCCESS_STATUSES
+        or live_exec_session(value)
     )
 
 
@@ -1021,8 +1027,32 @@ def output_error_hint(payload: Any) -> bool:
                          fragment.text, re.I) for value in values for fragment in json_fragments(value))
 
 
+def terminal_text_header(fragments: list[Fragment]) -> int | None:
+    """Read the tool's leading terminal header, before any printed Output body."""
+    for fragment in fragments:
+        if fragment.summary or fragment.text.lower().startswith("command="):
+            continue
+        text = fragment.text.strip()
+        for prefix in DEDUP_VALUE_PREFIXES:
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):]
+                break
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            match = EXIT_STATUS_RE.fullmatch(line)
+            if match is not None:
+                return int(match.group(1))
+            if not re.match(r"(?:Chunk ID|Wall time):", line, re.I):
+                break
+    return None
+
+
 def text_outcome(fragments: list[Fragment], *, typed_result: bool = False) -> tuple[int | None, bool, bool]:
     """Read tool-result text or, without result provenance, legacy text hints."""
+    if typed_result and (terminal_code := terminal_text_header(fragments)) is not None:
+        return terminal_code, terminal_code != 0, terminal_code == 0
     failure_signal = next(signal for signal in SIGNALS if signal.name == "repeated_command_failure")
     failed = False
     succeeded = False
@@ -1030,8 +1060,7 @@ def text_outcome(fragments: list[Fragment], *, typed_result: bool = False) -> tu
     for fragment in fragments:
         text = fragment.text
         canonical = canonical_hit_text(text)
-        terminal_text = typed_result and EXIT_STATUS_RE.fullmatch(canonical) is not None
-        if fragment.summary or (is_meta_echo(text) and not terminal_text):
+        if fragment.summary or is_meta_echo(text):
             continue
         if is_suppressed_noise(text) and not looks_like_static_diff_or_config(text):
             continue
@@ -1048,7 +1077,7 @@ def text_outcome(fragments: list[Fragment], *, typed_result: bool = False) -> tu
 
 
 def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) -> None:
-    if event.kind in {"call", "context"}:
+    if event.kind in {"call", "context", "scanner_diagnostic"}:
         return
     code = payload.get("exit_code") if isinstance(payload, dict) else None
     event.exit_code = code if isinstance(code, int) and not isinstance(code, bool) else None
@@ -1065,7 +1094,7 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
     else:
         if isinstance(payload, dict) and (
             ("exit_code" in payload and payload["exit_code"] is None)
-            or payload.get("session_id") is not None
+            or live_exec_session(payload)
             or status in {"running", "in_progress", "queued", "pending"}
         ):
             return
@@ -1121,7 +1150,9 @@ def normalize_events(
         if native_phase and not native_context:
             call_id = str(value.get("id") or "")
         command = command_value(value)
-        if kind in CALL_TYPES:
+        if line == 0:
+            parts = [(value, "", "scanner_diagnostic")]
+        elif kind in CALL_TYPES:
             if call_id:
                 calls[call_id] = command
             parts = [(value, "", "call")]
@@ -1144,7 +1175,8 @@ def normalize_events(
             event.file_id = stable_file_id(path)
             typed_result = (kind in RESULT_TYPES or role == "tool"
                             or (isinstance(payload, dict) and payload.get("type") in RESULT_TYPES))
-            set_outcome(event, payload, typed_result=typed_result)
+            if native_phase != "item.updated":
+                set_outcome(event, payload, typed_result=typed_result)
             # Correlate preceding calls even when the requested checkpoint excludes them.
             signature = json.dumps(simple_argv(event_command) or event_command, sort_keys=True) if event_command else None
             if tool_id and tool_id not in invocation_retries:
@@ -1152,7 +1184,7 @@ def normalize_events(
             event.retry = invocation_retries.get(tool_id, False)
             if signature and event.outcome_basis:
                 previous_failure[signature] = event.failed
-            if not after_checkpoint(path, line, after_file, after_line) or not in_time_window(record, since_ts, until_ts):
+            if line != 0 and (not after_checkpoint(path, line, after_file, after_line) or not in_time_window(record, since_ts, until_ts)):
                 continue
             previous = events.get(event_id)
             priority = {None: 0, "text_hint": 1, "result_text": 2, "result_status": 3}
@@ -1167,6 +1199,8 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
     seen_hits: set[tuple[int, str, str, int]] = set()
     line_signal_texts: dict[tuple[int, str], set[str]] = {}
     for event in events:
+        if event.kind == "scanner_diagnostic":
+            continue
         line_no = event.line
         if event.failed:
             evidence = event.evidence_text()
@@ -1262,6 +1296,14 @@ def outcome_summary(events: list[TraceEvent]) -> dict[str, Any]:
             for event in events if event.expected_nonzero
         ][:3],
     }
+
+
+def scanner_diagnostics(events: list[TraceEvent]) -> list[dict[str, Any]]:
+    return [
+        {"kind": "scanner_io_error", "file_id": event.file_id,
+         "message": redacted(event.evidence_text(), DEFAULT_CONTEXT_CHARS)}
+        for event in events if event.kind == "scanner_diagnostic"
+    ]
 
 
 def canonical_hit_text(text: str) -> str:
@@ -1439,14 +1481,15 @@ def finding_to_json(finding: Finding) -> dict[str, Any]:
     }
 
 
-def scan_summary(targets: list[ScanTarget], limitations: list[Limitation]) -> dict[str, Any]:
+def scan_summary(targets: list[ScanTarget], limitations: list[Limitation], events: Iterable[TraceEvent] = ()) -> dict[str, Any]:
     limitation_counts = Counter(limitation.kind for limitation in limitations)
+    limitation_counts.update("scanner_io_error" for event in events if event.kind == "scanner_diagnostic")
     truncated_file_count = sum(1 for target in targets if target.truncated)
     skipped_file_count = sum(limitation.file_count or 0 for limitation in limitations if limitation.kind in {"file_count_limit", "total_byte_limit"})
     scanned_bytes = sum(target.read_bytes for target in targets)
     total_candidate_bytes = sum(target.file_bytes for target in targets)
     return {
-        "scan_degraded": bool(limitations),
+        "scan_degraded": bool(limitation_counts),
         "limitation_counts": dict(sorted(limitation_counts.items())),
         "truncated_file_count": truncated_file_count,
         "skipped_file_count": skipped_file_count,
@@ -1473,12 +1516,13 @@ def limitation_to_json(limitation: Limitation) -> dict[str, Any]:
 
 
 def emit_json(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
+    events = getattr(findings, "events", [])
     payload = {
         "schema_version": 2,
         "count_semantics": COUNT_SEMANTICS,
         "ok": True,
-        "scan_summary": scan_summary(targets, limitations),
-        "outcome_summary": outcome_summary(getattr(findings, "events", [])),
+        "scan_summary": scan_summary(targets, limitations, events),
+        "outcome_summary": outcome_summary(events),
         "scanned_files": [
             {
                 "id": stable_file_id(target.path),
@@ -1489,32 +1533,34 @@ def emit_json(targets: list[ScanTarget], findings: dict[str, Finding], limitatio
             }
             for target in targets
         ],
-        "scan_limitations": [limitation_to_json(limitation) for limitation in limitations],
+        "scan_limitations": [limitation_to_json(limitation) for limitation in limitations] + scanner_diagnostics(events),
         "findings": [finding_to_json(finding) for finding in findings.values()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitations: list[Limitation]) -> None:
+    events = getattr(findings, "events", [])
     print(f"count_semantics: {COUNT_SEMANTICS}; command failures count results, other signals count text matches")
-    outcomes = outcome_summary(getattr(findings, "events", []))
+    outcomes = outcome_summary(events)
     print(f"nonzero_exits: {outcomes['nonzero_exit_count']}; expected_nonzero: {outcomes['expected_nonzero_count']}; text_hint_failures: {outcomes['text_hint_failure_count']}")
     print(f"Scanned {len(targets)} file(s).")
-    if limitations:
-        summary = scan_summary(targets, limitations)
+    displayed_limitations = [limitation_to_json(limitation) for limitation in limitations] + scanner_diagnostics(events)
+    if displayed_limitations:
+        summary = scan_summary(targets, limitations, events)
         print(
             "Scan degraded: "
             f"{summary['truncated_file_count']} truncated, "
             f"{summary['skipped_file_count']} skipped; use --json for full details."
         )
         print("Scan limitations:")
-        for limitation in limitations[:TEXT_LIMITATION_DISPLAY_LIMIT]:
-            suffix = f" file_id={stable_file_id(limitation.file)}" if limitation.file is not None else ""
-            count = f" file_count={limitation.file_count}" if limitation.file_count is not None else ""
-            limit = f" limit={limitation.limit}" if limitation.limit is not None else ""
-            print(f"- {limitation.kind}:{suffix}{count}{limit} {limitation.message}")
-        if len(limitations) > TEXT_LIMITATION_DISPLAY_LIMIT:
-            omitted_count = len(limitations) - TEXT_LIMITATION_DISPLAY_LIMIT
+        for limitation in displayed_limitations[:TEXT_LIMITATION_DISPLAY_LIMIT]:
+            suffix = f" file_id={limitation['file_id']}" if "file_id" in limitation else ""
+            count = f" file_count={limitation['file_count']}" if "file_count" in limitation else ""
+            limit = f" limit={limitation['limit']}" if "limit" in limitation else ""
+            print(f"- {limitation['kind']}:{suffix}{count}{limit} {limitation['message']}")
+        if len(displayed_limitations) > TEXT_LIMITATION_DISPLAY_LIMIT:
+            omitted_count = len(displayed_limitations) - TEXT_LIMITATION_DISPLAY_LIMIT
             print(f"- {omitted_count} additional limitation(s) omitted from text output; use --json for full details.")
     if not findings:
         print("No friction signals met reporting thresholds.")

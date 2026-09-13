@@ -1566,6 +1566,85 @@ def test_native_codex_command_items_use_identity_and_terminal_status() -> None:
             raise AssertionError("native stdout JSON must not override the outer command status")
 
 
+def test_terminal_headers_precede_investigation_noise_and_printed_statuses() -> None:
+    module = load_module()
+    body = "analyze_rollouts.py failed: error in input"
+
+    def textual_result(call_id: str, text: str) -> dict[str, object]:
+        return {"type": "function_call_output", "call_id": call_id, "output": text}
+
+    records = [textual_result(str(code), f"Process exited with code {code}\nOutput:\n{body}") for code in (1, 2, 128)]
+    copied = f"Process exited with code 1\n{body}"
+    records.extend([
+        textual_result("successful-source", f"Process exited with code 0\nOutput:\n{copied}"),
+        textual_result("successful-rendered", f"Chunk ID: test\nWall time: 0.1 seconds\nProcess exited with code 0\nFinal output:\n{copied}"),
+        tool_result("structured-source", {"exit_code": 0, "stdout": copied}),
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": copied}},
+        {"message": copied},
+        textual_result("source-code", f"```text\n{copied}\n```"),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        for suppress in (False, True):
+            findings = module.scan([trace], 100_000, 240, suppress_investigation_noise=suppress)
+            finding = findings.get("repeated_command_failure")
+            summary = module.outcome_summary(findings.events)
+            if finding is None or finding.count != 3 or summary["nonzero_exit_count"] != 3:
+                raise AssertionError(f"terminal headers were hidden or printed statuses were promoted: {summary}")
+            if sum(event.succeeded for event in findings.events) != 3:
+                raise AssertionError("successful outer statuses must override printed failure text")
+            if {hit.outcome_basis for hit in finding.hits} != {"result_text"}:
+                raise AssertionError("terminal text must retain explicit result provenance")
+
+
+def test_session_metadata_and_native_progress_are_not_terminal_outcomes() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        uuid_result = {"type": "function_call_output", "session_id": "12345678-1234-1234-1234-123456789abc",
+                       "output": "Process exited with code 1"}
+        trace = write_trace(Path(tmp), [uuid_result])
+        summary = module.outcome_summary(module.normalize_events(trace, 100_000))
+        if summary["failed_result_count"] != 1 or summary["nonzero_exit_count"] != 1:
+            raise AssertionError("an opaque session id is not proof that a result is still running")
+        records = [
+            {"type": "thread.started", "thread_id": "thread-context", "error": "Command failed example"},
+            {"type": "function_call_output", "call_id": "direct", "session_id": 7, "output": "error: pending diagnostic"},
+            tool_result("nested", {"session_id": 8, "output": "error: pending diagnostic"}),
+            {"type": "item.updated", "item": {"id": "no-status", "type": "command_execution", "aggregated_output": "error: pending diagnostic"}},
+            {"type": "item.updated", "item": {"id": "terminal-looking", "type": "command_execution", "exit_code": 1, "status": "completed"}},
+        ]
+        trace = write_trace(Path(tmp), records)
+        events = module.normalize_events(trace, 100_000)
+        if any(event.outcome_basis is not None for event in events):
+            raise AssertionError("numeric live sessions, native updates, and thread metadata must not create terminal outcomes")
+        records.append({"type": "item.completed", "item": {"id": "no-status", "type": "command_execution", "exit_code": 2, "status": "completed"}})
+        trace = write_trace(Path(tmp), records)
+        completed_events = module.normalize_events(trace, 100_000)
+        summary = module.outcome_summary(completed_events)
+        if len(completed_events) != len(events) or summary["failed_result_count"] != 1 or summary["nonzero_exit_count"] != 1:
+            raise AssertionError("the completed native result must still establish its terminal status")
+
+
+def test_scanner_diagnostics_survive_record_filters_without_friction() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "missing-private-trace.jsonl"
+        target = module.ScanTarget(missing, 1000, 1000, False)
+        for filters in ({"since_ts": module.parse_timestamp("2026-09-12T00:00:00Z")}, {"after_file": missing, "after_line": 1}):
+            fragments = list(module.iter_lines(missing, 1000, **filters))
+            findings = module.scan([target], 1000, 240, **filters)
+            if len(fragments) != 1 or fragments[0][0] != 0 or findings:
+                raise AssertionError("scanner diagnostics must survive filters without becoming friction findings")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                module.emit_json([target], findings, [])
+            payload = json.loads(stdout.getvalue())
+            if not payload["scan_summary"]["scan_degraded"] or payload["scan_summary"]["limitation_counts"] != {"scanner_io_error": 1}:
+                raise AssertionError("a read failure must be visible as a degraded scan")
+            if payload["scan_limitations"][0]["kind"] != "scanner_io_error" or str(missing) in stdout.getvalue():
+                raise AssertionError("read diagnostics must be separate and redacted")
+
+
 def main() -> int:
     test_result_statuses_survive_noise_filters_and_mirrors()
     test_successful_commands_prompts_and_source_dumps_are_not_failures()
@@ -1575,6 +1654,9 @@ def main() -> int:
     test_pending_results_sessions_and_truncated_records()
     test_typed_terminal_text_survives_without_promoting_echoes()
     test_native_codex_command_items_use_identity_and_terminal_status()
+    test_terminal_headers_precede_investigation_noise_and_printed_statuses()
+    test_session_metadata_and_native_progress_are_not_terminal_outcomes()
+    test_scanner_diagnostics_survive_record_filters_without_friction()
     test_github_wait_and_rollup_signals()
     test_json_object_summary_preserves_multi_field_signals()
     test_command_and_shell_friction_signals()

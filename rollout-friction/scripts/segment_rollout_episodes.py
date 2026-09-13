@@ -72,6 +72,9 @@ class TraceLine:
     kind: str = "legacy"
     file_id: str = ""
 
+    def evidence_text(self) -> str:
+        return self.snippet
+
 
 @dataclass
 class Episode:
@@ -340,15 +343,17 @@ def main() -> int:
         hits = [hit for hit in hits if counts[hit.signal] >= SIGNALS_BY_NAME[hit.signal].threshold]
         episodes.extend(build_episodes(target, hits, args.max_gap_lines, trace_lines))
     payloads = [episode_to_json(episode) for episode in episodes]
+    trace_events = [event for _target, _hits, lines in collected for event in lines]
+    read_diagnostics = ANALYZER.scanner_diagnostics(trace_events)
     if args.json:
         print(
             json.dumps(
                 {
                     "schema_version": 2,
                     "count_semantics": ANALYZER.COUNT_SEMANTICS,
-                    "outcome_summary": ANALYZER.outcome_summary([event for _target, _hits, lines in collected for event in lines]),
+                    "outcome_summary": ANALYZER.outcome_summary(trace_events),
                     "episode_count": len(payloads),
-                    "scan_limitations": [ANALYZER.limitation_to_json(limitation) for limitation in limitations],
+                    "scan_limitations": [ANALYZER.limitation_to_json(limitation) for limitation in limitations] + read_diagnostics,
                     "episodes": payloads,
                 },
                 indent=2,
@@ -356,6 +361,8 @@ def main() -> int:
             )
         )
         return 0
+    for diagnostic in read_diagnostics:
+        print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr)
     for payload in payloads:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0

@@ -12,7 +12,7 @@ import io
 import json
 import sys
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -315,12 +315,34 @@ def test_cli_thresholds_agree_across_multiple_files(module: ModuleType) -> None:
             trace.write_text(json.dumps(result_record("same-id", 1)) + "\n", encoding="utf-8")
             paths.append(trace)
         stdout = io.StringIO()
-        with mock.patch.object(sys, "argv", [str(SCRIPT), *map(str, paths), "--json"]), redirect_stdout(stdout):
+        with mock.patch.object(sys, "argv", [str(SCRIPT), *map(str, paths), *map(str, paths), "--json"]), redirect_stdout(stdout):
             module.main()
         payload = json.loads(stdout.getvalue())
         analyzer = module.ANALYZER.scan(paths, 100_000, 240)
     if payload["episode_count"] != 3 or sum(item["cost"]["failure_count"] for item in payload["episodes"]) != analyzer["repeated_command_failure"].count:
-        raise AssertionError("the analyzer and segmenter must apply the reporting threshold over the same source set")
+        raise AssertionError("the analyzer and segmenter must deduplicate CLI paths and apply thresholds over the same source set")
+
+
+def test_cli_read_diagnostics_remain_separate_from_episodes(module: ModuleType) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "missing-private-trace.jsonl"
+        scan_target = module.ANALYZER.ScanTarget(missing, 1000, 1000, False)
+        for json_mode in (False, True):
+            argv = [str(SCRIPT), str(missing), "--since", "2026-09-12T00:00:00Z"] + (["--json"] if json_mode else [])
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(module, "scan_targets", return_value=([scan_target], [])), redirect_stdout(stdout), redirect_stderr(stderr):
+                module.main()
+            if json_mode:
+                payload = json.loads(stdout.getvalue())
+                diagnostics = payload["scan_limitations"]
+                if payload["episode_count"] or payload["outcome_summary"]["failed_result_count"] or stderr.getvalue():
+                    raise AssertionError("read failures must not become JSON friction episodes")
+            else:
+                diagnostics = [json.loads(stderr.getvalue())]
+                if stdout.getvalue():
+                    raise AssertionError("JSONL stdout must remain an episode-only stream")
+            if len(diagnostics) != 1 or diagnostics[0]["kind"] != "scanner_io_error" or str(missing) in json.dumps(diagnostics):
+                raise AssertionError("read diagnostics must remain visible and redacted in either output mode")
 
 
 def main() -> int:
@@ -339,6 +361,7 @@ def main() -> int:
     test_real_collection_counts_results_calls_and_retries_once(module)
     test_successful_argument_literals_do_not_create_episodes(module)
     test_cli_thresholds_agree_across_multiple_files(module)
+    test_cli_read_diagnostics_remain_separate_from_episodes(module)
     print("ok validate-segment-rollout-episodes")
     return 0
 
