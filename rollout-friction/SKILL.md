@@ -244,7 +244,11 @@ rollout files, session traces, runout files, or agent workflow friction.
 3. Run `segment_rollout_episodes.py` over the same bounded source set to turn
    line-level signal hits into costed friction episodes. Episodes are the review
    unit: they preserve the intent-to-outcome shape better than individual
-   snippets while still avoiding raw trace dumps.
+   snippets while still avoiding raw trace dumps. Read
+   [event count semantics](references/event-counts.md) before interpreting
+   counts, comparing reports, or supplying reports to a model. Version 2 counts
+   command results and executed retries; other signal counts remain text
+   matches. Nonzero exits and text hints still require human classification.
 4. Run `cluster_rollout_episodes.py` on the episode JSONL to collapse recurring
    patterns into root-cause clusters and compact trajectory skeletons. Review
    high-cost clusters before inspecting raw trace snippets. Skeleton output is
