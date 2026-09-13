@@ -1323,6 +1323,19 @@ skills:
           notes: >-
             Behavior validation permits point-in-time safe exit for pre-trigger
             absence while preserving observed in-flight reviews as pending.
+      - check_id: cleanup-qualification-fixture-contracts
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: work/cleanup-integration-617-618
+          notes: >-
+            Offline fixtures, native-runner failure handling, and independent
+            mutation-based scoring are covered by the repository gate. These
+            tests do not run a model or establish ordinary-agent behavior.
       - check_id: jetbrains-readiness-evidence-contract
         kind: static_validator
         mode: ci
@@ -1360,6 +1373,7 @@ skills:
             contents, bounded coverage, freshness and post-action byte verification.
     known_gaps:
       - >-
-        Helper fixtures do not establish ordinary-agent selection or Astra
-        closeout behavior. Local-model review is advisory; integration and
-        execution qualification remain separate evidence.
+        Helper fixtures alone do not establish ordinary-agent selection or
+        Astra behavior. The opt-in native qualification procedure is documented
+        in work-closeout/evaluations/README.md; its bounded observations do not
+        establish population performance or untested host behavior.

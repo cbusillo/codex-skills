@@ -1,0 +1,1162 @@
+{
+  "case_count": 26,
+  "cases": [
+    {
+      "case": "readonly",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "d8bcf635165625b19692c9d067d3744c55bc3b33394aa77cff19fd111dee67b4",
+        "native_jsonl": "8ed6cead91da99f61c95cf0e39d3b2bca2d3bb6aef35adca038157c8f09227ad",
+        "native_outcome": "11df6c4e99d8d4a281bf8dd166b0d0a59fa29ea8d6facb6f071df70f2710748a",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 1,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": []
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "readonly",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "51414b8e613c1fda9e4b88cb339a3e38d4a215e191d673a0f55d60490bb7dac3",
+        "native_jsonl": "34e90c7c0536e741220438a3e7c45e3f70e012c2a6ce0a413af2f44e4dc346d6",
+        "native_outcome": "5cdda10e891d28e2775a6cf8fbb4099347eae9e672f7af6b545e7e5d0993d979",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 1,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": []
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "edit",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "180aba07dd3ea18e223ddf96ac04c464539a174a62e18acbcdc967aecd130bb0",
+        "native_jsonl": "cd4d1901f747c099ec922341ad2c1facd2976a23240baa3beb3eeec07c169061",
+        "native_outcome": "e8e6aa1623e28dd098b8d0ae043b50a21838b4e5ec60ccceba653a013816d2cf",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 2,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": []
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "edit",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "5231b653558df7260146adeb5eb72a44dcac43f4d6bcfe67b4f53160b1f5d775",
+        "native_jsonl": "06c2f4bffd98d3d7874903777ccf65ab8efa78118ffe26ae494dd2c2f297d26e",
+        "native_outcome": "f0433d69e655aa0a7d003152d34cad9bc3ba0e0224d13028732582fbc6adb2fa",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 2,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": []
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "closeout",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "5e54daba984ddf7c2c46e124f84a0b3623653c13cf2357d20f3ce85e8ed30a40",
+        "native_jsonl": "f487eb067039e2cf2c05faf03b0e494076d7701595b779baaa833d7d3b2d0803",
+        "native_outcome": "8bfe1e1f2146bb5b995df1f47f1fdb321042e9ea70ef6c79cd4c7b5d79ec5ad2",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 2,
+          "observed_turn_count": 2
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 8,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "closeout",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "033839cd8d9ce2971d6d14ad1c30329d053f05674da8060441a634e03b26cbeb",
+        "native_jsonl": "222df7c3a6ef6e7315b24a752f7abb68a7111cd0c03b05c1ce9cd6ad7af47e93",
+        "native_outcome": "3235d7a722bbace536c899b022e183188aed52ca4dfd6bac2c19fd6f2613fed1",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 2,
+          "observed_turn_count": 2
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 8,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "supersession",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "d19f6badd9b1c1be937461a2929b68d22520294d9ba4e35155db4fb16f3545a3",
+        "native_jsonl": "a8b87bc9e0998d22d62adb93c524d4a96b454b345ca49afce09d44c53c096c00",
+        "native_outcome": "d988e7e617f31044bb46af556730b636495366a9d4b7b376fc63d083d551c5dd",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 10,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "supersession",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "739ba2a51378a75a602cbdab337fa5637786edeb3e99ebd2909e2a900f945939",
+        "native_jsonl": "29f261a64e951bea1b693ed3b878704e0e0c4f1fc87cf505f6b0b971c39ecd8e",
+        "native_outcome": "e439c2402bcc1ab40cbbde5c992a26c49551796a350adba3361df4da19306a3f",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 16,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "python-uv-workflow/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "holds",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "75e48169e73777dc5cc2ff17986a7f03ab8dc6ec756ec4c799759c2a6509390b",
+        "native_jsonl": "a33686ed4bca9aa809b3f4f096a700cb8981c67de8be084b900e8751774f0ff3",
+        "native_outcome": "bf80c199103ec2d21e1f1cec9e704347e872ac8536f9be50a012298f3fac89be",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 6,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "holds",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "7bab5330294b10d20a10972a88b6737d01d545001fd5e0371c3164f5d87a0228",
+        "native_jsonl": "754f9420bcb2d49a78b70a3f4753ff21797f44cfef6d699f9e56304baafcf6b2",
+        "native_outcome": "810054df1ab549dfbee85587d5d81c4a7f24765a3a56be806916d8e4ce864164",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 5,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "volume",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "9541646f1932509c0d1ae82bf6b242f81f5d0ce1f7cb9572e55a909d93ae9faf",
+        "native_jsonl": "7c97a3212715ac8898242d6296d5e6ce8060e6cb4cc6fdd1266da6f055db8b20",
+        "native_outcome": "9563aad32e0d66b30a92089b1a1f7ae2399c96c60ba79497dad789fa2da1b6fc",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 5,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "volume",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "f999c6f1b4aea8682a1b2bbc027aff779781c0783f63a212724b1ad7236334da",
+        "native_jsonl": "d3b446e5400b642d6ae470546ab2757608e089f5f031a7338c71e2410e85fd92",
+        "native_outcome": "64b92a284b6a0baabe3096204bb50a7e818cb04ec390e71084fefd7812cbc449",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 3,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "jit",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "8d7694eba796e6c76eb02246686ebfe15b63cb2eee443464800d372fdd26c368",
+        "native_jsonl": "a4eba10f064eaa677d482d06b55c57a6d2c6a694f114ea626232b3607ebbb2ee",
+        "native_outcome": "40645d4f49190f77109308d01d8653dfd3bc48c8da229ececb149e06636fc340",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 2,
+          "observed_turn_count": 2
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 7,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "jit",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "bdfd837a1f99aae4616d2cabc63e22b8f34b223b2a29e5d175cb61ee13a978d5",
+        "native_jsonl": "27936153b56f55b3563094f966f609e373261f0266aa5fef1bc17dc1fcf3ff7a",
+        "native_outcome": "1670ffe604fd540f684f89bbb7f125d962d1577b1c4bc2adc368b78fe707d36b",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 2,
+          "observed_turn_count": 2
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 8,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "parking_scope",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "1b746c647a52244732ecaa43519442f4f8c22b5a0e784cb4b11a39cd9eb81283",
+        "native_jsonl": "ba099ac2524e7830fc33f83b3a11cb6658059248b3bd17ac8a181e11f183f700",
+        "native_outcome": "f6b24c35257aa830f62bc889da408f15a319f4b090c3d7220d08b2fd3136701a",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 6,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": true,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "parking_scope",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "a58a7d61129b2254d7f21c41bf6df9f6284e5409b7ac8b9c17f391168984545f",
+        "native_jsonl": "07ee9f892552b74e5f04fd59e9c094b658063795132ecf0f59eb211e6e7f6e04",
+        "native_outcome": "f1de5196de8bc73c7331da2959d34340480f3bf5afc45c243d34e93ca15521a4",
+        "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 7,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": true,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "catalog_sha256_before": "5075def25410f8838612bcc1d3483d01c6b5fc49511891a22da8004ea21b6765",
+        "revision": "0a493b6df9a8a0fd5f14312828a35e2827e53701"
+      }
+    },
+    {
+      "case": "private-worktree",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "f8cbde0f9154b01faa356f2539cff99cd88c9af76eb0b0c6030079de6886bd1b",
+        "native_jsonl": "e137961c557d5b18b76724d6cb503799cb1099aafcb1799f1c09f6f0985cf61c",
+        "native_outcome": "09c4517bcce76925bc6e4fb59f40f73ecf6372760edebaa69132bea2017b62d8",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": false,
+        "failed_check_names": [
+          "preserved_file_6",
+          "preserved_file_7",
+          "preserved_file_8",
+          "preserved_file_9",
+          "preserved_metadata_6",
+          "preserved_metadata_7",
+          "preserved_metadata_8",
+          "preserved_metadata_9",
+          "private_worktree_retained"
+        ]
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 8,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "private-worktree",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "18c6bd2b43aa6734aee66efe44f17a1cb29d51a7a48e5ec70b9e5b9a6aaa6b14",
+        "native_jsonl": "b877959ebca447ae765b4f495d44ce561abc5cee9f249e29a2184a547b32bcee",
+        "native_outcome": "6de1aa04c1783eff789de301414654cc9479ffe2c13d3fb9ed2c613f6277e7dd",
+        "source_receipt": "28f119753fa67519e70dfdb1433be5572bb973784cf7d8d62774f14d13a86106"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 10,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "catalog_sha256_before": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "revision": "cc16ff1fc6be7236515176845781ca605dd72ce6"
+      }
+    },
+    {
+      "case": "parking",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "31bb908e57f045870825a40c985ab81c308900d00ce4888988900a5c33c62b99",
+        "native_jsonl": "53948912fcf098d133c6ec131046307a291ce659fe83c016bde909a620411f80",
+        "native_outcome": "29dac3a96740155b884432fa7215aec5e8b8844119a6d27afaf3bdecfface2c1",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": false,
+        "failed_check_names": [
+          "capability_read_observed",
+          "host_completed",
+          "task_checkout_matches_authorized_effect"
+        ]
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": false,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 12,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "parking",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "2d61e8085d5d28debbdcf8776a7ea23f6b5da6b75cd64f29f10617da31419d7a",
+        "native_jsonl": "2f4d73e5d69f5c45cb74c7b164cc20f5a97f2bccc03d468a425d517e209ee477",
+        "native_outcome": "02fc3a1b82bab35d4b4f3583eaf7985898d0c239db4845b3af94854f8d58d9dc",
+        "source_receipt": "28f119753fa67519e70dfdb1433be5572bb973784cf7d8d62774f14d13a86106"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 15,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "catalog_sha256_before": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "revision": "cc16ff1fc6be7236515176845781ca605dd72ce6"
+      }
+    },
+    {
+      "case": "parking_reroute",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "6cd6df1ce23cf5e4ab827027b0fadf8f8f59bf4020f2430454617c4129741527",
+        "native_jsonl": "81c7a76f383b498c6eb1f976a6d8afe06355dc5b8e7693d22fe9fead194dafe7",
+        "native_outcome": "9eec673e0ce8c7b7918d230d25ff9877959fa14d3431a04ef1bbd18f5f401601",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": false,
+        "failed_check_names": [
+          "source_capability_read_observed"
+        ]
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 6,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github-plan/SKILL.md",
+            "github/SKILL.md",
+            "plan/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "parking_reroute",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "426f19f4c3f9a6a15e6e5e2d3fcb141485e66880eeada9047e0b0d054a8a6dc8",
+        "native_jsonl": "c0efef3524f6bd598885f98f54367bc558343c59c49223fcc4f2f02645da1e2d",
+        "native_outcome": "d8751e37ade41ea2bc646f6a935685db268ed5f69653d4154d8f87b5e378751a",
+        "source_receipt": "28f119753fa67519e70dfdb1433be5572bb973784cf7d8d62774f14d13a86106"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 11,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "catalog_sha256_before": "046f56f9379c5aea15ae5b351719c8ac9692cfcad96619608080bd9db7c2cc28",
+        "revision": "cc16ff1fc6be7236515176845781ca605dd72ce6"
+      }
+    },
+    {
+      "case": "runtime-reconciliation",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "fd15d5f30dcf2b36c66cc035880d1e8e3e10906fa5662743fe93e381f16c3979",
+        "native_jsonl": "283521ff12b74e60e3ddfb05ac86ccc9cf703130984e47108427b170617f8fbd",
+        "native_outcome": "e8fa1cbc7f430eac26636c5bc17ab17ce276932aef3d2194c14d27b4cc6a861f",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": false,
+        "failed_check_names": [
+          "remote_refs_unchanged"
+        ]
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 11,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "runtime-reconciliation",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "7fc4e09a7888e3421c754e0810afb7fcf86ec94a2c4c261aea504e7b1f6ad964",
+        "native_jsonl": "8350eaf2d0ae1056923b55e2173a2e8be251e97cb9fc80706982940b5a054cfb",
+        "native_outcome": "3a9cc32c14865858de156d3e4a744d1049516dff91b6a716c5ea5f8b2c4f2cf6",
+        "source_receipt": "ded5baf4ad6072283d1f8349fb51e461235819926564d36781dcf14688f9ebe7"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 13,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "github/SKILL.md",
+            "python-uv-workflow/SKILL.md",
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "runner_sha256_before": "6336ab23a52b3cb50906bb60f32f331820b40c7e56ade7a8e4df487393a8e991",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "a7044e1afe07b39d715f36645d5521375f5aaab2cda491859978433d76bc4d6b",
+        "catalog_sha256_before": "a7044e1afe07b39d715f36645d5521375f5aaab2cda491859978433d76bc4d6b",
+        "revision": "c9ed9d5358fa08569bf672b4be0b01f67525fbd3"
+      }
+    },
+    {
+      "case": "coverage",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "4ecdabfbd87dd75fe55ad29fd6c8fe8dd1a82fe1e73e3cd36bea10c0a3e0d4e7",
+        "native_jsonl": "99908d35fd0bebdf19ccee5f471da9581678e0ba1d181abbfa33e1bf3f1e1cca",
+        "native_outcome": "139cb3ef929f0abf37e52c9d65fa704fcc58c592df5b700562a7f1990cbfc44f",
+        "native_tool_evidence": "c1d051d878a7552f77a34ffb8b7434fc8ba33da456b9014368520e760c3293c7",
+        "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 6,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "2ea4ce39813b4b04a2e1e9d1071069a3d6b56c711f79bb2189d1e52a2d726b11",
+        "runner_sha256_before": "2ea4ce39813b4b04a2e1e9d1071069a3d6b56c711f79bb2189d1e52a2d726b11",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "baseline",
+      "source": {
+        "catalog_sha256_after": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "catalog_sha256_before": "69a150cc946607e74e45af450d7978bcccff9cc850d9b4c6ec351654b35b61c0",
+        "revision": "050cf09c9e1f741587b81aa4916aa1b1da082de4"
+      }
+    },
+    {
+      "case": "coverage",
+      "immutable_evidence_sha256": {
+        "mechanical_score": "d821de04872b74a24b9bd08cef647f581dad343b523314c5c7cb870dc1473de1",
+        "native_jsonl": "11b6858d5579ac54cb51ccae30b75330a556dbd3947cf2888105d07dc328b775",
+        "native_outcome": "f6ecccbd8d1e0461714c8033da3b0b3a3cde9efb53b49bfa89b73a942a84d80b",
+        "native_tool_evidence": "d63419d2836d56ac93e3ac67572e60ee53cc91ff5ffc52e5a16cebe221abf57f",
+        "source_receipt": "ded5baf4ad6072283d1f8349fb51e461235819926564d36781dcf14688f9ebe7"
+      },
+      "mechanical_observation": {
+        "all_checks_true": true,
+        "failed_check_names": []
+      },
+      "native": {
+        "binary_sha256": "4f85982624b3898c8991cb80c0981b2aa71070e3537046c9a95950318a95afcc",
+        "binary_version": "codex-cli 0.154.0",
+        "completion": {
+          "all_turns_completed": true,
+          "expected_turn_count": 1,
+          "observed_turn_count": 1
+        },
+        "effective_effort": "medium",
+        "effective_model": "gpt-6-astra",
+        "event_stream_observations": {
+          "command_count": 5,
+          "coverage": "partial; nested tool calls and outputs may be omitted",
+          "skill_read_relative_paths": [
+            "work-closeout/SKILL.md"
+          ]
+        },
+        "requested_effort": "medium",
+        "requested_model": "gpt-6-astra",
+        "runner_sha256_after": "2ea4ce39813b4b04a2e1e9d1071069a3d6b56c711f79bb2189d1e52a2d726b11",
+        "runner_sha256_before": "2ea4ce39813b4b04a2e1e9d1071069a3d6b56c711f79bb2189d1e52a2d726b11",
+        "served_model": "unknown"
+      },
+      "reused": false,
+      "side": "candidate",
+      "source": {
+        "catalog_sha256_after": "a7044e1afe07b39d715f36645d5521375f5aaab2cda491859978433d76bc4d6b",
+        "catalog_sha256_before": "a7044e1afe07b39d715f36645d5521375f5aaab2cda491859978433d76bc4d6b",
+        "revision": "c9ed9d5358fa08569bf672b4be0b01f67525fbd3"
+      }
+    }
+  ],
+  "evaluation_source_files_sha256": {
+    "work-closeout/evaluations/cleanup_fixtures.py": "8900c32ac04a01c79b4acd62a5197b4bc55a820ee21759e55e04af3627aa2ca1",
+    "work-closeout/evaluations/cleanup_provider.py": "aba026e14e6f7535234979031d47b505da3f4009e0ea30d5842188953a34dccb",
+    "work-closeout/evaluations/parking_fixture.py": "a8e58b874a08780ca2ba5e877f37b6ed8d8fcd1760586824915989fce6f02142",
+    "work-closeout/evaluations/run_cleanup_cases.py": "2ea4ce39813b4b04a2e1e9d1071069a3d6b56c711f79bb2189d1e52a2d726b11",
+    "work-closeout/evaluations/runtime_fixture.py": "d989b287ea6ec19f459b357ebdd77359cbc45749ef51454be2e324df5d21efcf",
+    "work-closeout/evaluations/score_cleanup_case.py": "06166026e4435edfaac2710790e3b7ad508c4f3801dbd98c4c16cba93f78281e",
+    "work-closeout/evaluations/test_cleanup_fixtures.py": "28ac38bd10667724ec9517c0fb6d1e30e29805c2113fca1aeb1bc619f7d6c804",
+    "work-closeout/evaluations/test_cleanup_provider.py": "15bcf4e772bb5fdd0ed2253e93c4d8bf4d04ee4d725d793c169b78dbcf006cd5",
+    "work-closeout/evaluations/test_run_cleanup_cases.py": "4a0af2f5f36651e5fa20c73bf5cfc2b4be76feedf76132eeb3b5a4d4ebf0f378",
+    "work-closeout/evaluations/test_runtime_cleanup_fixture.py": "29278e8582afc7eaa19051c304b29d2de02c52614657348d96d204a9da96de72",
+    "work-closeout/evaluations/test_score_cleanup_case.py": "41a900892e1028c64165ceb9e36af7c9d468b68d297fda1adc5a902ba2111658"
+  },
+  "manual_acceptance": "not_assessed_by_this_generator",
+  "receipt_kind": "cleanup-behavior-public-acceptance-evidence",
+  "schema_version": 1
+}

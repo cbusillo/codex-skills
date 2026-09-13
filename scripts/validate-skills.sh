@@ -75,6 +75,11 @@ helper_tests=(
 	openai-docs/scripts/test_fetch_codex_manual.py
 	people/scripts/test_resolve_person.py
 	work-closeout/scripts/test_repo_cleanup.py
+	work-closeout/evaluations/test_cleanup_fixtures.py
+	work-closeout/evaluations/test_cleanup_provider.py
+	work-closeout/evaluations/test_run_cleanup_cases.py
+	work-closeout/evaluations/test_score_cleanup_case.py
+	work-closeout/evaluations/test_runtime_cleanup_fixture.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
 	scripts/test_update_pep723_dependencies.py
