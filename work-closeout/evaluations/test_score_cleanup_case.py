@@ -203,6 +203,12 @@ class CleanupScoreTests(unittest.TestCase):
         self.assertTrue(committed["checks"]["task_branch_preserved"])
         self.assertTrue(committed["mechanical_pass"])
 
+        run_git(workspace / "archive", "commit", "--allow-empty", "-m", "Unrelated change")
+        unrelated_commit = self.score(root, manifest, before)
+        self.assertTrue(unrelated_commit["checks"]["only_requested_business_file_changed"])
+        self.assertFalse(unrelated_commit["checks"]["adjacent_refs_unchanged"])
+        self.assertFalse(unrelated_commit["mechanical_pass"])
+
         root2, manifest2, _, before2 = self.build_case(cleanup_fixtures.create_case, "edit", "edit-missing-readme")
         (Path(manifest2["workspace"]) / "project/README.md").unlink()
         missing = self.score(root2, manifest2, before2)

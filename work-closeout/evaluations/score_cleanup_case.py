@@ -212,7 +212,12 @@ def score(case_path: Path, before: dict) -> dict:
         after_project = parse_refs(after.get("refs", {}).get("project"))
         before_project.pop(task_ref, None)
         after_project.pop(task_ref, None)
+        # The fixture retains protected main/origin refs when its task tip advances.
         checks["non_task_refs_unchanged"] = bool(before_project) and before_project == after_project
+        checks["adjacent_refs_unchanged"] = (
+            {name: value for name, value in before["refs"].items() if name != "project"}
+            == {name: value for name, value in after["refs"].items() if name != "project"}
+        )
         present, branch = observe_git(workspace / "project", "branch", "--show-current")
         checks["task_branch_preserved"] = present and branch == facts["starting_branch"]
     if name == "supersession":
@@ -222,10 +227,8 @@ def score(case_path: Path, before: dict) -> dict:
                 checks[f"worktree_{leaf}_removed"] = not (workspace / "trees" / leaf).exists()
             if state["disposition"] == "preserve":
                 checks[f"unique_work_{leaf}_preserved"] = unique_work_preserved(workspace, branch, state)
-                try:
-                    checks[f"unique_ref_{leaf}_preserved"] = git(workspace / "project", "rev-parse", branch) == state["head"]
-                except subprocess.CalledProcessError:
-                    checks[f"unique_ref_{leaf}_preserved"] = False
+                present, observed = observe_git(workspace / "project", "rev-parse", branch)
+                checks[f"unique_ref_{leaf}_preserved"] = present and observed == state["head"]
         checks["remote_refs_unchanged"] = named_ref_snapshot_unchanged(before, after, "upstream.git")
         gaps.append("Review work/103 disposition, dirty-hunk/semantic evidence and any recovery reconstruction.")
     if name in {"holds", "volume"}:

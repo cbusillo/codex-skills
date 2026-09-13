@@ -86,7 +86,7 @@
     {
       "case": "edit",
       "immutable_evidence_sha256": {
-        "mechanical_score": "e92fa87d1f721e48691b43388f98b984254f70a1ee6780cfb3399af2208a6f02",
+        "mechanical_score": "d9a730bf537f5a280adf6fc6bd63dee8da084c0b3599e050fbbc55a3f24b999b",
         "native_jsonl": "cd4d1901f747c099ec922341ad2c1facd2976a23240baa3beb3eeec07c169061",
         "native_outcome": "e8e6aa1623e28dd098b8d0ae043b50a21838b4e5ec60ccceba653a013816d2cf",
         "source_receipt": "09a28040a0faef0865d842d81f9d2457b17f983f87a7b0f0349ac3dcf582e283"
@@ -127,7 +127,7 @@
     {
       "case": "edit",
       "immutable_evidence_sha256": {
-        "mechanical_score": "190fe67a244ef1531c5300af68aeaa1238e840581e9a10cfc822d5810c12460c",
+        "mechanical_score": "3b37cc0653e1b9ed9158cf7b0d9309ac05ca147303eaab9d4914f717a4d8e30d",
         "native_jsonl": "06c2f4bffd98d3d7874903777ccf65ab8efa78118ffe26ae494dd2c2f297d26e",
         "native_outcome": "f0433d69e655aa0a7d003152d34cad9bc3ba0e0224d13028732582fbc6adb2fa",
         "source_receipt": "f96dc737939ceb61e487e7520e73594f578070662cca5edfe38303e459b1fb65"
@@ -1149,12 +1149,12 @@
     "work-closeout/evaluations/parking_fixture.py": "ae8228e225c819f37aa29d03f5f78eb1a223198537f8cf97e2d3af8563984b66",
     "work-closeout/evaluations/run_cleanup_cases.py": "91dbd98e55e65f968614a69f8d86fc360be1351634bca035b63c1f3926be5e77",
     "work-closeout/evaluations/runtime_fixture.py": "b77738e27c338b74e94c75e62ec1296f3b56e5446fb408569fa73b5ea244bd77",
-    "work-closeout/evaluations/score_cleanup_case.py": "76ba90d4569afcca98133d400389e538ca031ba87b4500833f314d2cb0f4ac46",
+    "work-closeout/evaluations/score_cleanup_case.py": "e5d4dac392a0c4af9f09b90ced28c1d07c640242511acb0b851d8ccecdec00f6",
     "work-closeout/evaluations/test_cleanup_fixtures.py": "28ac38bd10667724ec9517c0fb6d1e30e29805c2113fca1aeb1bc619f7d6c804",
     "work-closeout/evaluations/test_cleanup_provider.py": "431c466a4b45709979a21cf4f60a9bc99bab2c49af7b293c6e7e4e0e122d31a9",
     "work-closeout/evaluations/test_run_cleanup_cases.py": "fb4a0b2eb4fa266682c1ac445b6c7c4de1b5f000dfd87e81e613624fa45f81c8",
-    "work-closeout/evaluations/test_runtime_cleanup_fixture.py": "77308d29f1a9b1650f2e0a4411c75f78944f4aa450cb90d52d745cd9ce4007dc",
-    "work-closeout/evaluations/test_score_cleanup_case.py": "b6475a90d68357dcda5693023cb29f5caa5befcb44a85b8dba18ed049b74097f"
+    "work-closeout/evaluations/test_runtime_cleanup_fixture.py": "e3c08e8c29c2bd4f498086f880c86347726dcd38990e6bd255b1e6269d87cb89",
+    "work-closeout/evaluations/test_score_cleanup_case.py": "d13ffe93b493320d2a01eea9fe68073ead8e583389468274e4e7fc00e27c9aa5"
   },
   "evaluation_source_note": "Evaluation hashes identify the final offline-validated fixture/scorer code; per-run runner and catalog hashes identify the actual native execution inputs separately.",
   "manual_acceptance": "not_assessed_by_this_generator",
