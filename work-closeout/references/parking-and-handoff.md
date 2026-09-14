@@ -71,6 +71,11 @@ owning GitHub issue or PR comment. Use local handoff files only as temporary
 scratch while drafting or when the user explicitly asks for an offline/private
 handoff.
 
+If a cross-repository prerequisite issue must still be created or identified,
+use `github-plan`'s [missing-gate handoff rule](../../github-plan/SKILL.md#missing-cross-repository-gates)
+to record who returns the canonical links and who verifies/connects the native
+blockers. Keep the waiting record on its permitted issue surface.
+
 - If a handoff file names an active issue or PR, copy the actionable summary,
   blockers, next action, validation state, and relevant point-in-time links to
   that GitHub thread before relying on it.

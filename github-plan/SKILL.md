@@ -495,6 +495,36 @@ the graph is clear. `not_planned` closure is intentionally different: it may
 retain open blockers or sub-issues, reports them in the result, and preserves the
 GitHub `not_planned` state reason as the durable supersession signal.
 
+### Missing Cross-Repository Gates
+
+When another repository's maintainer must create or identify a prerequisite
+issue before downstream blockers can be linked, include a return-and-link action
+in the canonical waiting record. Use an automation-owned `Current Status` or a
+bot-authored planning comment under the existing body-ownership rules:
+
+- Name the gate maintainer, downstream coordinator, return thread, and affected
+  downstream issues, using the existing [actor routing](#local-conventions).
+- Explicitly ask the maintainer to reply/tag the coordinator in that thread with
+  the canonical gate links and relevant completion criteria when ready.
+- Name who will verify the returned gate's scope/status and add or reconcile the
+  native blockers under existing authorization. Relationship updates do not
+  require rewriting a protected issue body.
+
+Use `Waiting for:` and, while no native blocker exists, `Blocked by: No native
+issue blocker; waiting for ...`. Existing label and Focus rules still apply;
+milestone membership or a mention alone does not establish a native dependency.
+Do not claim the missing gate or link exists until verified. Once the gate is
+known, use normal dependency tracking without an extra return round-trip.
+Reuse applicable approval; when posting authority is missing, prepare the draft
+and identify the remaining action. This rule does not authorize messages,
+mentions, unrelated writes, or recurring notifications/monitoring.
+
+Example draft: "Gate maintainer: create or identify the prerequisite for
+`OWNER/CLIENT#28`, then reply to the client coordinator on that issue with its
+canonical link and completion criteria. The coordinator will verify it and
+reconcile the native blocker under existing authorization. Until then, the
+client issue waits for gate identification and linkage."
+
 ## Related Issue Sweep
 
 Stale GitHub planning state is a regression source. Before closeout, handoff,
