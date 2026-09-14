@@ -1048,28 +1048,96 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
     def test_timeout_kills_descendants_that_inherit_output_pipes(self):
         temporary, root = self.make_git_worktree()
         self.addCleanup(temporary.cleanup)
+        descendant_ready = root.parent / "preparation-descendant-ready"
+        preparation_processes = []
+        preparation_started = None
+        preparation_witness_observed = False
+        real_popen = subprocess.Popen
+        descendant_command = (
+            "from pathlib import Path; import time; "
+            f"Path({str(descendant_ready)!r}).write_text('ready', encoding='utf-8'); "
+            "time.sleep(10)"
+        )
+        preparation_command = [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import subprocess, sys, time; "
+                f"child = subprocess.Popen([sys.executable, '-c', {descendant_command!r}]); "
+                "time.sleep(10)"
+            ),
+        ]
+
+        def witnessed_popen(*args, **kwargs):
+            nonlocal preparation_started, preparation_witness_observed
+            process = real_popen(*args, **kwargs)
+            command = args[0] if args else kwargs.get("args")
+            if command != preparation_command:
+                return process
+            preparation_processes.append(process)
+            deadline = time.monotonic() + 2
+            while not descendant_ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            if not descendant_ready.exists():
+                try:
+                    os.killpg(process.pid, jb_inspect.signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=2)
+                self.fail("preparation descendant did not reach the readiness witness")
+            preparation_witness_observed = True
+            preparation_started = time.monotonic()
+            return process
+
         context = self.make_context(
             root,
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import subprocess, sys, time; "
-                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
-                    "time.sleep(30)"
-                ),
-            ],
+            preparation_command,
         )
-        started = time.monotonic()
-        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}):
-            with self.assertRaises(jb_inspect.InspectError) as timed_out:
-                jb_inspect.run_repository_preparation(
-                    self.prep_args(repository_preparation_timeout_ms=25),
-                    context,
-                )
+        group_absent = False
+        try:
+            with (
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}),
+                patch.object(jb_inspect.subprocess, "Popen", side_effect=witnessed_popen),
+            ):
+                with self.assertRaises(jb_inspect.InspectError) as timed_out:
+                    jb_inspect.run_repository_preparation(
+                        self.prep_args(repository_preparation_timeout_ms=25),
+                        context,
+                    )
+                preparation_finished = time.monotonic()
 
-        self.assertEqual(timed_out.exception.payload["error_reason"], "repository_preparation_timeout")
-        self.assertLess(time.monotonic() - started, 3.0)
+            self.assertTrue(descendant_ready.exists())
+            self.assertTrue(preparation_witness_observed)
+            self.assertIsNotNone(preparation_started)
+            self.assertEqual(len(preparation_processes), 1)
+            self.assertEqual(timed_out.exception.payload["error_reason"], "repository_preparation_timeout")
+            preparation_elapsed = preparation_finished - preparation_started
+            self.assertLess(preparation_elapsed, 3.0)
+            group_deadline = time.monotonic() + 2
+            while time.monotonic() < group_deadline:
+                try:
+                    os.killpg(preparation_processes[0].pid, 0)
+                except ProcessLookupError:
+                    group_absent = True
+                    break
+                time.sleep(0.005)
+            self.assertTrue(group_absent, "preparation process group remained after timeout cleanup")
+        finally:
+            for process in preparation_processes:
+                if not group_absent:
+                    try:
+                        os.killpg(process.pid, jb_inspect.signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if not group_absent:
+                        try:
+                            os.killpg(process.pid, jb_inspect.signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    process.communicate(timeout=2)
 
     def test_opt_out_and_recursion_are_explicit_and_non_executing(self):
         temporary, root = self.make_git_worktree()
@@ -10833,6 +10901,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
             current = root / "current"
             current.symlink_to(old_deployment, target_is_directory=True)
             marker = root / "child-started"
+            lock_attempt = root / "child-lock-attempt"
             child_code = f"""
 import importlib.util
 import os
@@ -10843,6 +10912,16 @@ spec = importlib.util.spec_from_file_location('jb_inspect_child', script)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+real_outcome_routing_lock = module.outcome_routing_lock
+class WitnessedOutcomeRoutingLock:
+    def __init__(self, *args, **kwargs):
+        self.inner = real_outcome_routing_lock(*args, **kwargs)
+    def __enter__(self):
+        Path({str(lock_attempt)!r}).write_text('attempting', encoding='utf-8')
+        return self.inner.__enter__()
+    def __exit__(self, *args):
+        return self.inner.__exit__(*args)
+module.outcome_routing_lock = WitnessedOutcomeRoutingLock
 Path({str(marker)!r}).write_text('started', encoding='utf-8')
 module.log_outcome({{
     'command': 'inspect-closeout',
@@ -10861,33 +10940,61 @@ module.log_outcome({{
             })
             environment.pop(jb_inspect.DEPLOYMENT_MANIFEST_ENV, None)
 
-            with patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": str(cache)}, clear=False):
-                with jb_inspect.outcome_routing_lock(timeout_ms=5_000):
-                    child = subprocess.Popen(
-                        [sys.executable, "-c", child_code],
-                        env=environment,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
-                    deadline = time.monotonic() + 5
-                    while not marker.exists() and time.monotonic() < deadline:
-                        time.sleep(0.01)
-                    self.assertTrue(marker.exists(), "child did not reach the routing lock")
-                    time.sleep(0.1)
-                    replacement = root / ".current-new"
-                    replacement.symlink_to(new_deployment, target_is_directory=True)
-                    os.replace(replacement, current)
+            child = None
 
-            stdout, stderr = child.communicate(timeout=10)
-            self.assertEqual(child.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
-            self.assertFalse((old_deployment / "outcomes.jsonl").exists())
-            records = [
-                json.loads(line)
-                for line in (new_deployment / "outcomes.jsonl").read_text(encoding="utf-8").splitlines()
-            ]
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["client_run_id"], "routing-test")
+            def drain_child(*, terminate: bool) -> tuple[str, str]:
+                if child is None:
+                    return "", ""
+                if terminate and child.poll() is None:
+                    try:
+                        os.killpg(child.pid, jb_inspect.signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    return child.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(child.pid, jb_inspect.signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    return child.communicate(timeout=2)
+
+            try:
+                with patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": str(cache)}, clear=False):
+                    with jb_inspect.outcome_routing_lock(timeout_ms=5_000):
+                        child = subprocess.Popen(
+                            [sys.executable, "-c", child_code],
+                            env=environment,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            start_new_session=True,
+                        )
+                        deadline = time.monotonic() + 5
+                        while not lock_attempt.exists() and child.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        if not marker.exists() or not lock_attempt.exists():
+                            child_stdout, child_stderr = drain_child(terminate=True)
+                            self.fail(
+                                "child did not reach the routing-lock attempt witness; "
+                                f"stdout={child_stdout}\nstderr={child_stderr}"
+                            )
+                        replacement = root / ".current-new"
+                        replacement.symlink_to(new_deployment, target_is_directory=True)
+                        os.replace(replacement, current)
+
+                child_stdout, child_stderr = child.communicate(timeout=10)
+                self.assertEqual(child.returncode, 0, f"stdout={child_stdout}\nstderr={child_stderr}")
+                self.assertFalse((old_deployment / "outcomes.jsonl").exists())
+                records = [
+                    json.loads(line)
+                    for line in (new_deployment / "outcomes.jsonl").read_text(encoding="utf-8").splitlines()
+                ]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["client_run_id"], "routing-test")
+            finally:
+                if child is not None:
+                    drain_child(terminate=False)
 
     def test_routing_lock_uses_windows_file_lock_fallback(self):
         class FakeMsvcrt:

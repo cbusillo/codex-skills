@@ -46,8 +46,59 @@ class FetchCodexManualTests(unittest.TestCase):
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 const { fetchCodexManual } = await import(process.argv[2]);
+const nativeFetch = globalThis.fetch;
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
 const body = Buffer.from('# Manual\\n\\n## Section\\nBody\\n');
 let bodyStarted = false;
+let bodyReadStarted = false;
+let helperAbortFired = false;
+let proofDeadline;
+let resolveProofDeadline;
+const proofDeadlinePromise = new Promise(resolve => {
+  resolveProofDeadline = resolve;
+});
+const helperTimers = new Set();
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay !== 200) return nativeSetTimeout(callback, delay, ...args);
+  const timer = { active: true, args, callback };
+  helperTimers.add(timer);
+  return timer;
+};
+globalThis.clearTimeout = timer => {
+  if (helperTimers.has(timer)) {
+    timer.active = false;
+    return;
+  }
+  nativeClearTimeout(timer);
+};
+globalThis.fetch = async (...args) => {
+  const response = await nativeFetch(...args);
+  const method = args[1]?.method ?? 'GET';
+  if (method !== 'GET') return response;
+  return new Proxy(response, {
+    get(target, property) {
+      if (property === 'text') {
+        return async () => {
+          bodyReadStarted = true;
+          const bodyPromise = target.text();
+          proofDeadline = nativeSetTimeout(
+            () => resolveProofDeadline({ kind: 'proof-deadline' }),
+            1000,
+          );
+          const timer = [...helperTimers].find(candidate => candidate.active);
+          if (timer) {
+            helperAbortFired = true;
+            timer.callback(...timer.args);
+          }
+          return bodyPromise;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+};
 const server = createServer((request, response) => {
   response.writeHead(200, {
     'x-content-sha256': createHash('sha256').update(body).digest('hex'),
@@ -58,21 +109,48 @@ const server = createServer((request, response) => {
   response.write(body.subarray(0, 1));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-let rejected = false;
+const manualUrl = 'http://127.0.0.1:' + server.address().port + '/manual.md';
+let outcome;
 try {
-  await fetchCodexManual({
-    cacheDir: process.argv[1],
-    manualUrl: 'http://127.0.0.1:' + server.address().port + '/manual.md',
-    timeoutMs: 200,
-  });
-} catch (error) {
-  rejected = error.message.includes('could not be fetched');
+  outcome = await Promise.race([
+    fetchCodexManual({
+      cacheDir: process.argv[1],
+      manualUrl,
+      timeoutMs: 200,
+    }).then(
+      () => ({ kind: 'resolved' }),
+      error => ({
+        kind: 'rejected',
+        expectedError: error.message.includes('could not be fetched'),
+      }),
+    ),
+    proofDeadlinePromise,
+  ]);
 } finally {
+  nativeClearTimeout(proofDeadline);
+  globalThis.fetch = nativeFetch;
+  globalThis.setTimeout = nativeSetTimeout;
+  globalThis.clearTimeout = nativeClearTimeout;
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
 }
-if (bodyStarted && rejected) process.stdout.write('timed_out');
-else process.exitCode = 1;
+if (
+  bodyStarted &&
+  bodyReadStarted &&
+  helperAbortFired &&
+  outcome.kind === 'rejected' &&
+  outcome.expectedError
+) {
+  process.stdout.write('timed_out');
+} else {
+  process.stderr.write(JSON.stringify({
+    bodyStarted,
+    bodyReadStarted,
+    helperAbortFired,
+    outcome,
+  }));
+  process.exitCode = 1;
+}
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

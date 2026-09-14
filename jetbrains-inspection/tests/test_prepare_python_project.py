@@ -117,8 +117,14 @@ class PreparePythonProjectTest(unittest.TestCase):
             path = Path(temporary) / "file.xml"
             prepare_python_project.atomic_write(path, "same\n")
             before = path.stat().st_mtime_ns
-            prepare_python_project.atomic_write(path, "same\n")
-            self.assertEqual(path.stat().st_mtime_ns, before)
+            real_replace = prepare_python_project.os.replace
+            with patch.object(prepare_python_project.os, "replace", wraps=real_replace) as replace_file:
+                prepare_python_project.atomic_write(path, "same\n")
+                replace_file.assert_not_called()
+                self.assertEqual(path.stat().st_mtime_ns, before)
+                prepare_python_project.atomic_write(path, "changed\n")
+                replace_file.assert_called_once()
+            self.assertEqual(path.read_text(encoding="utf-8"), "changed\n")
 
     def test_preflight_requires_ignored_untracked_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
