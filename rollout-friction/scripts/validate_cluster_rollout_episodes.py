@@ -234,8 +234,24 @@ def test_count_versions_are_explicit_and_cannot_be_mixed(module: ModuleType) -> 
             raise AssertionError("relabeling a legacy report envelope must not reinterpret its child costs")
 
 
+
+def test_failed_scan_is_not_an_empty_cluster_report(module: ModuleType) -> None:
+    failed = {"ok": False, "schema_version": 2, "count_semantics": "normalized_events_v2",
+              "scan_limitations": [{"kind": "scan_time_limit"}], "partial_results_discarded": True}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "episodes.json"
+        for text in (json.dumps(failed), json.dumps(failed) + "\n" + json.dumps({"id": "legacy"})):
+            path.write_text(text)
+            try:
+                module.load_episodes(path)
+            except SystemExit as exc:
+                assert "episode scan failed" in str(exc)
+            else:
+                raise AssertionError("failed analysis must not become successful empty clusters")
+
 def main() -> int:
     module = load_module()
+    test_failed_scan_is_not_an_empty_cluster_report(module)
     test_clusters_by_signal_signature(module)
     test_repeated_command_clusters_split_by_dominant_cause(module)
     test_repeated_command_clusters_keep_same_cause_together(module)

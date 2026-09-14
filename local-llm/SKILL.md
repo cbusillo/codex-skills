@@ -182,12 +182,29 @@ is an LM Studio JIT hint; already-loaded manual or explicit instances may keep
 their load-time TTL instead of honoring per-request TTL.
 
 For deterministic long-context or load-parameter-sensitive runs, use
-`--load-policy api_explicit` with role or CLI `context_length`,
-`flash_attention`, and `--unload-after` when cleanup should be immediate. This
+`--load-policy api_explicit` with role `context_length` (or `load.context_length`)
+or CLI `--context-length`, plus role `load.flash_attention` or CLI
+`--flash-attention`. Use `--unload-after` when cleanup should be immediate. This
 uses `/api/v1/models/load` before chat and unloads only by the returned
-`instance_id`; do not attempt model-name-only unloads. On the tested LM Studio
-build, native load accepts context and flash-attention options but rejects TTL,
-so TTL remains a JIT-chat hint rather than an explicit-load cleanup mechanism.
+`instance_id`; do not attempt model-name-only unloads. Before warm-up or task
+content is sent, the helper requires a nonblank returned instance ID without
+surrounding whitespace. It also verifies typed `status: loaded` plus each
+requested load setting against the typed
+`load_config` echoed by LM Studio. Both warm-up and task chat are then bound to
+that exact instance ID while output keeps the originally requested and served
+model provenance. Missing, differently typed, or mismatched load evidence fails
+the run rather than qualifying the requested context. When `--unload-after` is
+set, later qualification, warm-up, or chat failures still trigger cleanup by
+that exact returned instance ID. On the tested LM Studio build, native load
+accepts context and flash-attention options but rejects TTL, so TTL remains a
+JIT-chat hint rather than an explicit-load cleanup mechanism.
+
+Successful JSON output retains provider-supplied usage for the task response
+without synthesizing absent token values. Warm-up usage, when supplied, remains
+separate under lifecycle evidence so it is not mistaken for task usage. Failed
+explicit runs retain the lifecycle evidence gathered before the error, including
+load verification and requested cleanup results; task usage remains available
+when a later content or cleanup check fails.
 
 The `lms` CLI is an operator fallback for local diagnostics, downloads, or
 manual recovery when the HTTP lifecycle path is unavailable. For non-local LM

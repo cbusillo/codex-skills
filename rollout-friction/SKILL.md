@@ -240,7 +240,11 @@ rollout files, session traces, runout files, or agent workflow friction.
    newline- or NUL-delimited file and pass `--paths-file`; do not pass one
    space-joined path string. Keep `--max-files`, total `--max-bytes`, and
    optional `--max-file-bytes` bounded, and read `scan_limitations` separately
-   from findings when judging degraded scans. Keep analysis local.
+   from findings when judging degraded scans. For long scans, use `--progress`
+   and an optional cooperative `--max-seconds` budget; keep an outer process
+   deadline for operations that cannot be interrupted between checks. Read the
+   [budget and count contract](references/event-counts.md) before interpreting
+   a time-limited result. Keep analysis local.
 3. Run `segment_rollout_episodes.py` over the same bounded source set to turn
    line-level signal hits into costed friction episodes. Episodes are the review
    unit: they preserve the intent-to-outcome shape better than individual

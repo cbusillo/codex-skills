@@ -3,6 +3,24 @@
 Read this reference when interpreting analyzer or episode counts, comparing
 reports, or giving reports and trajectory skeletons to a model.
 
+For long inputs, the analyzer and segmenter accept `--progress` for redacted
+file/stage updates on stderr and `--max-seconds` for a cooperative analysis
+budget. Its clock starts after file discovery and target planning; final report
+encoding and output are outside that clock. Budget checks occur between records,
+fragments, and stages (between files for episode grouping); they cannot
+interrupt a single slow I/O, parser, or regex operation. Use an outer process
+deadline when a hard limit is required. On budget exhaustion the command exits
+2 and discards the entire partial report. JSON mode emits `ok: false` with a
+`scan_time_limit` limitation and no findings or episode arrays; text/JSONL mode
+keeps stdout empty and reports the failure on stderr. The clusterer rejects a
+failed JSON report. Check the command exit status before consuming JSONL: an
+empty output from a failed scan is not a successful scan with zero episodes.
+
+Snippet limits apply after redaction. Matching uses the full bounded input;
+performance optimizations do not truncate signal evidence or change version-2
+counts. A time-limited run cannot establish complete coverage or absence of
+friction.
+
 New reports declare `schema_version: 2` and
 `count_semantics: normalized_events_v2`. The analyzer's
 `repeated_command_failure.count` counts distinct failed result events. Other

@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -1668,7 +1670,134 @@ def test_split_output_bodies_cannot_supply_terminal_headers() -> None:
                 raise AssertionError("a real split preamble/header must retain its authoritative status")
 
 
+
+def test_redaction_matches_previous_patterns() -> None:
+    module = load_module()
+    old_url = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@\S+", re.I)
+    old_path = re.compile(module.PATH_RE.pattern.replace(r"(?<![A-Za-z0-9_.-])", ""))
+
+    def previous(value: str, snippet_limit: int) -> str:
+        scrubbed = old_url.sub("[REDACTED_URL_AUTH]", " ".join(value.strip().split()))
+        for pattern, replacement in [(module.SECRET_RE, "[REDACTED_SECRET]"),
+                                     (old_path, "[REDACTED_PATH]"),
+                                     (module.LOCAL_HOST_RE, "[REDACTED_HOST]"),
+                                     (module.HOST_RE, "[REDACTED_HOST]")]:
+            scrubbed = pattern.sub(replacement, scrubbed)
+        return scrubbed[:snippet_limit - 3] + "..." if len(scrubbed) > snippet_limit else scrubbed
+
+    cases = [
+        "9http://" + "user:pass" + "@example.test/x", "09.-+HTTP://" + "u:p" + "@host/path",
+        "1http://" + "::p" + "@example.test", "https://" + "a::" + "@host", "https://" + ":p:" + "@host",
+        "https://" + "a:b:c:d" + "@host/x", "https://" + "user:pass/no-auth" + "@host",
+        "x" * 300 + " http://" + "user:password" + "@example.test/path",
+        "http://user:" + "p" * 300 + "@example.test/path after",
+        "token=" + "x" * 300 + " trailing text", "abc/def/ghi",
+        "prefix../foo/bar ../secret/path /Users/example/file C:\\secret\\file",
+    ]
+    rng = random.Random(626)
+    alphabet = "abAZ09:/@.+-~ \\\n'\"" + "İıſK"
+    atoms = ["9", "09.+-", "http://", "x://", "u:p@h", "::p@h", "u::@h",
+             "a/b/c", "/Users/demo/file", "token=dummy", " / ", "@", ":", "/"]
+    for _ in range(2500):
+        cases.append("".join(rng.choice(alphabet) for _ in range(rng.randrange(80))))
+        cases.append("".join(rng.choice(atoms) for _ in range(rng.randrange(1, 10))))
+    for text in cases:
+        for limit in (16, 180, 1000):
+            expected, actual = previous(text, limit), module.redacted(text, limit)
+            assert actual == expected, (text, limit, expected, actual)
+
+
+def test_long_tokens_do_not_stall_redaction() -> None:
+    # A generous subprocess deadline contains regressions; this is not a timing
+    # benchmark. The old search retried at each character of the long plain run.
+    code = """
+import importlib.util, sys
+s=importlib.util.spec_from_file_location('large_redaction',sys.argv[1])
+m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+text='a1'*500_000+' http://'+':'*100_000+'/invalid@example.test'
+assert m.redacted(text,120)=='a1'*58+'a...'
+"""
+    subprocess.run([sys.executable, "-c", code, str(SCRIPT)], check=True, timeout=20,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def test_repeated_hits_reuse_bounded_fragment_work() -> None:
+    module = load_module()
+    for count in (10, 40):
+        event = module.TraceEvent(1, "one-context", "context", [module.Fragment("stale_results " * count, False)])
+        with mock.patch("analyze_rollouts.redacted", wraps=module.redacted) as redact, \
+             mock.patch("analyze_rollouts.canonical_hit_text", wraps=module.canonical_hit_text) as canonical:
+            findings = module.collect_event_hits(Path("trace.jsonl"), [event], 180)
+        assert sum(f.count for f in findings.values()) == count
+        assert redact.call_count == 1
+        assert canonical.call_count <= 2
+
+
+def test_error_prose_scans_only_expected_search_candidates() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_trace(Path(tmp), [
+            {"type": "tool_result", "cmd": "build", "exit_code": 0, "output": "permission denied is printed data"},
+            {"type": "tool_result", "cmd": "build", "exit_code": 1, "output": "build failed"},
+            {"type": "tool_result", "cmd": "rg needle missing", "exit_code": 1, "output": "No such file or directory"},
+        ])
+        with mock.patch("analyze_rollouts.output_error_hint", wraps=module.output_error_hint) as hints:
+            events = module.normalize_events(path, 100_000)
+        assert hints.call_count == 1
+        assert [(e.failed, e.expected_nonzero) for e in events] == [(False, False), (True, False), (True, False)]
+
+
+def test_scan_budget_failure_and_progress_are_separate() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_trace(Path(tmp), [{"type": "tool_result", "exit_code": 1, "output": "private evidence"}])
+        def stop_at_matching(_budget: Any, phase: str, file: Path | None = None) -> None:
+            if phase == "signal matching":
+                raise module.ScanTimeLimit(phase, file, 1.0)
+        for json_mode in (False, True):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            argv = [str(SCRIPT), str(path), "--max-seconds", "1"] + (["--json"] if json_mode else [])
+            with mock.patch.object(sys, "argv", argv), mock.patch("analyze_rollouts.ScanBudget.check", stop_at_matching), \
+                 redirect_stdout(stdout), redirect_stderr(stderr):
+                assert module.main() == 2
+            payload = json.loads(stdout.getvalue() if json_mode else stderr.getvalue())
+            assert payload["ok"] is False and payload["partial_results_discarded"] is True
+            assert payload["scan_limitations"][0]["kind"] == "scan_time_limit"
+            assert "findings" not in payload and "outcome_summary" not in payload
+            assert str(path) not in json.dumps(payload) and "private evidence" not in json.dumps(payload)
+            if not json_mode:
+                assert stdout.getvalue() == ""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", [str(SCRIPT), str(path), "--json", "--progress"]), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            assert module.main() == 0
+        assert json.loads(stdout.getvalue())["ok"] is True
+        progress = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        assert [line["stage"] for line in progress] == ["normalization", "signal matching", "report"]
+        assert str(path) not in stderr.getvalue()
+    with mock.patch("analyze_rollouts.time.monotonic", side_effect=[10.0, 10.5, 11.0]):
+        budget = module.ScanBudget(1.0)
+        budget.check("first")
+        try:
+            budget.check("second")
+        except module.ScanTimeLimit:
+            pass
+        else:
+            raise AssertionError("elapsed budget must expire")
+    for invalid in ("0", "-1", "nan", "inf"):
+        try:
+            module.positive_seconds(invalid)
+        except Exception as exc:
+            assert type(exc).__name__ == "ArgumentTypeError"
+        else:
+            raise AssertionError("invalid budget accepted")
+
 def main() -> int:
+    test_redaction_matches_previous_patterns()
+    test_long_tokens_do_not_stall_redaction()
+    test_repeated_hits_reuse_bounded_fragment_work()
+    test_error_prose_scans_only_expected_search_candidates()
+    test_scan_budget_failure_and_progress_are_separate()
     test_result_statuses_survive_noise_filters_and_mirrors()
     test_successful_commands_prompts_and_source_dumps_are_not_failures()
     test_failure_diagnostics_are_one_event_and_batches_keep_children()
