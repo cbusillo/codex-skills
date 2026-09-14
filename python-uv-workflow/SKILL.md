@@ -14,6 +14,8 @@ scripts, dependencies, packaging, release, or runtime commands are involved.
 ## Core Rules
 
 - Prefer `uv run ...` for Python commands.
+- Run executable shell wrappers directly; do not wrap them in `uv run`, which
+  can install the caller's project before the wrapper starts.
 - Do not call system `python`, `pip`, or ad hoc virtualenv paths unless a repo
   explicitly requires it or you are diagnosing environment bootstrap failure.
 - Inspect `pyproject.toml` before choosing commands.
@@ -34,6 +36,13 @@ scripts, dependencies, packaging, release, or runtime commands are involved.
 - Formatting/linting/type checks: use documented uv commands and respect the
   user's linting constraints. Do not run broad lint unless requested or scoped
   to changed files.
+
+For standalone Python utilities unrelated to the current project, use their
+PEP 723 script metadata (`uv run path/to/helper.py`) or `uv run --no-project
+python <script.py>`. Add `--no-config` when caller-specific uv configuration must
+also be excluded. These options avoid inheriting project setup; they do not
+authorize dependency installation or builds that the user restricted. Actual
+project commands keep the repository's normal environment and gates.
 
 ## Dependencies And Lockfiles
 

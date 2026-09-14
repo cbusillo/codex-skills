@@ -14,9 +14,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shlex
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,10 +48,13 @@ PATH_RE = re.compile(
     r"srv|run|mnt|media|dev|proc|sys|workspace|workspaces|app"
     r")/[^\s,'\"]+|"
     r"(?:\.\.?/)+[^\s,'\"]+|"
-    r"(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
+    r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
     r"[A-Za-z]:\\[^\s,'\"]+"
 )
-URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@\S+", re.I)
+URL_AUTH_RE = re.compile(
+    r"(?<![a-z0-9+.-])(?P<prefix>[0-9+.-]*)"
+    r"[a-z][a-z0-9+.-]*://[^\s/@][^\s/@:]*:[^\s/@]+@\S+", re.I,
+)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
 LOCAL_HOST_RE = re.compile(
     r"\b(?:localhost|host\.docker\.internal|[a-z0-9-]+\.(?:local|localhost|internal|test))\b",
@@ -350,6 +355,55 @@ class ScanTarget(NamedTuple):
     truncated: bool
 
 
+class ScanTimeLimit(Exception):
+    def __init__(self, phase: str, path: Path | None, seconds: float) -> None:
+        super().__init__(f"scan time limit reached during {phase}; partial results discarded")
+        self.phase, self.path, self.seconds = phase, path, seconds
+
+
+class ScanBudget:
+    """Cooperative checks; an outer process deadline must bound a single slow operation."""
+
+    def __init__(self, seconds: float | None = None, progress: bool = False) -> None:
+        self.started = time.monotonic()
+        self.seconds, self.progress = seconds, progress
+
+    def check(self, phase: str, path: Path | None = None) -> None:
+        if self.seconds is not None and time.monotonic() - self.started >= self.seconds:
+            raise ScanTimeLimit(phase, path, self.seconds)
+
+    def stage(self, phase: str, path: Path | None = None) -> None:
+        self.check(phase, path)
+        if self.progress:
+            print(json.dumps({"stage": phase, "file_id": stable_file_id(path) if path else None,
+                              "elapsed_seconds": round(time.monotonic() - self.started, 3)}), file=sys.stderr)
+
+
+def positive_seconds(value: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be finite and greater than zero")
+    return seconds
+
+
+def add_budget_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-seconds", type=positive_seconds,
+                        help="Cooperative analysis time limit; cannot interrupt one slow operation.")
+    parser.add_argument("--progress", action="store_true", help="Report redacted file/stage progress on stderr.")
+
+
+def emit_time_limit(exc: ScanTimeLimit, *, json_mode: bool) -> int:
+    limitation: dict[str, Any] = {"kind": "scan_time_limit", "phase": exc.phase,
+                                  "limit_seconds": exc.seconds, "message": str(exc)}
+    if exc.path is not None:
+        limitation["file_id"] = stable_file_id(exc.path)
+    # Omit count/episode arrays entirely: a failed scan is not a valid empty scan.
+    payload = {"schema_version": 2, "count_semantics": COUNT_SEMANTICS, "ok": False,
+               "partial_results_discarded": True, "scan_limitations": [limitation]}
+    print(json.dumps(payload, sort_keys=True), file=sys.stdout if json_mode else sys.stderr)
+    return 2
+
+
 SIGNALS: list[Signal] = [
     Signal(
         "github_graphql_rate_limit",
@@ -515,6 +569,7 @@ SIGNALS: list[Signal] = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan local rollout/session traces for workflow friction.")
+    add_budget_arguments(parser)
     parser.add_argument("paths", nargs="*", type=Path, help="Files or directories to scan.")
     parser.add_argument(
         "--paths-file",
@@ -736,9 +791,13 @@ def is_candidate_file(path: Path) -> bool:
 
 def redacted(text: str, context_chars: int) -> str:
     single_line = " ".join(text.strip().split())
-    scrubbed = URL_AUTH_RE.sub("[REDACTED_URL_AUTH]", single_line)
+    # Start once per scheme/path component, rather than at every character of
+    # long tokens. The old URL search left any leading nonletters untouched.
+    scrubbed = (URL_AUTH_RE.sub(lambda match: match["prefix"] + "[REDACTED_URL_AUTH]", single_line)
+                if "://" in single_line and "@" in single_line else single_line)
     scrubbed = SECRET_RE.sub("[REDACTED_SECRET]", scrubbed)
-    scrubbed = PATH_RE.sub("[REDACTED_PATH]", scrubbed)
+    if "/" in scrubbed or "~" in scrubbed or "\\" in scrubbed:
+        scrubbed = PATH_RE.sub("[REDACTED_PATH]", scrubbed)
     scrubbed = LOCAL_HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     scrubbed = HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     if len(scrubbed) > context_chars:
@@ -761,7 +820,6 @@ def line_text_from_json(value: Any) -> str:
 def json_fragments(value: Any, structured_context: bool = False) -> Iterable[Fragment]:
     if isinstance(value, dict):
         structured = structured_context or is_structured_payload(value)
-        summary = line_text_from_json(value)
         for key, child in value.items():
             if isinstance(child, str) and key in NESTED_JSON_STRING_KEYS:
                 nested = parse_nested_json_object(child)
@@ -781,8 +839,10 @@ def json_fragments(value: Any, structured_context: bool = False) -> Iterable[Fra
                 yield Fragment(f"{key}={child}", False, structured)
                 continue
             yield from json_fragments(child, structured)
-        if summary != json.dumps(value, sort_keys=True, default=str):
-            yield Fragment(summary, True, structured)
+        # Without an interesting key, line_text_from_json is the JSON dump
+        # itself and was never emitted as a summary. Avoid constructing it twice.
+        if any(key in value for key in INTERESTING_JSON_KEYS):
+            yield Fragment(line_text_from_json(value), True, structured)
     elif isinstance(value, list):
         for child in value:
             yield from json_fragments(child, structured_context)
@@ -1095,7 +1155,8 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
     )
     if event.exit_code is not None or tool_error or status in SUCCESS_STATUSES or (isinstance(payload, dict) and payload.get("success") is True):
         event.outcome_basis = "result_status"
-        event.expected_nonzero = expected_search_status(event.command, event.exit_code, tool_error or output_error_hint(payload))
+        event.expected_nonzero = (expected_search_status(event.command, event.exit_code, tool_error)
+                                  and not output_error_hint(payload))
         event.failed = tool_error or (event.exit_code is not None and event.exit_code != 0 and not event.expected_nonzero)
         event.succeeded = not event.failed
     else:
@@ -1106,7 +1167,8 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
         ):
             return
         event.exit_code, event.failed, event.succeeded = text_outcome(event.fragments, typed_result=typed_result)
-        event.expected_nonzero = expected_search_status(event.command, event.exit_code, output_error_hint(payload))
+        event.expected_nonzero = (expected_search_status(event.command, event.exit_code, False)
+                                  and not output_error_hint(payload))
         if event.expected_nonzero:
             event.failed, event.succeeded = False, True
         if event.failed or event.succeeded or event.exit_code is not None:
@@ -1116,17 +1178,21 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
 def normalize_events(
     path: Path, max_bytes: int, since_ts: float | None = None, until_ts: float | None = None,
     after_file: Path | None = None, after_line: int | None = None,
+    budget: ScanBudget | None = None,
 ) -> list[TraceEvent]:
     calls: dict[str, str | list[str] | None] = {}
     previous_failure: dict[str, bool] = {}
     invocation_retries: dict[str, bool] = {}
     events: dict[str, TraceEvent] = {}
     session_id = ""
+    file_id = stable_file_id(path)
 
     def identity(event_key: str) -> str:
-        return hashlib.sha256(f"{stable_file_id(path)}:{session_id}:{event_key}".encode()).hexdigest()[:20]
+        return hashlib.sha256(f"{file_id}:{session_id}:{event_key}".encode()).hexdigest()[:20]
 
     for line, record in iter_records(path, max_bytes):
+        if budget is not None:
+            budget.check("normalization", path)
         if isinstance(record, dict) and record.get("type") in {"session_meta", "thread.started"}:
             metadata = record.get("payload", {})
             next_session = (str(record.get("thread_id", "")) if record.get("type") == "thread.started"
@@ -1179,7 +1245,7 @@ def normalize_events(
             tool_id = identity(f"tool:{child_call_id}:{identity_slot}" if child_call_id else f"tool:{line}:{slot}") if event_kind in {"call", "result"} else None
             event_id = identity(f"{event_kind}:{child_call_id}:{identity_slot}" if child_call_id else f"{event_kind}:{line}:{slot}")
             event = TraceEvent(line, event_id, event_kind, list(json_fragments(payload)), tool_id, event_command)
-            event.file_id = stable_file_id(path)
+            event.file_id = file_id
             typed_result = (kind in RESULT_TYPES or role == "tool"
                             or (isinstance(payload, dict) and payload.get("type") in RESULT_TYPES))
             if native_phase != "item.updated":
@@ -1201,11 +1267,14 @@ def normalize_events(
 
 
 def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
-                       suppress_investigation_noise: bool = False) -> dict[str, Finding]:
+                       suppress_investigation_noise: bool = False,
+                       budget: ScanBudget | None = None) -> dict[str, Finding]:
     findings = {signal.name: Finding(signal) for signal in SIGNALS}
     seen_hits: set[tuple[int, str, str, int]] = set()
     line_signal_texts: dict[tuple[int, str], set[str]] = {}
     for event in events:
+        if budget is not None:
+            budget.check("signal matching", path)
         if event.kind == "scanner_diagnostic":
             continue
         line_no = event.line
@@ -1216,11 +1285,15 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                 signal_tags("repeated_command_failure", evidence, evidence), event.event_id, event.outcome_basis,
             ))
         for text, is_summary, is_structured in event.fragments:
+            if budget is not None:
+                budget.check("signal matching", path)
             if is_meta_echo(text):
                 continue
             if suppress_investigation_noise and not is_structured and is_suppressed_noise(text):
                 continue
             matched_auth_login_noise = bool(AUTH_LOGIN_NOISE_RE.search(text))
+            canonical_text = canonical_hit_text(text)
+            snippet: str | None = None
             for signal in SIGNALS:
                 if signal.name == "repeated_command_failure":
                     continue
@@ -1234,11 +1307,10 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                     continue
                 if signal.name == "auth_login_loop" and not matched_auth_login_noise:
                     continue
-                canonical_text = canonical_hit_text(text)
+                tags: tuple[str, ...] | None = None
                 for occurrence, match in enumerate(signal.pattern.finditer(text)):
                     if should_skip_signal_match(signal.name, text, canonical_text, match):
                         continue
-                    tags = signal_tags(signal.name, text, canonical_text)
                     line_signal_key = (line_no, signal.name)
                     line_texts = line_signal_texts.setdefault(line_signal_key, set())
                     if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
@@ -1248,11 +1320,15 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                         continue
                     seen_hits.add(hit_key)
                     line_texts.add(canonical_text)
+                    if tags is None:
+                        tags = signal_tags(signal.name, text, canonical_text)
+                    if snippet is None:
+                        snippet = redacted(text, context_chars)
                     findings[signal.name].add(
                         Hit(
                             file=path,
                             line=line_no,
-                            snippet=redacted(text, context_chars),
+                            snippet=snippet,
                             structured=is_structured,
                             tags=tags,
                             event_id=event.event_id,
@@ -1270,6 +1346,7 @@ def scan(
     after_file: Path | None = None,
     after_line: int | None = None,
     suppress_investigation_noise: bool = False,
+    budget: ScanBudget | None = None,
 ) -> ScanFindings:
     findings = {signal.name: Finding(signal) for signal in SIGNALS}
     all_events: list[TraceEvent] = []
@@ -1282,9 +1359,13 @@ def scan(
         if path in seen_paths:
             continue
         seen_paths.add(path)
-        events = normalize_events(path, read_bytes, since_ts, until_ts, after_file, after_line)
+        if budget is not None:
+            budget.stage("normalization", path)
+        events = normalize_events(path, read_bytes, since_ts, until_ts, after_file, after_line, budget)
         all_events.extend(events)
-        for name, finding in collect_event_hits(path, events, context_chars, suppress_investigation_noise).items():
+        if budget is not None:
+            budget.stage("signal matching", path)
+        for name, finding in collect_event_hits(path, events, context_chars, suppress_investigation_noise, budget).items():
             for hit in finding.hits:
                 findings[name].add(hit)
     return ScanFindings({
@@ -1605,16 +1686,22 @@ def main() -> int:
     files, limitations = iter_candidate_files(paths, args.max_files)
     targets, scan_limitations = plan_scan_targets(files, args.max_bytes, args.max_file_bytes)
     limitations.extend(scan_limitations)
-    findings = scan(
-        targets,
-        args.max_bytes,
-        args.context_chars,
-        since_ts=args.since_ts,
-        until_ts=args.until_ts,
-        after_file=args.after_file,
-        after_line=args.after_line,
-        suppress_investigation_noise=args.suppress_investigation_noise,
-    )
+    budget = ScanBudget(args.max_seconds, args.progress)
+    try:
+        findings = scan(
+            targets,
+            args.max_bytes,
+            args.context_chars,
+            since_ts=args.since_ts,
+            until_ts=args.until_ts,
+            after_file=args.after_file,
+            after_line=args.after_line,
+            suppress_investigation_noise=args.suppress_investigation_noise,
+            budget=budget,
+        )
+        budget.stage("report")
+    except ScanTimeLimit as exc:
+        return emit_time_limit(exc, json_mode=args.json)
     if args.json:
         emit_json(targets, findings, limitations)
     else:

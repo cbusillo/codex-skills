@@ -86,6 +86,8 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
     else:
         payload = None
     if isinstance(payload, dict):
+        if payload.get("ok") is False:
+            raise SystemExit("episode scan failed; rerun it successfully before clustering")
         object_records = payload.get("episodes", [])
         if not isinstance(object_records, list):
             raise SystemExit("episodes JSON object must contain an episodes array")
@@ -102,6 +104,8 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
         value = json.loads(line)
         if not isinstance(value, dict):
             raise SystemExit(f"line {line_no}: episode record must be an object")
+        if value.get("ok") is False:
+            raise SystemExit("episode scan failed; rerun it successfully before clustering")
         line_records.append(value)
     return line_records
 

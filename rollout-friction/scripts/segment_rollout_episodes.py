@@ -99,6 +99,7 @@ class Episode:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Group rollout friction hits into episodes.")
+    ANALYZER.add_budget_arguments(parser)
     parser.add_argument("paths", nargs="*", type=Path, help="Files or directories to scan.")
     parser.add_argument("--paths-file", type=Path, help="Read newline- or NUL-delimited trace paths from this file.")
     parser.add_argument("--root", type=Path, help="Directory to scan when no paths are provided.")
@@ -134,13 +135,18 @@ def scan_targets(args: argparse.Namespace) -> tuple[list[Any], list[Any]]:
     return targets, [*limitations, *scan_limitations]
 
 
-def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thresholds: bool = True) -> tuple[list[EventHit], list[TraceLine]]:
+def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thresholds: bool = True,
+                           budget: Any = None) -> tuple[list[EventHit], list[TraceLine]]:
     since_ts = ANALYZER.parse_timestamp_arg(args.since, "--since") if args.since else None
     until_ts = ANALYZER.parse_timestamp_arg(args.until, "--until") if args.until else None
     hits: list[EventHit] = []
     trace_lines: list[TraceLine] = []
-    events = ANALYZER.normalize_events(target.path, target.read_bytes, since_ts, until_ts)
-    findings = ANALYZER.collect_event_hits(target.path, events, args.context_chars, args.suppress_investigation_noise)
+    if budget is not None:
+        budget.stage("normalization", target.path)
+    events = ANALYZER.normalize_events(target.path, target.read_bytes, since_ts, until_ts, budget=budget)
+    if budget is not None:
+        budget.stage("signal matching", target.path)
+    findings = ANALYZER.collect_event_hits(target.path, events, args.context_chars, args.suppress_investigation_noise, budget)
     for finding in findings.values():
         signal = finding.signal
         if apply_thresholds and finding.count < signal.threshold:
@@ -149,7 +155,11 @@ def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thres
             hits.append(EventHit(signal.name, hit.line, hit.snippet, hit.structured, hit.tags,
                                  signal.severity, signal.category, signal.destination, signal.likely_cause,
                                  hit.event_id, hit.outcome_basis))
+    if budget is not None:
+        budget.stage("trace redaction", target.path)
     for event in events:
+        if budget is not None:
+            budget.check("trace redaction", target.path)
         trace_lines.append(TraceLine(
             event.line, ANALYZER.redacted(event.evidence_text(), args.context_chars),
             event.outcome_basis in {"result_status", "result_text"}, event.event_id, event.tool_id,
@@ -337,12 +347,18 @@ def main() -> int:
     args = parse_args()
     targets, limitations = scan_targets(args)
     episodes: list[Episode] = []
-    collected = [(target, *collect_hits_and_lines(target, args, apply_thresholds=False)) for target in targets]
-    counts = Counter(hit.signal for _target, hits, _lines in collected for hit in hits)
-    for target, hits, trace_lines in collected:
-        hits = [hit for hit in hits if counts[hit.signal] >= SIGNALS_BY_NAME[hit.signal].threshold]
-        episodes.extend(build_episodes(target, hits, args.max_gap_lines, trace_lines))
-    payloads = [episode_to_json(episode) for episode in episodes]
+    budget = ANALYZER.ScanBudget(args.max_seconds, args.progress)
+    try:
+        collected = [(target, *collect_hits_and_lines(target, args, apply_thresholds=False, budget=budget)) for target in targets]
+        counts = Counter(hit.signal for _target, hits, _lines in collected for hit in hits)
+        for target, hits, trace_lines in collected:
+            budget.stage("episode grouping", target.path)
+            hits = [hit for hit in hits if counts[hit.signal] >= SIGNALS_BY_NAME[hit.signal].threshold]
+            episodes.extend(build_episodes(target, hits, args.max_gap_lines, trace_lines))
+        payloads = [episode_to_json(episode) for episode in episodes]
+        budget.stage("report")
+    except ANALYZER.ScanTimeLimit as exc:
+        return ANALYZER.emit_time_limit(exc, json_mode=args.json)
     trace_events = [event for _target, _hits, lines in collected for event in lines]
     read_diagnostics = ANALYZER.scanner_diagnostics(trace_events)
     if args.json:

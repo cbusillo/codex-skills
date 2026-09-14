@@ -14,6 +14,7 @@ import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
@@ -345,8 +346,33 @@ def test_cli_read_diagnostics_remain_separate_from_episodes(module: ModuleType) 
                 raise AssertionError("read diagnostics must remain visible and redacted in either output mode")
 
 
+
+def test_budget_failure_discards_episode_output(module: ModuleType) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "rollout-private.jsonl"
+        trace.write_text("\n".join(json.dumps({"type": "tool_result", "exit_code": 1,
+                                              "output": "private failure evidence"}) for _ in range(3)) + "\n")
+        for phase in ("trace redaction", "episode grouping"):
+            def expire(_budget: Any, stage: str, path: Path | None = None) -> None:
+                if stage == phase:
+                    raise module.ANALYZER.ScanTimeLimit(stage, path, 1.0)
+            for json_mode in (False, True):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                argv = [str(SCRIPT), str(trace), "--max-seconds", "1"] + (["--json"] if json_mode else [])
+                with mock.patch.object(sys, "argv", argv), mock.patch("analyze_rollouts.ScanBudget.check", expire), \
+                     redirect_stdout(stdout), redirect_stderr(stderr):
+                    assert module.main() == 2
+                report = json.loads(stdout.getvalue() if json_mode else stderr.getvalue())
+                assert report["ok"] is False and report["partial_results_discarded"] is True
+                assert report["scan_limitations"][0]["phase"] == phase
+                assert "episodes" not in report and "episode_count" not in report
+                assert str(trace) not in json.dumps(report) and "private failure evidence" not in json.dumps(report)
+                if not json_mode:
+                    assert stdout.getvalue() == ""
+
 def main() -> int:
     module = load_module()
+    test_budget_failure_discards_episode_output(module)
     test_groups_nearby_hits_and_detects_resolution(module)
     test_episode_carries_failure_cause_tags(module)
     test_retry_mentions_do_not_count_as_executed_retries(module)
