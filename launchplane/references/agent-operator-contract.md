@@ -10,7 +10,7 @@ by this skill. Its current identity is:
 - operation count: `20`
 
 This artifact is byte-identical to the published
-[Launchplane contract at 3cbc59e4](https://github.com/cbusillo/launchplane/blob/3cbc59e48003a3b0822f3c702f8ac38dcd4210b/contracts/agent-operator-contract.json).
+[Launchplane contract at 3cbc59e4](https://github.com/cbusillo/launchplane/blob/3cbc59e48003a3b0822f3c702f8ac38dcd4210b4/contracts/agent-operator-contract.json).
 It includes the terminal enrollment, private credential claim, ordinary session
 and finite-job operations. The embedded source provenance records the exporter
 checkout; the published commit above identifies this retrieved artifact. Neither
