@@ -5,14 +5,35 @@ by this skill. Its current identity is:
 
 - schema version: `1`
 - normalization version: `1`
-- semantic digest: `9c667b339d2435e210498cfe264cf4b789b7050f4c1690912b667be64da01ac5`
-- non-gating source provenance: `2494668205388a7d70f1a9e74bd4af300854fd20`
-- operation count: `12`
+- semantic digest: `6dfd9bfb019169fc2493f5304443424f4573ee7426ca52e796e11e3eacb1b693`
+- non-gating source provenance: `7aa6360486e3a20c3c5f6b052041fc90ae39cd46`
+- operation count: `20`
 
-This refresh also carries the upstream identity dependency change for
-`reconcile_managed_authz_policy` from browser mutation identity to bearer
-identity. The vendored artifact remains byte-identical to the published
-Launchplane contract; this skill does not reinterpret or widen that operation.
+This artifact is byte-identical to the published
+[Launchplane contract at 3cbc59e4](https://github.com/cbusillo/launchplane/blob/3cbc59e48003a3b0822f3c702f8ac38dcd4210b4/contracts/agent-operator-contract.json).
+It includes the terminal enrollment, private credential claim, ordinary session
+and finite-job operations. The embedded source provenance records the exporter
+checkout; the published commit above identifies this retrieved artifact. Neither
+provenance nor a matching contract grants runtime authority. Private claims are
+consumed only by the private ordinary-agent adapter, outside the generic
+agent-visible operator helper.
+
+Relative to the previously vendored 12-operation artifact, this published
+artifact adds eight ordinary-agent operations: enrollment proposal and status,
+receiver-bound credential claim, session proposal/status/cancellation, and
+finite-job admission/status. These additions introduce the
+`terminal_agent_client`, `ordinary_agent_client`, and `private_agent_client`
+surfaces, plus the `read_terminal_enrollment_requester`,
+`read_ordinary_agent_proof`, and `read_ordinary_agent_receiver_claim` identity
+dependencies. Five existing schema fingerprints also changed:
+`apply_change_impact_policy`, `read_change_impact_policy`,
+`reconcile_managed_authz_policy`, `read_governance_projection`, and
+`write_merge_train_controller_run_once`. For those existing operations, the
+route, method, modes, idempotency, reviewed evidence, supported surface, and
+identity dependency fields are unchanged. The invariants and protected
+workflow bindings are unchanged. Existing operator consumers remain covered by
+their helper and contract tests. The bearer-identity contract for
+`reconcile_managed_authz_policy` remains unchanged.
 
 Run the offline conformance gate with:
 
@@ -57,7 +78,7 @@ block ordinary Launchplane helper reads.
 The merge-train policy import dry-run/apply commands and generic-web
 deploy-recovery dry-run/apply commands are currently bounded local extensions
 because they are consumed by `launchplane-write-action.py` but are not present
-in the upstream 12-operation projection. The validator keeps all four explicit
+in the upstream public operation projection. The validator keeps all four explicit
 and fails if an upstream artifact later projects the same routes, forcing a
 deliberate migration instead of silently maintaining two sources of truth.
 

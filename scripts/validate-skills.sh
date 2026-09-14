@@ -68,6 +68,7 @@ helper_tests=(
 	partdb/scripts/test_partdb_write.py
 	launchplane/scripts/test_launchplane_contract_freshness.py
 	launchplane/scripts/test_launchplane_helpers.py
+	launchplane/scripts/test_launchplane_ordinary_agent_client.py
 	local-llm/scripts/validate_local_code_agent.py
 	local-llm/scripts/validate_local_codex_agent.py
 	local-llm/scripts/validate_lm_studio_api.py
