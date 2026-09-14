@@ -464,40 +464,6 @@ def extract_argparse_argument_choices(path: Path, argument: str, errors: list[st
     return set()
 
 
-def extract_shell_case_choices(path: Path, variable: str, errors: list[str]) -> set[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        errors.append(f"unable to read {path}: {exc}")
-        return set()
-    commands = extract_shell_case_choices_from_text(text, variable)
-    if not commands:
-        errors.append(f"unable to find public case choices for ${variable} in {path}")
-    return commands
-
-
-def extract_shell_case_choices_from_text(text: str, variable: str) -> set[str]:
-    match = re.search(
-        rf"case\s+\"\${re.escape(variable)}\"\s+in\n(?P<body>.*?)\n[ \t]*esac\b",
-        text,
-        re.DOTALL,
-    )
-    if not match:
-        return set()
-
-    commands: set[str] = set()
-    for raw_line in match.group("body").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("*)") or ")" not in line:
-            continue
-        choices = line.split(")", 1)[0]
-        for choice in re.split(r"\s*\|\s*", choices):
-            choice = choice.strip()
-            if re.fullmatch(r"[a-z][a-z0-9_-]*", choice):
-                commands.add(choice)
-    return commands
-
-
 def extract_public_script_resources(path: Path, errors: list[str]) -> set[str]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -525,7 +491,6 @@ def run_self_tests() -> int:
         test_planned_migration_requires_changed_evidence,
         test_missing_python_symbol_reference_fails,
         test_missing_line_reference_fails,
-        test_shell_case_extractor_handles_pipe_choices,
         test_argparse_argument_choice_extractor,
         test_static_command_coverage_reports_missing_entrypoint,
     ]
@@ -660,11 +625,6 @@ def test_missing_line_reference_fails() -> None:
         errors,
     )
     assert any("missing line" in error for error in errors), errors
-
-
-def test_shell_case_extractor_handles_pipe_choices() -> None:
-    text = 'if true; then\n  case "$kind" in\n    issue|pr) ;;\n    *) exit 2 ;;\n  esac\nfi\n'
-    assert extract_shell_case_choices_from_text(text, "kind") == {"issue", "pr"}
 
 
 def test_argparse_argument_choice_extractor() -> None:

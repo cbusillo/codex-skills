@@ -300,7 +300,7 @@ def test_redacted_live_rate_limit_evidence_still_counts() -> None:
             raise AssertionError(f"redacted/live quota failures should still report {expected}: {sorted(findings)}")
 
 
-def test_auth_login_noise_is_classified_without_generic_failure() -> None:
+def test_auth_login_loop_preserves_factual_command_failures() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
         trace = write_trace(
@@ -329,8 +329,13 @@ def test_auth_login_noise_is_classified_without_generic_failure() -> None:
         findings = module.scan([trace], max_bytes=100_000, context_chars=240)
     if "auth_login_loop" not in findings:
         raise AssertionError("auth/login loops should be classified explicitly")
-    if "repeated_command_failure" in findings:
-        raise AssertionError("auth/login loops should not inflate repeated command failures")
+    failure = findings.get("repeated_command_failure")
+    if failure is None or failure.count != 3:
+        raise AssertionError("three auth-related failed results should retain three command failures")
+    if len({hit.event_id for hit in failure.hits}) != 3:
+        raise AssertionError("distinct auth-related results must retain distinct event identities")
+    if {hit.outcome_basis for hit in failure.hits} != {"text_hint"}:
+        raise AssertionError("legacy auth logs must not gain typed tool-result provenance")
 
 
 def test_nominal_remote_control_enrollment_is_not_auth_loop() -> None:
@@ -2166,85 +2171,14 @@ def test_scan_budget_failure_and_progress_are_separate() -> None:
             raise AssertionError("invalid budget accepted")
 
 def main() -> int:
-    test_redaction_matches_previous_patterns()
-    test_long_tokens_do_not_stall_redaction()
-    test_ordered_use_helper_guidance_matches_previous_branch()
-    test_signal_skip_cache_respects_line_signal_and_fragment_scope()
-    test_static_context_scan_is_shared_within_each_fragment()
-    test_signal_skip_cache_preserves_occurrence_and_summary_counts()
-    test_long_use_helper_nonmatch_finishes_before_child_deadline()
-    test_repeated_hits_reuse_bounded_fragment_work()
-    test_error_prose_scans_only_expected_search_candidates()
-    test_scan_budget_failure_and_progress_are_separate()
-    test_result_statuses_survive_noise_filters_and_mirrors()
-    test_successful_commands_prompts_and_source_dumps_are_not_failures()
-    test_failure_diagnostics_are_one_event_and_batches_keep_children()
-    test_expected_search_nonzero_statuses_keep_raw_evidence()
-    test_retries_require_execution_and_checkpoint_keeps_call_context()
-    test_pending_results_sessions_and_truncated_records()
-    test_typed_terminal_text_survives_without_promoting_echoes()
-    test_native_codex_command_items_use_identity_and_terminal_status()
-    test_wrapped_native_items_preserve_outcomes_kinds_and_mirrors()
-    test_wrapped_native_lifecycle_aliases_and_roles_are_guarded()
-    test_wrapped_native_search_and_error_precedence()
-    test_terminal_headers_precede_investigation_noise_and_printed_statuses()
-    test_session_metadata_and_native_progress_are_not_terminal_outcomes()
-    test_scanner_diagnostics_survive_record_filters_without_friction()
-    test_split_output_bodies_cannot_supply_terminal_headers()
-    test_github_wait_and_rollup_signals()
-    test_json_object_summary_preserves_multi_field_signals()
-    test_command_and_shell_friction_signals()
-    test_single_git_safety_guard_does_not_count_as_friction()
-    test_auto_review_valid_finding_signal()
-    test_skill_guidance_does_not_count_as_github_rate_limit()
-    test_helper_doc_dump_does_not_count_as_github_rate_limit()
-    test_github_plan_doc_dump_does_not_count_as_github_rate_limit()
-    test_rate_limit_guidance_payload_does_not_count_as_live_quota_pressure()
-    test_rate_limit_secret_placeholder_and_static_diff_do_not_count()
-    test_rate_limit_markdown_docs_and_type_annotations_do_not_count()
-    test_live_rate_limit_evidence_still_counts()
-    test_redacted_live_rate_limit_evidence_still_counts()
-    test_nested_json_fragments_count_once_per_line()
-    test_pretty_json_object_counts_as_one_record()
-    test_structured_json_record_counts_distinct_child_results()
-    test_pretty_json_array_counts_top_level_records()
-    test_explicit_files_are_not_capped_by_directory_limit()
-    test_paths_file_supplies_many_explicit_files()
-    test_space_joined_existing_paths_fail_fast()
-    test_total_byte_budget_reports_scan_limitations()
-    test_missing_explicit_path_reports_limitation()
-    test_directory_discovery_reports_entry_limit()
-    test_skill_docs_are_not_directory_candidates()
-    test_neutral_structured_traces_are_directory_candidates()
-    test_redaction_covers_local_path_shapes()
-    test_scanner_io_errors_do_not_count_as_command_failures()
-    test_meta_echoes_do_not_create_findings()
-    test_real_trace_evidence_survives_meta_echo_filter()
-    test_static_diff_payloads_do_not_count_as_failures()
-    test_yaml_config_payloads_do_not_count_as_failures()
-    test_real_failures_after_static_payload_still_count()
-    test_partial_diff_headers_do_not_count_as_failures()
-    test_repeated_identical_auto_review_events_still_count_as_loop()
-    test_distinct_auto_review_events_still_count_as_loop()
-    test_auto_review_branch_chatter_is_not_a_loop()
-    test_auto_review_ledger_discussion_is_not_a_loop()
-    test_command_failure_tags_are_exported()
-    test_scan_summary_reports_degraded_scan()
-    test_lm_studio_scout_delegates_to_local_llm_chat()
-    test_lm_studio_scout_deep_forwards_timeout()
-    test_lm_studio_scout_reports_chat_errors()
-    test_lm_studio_scout_rejects_null_byte_report()
-    test_spaced_auto_review_with_diff_marker_is_preserved()
-    test_plain_workflow_branch_failure_text_is_not_static_config()
-    test_structured_payload_counts_are_separate_from_broad_context()
-    test_since_and_after_line_bound_scan_records()
-    test_investigation_noise_suppression_preserves_structured_payloads()
-    test_suppression_filters_injected_context_and_code_snippets()
-    test_suppression_preserves_real_command_failures()
-    test_nested_wrapped_helper_payload_retains_structured_context()
-    test_non_structured_nested_payload_strings_are_preserved()
-    test_status_wrapper_does_not_make_discussion_structured()
-    print("ok validate-analyze-rollouts")
+    tests = [
+        candidate
+        for name, candidate in globals().items()
+        if name.startswith("test_") and callable(candidate)
+    ]
+    for test in tests:
+        test()
+    print(f"ok validate-analyze-rollouts ({len(tests)} tests)")
     return 0
 
 
