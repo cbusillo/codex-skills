@@ -951,7 +951,10 @@ class OrdinaryAgentClient:
                 prepared = self._prepare_enrollment_state(
                     state, proposal, alias=enrollment_alias
                 )
-            body = self._decode_state_bytes(prepared["request_bytes_b64"])
+            request_bytes = prepared.get("request_bytes_b64")
+            if not isinstance(request_bytes, str):
+                raise OrdinaryAgentClientError("enrollment_unavailable")
+            body = self._decode_state_bytes(request_bytes)
             self.state.checkpoint(state)
             payload, _ = self._request(
                 "propose_ordinary_agent_enrollment",

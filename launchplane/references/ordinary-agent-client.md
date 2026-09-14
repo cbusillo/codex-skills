@@ -87,18 +87,20 @@ retry the same command after it finishes. Transport defaults to three attempts
 and ten seconds per request. No background worker or polling loop starts.
 
 Resume ambiguous enrollment, session proposal or job admission with the same
-alias and no input file. A lost response does not justify a new key. New admission reads the current
-session and rejects known expired/revoked leases; exact replay uses saved request
-bytes. Changed job intent with an existing alias is rejected; a new intended job
-needs a new alias/retry key. An unacknowledged session proposal has no returned
-handle yet: resume its proposal before reading status or admitting a job.
+alias and no input file. A lost response does not justify a new key. New
+admission reads the current session and rejects known expired/revoked leases;
+exact replay uses saved request bytes. Changed job intent with an existing alias
+is rejected; a new intended job needs a new alias/retry key. An unacknowledged
+session proposal has no returned handle yet: resume its proposal before reading
+status or admitting a job.
 
 Errors return a bounded JSON code and exit 2 without response bodies or secrets.
 Normal status output contains public service metadata, including connection
 credential IDs/versions/deadlines; these are not credential material. This
 specialized projection is separate from the generic operator helper's key filter.
-Claim output contains no credential. Importing hosts must also keep state/proof APIs within their private
-boundary. Client availability and contract conformance do not establish live
+Claim output contains no credential. Importing hosts must also keep
+state/proof APIs within their private boundary. Client availability and
+contract conformance do not establish live
 authority or qualification: approval, custody, policy, activation and worker start
 remain service-owned prerequisites. The client cannot approve its own proposal
 or silently renew an expired session.
@@ -114,5 +116,7 @@ or silently renew an expired session.
 | `claim_cache_policy` | Repair the service/cache path before retrying the same claim within its delivery window. No credential was accepted into custody. |
 | `unsafe_private_state` / `private_state_unavailable` | Restore user-owned private storage outside repositories; preserve existing state instead of deleting it to start over. |
 
-Unknown response fields fail closed. A changed service contract requires a
-deliberate artifact/consumer refresh, not weaker validation or credential fallback.
+Unknown fields in operation envelopes fail closed. Other public projections are
+safety-checked and validate their required identifiers. A changed service
+contract requires a deliberate artifact/consumer refresh, not weaker validation
+or credential fallback.

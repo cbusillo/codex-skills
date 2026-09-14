@@ -18,12 +18,21 @@ provenance nor a matching contract grants runtime authority. Private claims are
 consumed only by the private ordinary-agent adapter, outside the generic
 agent-visible operator helper.
 
-The refresh carries only the upstream schema-fingerprint change for
-`write_merge_train_controller_run_once`, which reflects the published
-read-only historical-completion preflight shape. No operation, protected
-workflow, invariant, identity dependency, or authorization surface was added
-or widened. Existing operator consumers remain covered by their helper and
-contract tests. The bearer-identity contract for
+Relative to the previously vendored 12-operation artifact, this published
+artifact adds eight ordinary-agent operations: enrollment proposal and status,
+receiver-bound credential claim, session proposal/status/cancellation, and
+finite-job admission/status. These additions introduce the
+`terminal_agent_client`, `ordinary_agent_client`, and `private_agent_client`
+surfaces, plus the `read_terminal_enrollment_requester`,
+`read_ordinary_agent_proof`, and `read_ordinary_agent_receiver_claim` identity
+dependencies. Five existing schema fingerprints also changed:
+`apply_change_impact_policy`, `read_change_impact_policy`,
+`reconcile_managed_authz_policy`, `read_governance_projection`, and
+`write_merge_train_controller_run_once`. For those existing operations, the
+route, method, modes, idempotency, reviewed evidence, supported surface, and
+identity dependency fields are unchanged. The invariants and protected
+workflow bindings are unchanged. Existing operator consumers remain covered by
+their helper and contract tests. The bearer-identity contract for
 `reconcile_managed_authz_policy` remains unchanged.
 
 Run the offline conformance gate with:

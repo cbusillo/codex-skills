@@ -183,6 +183,29 @@ class OrdinaryAgentClientTests(TestCase):
                 "http://127.0.0.1:8123/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-enrollment",
             )
 
+    def test_corrupt_saved_enrollment_returns_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateStateStore(directory)
+            client = OrdinaryAgentClient(
+                "http://127.0.0.1:8123", state=store, terminal_credential="terminal"
+            )
+            store.update(
+                lambda state: {
+                    **state,
+                    "current_enrollment": "retry-key-2366",
+                    "enrollments": {
+                        "retry-key-2366": {
+                            "canonical_operation_id": "fixture-enrollment",
+                            "principal_id": "fixture-agent",
+                        }
+                    },
+                }
+            )
+            with self.assertRaisesRegex(
+                OrdinaryAgentClientError, "enrollment_unavailable"
+            ):
+                client.propose_enrollment()
+
     def test_private_state_is_bound_before_credentials_are_used(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             unbound = PrivateStateStore(directory)
