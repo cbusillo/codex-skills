@@ -323,26 +323,15 @@ def test_compiled_output_must_match_requested_direct_packages() -> None:
     )
 
 
-TESTS = [
-    test_parse_uses_toml_semantics_and_preserves_other_metadata,
-    test_rewrite_targets_only_canonical_top_level_dependencies,
-    test_validation_rejects_unpinned_and_inconsistent_dependencies,
-    test_validation_rejects_unsupported_requirement_forms,
-    test_parser_fails_closed_for_invalid_metadata,
-    test_missing_dependencies_key_is_an_empty_unchanged_list,
-    test_proposed_updates_pin_and_sort_all_supported_dependencies,
-    test_uv_resolution_is_pypi_only_direct_and_stable,
-    test_resolver_and_release_verification_fail_closed,
-    test_crlf_rewrite_is_idempotent,
-    test_apply_changes_rolls_back_failed_validation,
-    test_compiled_output_must_match_requested_direct_packages,
-]
-
-
 def main() -> int:
-    for test in TESTS:
+    tests = [
+        candidate
+        for name, candidate in globals().items()
+        if name.startswith("test_") and callable(candidate)
+    ]
+    for test in tests:
         test()
-    print(f"update PEP 723 dependency tests passed ({len(TESTS)} tests)")
+    print(f"update PEP 723 dependency tests passed ({len(tests)} tests)")
     return 0
 
 
