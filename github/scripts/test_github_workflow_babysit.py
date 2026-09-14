@@ -123,6 +123,7 @@ def run_snapshot(
     status: str,
     *,
     conclusion: str | None = None,
+    event: str = "workflow_dispatch",
     triggering_actor: str = "automation-bot",
     run_attempt: int = 1,
 ) -> workflow_babysit.RunSnapshot:
@@ -131,7 +132,7 @@ def run_snapshot(
         run_url="https://github.com/example/repo/actions/runs/123",
         status=status,
         conclusion=conclusion,
-        event="workflow_dispatch",
+        event=event,
         actor=triggering_actor,
         triggering_actor=triggering_actor,
         head_branch="main",
@@ -419,6 +420,38 @@ class WorkflowBabysitterTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "protected_environment_approval_required")
         self.assertEqual(client.approvals, [])
+
+    def test_non_dispatch_event_blocks_protected_approval(self) -> None:
+        client = FakeWorkflowClient(
+            runs=[
+                run_snapshot(
+                    "waiting",
+                    event="push",
+                    triggering_actor="automation-bot",
+                    run_attempt=1,
+                ),
+                run_snapshot("completed", event="push", conclusion="success"),
+            ],
+            pending=[(pending_environment(can_approve=True),)],
+        )
+        clock = ManualClock()
+        babysitter = workflow_babysit.WorkflowBabysitter(
+            client, clock=clock.now, sleep=clock.sleep,
+        )
+
+        result = babysitter.watch(
+            run_id=123,
+            run_url=None,
+            authorized_environments=frozenset({"protected-admin"}),
+            approval_comment="Reviewed protected action.",
+            timeout_seconds=30,
+            poll_interval_seconds=5,
+        )
+
+        self.assertEqual(result["outcome"], "protected_workflow_event_mismatch")
+        self.assertEqual(client.approvals, [])
+        self.assertEqual(result["polls"], 1)
+        self.assertEqual(clock.value, 0)
 
     def test_approvable_run_must_have_been_dispatched_by_automation_actor(self) -> None:
         client = FakeWorkflowClient(
