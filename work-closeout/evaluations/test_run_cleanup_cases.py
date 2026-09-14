@@ -65,7 +65,7 @@ class CleanupRunnerTests(unittest.TestCase):
         return textwrap.dedent(
             """\
             #!/usr/bin/env python3
-            import json, os, pathlib, subprocess, sys, time
+            import json, os, pathlib, sys, time
             args = sys.argv[1:]
             if args == ["--version"]:
                 print("codex-cli 9.9.9-test")
@@ -80,9 +80,7 @@ class CleanupRunnerTests(unittest.TestCase):
                 sys.stdout.flush()
                 time.sleep(10)
             if mode == "timeout":
-                child = subprocess.Popen(["sleep", "60"])
-                pathlib.Path("child.pid").write_text(str(child.pid), encoding="utf-8")
-                time.sleep(60)
+                time.sleep(10)
             output = pathlib.Path(args[args.index("-o") + 1])
             output.write_text("completed", encoding="utf-8")
             if mode == "malformed":
@@ -213,23 +211,97 @@ class CleanupRunnerTests(unittest.TestCase):
         self.assertIn("[redacted-auth]", (artifacts / "turn-01/stderr.log").read_text())
         self.assertFalse(any(self.private.iterdir()))
 
-    def test_timeout_stops_owned_child_group(self) -> None:
+    def test_timeout_records_124_and_removes_private_home(self) -> None:
         case, outcome = self.write_case(
             prompts=["Timeout."], environment={"CODEX_CLEANUP_FIXTURE_MODE": "timeout"}
         )
         result = self.run_case(case, timeout=0.2)
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertEqual(124, json.loads(outcome.read_text())["turns"][0]["returncode"])
-        child = int((self.workspace / "child.pid").read_text())
-        for _ in range(40):
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        else:
-            self.fail("owned child process survived timeout cleanup")
         self.assertFalse(any(self.private.iterdir()))
+
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_invoke_timeout_terminates_owned_descendants_after_readiness_witness(self) -> None:
+        spec = importlib.util.spec_from_file_location("cleanup_runner_under_test", SCRIPT)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+        descendant_ready = self.workspace / "descendant-ready"
+        descendant_command = (
+            "from pathlib import Path; import time; "
+            f"Path({str(descendant_ready)!r}).write_text('ready', encoding='utf-8'); "
+            "time.sleep(10)"
+        )
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import subprocess, sys, time; "
+                f"child = subprocess.Popen([sys.executable, '-c', {descendant_command!r}]); "
+                "time.sleep(10)"
+            ),
+        ]
+        real_popen = subprocess.Popen
+        processes = []
+
+        def witnessed_popen(*args, **kwargs):
+            spawned_process = real_popen(*args, **kwargs)
+            invoked = args[0] if args else kwargs.get("args")
+            if invoked != command:
+                return spawned_process
+            processes.append(spawned_process)
+            deadline = time.monotonic() + 2
+            while not descendant_ready.exists() and spawned_process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            if not descendant_ready.exists():
+                try:
+                    os.killpg(spawned_process.pid, runner.signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                spawned_process.wait(timeout=2)
+                self.fail("descendant did not reach readiness witness")
+            return spawned_process
+
+        group_absent = False
+        try:
+            with mock.patch.object(subprocess, "Popen", side_effect=witnessed_popen):
+                returncode, _, _, _ = runner.invoke(
+                    command,
+                    "timeout proof",
+                    os.environ.copy(),
+                    self.workspace,
+                    0.05,
+                    self.base / "invoke-capture",
+                )
+
+            self.assertTrue(descendant_ready.exists(), "descendant did not reach readiness witness")
+            self.assertEqual(returncode, 124)
+            self.assertEqual(len(processes), 1)
+            group_deadline = time.monotonic() + 2
+            while time.monotonic() < group_deadline:
+                try:
+                    os.killpg(processes[0].pid, 0)
+                except ProcessLookupError:
+                    group_absent = True
+                    break
+                time.sleep(0.005)
+            self.assertTrue(group_absent, "owned invoke process group remained after timeout cleanup")
+        finally:
+            for owned_process in processes:
+                if not group_absent:
+                    try:
+                        os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    owned_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if not group_absent:
+                        try:
+                            os.killpg(owned_process.pid, runner.signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    owned_process.wait(timeout=2)
 
     def test_network_enabled_native_context_fails_attribution(self) -> None:
         case, outcome = self.write_case(

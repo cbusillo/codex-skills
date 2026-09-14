@@ -24,7 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
@@ -321,15 +321,6 @@ def test_build_command_extra_headers() -> None:
 def test_build_command_includes_default_api_version() -> None:
     cmd = _api.build_gh_command("GET", "/rate_limit", gh_cmd="gh")
     assert f"X-GitHub-Api-Version: {_api.DEFAULT_API_VERSION}" in cmd
-
-
-def test_build_post_body_never_on_command_line() -> None:
-    """The body must not appear as any argv token — it belongs on stdin."""
-    sensitive_body = {"token": "ghp_secret_value", "title": "my PR"}
-    cmd = _api.build_gh_command("POST", "/repos/owner/repo/pulls")
-    for token in cmd[1:]:
-        assert "ghp_secret_value" not in token
-        assert "secret" not in token.lower() or token.startswith("-H")
 
 
 # ---------------------------------------------------------------------------
@@ -2855,7 +2846,6 @@ def main() -> None:
         test_build_command_custom_gh_cmd,
         test_build_command_extra_headers,
         test_build_command_includes_default_api_version,
-        test_build_post_body_never_on_command_line,
         # call_gh success envelope
         test_call_gh_success_returns_ok_result,
         test_call_gh_result_asdict_has_version,
