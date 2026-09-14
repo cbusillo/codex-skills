@@ -203,12 +203,20 @@ def test_count_versions_are_explicit_and_cannot_be_mixed(module: ModuleType) -> 
     legacy = episode("legacy", 10, "Process exited with code 1")
     current = episode("current", 12, "exit_code=1")
     current.update(schema_version=2, count_semantics="normalized_events_v2")
+    current_hits = current.get("hits")
+    if not isinstance(current_hits, list) or not current_hits or not isinstance(current_hits[0], dict):
+        raise AssertionError("current episode fixture must include a dictionary hit")
+    current_hits[0].update(event_id="native-event-synthetic", outcome_basis="result_status")
     for record, expected in ((legacy, "legacy_fragment_hits_v1"), (current, "normalized_events_v2")):
         payload = module.build_clusters([record], 10, 8, False)
         if {payload["count_semantics"], payload["clusters"][0]["count_semantics"], payload["skeletons"][0]["count_semantics"]} != {expected}:
             raise AssertionError("cluster reports and model skeletons must preserve their count interpretation")
         if expected == "normalized_events_v2" and payload["skeletons"][0]["steps"][0]["kind"] != "failure":
             raise AssertionError("a normalized failed result must remain a failure in the model skeleton")
+        if expected == "normalized_events_v2":
+            step = payload["skeletons"][0]["steps"][0]
+            if (step["event_id"], step["outcome_basis"]) != ("native-event-synthetic", "result_status"):
+                raise AssertionError("cluster skeletons must preserve typed native event provenance")
     try:
         module.build_clusters([legacy, current], 10, 8, False)
     except SystemExit as exc:
@@ -234,8 +242,24 @@ def test_count_versions_are_explicit_and_cannot_be_mixed(module: ModuleType) -> 
             raise AssertionError("relabeling a legacy report envelope must not reinterpret its child costs")
 
 
+
+def test_failed_scan_is_not_an_empty_cluster_report(module: ModuleType) -> None:
+    failed = {"ok": False, "schema_version": 2, "count_semantics": "normalized_events_v2",
+              "scan_limitations": [{"kind": "scan_time_limit"}], "partial_results_discarded": True}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "episodes.json"
+        for text in (json.dumps(failed), json.dumps(failed) + "\n" + json.dumps({"id": "legacy"})):
+            path.write_text(text)
+            try:
+                module.load_episodes(path)
+            except SystemExit as exc:
+                assert "episode scan failed" in str(exc)
+            else:
+                raise AssertionError("failed analysis must not become successful empty clusters")
+
 def main() -> int:
     module = load_module()
+    test_failed_scan_is_not_an_empty_cluster_report(module)
     test_clusters_by_signal_signature(module)
     test_repeated_command_clusters_split_by_dominant_cause(module)
     test_repeated_command_clusters_keep_same_cause_together(module)

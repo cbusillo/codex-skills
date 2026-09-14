@@ -14,6 +14,7 @@ import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
@@ -265,6 +266,21 @@ def result_record(call_id: str, code: int, text: str = "") -> dict[str, object]:
     }}
 
 
+def collect_records(
+    module: ModuleType,
+    root: Path,
+    records: list[dict[str, object]],
+    *,
+    apply_thresholds: bool = True,
+) -> tuple[Path, Any, list[Any], list[Any]]:
+    trace = root / "trace.jsonl"
+    trace.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
+    args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
+    hits, lines = module.collect_hits_and_lines(scan_target, args, apply_thresholds=apply_thresholds)
+    return trace, scan_target, hits, lines
+
+
 def test_real_collection_counts_results_calls_and_retries_once(module: ModuleType) -> None:
     records = []
     for index in range(4):
@@ -276,11 +292,7 @@ def test_real_collection_counts_results_calls_and_retries_once(module: ModuleTyp
                             {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": "retry again"}}])
     records.extend([command_record("search", "rg needle sample.txt"), result_record("search", 1)])
     with tempfile.TemporaryDirectory() as tmp:
-        trace = Path(tmp) / "trace.jsonl"
-        trace.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-        scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
-        args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
-        hits, lines = module.collect_hits_and_lines(scan_target, args)
+        trace, scan_target, hits, lines = collect_records(module, Path(tmp), records)
         episodes = module.build_episodes(scan_target, hits, 25, lines)
         analyzer = module.ANALYZER.scan([trace], 100_000, 240, suppress_investigation_noise=True)
     if len(episodes) != 1:
@@ -294,15 +306,48 @@ def test_real_collection_counts_results_calls_and_retries_once(module: ModuleTyp
         raise AssertionError("new cost meanings must be versioned")
 
 
+def test_wrapped_native_items_propagate_typed_episode_costs(module: ModuleType) -> None:
+    def completed(item: dict[str, object]) -> dict[str, object]:
+        return {"type": "event_msg", "payload": {
+            "type": "item_completed", "thread_id": "thread-synthetic", "turn_id": "turn-synthetic", "item": item,
+        }}
+
+    def command(item_id: str, argv: list[str], code: int, output: str = "", status: str = "completed") -> dict[str, object]:
+        return completed({
+            "type": "CommandExecution", "id": item_id, "command": argv, "status": status,
+            "stdout": output, "stderr": "", "aggregated_output": output, "formatted_output": output,
+            "exit_code": code,
+        })
+
+    records = [
+        {"type": "session_meta", "payload": {"id": "session-synthetic"}},
+        command("failed-one", ["build", "example"], 1, "build stopped", "failed"),
+        command("failed-127", ["missing-example-tool"], 127, "tool unavailable", "failed"),
+        completed({
+            "type": "FileChange", "id": "change-synthetic", "status": "completed",
+            "changes": {"example.txt": {"type": "add", "content": "error: source example\nCommand failed"}},
+            "stdout": "", "stderr": "",
+        }),
+        command("successful", ["cat", "history.log"], 0, "error: historical failure\nProcess exited with code 101"),
+        command("search", ["rg", "needle", "example.txt"], 1),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        _trace, scan_target, hits, lines = collect_records(module, Path(tmp), records, apply_thresholds=False)
+        episodes = module.build_episodes(scan_target, hits, 25, lines)
+    if len(episodes) != 1 or {event_hit.outcome_basis for event_hit in hits} != {"result_status"}:
+        raise AssertionError("native command failures must reach episodes with typed provenance")
+    payload = module.episode_to_json(episodes[0])
+    expected = {"event_count": 2, "failure_count": 2, "tool_call_count": 4, "retry_count": 0,
+                "nonzero_exit_count": 3, "expected_nonzero_count": 1, "text_hint_failure_count": 0}
+    if payload["cost"] != expected or payload["outcome"] != "resolved_after_retries":
+        raise AssertionError(f"native context or printed history changed typed episode costs: {payload}")
+
+
 def test_successful_argument_literals_do_not_create_episodes(module: ModuleType) -> None:
     records = [command_record("search", "rg --count 'error:|Command failed|exit_code=1' sample.txt"),
                result_record("search", 0, "3")]
     with tempfile.TemporaryDirectory() as tmp:
-        trace = Path(tmp) / "trace.jsonl"
-        trace.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-        scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
-        args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
-        hits, lines = module.collect_hits_and_lines(scan_target, args)
+        _trace, scan_target, hits, lines = collect_records(module, Path(tmp), records)
         if module.build_episodes(scan_target, hits, 25, lines) or any(line.failed for line in lines):
             raise AssertionError("a successful command's argument literals must not create a friction episode")
 
@@ -345,8 +390,33 @@ def test_cli_read_diagnostics_remain_separate_from_episodes(module: ModuleType) 
                 raise AssertionError("read diagnostics must remain visible and redacted in either output mode")
 
 
+
+def test_budget_failure_discards_episode_output(module: ModuleType) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = Path(tmp) / "rollout-private.jsonl"
+        trace.write_text("\n".join(json.dumps({"type": "tool_result", "exit_code": 1,
+                                              "output": "private failure evidence"}) for _ in range(3)) + "\n")
+        for phase in ("trace redaction", "episode grouping"):
+            def expire(_budget: Any, stage: str, path: Path | None = None) -> None:
+                if stage == phase:
+                    raise module.ANALYZER.ScanTimeLimit(stage, path, 1.0)
+            for json_mode in (False, True):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                argv = [str(SCRIPT), str(trace), "--max-seconds", "1"] + (["--json"] if json_mode else [])
+                with mock.patch.object(sys, "argv", argv), mock.patch("analyze_rollouts.ScanBudget.check", expire), \
+                     redirect_stdout(stdout), redirect_stderr(stderr):
+                    assert module.main() == 2
+                report = json.loads(stdout.getvalue() if json_mode else stderr.getvalue())
+                assert report["ok"] is False and report["partial_results_discarded"] is True
+                assert report["scan_limitations"][0]["phase"] == phase
+                assert "episodes" not in report and "episode_count" not in report
+                assert str(trace) not in json.dumps(report) and "private failure evidence" not in json.dumps(report)
+                if not json_mode:
+                    assert stdout.getvalue() == ""
+
 def main() -> int:
     module = load_module()
+    test_budget_failure_discards_episode_output(module)
     test_groups_nearby_hits_and_detects_resolution(module)
     test_episode_carries_failure_cause_tags(module)
     test_retry_mentions_do_not_count_as_executed_retries(module)
@@ -359,6 +429,7 @@ def main() -> int:
     test_subthreshold_hits_are_filtered(module)
     test_time_filters_use_analyzer_timestamp_parser(module)
     test_real_collection_counts_results_calls_and_retries_once(module)
+    test_wrapped_native_items_propagate_typed_episode_costs(module)
     test_successful_argument_literals_do_not_create_episodes(module)
     test_cli_thresholds_agree_across_multiple_files(module)
     test_cli_read_diagnostics_remain_separate_from_episodes(module)

@@ -14,9 +14,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shlex
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,10 +48,13 @@ PATH_RE = re.compile(
     r"srv|run|mnt|media|dev|proc|sys|workspace|workspaces|app"
     r")/[^\s,'\"]+|"
     r"(?:\.\.?/)+[^\s,'\"]+|"
-    r"(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
+    r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/){2,}[A-Za-z0-9_.-]+|"
     r"[A-Za-z]:\\[^\s,'\"]+"
 )
-URL_AUTH_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@\S+", re.I)
+URL_AUTH_RE = re.compile(
+    r"(?<![a-z0-9+.-])(?P<prefix>[0-9+.-]*)"
+    r"[a-z][a-z0-9+.-]*://[^\s/@][^\s/@:]*:[^\s/@]+@\S+", re.I,
+)
 HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b", re.I)
 LOCAL_HOST_RE = re.compile(
     r"\b(?:localhost|host\.docker\.internal|[a-z0-9-]+\.(?:local|localhost|internal|test))\b",
@@ -111,13 +116,15 @@ RATE_LIMIT_GUIDANCE_RE = re.compile(
     r"before\s+[^\n]{0,80}\bcheck rate limits?\b|"
     r"do not keep retrying|prefer REST|fallback to REST|"
     r"rate[- ]limit pressure should be classified|"
-    r"use .*helper.*rate limit|"
     r"usage:\s+[^\n]{0,120}\brate-limit\b|"
     r"Handle GitHub [^\n]{0,120}\brate limits\b|"
     r"purpose:|description:|match:|argv_prefix:"
     r")",
     re.I,
 )
+USE_GUIDANCE_RE = re.compile(r"\buse ", re.I)
+HELPER_GUIDANCE_RE = re.compile(r"helper", re.I)
+RATE_LIMIT_GUIDANCE_LITERAL_RE = re.compile(r"rate limit", re.I)
 RATE_LIMIT_PLACEHOLDER_RE = re.compile(
     r"\b(?:GITHUB|TOKEN|SECRET|API[_-]?KEY|PASSWORD)[A-Z0-9_\-]*\[REDACTED_SECRET]"
     r"|\[REDACTED_SECRET][A-Z0-9_\-]*(?:LIMIT|QUOTA|RATE)",
@@ -152,6 +159,16 @@ STATIC_CONFIG_LINE_RE = re.compile(
     r"-\s*(?:run|uses|name|with)\s*:)",
     re.I,
 )
+# These filters depend on match position only through matched_line; failed
+# results are handled separately before the text-signal loop.
+LINE_SCOPED_SIGNAL_FILTERS = {
+    "github_graphql_rate_limit",
+    "github_rest_rate_limit",
+    "generic_rate_limit",
+    "missing_dependency_or_tool",
+}
+# These filters have no match-position dependence.
+FRAGMENT_SCOPED_SIGNAL_FILTERS = {"auto_review_loop", "auto_review_valid_finding"}
 INTERESTING_JSON_KEYS = (
     "type",
     "message",
@@ -350,6 +367,55 @@ class ScanTarget(NamedTuple):
     truncated: bool
 
 
+class ScanTimeLimit(Exception):
+    def __init__(self, phase: str, path: Path | None, seconds: float) -> None:
+        super().__init__(f"scan time limit reached during {phase}; partial results discarded")
+        self.phase, self.path, self.seconds = phase, path, seconds
+
+
+class ScanBudget:
+    """Cooperative checks; an outer process deadline must bound a single slow operation."""
+
+    def __init__(self, seconds: float | None = None, progress: bool = False) -> None:
+        self.started = time.monotonic()
+        self.seconds, self.progress = seconds, progress
+
+    def check(self, phase: str, path: Path | None = None) -> None:
+        if self.seconds is not None and time.monotonic() - self.started >= self.seconds:
+            raise ScanTimeLimit(phase, path, self.seconds)
+
+    def stage(self, phase: str, path: Path | None = None) -> None:
+        self.check(phase, path)
+        if self.progress:
+            print(json.dumps({"stage": phase, "file_id": stable_file_id(path) if path else None,
+                              "elapsed_seconds": round(time.monotonic() - self.started, 3)}), file=sys.stderr)
+
+
+def positive_seconds(value: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be finite and greater than zero")
+    return seconds
+
+
+def add_budget_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-seconds", type=positive_seconds,
+                        help="Cooperative analysis time limit; cannot interrupt one slow operation.")
+    parser.add_argument("--progress", action="store_true", help="Report redacted file/stage progress on stderr.")
+
+
+def emit_time_limit(exc: ScanTimeLimit, *, json_mode: bool) -> int:
+    limitation: dict[str, Any] = {"kind": "scan_time_limit", "phase": exc.phase,
+                                  "limit_seconds": exc.seconds, "message": str(exc)}
+    if exc.path is not None:
+        limitation["file_id"] = stable_file_id(exc.path)
+    # Omit count/episode arrays entirely: a failed scan is not a valid empty scan.
+    payload = {"schema_version": 2, "count_semantics": COUNT_SEMANTICS, "ok": False,
+               "partial_results_discarded": True, "scan_limitations": [limitation]}
+    print(json.dumps(payload, sort_keys=True), file=sys.stdout if json_mode else sys.stderr)
+    return 2
+
+
 SIGNALS: list[Signal] = [
     Signal(
         "github_graphql_rate_limit",
@@ -515,6 +581,7 @@ SIGNALS: list[Signal] = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan local rollout/session traces for workflow friction.")
+    add_budget_arguments(parser)
     parser.add_argument("paths", nargs="*", type=Path, help="Files or directories to scan.")
     parser.add_argument(
         "--paths-file",
@@ -736,9 +803,13 @@ def is_candidate_file(path: Path) -> bool:
 
 def redacted(text: str, context_chars: int) -> str:
     single_line = " ".join(text.strip().split())
-    scrubbed = URL_AUTH_RE.sub("[REDACTED_URL_AUTH]", single_line)
+    # Start once per scheme/path component, rather than at every character of
+    # long tokens. The old URL search left any leading nonletters untouched.
+    scrubbed = (URL_AUTH_RE.sub(lambda match: match["prefix"] + "[REDACTED_URL_AUTH]", single_line)
+                if "://" in single_line and "@" in single_line else single_line)
     scrubbed = SECRET_RE.sub("[REDACTED_SECRET]", scrubbed)
-    scrubbed = PATH_RE.sub("[REDACTED_PATH]", scrubbed)
+    if "/" in scrubbed or "~" in scrubbed or "\\" in scrubbed:
+        scrubbed = PATH_RE.sub("[REDACTED_PATH]", scrubbed)
     scrubbed = LOCAL_HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     scrubbed = HOST_RE.sub("[REDACTED_HOST]", scrubbed)
     if len(scrubbed) > context_chars:
@@ -761,7 +832,6 @@ def line_text_from_json(value: Any) -> str:
 def json_fragments(value: Any, structured_context: bool = False) -> Iterable[Fragment]:
     if isinstance(value, dict):
         structured = structured_context or is_structured_payload(value)
-        summary = line_text_from_json(value)
         for key, child in value.items():
             if isinstance(child, str) and key in NESTED_JSON_STRING_KEYS:
                 nested = parse_nested_json_object(child)
@@ -781,8 +851,10 @@ def json_fragments(value: Any, structured_context: bool = False) -> Iterable[Fra
                 yield Fragment(f"{key}={child}", False, structured)
                 continue
             yield from json_fragments(child, structured)
-        if summary != json.dumps(value, sort_keys=True, default=str):
-            yield Fragment(summary, True, structured)
+        # Without an interesting key, line_text_from_json is the JSON dump
+        # itself and was never emitted as a summary. Avoid constructing it twice.
+        if any(key in value for key in INTERESTING_JSON_KEYS):
+            yield Fragment(line_text_from_json(value), True, structured)
     elif isinstance(value, list):
         for child in value:
             yield from json_fragments(child, structured_context)
@@ -935,6 +1007,21 @@ def iter_lines(
 CALL_TYPES = {"function_call", "custom_tool_call", "tool_call", "tool_use", "exec_command_begin"}
 RESULT_TYPES = {"function_call_output", "custom_tool_call_output", "tool_result", "tool_call_end", "exec_command_end"}
 CONTEXT_TYPES = {"user_message", "agent_message", "assistant_message", "reasoning", "session_meta", "thread.started", "turn_context", "compacted"}
+MESSAGE_ROLES = {"user", "assistant", "system", "developer"}
+NATIVE_ITEM_PHASES = {
+    "item.started": "item.started",
+    "item.updated": "item.updated",
+    "item.completed": "item.completed",
+    "item_started": "item.started",
+    "item_updated": "item.updated",
+    "item_completed": "item.completed",
+}
+NATIVE_COMMAND_PHASE_KINDS = {
+    "item.started": "exec_command_begin",
+    "item.updated": "exec_command_end",
+    "item.completed": "exec_command_end",
+}
+NATIVE_COMMAND_ITEM_TYPES = {"command_execution", "CommandExecution"}
 ERROR_STATUSES = {"error", "failed", "failure", "timeout", "timed_out", "cancelled"}
 SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed"}
 EXIT_STATUS_RE = re.compile(r"\b(?:exit[_ -]?code\s*[:=]?\s*|process exited with code\s+)(-?\d+)\b", re.I)
@@ -1095,7 +1182,8 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
     )
     if event.exit_code is not None or tool_error or status in SUCCESS_STATUSES or (isinstance(payload, dict) and payload.get("success") is True):
         event.outcome_basis = "result_status"
-        event.expected_nonzero = expected_search_status(event.command, event.exit_code, tool_error or output_error_hint(payload))
+        event.expected_nonzero = (expected_search_status(event.command, event.exit_code, tool_error)
+                                  and not output_error_hint(payload))
         event.failed = tool_error or (event.exit_code is not None and event.exit_code != 0 and not event.expected_nonzero)
         event.succeeded = not event.failed
     else:
@@ -1106,7 +1194,8 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
         ):
             return
         event.exit_code, event.failed, event.succeeded = text_outcome(event.fragments, typed_result=typed_result)
-        event.expected_nonzero = expected_search_status(event.command, event.exit_code, output_error_hint(payload))
+        event.expected_nonzero = (expected_search_status(event.command, event.exit_code, False)
+                                  and not output_error_hint(payload))
         if event.expected_nonzero:
             event.failed, event.succeeded = False, True
         if event.failed or event.succeeded or event.exit_code is not None:
@@ -1116,17 +1205,21 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
 def normalize_events(
     path: Path, max_bytes: int, since_ts: float | None = None, until_ts: float | None = None,
     after_file: Path | None = None, after_line: int | None = None,
+    budget: ScanBudget | None = None,
 ) -> list[TraceEvent]:
     calls: dict[str, str | list[str] | None] = {}
     previous_failure: dict[str, bool] = {}
     invocation_retries: dict[str, bool] = {}
     events: dict[str, TraceEvent] = {}
     session_id = ""
+    file_id = stable_file_id(path)
 
     def identity(event_key: str) -> str:
-        return hashlib.sha256(f"{stable_file_id(path)}:{session_id}:{event_key}".encode()).hexdigest()[:20]
+        return hashlib.sha256(f"{file_id}:{session_id}:{event_key}".encode()).hexdigest()[:20]
 
     for line, record in iter_records(path, max_bytes):
+        if budget is not None:
+            budget.check("normalization", path)
         if isinstance(record, dict) and record.get("type") in {"session_meta", "thread.started"}:
             metadata = record.get("payload", {})
             next_session = (str(record.get("thread_id", "")) if record.get("type") == "thread.started"
@@ -1137,21 +1230,30 @@ def normalize_events(
                 previous_failure.clear()
                 invocation_retries.clear()
         value = record
-        native_phase = ""
-        native_context = False
-        if (isinstance(record, dict) and record.get("type") in {"item.started", "item.updated", "item.completed"}
-                and record.get("role") not in {"user", "assistant", "system", "developer"}
-                and isinstance(record.get("item"), dict)):
-            value = record["item"]
-            native_phase = str(record["type"])
-            native_context = value.get("type") != "command_execution"
-        while (isinstance(value, dict) and value.get("type") in {"response_item", "event_msg"}
-               and value.get("role") not in {"user", "assistant", "system", "developer"}
-               and isinstance(value.get("payload"), dict)):
+        while isinstance(value, dict):
+            wrapper_type = value.get("type")
+            if (not isinstance(wrapper_type, str) or wrapper_type not in {"response_item", "event_msg"}
+                    or value.get("role") in MESSAGE_ROLES or not isinstance(value.get("payload"), dict)):
+                break
             value = value["payload"]
+        value_type = value.get("type") if isinstance(value, dict) else None
+        malformed_type = value_type is not None and not isinstance(value_type, str)
+        candidate_phase = NATIVE_ITEM_PHASES.get(value_type, "") if isinstance(value_type, str) else ""
+        native_phase = ""
+        native_context = bool(candidate_phase)
+        if candidate_phase and isinstance(value.get("item"), dict):
+            native_phase = candidate_phase
+            item = value["item"]
+            native_context = (
+                value.get("role") in MESSAGE_ROLES
+                or item.get("role") in MESSAGE_ROLES
+                or not isinstance(item.get("type"), str)
+                or item.get("type") not in NATIVE_COMMAND_ITEM_TYPES
+            )
+            value = item
         kind = str(value.get("type", "")) if isinstance(value, dict) else ""
         if native_phase and not native_context:
-            kind = "exec_command_begin" if native_phase == "item.started" else "exec_command_end"
+            kind = NATIVE_COMMAND_PHASE_KINDS[native_phase]
         role = value.get("role") if isinstance(value, dict) else None
         call_id = str(value.get("call_id") or value.get("tool_call_id") or "") if isinstance(value, dict) else ""
         if native_phase and not native_context:
@@ -1159,11 +1261,13 @@ def normalize_events(
         command = command_value(value)
         if line == 0:
             parts = [(value, "", "scanner_diagnostic")]
+        elif native_context or malformed_type:
+            parts = [(value, "", "context")]
         elif kind in CALL_TYPES:
             if call_id:
                 calls[call_id] = command
             parts = [(value, "", "call")]
-        elif (native_context or role in {"user", "assistant", "system", "developer"} or kind in CONTEXT_TYPES
+        elif (role in MESSAGE_ROLES or kind in CONTEXT_TYPES
               or (isinstance(value, str) and value.lstrip().startswith(("{", "[")))):
             parts = [(value, "", "context")]
         else:
@@ -1179,9 +1283,10 @@ def normalize_events(
             tool_id = identity(f"tool:{child_call_id}:{identity_slot}" if child_call_id else f"tool:{line}:{slot}") if event_kind in {"call", "result"} else None
             event_id = identity(f"{event_kind}:{child_call_id}:{identity_slot}" if child_call_id else f"{event_kind}:{line}:{slot}")
             event = TraceEvent(line, event_id, event_kind, list(json_fragments(payload)), tool_id, event_command)
-            event.file_id = stable_file_id(path)
+            event.file_id = file_id
+            payload_type = payload.get("type") if isinstance(payload, dict) else None
             typed_result = (kind in RESULT_TYPES or role == "tool"
-                            or (isinstance(payload, dict) and payload.get("type") in RESULT_TYPES))
+                            or (isinstance(payload_type, str) and payload_type in RESULT_TYPES))
             if native_phase != "item.updated":
                 set_outcome(event, payload, typed_result=typed_result)
             # Correlate preceding calls even when the requested checkpoint excludes them.
@@ -1201,11 +1306,14 @@ def normalize_events(
 
 
 def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
-                       suppress_investigation_noise: bool = False) -> dict[str, Finding]:
+                       suppress_investigation_noise: bool = False,
+                       budget: ScanBudget | None = None) -> dict[str, Finding]:
     findings = {signal.name: Finding(signal) for signal in SIGNALS}
     seen_hits: set[tuple[int, str, str, int]] = set()
     line_signal_texts: dict[tuple[int, str], set[str]] = {}
     for event in events:
+        if budget is not None:
+            budget.check("signal matching", path)
         if event.kind == "scanner_diagnostic":
             continue
         line_no = event.line
@@ -1216,11 +1324,16 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                 signal_tags("repeated_command_failure", evidence, evidence), event.event_id, event.outcome_basis,
             ))
         for text, is_summary, is_structured in event.fragments:
+            if budget is not None:
+                budget.check("signal matching", path)
             if is_meta_echo(text):
                 continue
             if suppress_investigation_noise and not is_structured and is_suppressed_noise(text):
                 continue
             matched_auth_login_noise = bool(AUTH_LOGIN_NOISE_RE.search(text))
+            canonical_text = canonical_hit_text(text)
+            snippet: str | None = None
+            static_diff_or_config: bool | None = None
             for signal in SIGNALS:
                 if signal.name == "repeated_command_failure":
                     continue
@@ -1234,25 +1347,60 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                     continue
                 if signal.name == "auth_login_loop" and not matched_auth_login_noise:
                     continue
-                canonical_text = canonical_hit_text(text)
+                tags: tuple[str, ...] | None = None
+                line_skip_cache: dict[str, bool] | None = (
+                    {} if signal.name in LINE_SCOPED_SIGNAL_FILTERS else None
+                )
+                fragment_skip: bool | None = None
+                summary_repeat_seen_size: int | None = None
+                summary_repeat = False
                 for occurrence, match in enumerate(signal.pattern.finditer(text)):
-                    if should_skip_signal_match(signal.name, text, canonical_text, match):
+                    if line_skip_cache is not None:
+                        if static_diff_or_config is None:
+                            static_diff_or_config = looks_like_static_diff_or_config(text)
+                        match_line = matched_line(text, match)
+                        if match_line not in line_skip_cache:
+                            line_skip_cache[match_line] = should_skip_signal_match(
+                                signal.name,
+                                text,
+                                canonical_text,
+                                match,
+                                static_diff_or_config=static_diff_or_config,
+                            )
+                        skip_match = line_skip_cache[match_line]
+                    elif signal.name in FRAGMENT_SCOPED_SIGNAL_FILTERS:
+                        if fragment_skip is None:
+                            fragment_skip = should_skip_signal_match(signal.name, text, canonical_text, match)
+                        skip_match = fragment_skip
+                    else:
+                        skip_match = should_skip_signal_match(signal.name, text, canonical_text, match)
+                    if skip_match:
                         continue
-                    tags = signal_tags(signal.name, text, canonical_text)
                     line_signal_key = (line_no, signal.name)
                     line_texts = line_signal_texts.setdefault(line_signal_key, set())
-                    if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
-                        continue
+                    if is_summary:
+                        if summary_repeat_seen_size != len(line_texts):
+                            summary_repeat = summary_only_repeats_seen_values(
+                                canonical_text,
+                                line_texts,
+                            )
+                            summary_repeat_seen_size = len(line_texts)
+                        if summary_repeat:
+                            continue
                     hit_key = (line_no, signal.name, canonical_text, occurrence)
                     if hit_key in seen_hits:
                         continue
                     seen_hits.add(hit_key)
                     line_texts.add(canonical_text)
+                    if tags is None:
+                        tags = signal_tags(signal.name, text, canonical_text)
+                    if snippet is None:
+                        snippet = redacted(text, context_chars)
                     findings[signal.name].add(
                         Hit(
                             file=path,
                             line=line_no,
-                            snippet=redacted(text, context_chars),
+                            snippet=snippet,
                             structured=is_structured,
                             tags=tags,
                             event_id=event.event_id,
@@ -1270,6 +1418,7 @@ def scan(
     after_file: Path | None = None,
     after_line: int | None = None,
     suppress_investigation_noise: bool = False,
+    budget: ScanBudget | None = None,
 ) -> ScanFindings:
     findings = {signal.name: Finding(signal) for signal in SIGNALS}
     all_events: list[TraceEvent] = []
@@ -1282,9 +1431,13 @@ def scan(
         if path in seen_paths:
             continue
         seen_paths.add(path)
-        events = normalize_events(path, read_bytes, since_ts, until_ts, after_file, after_line)
+        if budget is not None:
+            budget.stage("normalization", path)
+        events = normalize_events(path, read_bytes, since_ts, until_ts, after_file, after_line, budget)
         all_events.extend(events)
-        for name, finding in collect_event_hits(path, events, context_chars, suppress_investigation_noise).items():
+        if budget is not None:
+            budget.stage("signal matching", path)
+        for name, finding in collect_event_hits(path, events, context_chars, suppress_investigation_noise, budget).items():
             for hit in finding.hits:
                 findings[name].add(hit)
     return ScanFindings({
@@ -1329,11 +1482,22 @@ def should_skip_signal_match(
     text: str,
     canonical_text: str,
     match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
 ) -> bool:
     if signal_name in {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"}:
-        return looks_like_rate_limit_false_positive(text, canonical_text, match)
+        return looks_like_rate_limit_false_positive(
+            text,
+            canonical_text,
+            match,
+            static_diff_or_config=static_diff_or_config,
+        )
     if signal_name in {"repeated_command_failure", "missing_dependency_or_tool"}:
-        return looks_like_static_match_context(text, match)
+        return looks_like_static_match_context(
+            text,
+            match,
+            static_diff_or_config=static_diff_or_config,
+        )
     if signal_name == "auto_review_loop" and not is_auto_review_loop_evidence(canonical_text):
         return True
     if signal_name in {"auto_review_loop", "auto_review_valid_finding"}:
@@ -1341,8 +1505,18 @@ def should_skip_signal_match(
     return False
 
 
-def looks_like_rate_limit_false_positive(text: str, canonical_text: str, match: re.Match[str]) -> bool:
-    if looks_like_static_match_context(text, match):
+def looks_like_rate_limit_false_positive(
+    text: str,
+    canonical_text: str,
+    match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
+) -> bool:
+    if looks_like_static_match_context(
+        text,
+        match,
+        static_diff_or_config=static_diff_or_config,
+    ):
         return True
     line = matched_line(text, match)
     combined = f"{canonical_text}\n{line}"
@@ -1352,8 +1526,23 @@ def looks_like_rate_limit_false_positive(text: str, canonical_text: str, match: 
         return True
     if RATE_LIMIT_PLACEHOLDER_RE.search(combined):
         return True
-    if RATE_LIMIT_GUIDANCE_RE.search(combined):
+    if RATE_LIMIT_GUIDANCE_RE.search(combined) or has_ordered_use_helper_rate_limit(combined):
         return True
+    return False
+
+
+def has_ordered_use_helper_rate_limit(text: str) -> bool:
+    for line in text.split("\n"):
+        # Fixed-width literals make the earliest starts also the earliest ends.
+        # If any ordered chain exists, it is reachable from that earliest pair.
+        use = USE_GUIDANCE_RE.search(line)
+        if use is None:
+            continue
+        helper = HELPER_GUIDANCE_RE.search(line, use.end())
+        if helper is None:
+            continue
+        if RATE_LIMIT_GUIDANCE_LITERAL_RE.search(line, helper.end()) is not None:
+            return True
     return False
 
 
@@ -1406,8 +1595,15 @@ def looks_like_static_diff_or_config(text: str) -> bool:
     return bool(DIFF_OR_STATIC_CONTEXT_RE.search(text))
 
 
-def looks_like_static_match_context(text: str, match: re.Match[str]) -> bool:
-    if not looks_like_static_diff_or_config(text):
+def looks_like_static_match_context(
+    text: str,
+    match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
+) -> bool:
+    if static_diff_or_config is None:
+        static_diff_or_config = looks_like_static_diff_or_config(text)
+    if not static_diff_or_config:
         return False
     line = matched_line(text, match)
     return looks_like_static_diff_line(line) or looks_like_static_config_line(line)
@@ -1605,16 +1801,22 @@ def main() -> int:
     files, limitations = iter_candidate_files(paths, args.max_files)
     targets, scan_limitations = plan_scan_targets(files, args.max_bytes, args.max_file_bytes)
     limitations.extend(scan_limitations)
-    findings = scan(
-        targets,
-        args.max_bytes,
-        args.context_chars,
-        since_ts=args.since_ts,
-        until_ts=args.until_ts,
-        after_file=args.after_file,
-        after_line=args.after_line,
-        suppress_investigation_noise=args.suppress_investigation_noise,
-    )
+    budget = ScanBudget(args.max_seconds, args.progress)
+    try:
+        findings = scan(
+            targets,
+            args.max_bytes,
+            args.context_chars,
+            since_ts=args.since_ts,
+            until_ts=args.until_ts,
+            after_file=args.after_file,
+            after_line=args.after_line,
+            suppress_investigation_noise=args.suppress_investigation_noise,
+            budget=budget,
+        )
+        budget.stage("report")
+    except ScanTimeLimit as exc:
+        return emit_time_limit(exc, json_mode=args.json)
     if args.json:
         emit_json(targets, findings, limitations)
     else:

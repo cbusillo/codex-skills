@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from lm_studio_api import (
-    DEFAULT_BASE_URL,
     DEFAULT_CONFIG,
     MODEL_INDEX,
     LocalLLMError,
@@ -37,6 +36,15 @@ from lm_studio_api import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MAX_INPUT_CHARS = 12_000
 CHANNEL_RE = re.compile(r"<\|channel\|>\w+\s*(?:<\|constrain\|>\w+)?\s*<\|message\|>", re.I)
+
+
+class LocalLLMChatError(LocalLLMError):
+    """A chat failure with the public-safe lifecycle evidence collected so far."""
+
+    def __init__(self, message: str, lifecycle: dict[str, Any], usage: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.lifecycle = lifecycle
+        self.usage = usage
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,7 +89,11 @@ def main() -> int:
         prompt = read_prompt(args)[: args.max_input_chars]
         result = chat(endpoint, model, prompt, args.system, args, role)
     except LocalLLMError as exc:
-        payload = {"ok": False, "error": str(exc)}
+        payload: dict[str, Any] = {"ok": False, "error": str(exc)}
+        if isinstance(exc, LocalLLMChatError):
+            payload["lifecycle"] = exc.lifecycle
+            if exc.usage is not None:
+                payload["usage"] = exc.usage
         emit(payload, json_mode=args.json)
         return 1
     emit(result, json_mode=args.json)
@@ -103,11 +115,23 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
     max_tokens = parse_int_option(args.max_tokens, role.get("max_tokens"), 900, "max_tokens")
     timeout = parse_float_option(args.timeout, role.get("timeout_seconds"), 120, "timeout_seconds")
     temperature = parse_float_option(args.temperature, role.get("temperature"), 0.2, "temperature")
-    lifecycle = prepare_lifecycle(endpoint, model, args, role, timeout)
+    lifecycle: dict[str, Any] = {}
     response: dict[str, Any] | None = None
+    task_usage: dict[str, Any] | None = None
+    content = ""
+    primary_error: Exception | None = None
+    cleanup_error: Exception | None = None
     try:
+        prepare_lifecycle(endpoint, model, args, role, timeout, lifecycle)
+        inference_model = (
+            lifecycle["loaded_instance_id"]
+            if lifecycle.get("load_policy") == "api_explicit"
+            else model
+        )
         if args.warmup:
-            warmup_payload = chat_payload(model, "Reply with exactly: OK", "You are a readiness probe.", temperature, 16)
+            warmup_payload = chat_payload(
+                inference_model, "Reply with exactly: OK", "You are a readiness probe.", temperature, 16
+            )
             if lifecycle.get("load_policy") == "jit_chat" and lifecycle.get("ttl_seconds"):
                 warmup_payload["ttl"] = lifecycle["ttl_seconds"]
             warmup_response = post_json(
@@ -118,7 +142,9 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
                 error_context="warmup chat request failed",
             )
             lifecycle["warmup_served_model"] = warmup_response.get("model")
-        payload = chat_payload(model, prompt, system, temperature, max_tokens)
+            if isinstance(warmup_response.get("usage"), dict):
+                lifecycle["warmup_usage"] = dict(warmup_response["usage"])
+        payload = chat_payload(inference_model, prompt, system, temperature, max_tokens)
         if lifecycle.get("load_policy") == "jit_chat" and lifecycle.get("ttl_seconds"):
             payload["ttl"] = lifecycle["ttl_seconds"]
         response = post_json(
@@ -128,15 +154,40 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
             timeout,
             error_context=f"chat request failed for {endpoint.get('id')}",
         )
+        if isinstance(response.get("usage"), dict):
+            task_usage = dict(response["usage"])
+        content = extract_content(response)
+        if not content:
+            raise LocalLLMError("endpoint returned no assistant content; increase --max-tokens for reasoning models")
+    except Exception as exc:
+        primary_error = exc
     finally:
         if args.unload_after and lifecycle.get("loaded_instance_id"):
-            lifecycle["unload_response"] = unload_lm_studio_model(endpoint, str(lifecycle["loaded_instance_id"]), timeout)
+            try:
+                lifecycle["unload_response"] = unload_lm_studio_model(
+                    endpoint, str(lifecycle["loaded_instance_id"]), timeout
+                )
+            except Exception as exc:
+                cleanup_error = exc
+                lifecycle["unload_error"] = str(exc)
+        elif (
+            args.unload_after
+            and lifecycle.get("load_policy") == "api_explicit"
+            and "load_response" in lifecycle
+        ):
+            lifecycle["cleanup_skipped"] = {
+                "reason": "load response did not provide a usable instance_id",
+                "loaded_state": "unknown",
+            }
+    if primary_error is not None or cleanup_error is not None:
+        if primary_error is not None and cleanup_error is not None:
+            message = f"{primary_error}; cleanup also failed: {cleanup_error}"
+        else:
+            message = str(primary_error or cleanup_error)
+        raise LocalLLMChatError(message, lifecycle, task_usage) from primary_error or cleanup_error
     if response is None:
-        raise LocalLLMError("chat request failed before a response was returned")
-    content = extract_content(response)
-    if not content:
-        raise LocalLLMError("endpoint returned no assistant content; increase --max-tokens for reasoning models")
-    return {
+        raise LocalLLMChatError("chat request failed before a response was returned", lifecycle)
+    result = {
         "ok": True,
         "model": model,
         "served_model": response.get("model"),
@@ -147,6 +198,9 @@ def chat(endpoint: dict[str, Any], model: str, prompt: str, system: str, args: a
         "lifecycle": lifecycle,
         "content": content,
     }
+    if task_usage is not None:
+        result["usage"] = task_usage
+    return result
 
 
 def chat_payload(model: str, prompt: str, system: str, temperature: float, max_tokens: int) -> dict[str, Any]:
@@ -162,13 +216,21 @@ def chat_payload(model: str, prompt: str, system: str, temperature: float, max_t
     }
 
 
-def prepare_lifecycle(endpoint: dict[str, Any], model: str, args: argparse.Namespace, role: dict[str, Any], timeout: float) -> dict[str, Any]:
+def prepare_lifecycle(
+    endpoint: dict[str, Any],
+    model: str,
+    args: argparse.Namespace,
+    role: dict[str, Any],
+    timeout: float,
+    lifecycle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     raw_load_config = role.get("load")
     load_config: dict[str, Any] = raw_load_config if isinstance(raw_load_config, dict) else {}
     policy = normalize_load_policy(args.load_policy or str(role.get("load_policy") or load_config.get("policy") or "none"))
     ttl_source = role.get("ttl_seconds") or load_config.get("ttl_seconds")
     ttl = parse_int_option(args.ttl, ttl_source, 0, "ttl") if args.ttl or ttl_source else None
-    lifecycle: dict[str, Any] = {"load_policy": policy, "ttl_seconds": ttl}
+    lifecycle = lifecycle if lifecycle is not None else {}
+    lifecycle.update({"load_policy": policy, "ttl_seconds": ttl})
     if policy == "none":
         return lifecycle
     if policy == "jit_chat":
@@ -176,13 +238,23 @@ def prepare_lifecycle(endpoint: dict[str, Any], model: str, args: argparse.Names
             raise LocalLLMError("jit_chat load policy requires provider=lm_studio")
         return lifecycle
     if policy == "api_explicit":
-        context_source = role.get("context_length") or load_config.get("context_length")
+        context_source = role.get("context_length")
+        if context_source is None:
+            context_source = load_config.get("context_length")
         context_length = (
             parse_int_option(args.context_length, context_source, 0, "context_length")
-            if args.context_length or context_source
+            if args.context_length is not None or context_source is not None
             else None
         )
         flash_attention = True if args.flash_attention else load_config.get("flash_attention")
+        if flash_attention is not None and not isinstance(flash_attention, bool):
+            raise LocalLLMError("flash_attention must be a boolean")
+        requested_load_config: dict[str, Any] = {}
+        if context_length is not None:
+            requested_load_config["context_length"] = context_length
+        if flash_attention is not None:
+            requested_load_config["flash_attention"] = flash_attention
+        lifecycle["requested_load_config"] = requested_load_config
         if ttl:
             lifecycle["ttl_note"] = "ttl is not sent to LM Studio native load; use --unload-after for explicit cleanup"
         response = load_lm_studio_model(
@@ -195,7 +267,6 @@ def prepare_lifecycle(endpoint: dict[str, Any], model: str, args: argparse.Names
         )
         lifecycle.update(
             {
-                "loaded_instance_id": response.get("instance_id"),
                 "load_response": {
                     "status": response.get("status"),
                     "load_time_seconds": response.get("load_time_seconds"),
@@ -203,8 +274,62 @@ def prepare_lifecycle(endpoint: dict[str, Any], model: str, args: argparse.Names
                 },
             }
         )
+        instance_id = response.get("instance_id")
+        if not isinstance(instance_id, str) or not instance_id.strip():
+            lifecycle["instance_id_verified"] = False
+            raise LocalLLMError("LM Studio load response did not contain a usable instance_id")
+        if instance_id != instance_id.strip():
+            lifecycle["instance_id_verified"] = False
+            raise LocalLLMError("LM Studio load response instance_id has surrounding whitespace; refusing to trim it")
+        lifecycle["loaded_instance_id"] = instance_id
+        lifecycle["instance_id_verified"] = True
+        status = response.get("status")
+        status_verified = type(status) is str and status == "loaded"
+        lifecycle["load_status_verification"] = {
+            "expected": "loaded",
+            "effective": status,
+            "verified": status_verified,
+        }
+        if not status_verified:
+            raise LocalLLMError("LM Studio load response did not report typed status=loaded")
+        verify_load_config(lifecycle, requested_load_config, response.get("load_config"))
         return lifecycle
     raise LocalLLMError(f"unknown load policy: {policy}")
+
+
+def verify_load_config(
+    lifecycle: dict[str, Any], requested: dict[str, Any], effective: Any
+) -> None:
+    verification: dict[str, Any] = {"status": "not_requested", "fields": {}}
+    lifecycle["load_config_verification"] = verification
+    if not requested:
+        return
+    if not isinstance(effective, dict):
+        verification["status"] = "unknown"
+        verification["fields"] = {
+            key: {"requested": value, "effective": None, "verified": False}
+            for key, value in requested.items()
+        }
+        raise LocalLLMError("LM Studio load response omitted the effective load_config; requested settings were not verified")
+
+    mismatches: list[str] = []
+    for key, requested_value in requested.items():
+        effective_value = effective.get(key)
+        expected_type = bool if key == "flash_attention" else int
+        typed_match = type(effective_value) is expected_type and effective_value == requested_value
+        verification["fields"][key] = {
+            "requested": requested_value,
+            "effective": effective_value,
+            "verified": typed_match,
+        }
+        if not typed_match:
+            mismatches.append(key)
+    if mismatches:
+        verification["status"] = "mismatch"
+        raise LocalLLMError(
+            "LM Studio effective load_config did not match requested settings: " + ", ".join(mismatches)
+        )
+    verification["status"] = "verified"
 
 
 def normalize_load_policy(policy: str) -> str:

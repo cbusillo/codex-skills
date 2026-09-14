@@ -3,6 +3,24 @@
 Read this reference when interpreting analyzer or episode counts, comparing
 reports, or giving reports and trajectory skeletons to a model.
 
+For long inputs, the analyzer and segmenter accept `--progress` for redacted
+file/stage updates on stderr and `--max-seconds` for a cooperative analysis
+budget. Its clock starts after file discovery and target planning; final report
+encoding and output are outside that clock. Budget checks occur between records,
+fragments, and stages (between files for episode grouping); they cannot
+interrupt a single slow I/O, parser, or regex operation. Use an outer process
+deadline when a hard limit is required. On budget exhaustion the command exits
+2 and discards the entire partial report. JSON mode emits `ok: false` with a
+`scan_time_limit` limitation and no findings or episode arrays; text/JSONL mode
+keeps stdout empty and reports the failure on stderr. The clusterer rejects a
+failed JSON report. Check the command exit status before consuming JSONL: an
+empty output from a failed scan is not a successful scan with zero episodes.
+
+Snippet limits apply after redaction. Matching uses the full bounded input;
+performance optimizations do not truncate signal evidence or change version-2
+counts. A time-limited run cannot establish complete coverage or absence of
+friction.
+
 New reports declare `schema_version: 2` and
 `count_semantics: normalized_events_v2`. The analyzer's
 `repeated_command_failure.count` counts distinct failed result events. Other
@@ -26,13 +44,21 @@ terminal header is read before filtering investigation chatter. Printed `Output`
 content cannot override that header, including a successful zero exit.
 That boundary persists across content fragments; a body without a preceding
 terminal header cannot supply an outcome through fallback text matching.
-Native Codex exec JSONL
-`item.started`/`item.updated`/`item.completed` records whose `item.type` is
-`command_execution` share `item.id` as their invocation identity and use the
-terminal command status. `item.updated` remains progress until `item.completed`,
-even if an update contains error prose or terminal-looking fields.
-Other native item kinds, including agent messages,
-reasoning, and model metadata warnings, remain context.
+Native Codex exec JSONL accepts dotted `item.started`/`item.updated`/
+`item.completed` phases and the equivalent `item_started`/`item_updated`/
+`item_completed` spellings, with either `command_execution` or
+`CommandExecution` as the command item type. These forms may appear directly
+or inside `event_msg`/`response_item` payload envelopes, including nested ones.
+These forms share `item.id` as their invocation identity and use the terminal
+command status. Starts and updates remain non-terminal until completion, even
+if they contain error prose or terminal-looking fields. Native items carrying
+a user, assistant, system, or developer role remain context at every envelope
+level and cannot establish later command correlation.
+Other native item kinds, including `FileChange`, agent messages, reasoning, and
+model metadata warnings, remain context. Their completed status and embedded
+source text do not establish a command outcome.
+Recognized lifecycle envelopes without a valid item remain context; fields on
+an incomplete envelope do not establish a command result.
 
 Mirrors with the same call identity in one source session count once. Separate
 calls and identified sessions remain distinct. Without a call identity, a result

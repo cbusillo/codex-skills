@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -1356,6 +1358,44 @@ def tool_call(call_id: str, command: str | list[str]) -> dict[str, object]:
     }}
 
 
+def native_item_event(phase: str, item: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "event_msg", "payload": {
+        "type": phase,
+        "thread_id": "thread-synthetic",
+        "turn_id": "turn-synthetic",
+        "item": item,
+        "started_at_ms": 1,
+        "completed_at_ms": 2,
+    }}
+
+
+def native_command_item(
+    item_id: str,
+    command: str | list[str],
+    exit_code: int | None,
+    stdout: str = "",
+    stderr: str = "",
+    status: str = "completed",
+) -> dict[str, Any]:
+    display_command = command if isinstance(command, str) else " ".join(command)
+    return {
+        "type": "CommandExecution",
+        "id": item_id,
+        "process_id": f"process-{item_id}",
+        "command": command,
+        "cwd": "/workspace/example",
+        "parsed_cmd": [{"type": "unknown", "cmd": display_command}],
+        "source": "agent",
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+        "aggregated_output": stdout,
+        "exit_code": exit_code,
+        "duration": {"secs": 0, "nanos": 1},
+        "formatted_output": stdout,
+    }
+
+
 def test_result_statuses_survive_noise_filters_and_mirrors() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1561,6 +1601,161 @@ def test_native_codex_command_items_use_identity_and_terminal_status() -> None:
             raise AssertionError("native stdout JSON must not override the outer command status")
 
 
+def test_wrapped_native_items_preserve_outcomes_kinds_and_mirrors() -> None:
+    module = load_module()
+    historical_failure = "error: historical compiler failure\nProcess exited with code 101"
+    successful = native_command_item("call-success", ["cat", "history.log"], 0, historical_failure)
+    failed_one = native_command_item("call-one", ["build", "example"], 1, "build stopped", status="failed")
+    failed_127 = native_command_item("call-127", ["missing-example-tool"], 127, "tool unavailable", status="failed")
+    file_change = {
+        "type": "FileChange",
+        "id": "change-synthetic",
+        "status": "completed",
+        "changes": {"example.txt": {"type": "add", "content": "error: source example\nCommand failed\nexit_code=1"}},
+        "stdout": "",
+        "stderr": "",
+    }
+    records = [
+        {"type": "session_meta", "payload": {"id": "session-synthetic"}},
+        native_item_event("item_completed", successful),
+        native_item_event("item_completed", failed_one),
+        tool_result("call-one", {"exit_code": 1, "output": "build stopped"}),
+        {"type": "item.completed", "item": {**failed_one, "type": "command_execution"}},
+        native_item_event("item_completed", failed_127),
+        native_item_event("item_completed", file_change),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        events = module.normalize_events(trace, 100_000)
+        findings = module.collect_event_hits(trace, events, 240)
+
+    results = [event for event in events if event.kind == "result"]
+    if len(results) != 3 or len({event.tool_id for event in results}) != 3:
+        raise AssertionError("native results and their same-id response mirrors must share one identity")
+    by_exit = {event.exit_code: event for event in results}
+    if by_exit[0].failed or not by_exit[0].succeeded or by_exit[0].outcome_basis != "result_status":
+        raise AssertionError("a successful native status must override historical failure text")
+    if any(not by_exit[code].failed or by_exit[code].outcome_basis != "result_status" for code in (1, 127)):
+        raise AssertionError("native nonzero exits must keep typed result provenance")
+    change_event = next(event for event in events if "FileChange" in event.evidence_text())
+    if change_event.kind != "context" or change_event.tool_id or change_event.outcome_basis:
+        raise AssertionError("completed FileChange source text must remain non-command context")
+    failure_hits = findings["repeated_command_failure"].hits
+    if len(failure_hits) != 2 or {hit.outcome_basis for hit in failure_hits} != {"result_status"}:
+        raise AssertionError("only genuine native command failures should produce typed failure hits")
+
+
+def test_wrapped_native_lifecycle_aliases_and_roles_are_guarded() -> None:
+    module = load_module()
+    lifecycle = native_command_item("lifecycle", ["build", "example"], 1, "error: pending")
+    records = [
+        {"type": "session_meta", "payload": {"id": "session-lifecycle"}},
+        native_item_event("item_started", lifecycle),
+        {"type": "response_item", "payload": native_item_event("item_updated", lifecycle)["payload"]},
+        {"type": "event_msg", "payload": {"type": "response_item", "payload": {
+            "type": "item.updated", "item": lifecycle,
+        }}},
+    ]
+    malformed = native_item_event("item_completed", lifecycle)
+    malformed["payload"]["item"] = ["not", "an", "item"]
+    malformed_phase = native_item_event("item_completed", lifecycle)
+    malformed_phase["payload"]["type"] = ["item_completed"]
+    records.extend([
+        malformed,
+        malformed_phase,
+        {"type": "item.completed", "exit_code": 1, "status": "failed"},
+        {"type": "event_msg", "payload": {"type": "item_completed", "exit_code": 1, "status": "failed"}},
+        native_item_event("item_completed", {**lifecycle, "id": "unknown-item", "type": "CommandExecutionLike"}),
+        native_item_event("item_started", {"id": "call-collision", "type": "function_call", "call_id": "collision"}),
+        native_item_event("item_started", {"id": "exec-collision", "type": "exec_command_begin", "call_id": "collision"}),
+        native_item_event("item_completed", {**lifecycle, "id": "malformed-item-type", "type": {"name": "CommandExecution"}}),
+        native_item_event("item_finished", {**lifecycle, "id": "unknown-phase"}),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        events = module.normalize_events(write_trace(Path(tmp), records), 100_000)
+    lifecycle_events = [event for event in events if event.tool_id]
+    if (len(lifecycle_events) != 2 or len({event.tool_id for event in lifecycle_events}) != 1
+            or {event.kind for event in lifecycle_events} != {"call", "result"}):
+        raise AssertionError("wrapped started and updated aliases must share one command identity")
+    if any(event.outcome_basis for event in lifecycle_events):
+        raise AssertionError("native starts and updates must never establish terminal outcomes")
+    progress_hits = module.collect_event_hits(Path("synthetic-progress.jsonl"), lifecycle_events, 240)
+    if progress_hits["repeated_command_failure"].count:
+        raise AssertionError("native progress output must not produce command-failure hits")
+    non_lifecycle = [event for event in events if event not in lifecycle_events]
+    if any(event.outcome_basis == "result_status" or event.tool_id or event.kind == "call" for event in non_lifecycle):
+        raise AssertionError("malformed phases and unknown item types must not gain typed tool authority")
+    records.append(native_item_event(
+        "item_completed", native_command_item("lifecycle", ["build", "example"], 2, status="failed")
+    ))
+    with tempfile.TemporaryDirectory() as tmp:
+        completed_events = module.normalize_events(write_trace(Path(tmp), records), 100_000)
+    completed_tool_events = [event for event in completed_events if event.tool_id]
+    terminal = [event for event in completed_tool_events if event.outcome_basis]
+    if (len({event.tool_id for event in completed_tool_events}) != 1 or len(terminal) != 1
+            or not terminal[0].failed or terminal[0].exit_code != 2):
+        raise AssertionError("completion must replace its update with one terminal result on the same invocation")
+
+    for role in module.MESSAGE_ROLES:
+        for placement in ("outer", "intermediate", "item"):
+            guarded_item = native_command_item("guarded", ["rg", "needle", "example.txt"], None, status="in_progress")
+            guarded = native_item_event("item_started", guarded_item)
+            if placement == "outer":
+                guarded["role"] = role
+            elif placement == "intermediate":
+                guarded["payload"]["role"] = role
+            else:
+                guarded_item["role"] = role
+            completed_item = native_command_item("guarded", ["rg", "needle", "example.txt"], 0)
+            completed_guarded = native_item_event("item_completed", completed_item)
+            if placement == "outer":
+                completed_guarded["role"] = role
+            elif placement == "intermediate":
+                completed_guarded["payload"]["role"] = role
+            else:
+                completed_item["role"] = role
+            with tempfile.TemporaryDirectory() as tmp:
+                trace = write_trace(Path(tmp), [
+                    {"type": "session_meta", "payload": {"id": f"session-{role}-{placement}"}},
+                    guarded,
+                    completed_guarded,
+                    tool_result("guarded", {"exit_code": 1, "output": "no match"}),
+                ])
+                guarded_events = module.normalize_events(trace, 100_000)
+            result = next(event for event in guarded_events if event.kind == "result")
+            contexts = [event for event in guarded_events if event.kind == "context"]
+            if (any(event.kind == "call" for event in guarded_events) or result.expected_nonzero or not result.failed
+                    or any(event.failed or event.succeeded or event.outcome_basis for event in contexts)):
+                raise AssertionError(f"{placement} {role} role must not seed later command correlation")
+
+
+def test_wrapped_native_search_and_error_precedence() -> None:
+    module = load_module()
+    cases = [
+        (["rg", "needle", "example.txt"], 1, "", None, "completed", True, False),
+        (["rg", "needle", "example.txt"], 1, "rg: example.txt: Permission denied", None, "completed", False, True),
+        (["/bin/zsh", "-c", "rg needle example.txt"], 1, "", None, "completed", False, True),
+        ("rg needle example.txt | sort", 1, "", None, "completed", False, True),
+        (["build", "example"], 0, "", "reported tool error", "completed", False, True),
+        (["build", "example"], 0, "", None, "failed", False, True),
+        (["missing-example-tool"], 127, "", None, "failed", False, True),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, (command, code, stderr, error, status, expected_search, failed) in enumerate(cases):
+            item = native_command_item(f"precedence-{index}", command, code, stderr=stderr, status=status)
+            if error is not None:
+                item["error"] = error
+            trace = write_trace(Path(tmp), [
+                {"type": "session_meta", "payload": {"id": f"session-precedence-{index}"}},
+                native_item_event("item_completed", item),
+            ])
+            result = next(event for event in module.normalize_events(trace, 100_000) if event.kind == "result")
+            actual = (result.outcome_basis, result.exit_code, result.expected_nonzero, result.failed)
+            expected = ("result_status", code, expected_search, failed)
+            if actual != expected:
+                raise AssertionError(f"incorrect native status/search precedence for {command!r}: {actual}")
+
+
 def test_terminal_headers_precede_investigation_noise_and_printed_statuses() -> None:
     module = load_module()
     body = "analyze_rollouts.py failed: error in input"
@@ -1668,7 +1863,319 @@ def test_split_output_bodies_cannot_supply_terminal_headers() -> None:
                 raise AssertionError("a real split preamble/header must retain its authoritative status")
 
 
+
+def test_redaction_matches_previous_patterns() -> None:
+    module = load_module()
+    old_url = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@]+:[^\s/@]+@\S+", re.I)
+    old_path = re.compile(module.PATH_RE.pattern.replace(r"(?<![A-Za-z0-9_.-])", ""))
+
+    def previous(value: str, snippet_limit: int) -> str:
+        scrubbed = old_url.sub("[REDACTED_URL_AUTH]", " ".join(value.strip().split()))
+        for pattern, replacement in [(module.SECRET_RE, "[REDACTED_SECRET]"),
+                                     (old_path, "[REDACTED_PATH]"),
+                                     (module.LOCAL_HOST_RE, "[REDACTED_HOST]"),
+                                     (module.HOST_RE, "[REDACTED_HOST]")]:
+            scrubbed = pattern.sub(replacement, scrubbed)
+        return scrubbed[:snippet_limit - 3] + "..." if len(scrubbed) > snippet_limit else scrubbed
+
+    cases = [
+        "9http://" + "user:pass" + "@example.test/x", "09.-+HTTP://" + "u:p" + "@host/path",
+        "1http://" + "::p" + "@example.test", "https://" + "a::" + "@host", "https://" + ":p:" + "@host",
+        "https://" + "a:b:c:d" + "@host/x", "https://" + "user:pass/no-auth" + "@host",
+        "x" * 300 + " http://" + "user:password" + "@example.test/path",
+        "http://user:" + "p" * 300 + "@example.test/path after",
+        "token=" + "x" * 300 + " trailing text", "abc/def/ghi",
+        "prefix../foo/bar ../secret/path /Users/example/file C:\\secret\\file",
+    ]
+    rng = random.Random(626)
+    alphabet = "abAZ09:/@.+-~ \\\n'\"" + "İıſK"
+    atoms = ["9", "09.+-", "http://", "x://", "u:p@h", "::p@h", "u::@h",
+             "a/b/c", "/Users/demo/file", "token=dummy", " / ", "@", ":", "/"]
+    for _ in range(2500):
+        cases.append("".join(rng.choice(alphabet) for _ in range(rng.randrange(80))))
+        cases.append("".join(rng.choice(atoms) for _ in range(rng.randrange(1, 10))))
+    for text in cases:
+        for limit in (16, 180, 1000):
+            expected, actual = previous(text, limit), module.redacted(text, limit)
+            assert actual == expected, (text, limit, expected, actual)
+
+
+def test_long_tokens_do_not_stall_redaction() -> None:
+    # A generous subprocess deadline contains regressions; this is not a timing
+    # benchmark. The old search retried at each character of the long plain run.
+    code = """
+import importlib.util, sys
+s=importlib.util.spec_from_file_location('large_redaction',sys.argv[1])
+m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+text='a1'*500_000+' http://'+':'*100_000+'/invalid@example.test'
+assert m.redacted(text,120)=='a1'*58+'a...'
+"""
+    subprocess.run([sys.executable, "-c", code, str(SCRIPT)], check=True, timeout=20,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def test_ordered_use_helper_guidance_matches_previous_branch() -> None:
+    module = load_module()
+    previous = re.compile(r"\buse .*helper.*rate limit", re.I)
+    cases = [
+        "use helper rate limit",
+        "use helperrate limit",
+        "use helpers manage rate limits",
+        "use xhelperx for corporate limit",
+        "USE the HeLpEr for RATE LIMIT handling",
+        "uſe the helper for rate limit handling",
+        "use the helper for rate lİmİt handling",
+        "prefix\nUSE helper RATE LIMIT\nsuffix",
+        "use helper\r before rate limit",
+        "use helper\u2028before rate limit",
+        "abuse helper rate limit",
+        "use\thelper rate limit",
+        "use rate limit before helper",
+        "use helper\nrate limit",
+        "use helper RATE-LIMIT",
+        "use helper repeatedly without the terminal phrase",
+    ]
+    rng = random.Random(626)
+    atoms = [
+        "use",
+        "USE ",
+        "uſe ",
+        "abuse ",
+        "helper",
+        "helpers",
+        "xhelperx",
+        "rate limit",
+        "RATE LIMIT",
+        "rate lİmİt",
+        "corporate limit",
+        " ",
+        "\r",
+        "\n",
+        "\u2028",
+        "ſ",
+        "K",
+        "İ",
+        "x",
+    ]
+    for _ in range(1000):
+        cases.append("".join(rng.choice(atoms) for _ in range(rng.randrange(1, 18))))
+    for text in cases:
+        expected = previous.search(text) is not None
+        actual = module.has_ordered_use_helper_rate_limit(text)
+        if actual != expected:
+            raise AssertionError((text, expected, actual))
+
+    compact_pattern = re.sub(r"\s+", "", module.RATE_LIMIT_GUIDANCE_RE.pattern)
+    assert "||" not in compact_pattern
+    assert "(|" not in compact_pattern
+    assert "|)" not in compact_pattern
+    assert module.RATE_LIMIT_GUIDANCE_RE.search("ordinary benign aggregate text") is None
+
+
+def test_signal_skip_cache_respects_line_signal_and_fragment_scope() -> None:
+    module = load_module()
+
+    def collect(fragments: list[Any]) -> tuple[dict[str, Any], int]:
+        event = module.TraceEvent(1, "cache-event", "context", fragments)
+        with mock.patch(
+            "analyze_rollouts.should_skip_signal_match", wraps=module.should_skip_signal_match
+        ) as skip:
+            collected_findings = module.collect_event_hits(Path("synthetic.jsonl"), [event], 1000)
+        return collected_findings, skip.call_count
+
+    repeated_guidance = "rate limit noted; use the helper before rate limit. " * 40
+    findings, calls = collect([module.Fragment(repeated_guidance, False)])
+    assert calls == 1 and findings["generic_rate_limit"].count == 0
+
+    mixed_lines = "diff --git a/x b/x\n+ rate limit\nAPI rate limit exceeded"
+    findings, calls = collect([module.Fragment(mixed_lines, False)])
+    assert calls == 2 and findings["generic_rate_limit"].count == 1
+
+    findings, calls = collect([module.Fragment("GraphQL API returned secondary rate limit", False)])
+    assert calls == 2
+    assert findings["github_graphql_rate_limit"].count == 1
+    assert findings["generic_rate_limit"].count == 1
+
+    repeated_fragment = module.Fragment("if rate limit pressure happens", False)
+    findings, calls = collect([repeated_fragment, repeated_fragment])
+    assert calls == 2 and findings["generic_rate_limit"].count == 0
+
+    auto_review = module.Fragment("auto-review note " * 20, False)
+    findings, calls = collect([auto_review])
+    assert calls == 1 and findings["auto_review_loop"].count == 0
+
+
+def test_static_context_scan_is_shared_within_each_fragment() -> None:
+    module = load_module()
+    unique_static_lines = "diff --git a/x b/x\n" + "\n".join(
+        f"+ No such file or directory: fixture-{index}" for index in range(200)
+    )
+    fragments = [
+        module.Fragment(unique_static_lines, False),
+        module.Fragment("No such file or directory: live-fixture", False),
+    ]
+    event = module.TraceEvent(1, "static-context-event", "context", fragments)
+    with mock.patch(
+        "analyze_rollouts.looks_like_static_diff_or_config",
+        wraps=module.looks_like_static_diff_or_config,
+    ) as static_context:
+        findings = module.collect_event_hits(Path("synthetic.jsonl"), [event], 1000)
+    assert static_context.call_count == 2
+    assert findings["missing_dependency_or_tool"].count == 1
+    assert "live-fixture" in findings["missing_dependency_or_tool"].hits[0].snippet
+
+
+def test_signal_skip_cache_preserves_occurrence_and_summary_counts() -> None:
+    module = load_module()
+    events = [
+        module.TraceEvent(
+            1,
+            "summary-event",
+            "context",
+            [module.Fragment("No such file or directory. " * 5, True)],
+        ),
+        module.TraceEvent(
+            2,
+            "ordinary-event",
+            "context",
+            [module.Fragment("stale_results " * 5, False)],
+        ),
+    ]
+    findings = module.collect_event_hits(Path("synthetic.jsonl"), events, 1000)
+    assert findings["missing_dependency_or_tool"].count == 1
+    assert findings["missing_dependency_or_tool"].hits[0].event_id == "summary-event"
+    assert findings["stale_results"].count == 5
+
+    prior_and_summary = [
+        module.TraceEvent(
+            3,
+            "prior-event",
+            "context",
+            [module.Fragment("No such file or directory: unrelated-prior", False)],
+        ),
+        module.TraceEvent(
+            3,
+            "non-repeating-summary",
+            "context",
+            [
+                module.Fragment(
+                    "\n".join(
+                        f"No such file or directory: summary-{index}" for index in range(5)
+                    ),
+                    True,
+                )
+            ],
+        ),
+    ]
+    findings = module.collect_event_hits(Path("synthetic.jsonl"), prior_and_summary, 1000)
+    assert findings["missing_dependency_or_tool"].count == 6
+    assert [hit.event_id for hit in findings["missing_dependency_or_tool"].hits].count(
+        "non-repeating-summary"
+    ) == 5
+
+
+def test_long_use_helper_nonmatch_finishes_before_child_deadline() -> None:
+    code = """
+import importlib.util, pathlib, sys
+s=importlib.util.spec_from_file_location('long_guidance',sys.argv[1])
+m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+text='rate limit observed. '+'use filler helper filler '*12_000+'done'
+event=m.TraceEvent(1,'long-event','context',[m.Fragment(text,False)])
+findings=m.collect_event_hits(pathlib.Path('synthetic.jsonl'),[event],1000)
+assert findings['generic_rate_limit'].count==1
+"""
+    subprocess.run(
+        [sys.executable, "-c", code, str(SCRIPT)],
+        check=True,
+        timeout=8,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def test_repeated_hits_reuse_bounded_fragment_work() -> None:
+    module = load_module()
+    for count in (10, 40):
+        event = module.TraceEvent(1, "one-context", "context", [module.Fragment("stale_results " * count, False)])
+        with mock.patch("analyze_rollouts.redacted", wraps=module.redacted) as redact, \
+             mock.patch("analyze_rollouts.canonical_hit_text", wraps=module.canonical_hit_text) as canonical:
+            findings = module.collect_event_hits(Path("trace.jsonl"), [event], 180)
+        assert sum(f.count for f in findings.values()) == count
+        assert redact.call_count == 1
+        assert canonical.call_count <= 2
+
+
+def test_error_prose_scans_only_expected_search_candidates() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_trace(Path(tmp), [
+            {"type": "tool_result", "cmd": "build", "exit_code": 0, "output": "permission denied is printed data"},
+            {"type": "tool_result", "cmd": "build", "exit_code": 1, "output": "build failed"},
+            {"type": "tool_result", "cmd": "rg needle missing", "exit_code": 1, "output": "No such file or directory"},
+        ])
+        with mock.patch("analyze_rollouts.output_error_hint", wraps=module.output_error_hint) as hints:
+            events = module.normalize_events(path, 100_000)
+        assert hints.call_count == 1
+        assert [(e.failed, e.expected_nonzero) for e in events] == [(False, False), (True, False), (True, False)]
+
+
+def test_scan_budget_failure_and_progress_are_separate() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_trace(Path(tmp), [{"type": "tool_result", "exit_code": 1, "output": "private evidence"}])
+        def stop_at_matching(_budget: Any, phase: str, file: Path | None = None) -> None:
+            if phase == "signal matching":
+                raise module.ScanTimeLimit(phase, file, 1.0)
+        for json_mode in (False, True):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            argv = [str(SCRIPT), str(path), "--max-seconds", "1"] + (["--json"] if json_mode else [])
+            with mock.patch.object(sys, "argv", argv), mock.patch("analyze_rollouts.ScanBudget.check", stop_at_matching), \
+                 redirect_stdout(stdout), redirect_stderr(stderr):
+                assert module.main() == 2
+            payload = json.loads(stdout.getvalue() if json_mode else stderr.getvalue())
+            assert payload["ok"] is False and payload["partial_results_discarded"] is True
+            assert payload["scan_limitations"][0]["kind"] == "scan_time_limit"
+            assert "findings" not in payload and "outcome_summary" not in payload
+            assert str(path) not in json.dumps(payload) and "private evidence" not in json.dumps(payload)
+            if not json_mode:
+                assert stdout.getvalue() == ""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", [str(SCRIPT), str(path), "--json", "--progress"]), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            assert module.main() == 0
+        assert json.loads(stdout.getvalue())["ok"] is True
+        progress = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        assert [line["stage"] for line in progress] == ["normalization", "signal matching", "report"]
+        assert str(path) not in stderr.getvalue()
+    with mock.patch("analyze_rollouts.time.monotonic", side_effect=[10.0, 10.5, 11.0]):
+        budget = module.ScanBudget(1.0)
+        budget.check("first")
+        try:
+            budget.check("second")
+        except module.ScanTimeLimit:
+            pass
+        else:
+            raise AssertionError("elapsed budget must expire")
+    for invalid in ("0", "-1", "nan", "inf"):
+        try:
+            module.positive_seconds(invalid)
+        except Exception as exc:
+            assert type(exc).__name__ == "ArgumentTypeError"
+        else:
+            raise AssertionError("invalid budget accepted")
+
 def main() -> int:
+    test_redaction_matches_previous_patterns()
+    test_long_tokens_do_not_stall_redaction()
+    test_ordered_use_helper_guidance_matches_previous_branch()
+    test_signal_skip_cache_respects_line_signal_and_fragment_scope()
+    test_static_context_scan_is_shared_within_each_fragment()
+    test_signal_skip_cache_preserves_occurrence_and_summary_counts()
+    test_long_use_helper_nonmatch_finishes_before_child_deadline()
+    test_repeated_hits_reuse_bounded_fragment_work()
+    test_error_prose_scans_only_expected_search_candidates()
+    test_scan_budget_failure_and_progress_are_separate()
     test_result_statuses_survive_noise_filters_and_mirrors()
     test_successful_commands_prompts_and_source_dumps_are_not_failures()
     test_failure_diagnostics_are_one_event_and_batches_keep_children()
@@ -1677,6 +2184,9 @@ def main() -> int:
     test_pending_results_sessions_and_truncated_records()
     test_typed_terminal_text_survives_without_promoting_echoes()
     test_native_codex_command_items_use_identity_and_terminal_status()
+    test_wrapped_native_items_preserve_outcomes_kinds_and_mirrors()
+    test_wrapped_native_lifecycle_aliases_and_roles_are_guarded()
+    test_wrapped_native_search_and_error_precedence()
     test_terminal_headers_precede_investigation_noise_and_printed_statuses()
     test_session_metadata_and_native_progress_are_not_terminal_outcomes()
     test_scanner_diagnostics_survive_record_filters_without_friction()
