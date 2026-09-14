@@ -1721,6 +1721,186 @@ assert m.redacted(text,120)=='a1'*58+'a...'
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
+def test_ordered_use_helper_guidance_matches_previous_branch() -> None:
+    module = load_module()
+    previous = re.compile(r"\buse .*helper.*rate limit", re.I)
+    cases = [
+        "use helper rate limit",
+        "use helperrate limit",
+        "use helpers manage rate limits",
+        "use xhelperx for corporate limit",
+        "USE the HeLpEr for RATE LIMIT handling",
+        "uſe the helper for rate limit handling",
+        "use the helper for rate lİmİt handling",
+        "prefix\nUSE helper RATE LIMIT\nsuffix",
+        "use helper\r before rate limit",
+        "use helper\u2028before rate limit",
+        "abuse helper rate limit",
+        "use\thelper rate limit",
+        "use rate limit before helper",
+        "use helper\nrate limit",
+        "use helper RATE-LIMIT",
+        "use helper repeatedly without the terminal phrase",
+    ]
+    rng = random.Random(626)
+    atoms = [
+        "use",
+        "USE ",
+        "uſe ",
+        "abuse ",
+        "helper",
+        "helpers",
+        "xhelperx",
+        "rate limit",
+        "RATE LIMIT",
+        "rate lİmİt",
+        "corporate limit",
+        " ",
+        "\r",
+        "\n",
+        "\u2028",
+        "ſ",
+        "K",
+        "İ",
+        "x",
+    ]
+    for _ in range(1000):
+        cases.append("".join(rng.choice(atoms) for _ in range(rng.randrange(1, 18))))
+    for text in cases:
+        expected = previous.search(text) is not None
+        actual = module.has_ordered_use_helper_rate_limit(text)
+        if actual != expected:
+            raise AssertionError((text, expected, actual))
+
+    compact_pattern = re.sub(r"\s+", "", module.RATE_LIMIT_GUIDANCE_RE.pattern)
+    assert "||" not in compact_pattern
+    assert "(|" not in compact_pattern
+    assert "|)" not in compact_pattern
+    assert module.RATE_LIMIT_GUIDANCE_RE.search("ordinary benign aggregate text") is None
+
+
+def test_signal_skip_cache_respects_line_signal_and_fragment_scope() -> None:
+    module = load_module()
+
+    def collect(fragments: list[Any]) -> tuple[dict[str, Any], int]:
+        event = module.TraceEvent(1, "cache-event", "context", fragments)
+        with mock.patch(
+            "analyze_rollouts.should_skip_signal_match", wraps=module.should_skip_signal_match
+        ) as skip:
+            collected_findings = module.collect_event_hits(Path("synthetic.jsonl"), [event], 1000)
+        return collected_findings, skip.call_count
+
+    repeated_guidance = "rate limit noted; use the helper before rate limit. " * 40
+    findings, calls = collect([module.Fragment(repeated_guidance, False)])
+    assert calls == 1 and findings["generic_rate_limit"].count == 0
+
+    mixed_lines = "diff --git a/x b/x\n+ rate limit\nAPI rate limit exceeded"
+    findings, calls = collect([module.Fragment(mixed_lines, False)])
+    assert calls == 2 and findings["generic_rate_limit"].count == 1
+
+    findings, calls = collect([module.Fragment("GraphQL API returned secondary rate limit", False)])
+    assert calls == 2
+    assert findings["github_graphql_rate_limit"].count == 1
+    assert findings["generic_rate_limit"].count == 1
+
+    repeated_fragment = module.Fragment("if rate limit pressure happens", False)
+    findings, calls = collect([repeated_fragment, repeated_fragment])
+    assert calls == 2 and findings["generic_rate_limit"].count == 0
+
+    auto_review = module.Fragment("auto-review note " * 20, False)
+    findings, calls = collect([auto_review])
+    assert calls == 1 and findings["auto_review_loop"].count == 0
+
+
+def test_static_context_scan_is_shared_within_each_fragment() -> None:
+    module = load_module()
+    unique_static_lines = "diff --git a/x b/x\n" + "\n".join(
+        f"+ No such file or directory: fixture-{index}" for index in range(200)
+    )
+    fragments = [
+        module.Fragment(unique_static_lines, False),
+        module.Fragment("No such file or directory: live-fixture", False),
+    ]
+    event = module.TraceEvent(1, "static-context-event", "context", fragments)
+    with mock.patch(
+        "analyze_rollouts.looks_like_static_diff_or_config",
+        wraps=module.looks_like_static_diff_or_config,
+    ) as static_context:
+        findings = module.collect_event_hits(Path("synthetic.jsonl"), [event], 1000)
+    assert static_context.call_count == 2
+    assert findings["missing_dependency_or_tool"].count == 1
+    assert "live-fixture" in findings["missing_dependency_or_tool"].hits[0].snippet
+
+
+def test_signal_skip_cache_preserves_occurrence_and_summary_counts() -> None:
+    module = load_module()
+    events = [
+        module.TraceEvent(
+            1,
+            "summary-event",
+            "context",
+            [module.Fragment("No such file or directory. " * 5, True)],
+        ),
+        module.TraceEvent(
+            2,
+            "ordinary-event",
+            "context",
+            [module.Fragment("stale_results " * 5, False)],
+        ),
+    ]
+    findings = module.collect_event_hits(Path("synthetic.jsonl"), events, 1000)
+    assert findings["missing_dependency_or_tool"].count == 1
+    assert findings["missing_dependency_or_tool"].hits[0].event_id == "summary-event"
+    assert findings["stale_results"].count == 5
+
+    prior_and_summary = [
+        module.TraceEvent(
+            3,
+            "prior-event",
+            "context",
+            [module.Fragment("No such file or directory: unrelated-prior", False)],
+        ),
+        module.TraceEvent(
+            3,
+            "non-repeating-summary",
+            "context",
+            [
+                module.Fragment(
+                    "\n".join(
+                        f"No such file or directory: summary-{index}" for index in range(5)
+                    ),
+                    True,
+                )
+            ],
+        ),
+    ]
+    findings = module.collect_event_hits(Path("synthetic.jsonl"), prior_and_summary, 1000)
+    assert findings["missing_dependency_or_tool"].count == 6
+    assert [hit.event_id for hit in findings["missing_dependency_or_tool"].hits].count(
+        "non-repeating-summary"
+    ) == 5
+
+
+def test_long_use_helper_nonmatch_finishes_before_child_deadline() -> None:
+    code = """
+import importlib.util, pathlib, sys
+s=importlib.util.spec_from_file_location('long_guidance',sys.argv[1])
+m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+text='rate limit observed. '+'use filler helper filler '*12_000+'done'
+event=m.TraceEvent(1,'long-event','context',[m.Fragment(text,False)])
+findings=m.collect_event_hits(pathlib.Path('synthetic.jsonl'),[event],1000)
+assert findings['generic_rate_limit'].count==1
+"""
+    subprocess.run(
+        [sys.executable, "-c", code, str(SCRIPT)],
+        check=True,
+        timeout=8,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def test_repeated_hits_reuse_bounded_fragment_work() -> None:
     module = load_module()
     for count in (10, 40):
@@ -1795,6 +1975,11 @@ def test_scan_budget_failure_and_progress_are_separate() -> None:
 def main() -> int:
     test_redaction_matches_previous_patterns()
     test_long_tokens_do_not_stall_redaction()
+    test_ordered_use_helper_guidance_matches_previous_branch()
+    test_signal_skip_cache_respects_line_signal_and_fragment_scope()
+    test_static_context_scan_is_shared_within_each_fragment()
+    test_signal_skip_cache_preserves_occurrence_and_summary_counts()
+    test_long_use_helper_nonmatch_finishes_before_child_deadline()
     test_repeated_hits_reuse_bounded_fragment_work()
     test_error_prose_scans_only_expected_search_candidates()
     test_scan_budget_failure_and_progress_are_separate()

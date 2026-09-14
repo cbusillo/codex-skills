@@ -116,13 +116,15 @@ RATE_LIMIT_GUIDANCE_RE = re.compile(
     r"before\s+[^\n]{0,80}\bcheck rate limits?\b|"
     r"do not keep retrying|prefer REST|fallback to REST|"
     r"rate[- ]limit pressure should be classified|"
-    r"use .*helper.*rate limit|"
     r"usage:\s+[^\n]{0,120}\brate-limit\b|"
     r"Handle GitHub [^\n]{0,120}\brate limits\b|"
     r"purpose:|description:|match:|argv_prefix:"
     r")",
     re.I,
 )
+USE_GUIDANCE_RE = re.compile(r"\buse ", re.I)
+HELPER_GUIDANCE_RE = re.compile(r"helper", re.I)
+RATE_LIMIT_GUIDANCE_LITERAL_RE = re.compile(r"rate limit", re.I)
 RATE_LIMIT_PLACEHOLDER_RE = re.compile(
     r"\b(?:GITHUB|TOKEN|SECRET|API[_-]?KEY|PASSWORD)[A-Z0-9_\-]*\[REDACTED_SECRET]"
     r"|\[REDACTED_SECRET][A-Z0-9_\-]*(?:LIMIT|QUOTA|RATE)",
@@ -157,6 +159,16 @@ STATIC_CONFIG_LINE_RE = re.compile(
     r"-\s*(?:run|uses|name|with)\s*:)",
     re.I,
 )
+# These filters depend on match position only through matched_line; failed
+# results are handled separately before the text-signal loop.
+LINE_SCOPED_SIGNAL_FILTERS = {
+    "github_graphql_rate_limit",
+    "github_rest_rate_limit",
+    "generic_rate_limit",
+    "missing_dependency_or_tool",
+}
+# These filters have no match-position dependence.
+FRAGMENT_SCOPED_SIGNAL_FILTERS = {"auto_review_loop", "auto_review_valid_finding"}
 INTERESTING_JSON_KEYS = (
     "type",
     "message",
@@ -1294,6 +1306,7 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
             matched_auth_login_noise = bool(AUTH_LOGIN_NOISE_RE.search(text))
             canonical_text = canonical_hit_text(text)
             snippet: str | None = None
+            static_diff_or_config: bool | None = None
             for signal in SIGNALS:
                 if signal.name == "repeated_command_failure":
                     continue
@@ -1308,13 +1321,45 @@ def collect_event_hits(path: Path, events: list[TraceEvent], context_chars: int,
                 if signal.name == "auth_login_loop" and not matched_auth_login_noise:
                     continue
                 tags: tuple[str, ...] | None = None
+                line_skip_cache: dict[str, bool] | None = (
+                    {} if signal.name in LINE_SCOPED_SIGNAL_FILTERS else None
+                )
+                fragment_skip: bool | None = None
+                summary_repeat_seen_size: int | None = None
+                summary_repeat = False
                 for occurrence, match in enumerate(signal.pattern.finditer(text)):
-                    if should_skip_signal_match(signal.name, text, canonical_text, match):
+                    if line_skip_cache is not None:
+                        if static_diff_or_config is None:
+                            static_diff_or_config = looks_like_static_diff_or_config(text)
+                        match_line = matched_line(text, match)
+                        if match_line not in line_skip_cache:
+                            line_skip_cache[match_line] = should_skip_signal_match(
+                                signal.name,
+                                text,
+                                canonical_text,
+                                match,
+                                static_diff_or_config=static_diff_or_config,
+                            )
+                        skip_match = line_skip_cache[match_line]
+                    elif signal.name in FRAGMENT_SCOPED_SIGNAL_FILTERS:
+                        if fragment_skip is None:
+                            fragment_skip = should_skip_signal_match(signal.name, text, canonical_text, match)
+                        skip_match = fragment_skip
+                    else:
+                        skip_match = should_skip_signal_match(signal.name, text, canonical_text, match)
+                    if skip_match:
                         continue
                     line_signal_key = (line_no, signal.name)
                     line_texts = line_signal_texts.setdefault(line_signal_key, set())
-                    if is_summary and summary_only_repeats_seen_values(canonical_text, line_texts):
-                        continue
+                    if is_summary:
+                        if summary_repeat_seen_size != len(line_texts):
+                            summary_repeat = summary_only_repeats_seen_values(
+                                canonical_text,
+                                line_texts,
+                            )
+                            summary_repeat_seen_size = len(line_texts)
+                        if summary_repeat:
+                            continue
                     hit_key = (line_no, signal.name, canonical_text, occurrence)
                     if hit_key in seen_hits:
                         continue
@@ -1410,11 +1455,22 @@ def should_skip_signal_match(
     text: str,
     canonical_text: str,
     match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
 ) -> bool:
     if signal_name in {"github_graphql_rate_limit", "github_rest_rate_limit", "generic_rate_limit"}:
-        return looks_like_rate_limit_false_positive(text, canonical_text, match)
+        return looks_like_rate_limit_false_positive(
+            text,
+            canonical_text,
+            match,
+            static_diff_or_config=static_diff_or_config,
+        )
     if signal_name in {"repeated_command_failure", "missing_dependency_or_tool"}:
-        return looks_like_static_match_context(text, match)
+        return looks_like_static_match_context(
+            text,
+            match,
+            static_diff_or_config=static_diff_or_config,
+        )
     if signal_name == "auto_review_loop" and not is_auto_review_loop_evidence(canonical_text):
         return True
     if signal_name in {"auto_review_loop", "auto_review_valid_finding"}:
@@ -1422,8 +1478,18 @@ def should_skip_signal_match(
     return False
 
 
-def looks_like_rate_limit_false_positive(text: str, canonical_text: str, match: re.Match[str]) -> bool:
-    if looks_like_static_match_context(text, match):
+def looks_like_rate_limit_false_positive(
+    text: str,
+    canonical_text: str,
+    match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
+) -> bool:
+    if looks_like_static_match_context(
+        text,
+        match,
+        static_diff_or_config=static_diff_or_config,
+    ):
         return True
     line = matched_line(text, match)
     combined = f"{canonical_text}\n{line}"
@@ -1433,8 +1499,23 @@ def looks_like_rate_limit_false_positive(text: str, canonical_text: str, match: 
         return True
     if RATE_LIMIT_PLACEHOLDER_RE.search(combined):
         return True
-    if RATE_LIMIT_GUIDANCE_RE.search(combined):
+    if RATE_LIMIT_GUIDANCE_RE.search(combined) or has_ordered_use_helper_rate_limit(combined):
         return True
+    return False
+
+
+def has_ordered_use_helper_rate_limit(text: str) -> bool:
+    for line in text.split("\n"):
+        # Fixed-width literals make the earliest starts also the earliest ends.
+        # If any ordered chain exists, it is reachable from that earliest pair.
+        use = USE_GUIDANCE_RE.search(line)
+        if use is None:
+            continue
+        helper = HELPER_GUIDANCE_RE.search(line, use.end())
+        if helper is None:
+            continue
+        if RATE_LIMIT_GUIDANCE_LITERAL_RE.search(line, helper.end()) is not None:
+            return True
     return False
 
 
@@ -1487,8 +1568,15 @@ def looks_like_static_diff_or_config(text: str) -> bool:
     return bool(DIFF_OR_STATIC_CONTEXT_RE.search(text))
 
 
-def looks_like_static_match_context(text: str, match: re.Match[str]) -> bool:
-    if not looks_like_static_diff_or_config(text):
+def looks_like_static_match_context(
+    text: str,
+    match: re.Match[str],
+    *,
+    static_diff_or_config: bool | None = None,
+) -> bool:
+    if static_diff_or_config is None:
+        static_diff_or_config = looks_like_static_diff_or_config(text)
+    if not static_diff_or_config:
         return False
     line = matched_line(text, match)
     return looks_like_static_diff_line(line) or looks_like_static_config_line(line)
