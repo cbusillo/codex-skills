@@ -339,6 +339,57 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
     assert "dependency_reads_degraded" in captured["notes"]
 
 
+def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers() -> None:
+    module = load_module()
+    captured: dict[str, Any] = {}
+    visible_blockers = [
+        related(number, state="closed")
+        for number in range(2, module.NEXT_RELATIONSHIP_LIMIT + 2)
+    ]
+
+    original_collect = module.collect_paged_rest_items
+    original_focus = module.next_focus_context
+    original_relationships = module.read_next_issue_relationships
+    original_emit = module.emit
+    module.collect_paged_rest_items = lambda *_args, **_kwargs: (
+        "automation-gh", [issue(1)],
+    )
+    module.next_focus_context = lambda _repo, _config: (
+        "automation-gh",
+        {},
+        {"available": False, "reason": "project_not_configured"},
+    )
+    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
+        "automation-gh",
+        relationships(blocked_by=visible_blockers),
+        ["blocked_by"],
+    )
+    module.emit = captured.update
+    try:
+        module.cmd_next(
+            type(
+                "Args",
+                (),
+                {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5},
+            )()
+        )
+    finally:
+        module.collect_paged_rest_items = original_collect
+        module.next_focus_context = original_focus
+        module.read_next_issue_relationships = original_relationships
+        module.emit = original_emit
+
+    assert captured["candidate_count"] == 0
+    assert captured["candidates"] == []
+    assert len(captured["excluded"]) == 1
+    assert captured["excluded"][0]["number"] == 1
+    assert captured["excluded"][0]["exclusion"] == "unknown_dependencies"
+    assert captured["excluded"][0]["truncated_relationships"] == ["blocked_by"]
+    assert captured["dependency_context"]["complete"] is False
+    assert captured["dependency_context"]["degraded_count"] == 1
+    assert "dependency_reads_degraded" in captured["notes"]
+
+
 def test_cmd_next_reraises_dependency_api_failures() -> None:
     module = load_module()
     original_collect = module.collect_paged_rest_items
@@ -482,6 +533,7 @@ TESTS = [
     test_next_focus_context_normalizes_keys_and_reports_truncation,
     test_cmd_next_is_bounded_read_only_and_explainable,
     test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions,
+    test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers,
     test_cmd_next_reraises_dependency_api_failures,
     test_next_relationship_reads_are_bounded_and_report_truncation,
     test_cmd_next_supports_milestone_scope_and_focus_degradation,
