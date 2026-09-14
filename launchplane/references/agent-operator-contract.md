@@ -5,12 +5,12 @@ by this skill. Its current identity is:
 
 - schema version: `1`
 - normalization version: `1`
-- semantic digest: `a6dad1fcf4fe6ee709f6c3fb0c6b9d40688f3b7eed443add30cbd65ce745bf8d`
-- non-gating source provenance: `88a912940df197fc839180681c5970aba206592e`
+- semantic digest: `6dfd9bfb019169fc2493f5304443424f4573ee7426ca52e796e11e3eacb1b693`
+- non-gating source provenance: `7aa6360486e3a20c3c5f6b052041fc90ae39cd46`
 - operation count: `20`
 
 This artifact is byte-identical to the published
-[Launchplane contract at d34bf73f](https://github.com/cbusillo/launchplane/blob/d34bf73f98368bc927fd7065d5c862d79ff6abe1/contracts/agent-operator-contract.json).
+[Launchplane contract at 3cbc59e4](https://github.com/cbusillo/launchplane/blob/3cbc59e48003a3b0822f3c702f8ac38dcd4210b/contracts/agent-operator-contract.json).
 It includes the terminal enrollment, private credential claim, ordinary session
 and finite-job operations. The embedded source provenance records the exporter
 checkout; the published commit above identifies this retrieved artifact. Neither
@@ -18,12 +18,13 @@ provenance nor a matching contract grants runtime authority. Private claims are
 consumed only by the private ordinary-agent adapter, outside the generic
 agent-visible operator helper.
 
-The refresh also carries upstream schema-fingerprint changes for
-`apply_change_impact_policy`, `read_change_impact_policy`,
-`reconcile_managed_authz_policy` and `read_governance_projection`. Existing
-operator consumers remain covered by their helper/contract tests. The earlier
-bearer-identity contract for `reconcile_managed_authz_policy` remains intact;
-this refresh does not reinterpret or widen that operation.
+The refresh carries only the upstream schema-fingerprint change for
+`write_merge_train_controller_run_once`, which reflects the published
+read-only historical-completion preflight shape. No operation, protected
+workflow, invariant, identity dependency, or authorization surface was added
+or widened. Existing operator consumers remain covered by their helper and
+contract tests. The bearer-identity contract for
+`reconcile_managed_authz_policy` remains unchanged.
 
 Run the offline conformance gate with:
 

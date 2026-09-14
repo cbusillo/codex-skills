@@ -99,7 +99,7 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     artifact = contract_artifact()
     summary = contract.validate_contract(artifact)
     assert summary["semantic_digest_sha256"] == (
-        "a6dad1fcf4fe6ee709f6c3fb0c6b9d40688f3b7eed443add30cbd65ce745bf8d"
+        "6dfd9bfb019169fc2493f5304443424f4573ee7426ca52e796e11e3eacb1b693"
     )
     assert summary["operation_count"] == 20
     assert summary["protected_workflow_count"] == 4
