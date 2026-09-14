@@ -5,7 +5,10 @@
 # ///
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import os
 import pathlib
 import sys
@@ -59,6 +62,7 @@ class FakeWorkflowClient:
         self.approved_environment_ids = approved_environment_ids
         self.approvals: list[tuple[int, tuple[int, ...], str]] = []
         self.dispatch_calls: list[dict[str, Any]] = []
+        self.last_run_reference: workflow_babysit.RunReference | None = None
         self.pending_calls = 0
         self.approval_history_calls = 0
         self.job_calls = 0
@@ -74,10 +78,11 @@ class FakeWorkflowClient:
         inputs: Mapping[str, str | int | float | bool],
     ) -> workflow_babysit.RunReference:
         self.dispatch_calls.append({"workflow": workflow, "ref": ref, "inputs": dict(inputs)})
-        return workflow_babysit.RunReference(
+        self.last_run_reference = workflow_babysit.RunReference(
             run_id=self.runs[0].run_id,
             run_url=self.runs[0].run_url,
         )
+        return self.last_run_reference
 
     def get_run(self, run_id: int) -> workflow_babysit.RunSnapshot:
         value = self.runs.pop(0) if len(self.runs) > 1 else self.runs[0]
@@ -152,6 +157,45 @@ def pending_environment(
         wait_timer_started_at=None,
         reviewers=reviewers,
     )
+
+
+SYNTHETIC_INPUT_VALUE = "SYNTHETIC-WORKFLOW-INPUT-533"
+
+
+def run_main_with_json_inputs(
+    client: FakeWorkflowClient,
+) -> tuple[int, str, str]:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = pathlib.Path(temp_dir) / "inputs.json"
+        path.write_text(
+            json.dumps({"reason": SYNTHETIC_INPUT_VALUE, "mode": "dry_run"}),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                workflow_babysit,
+                "GitHubWorkflowClient",
+                return_value=client,
+            ),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            exit_code = workflow_babysit.main(
+                [
+                    "dispatch",
+                    "--repo",
+                    "example/repo",
+                    "--workflow",
+                    "operator.yml",
+                    "--ref",
+                    "main",
+                    "--json-input-file",
+                    str(path),
+                ]
+            )
+    return exit_code, stdout.getvalue(), stderr.getvalue()
 
 
 class WorkflowBabysitterTests(unittest.TestCase):
@@ -488,6 +532,28 @@ class WorkflowBabysitterTests(unittest.TestCase):
 
 
 class GitHubWorkflowClientTests(unittest.TestCase):
+    def assert_terminal_result_excludes_json_input_values(
+        self,
+        *,
+        client: FakeWorkflowClient,
+        exit_code: int,
+        stdout: str,
+        stderr: str,
+        expected_exit_code: int,
+        expected_outcome: str,
+    ) -> None:
+        payload = json.loads(stdout)
+        self.assertEqual(exit_code, expected_exit_code)
+        self.assertEqual(payload["exit_code"], expected_exit_code)
+        self.assertEqual(payload["outcome"], expected_outcome)
+        self.assertEqual(payload["input_keys"], ["mode", "reason"])
+        self.assertEqual(
+            client.dispatch_calls[0]["inputs"],
+            {"reason": SYNTHETIC_INPUT_VALUE, "mode": "dry_run"},
+        )
+        self.assertNotIn(SYNTHETIC_INPUT_VALUE, stdout)
+        self.assertNotIn(SYNTHETIC_INPUT_VALUE, stderr)
+
     def test_dispatch_uses_current_api_and_exact_returned_run(self) -> None:
         calls: list[dict[str, Any]] = []
 
@@ -617,13 +683,42 @@ class GitHubWorkflowClientTests(unittest.TestCase):
         self.assertIn("CODEX_GITHUB_TOKEN", prefix)
         self.assertEqual(prefix[-1], workflow_babysit.ACTIVE_GH)
 
-    def test_json_input_values_are_never_needed_for_terminal_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = pathlib.Path(temp_dir) / "inputs.json"
-            path.write_text('{"reason":"sensitive-value","mode":"dry_run"}', encoding="utf-8")
-            inputs = workflow_babysit.load_json_inputs(path)
+    def test_success_terminal_metadata_excludes_json_input_values(self) -> None:
+        client = FakeWorkflowClient(
+            runs=[run_snapshot("completed", conclusion="success")],
+        )
 
-        self.assertEqual(sorted(inputs), ["mode", "reason"])
+        exit_code, stdout, stderr = run_main_with_json_inputs(client)
+
+        self.assert_terminal_result_excludes_json_input_values(
+            client=client,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            expected_exit_code=0,
+            expected_outcome="completed_success",
+        )
+
+    def test_handled_error_terminal_metadata_excludes_json_input_values(self) -> None:
+        client = FakeWorkflowClient(runs=[run_snapshot("queued")])
+        with mock.patch.object(
+            client,
+            "get_run",
+            side_effect=workflow_babysit.WorkflowBabysitError(
+                "synthetic_failure",
+                "synthetic failure",
+            ),
+        ):
+            exit_code, stdout, stderr = run_main_with_json_inputs(client)
+
+        self.assert_terminal_result_excludes_json_input_values(
+            client=client,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            expected_exit_code=1,
+            expected_outcome="synthetic_failure",
+        )
 
     def test_dispatch_rejects_more_than_twenty_five_inputs(self) -> None:
         with self.assertRaisesRegex(
