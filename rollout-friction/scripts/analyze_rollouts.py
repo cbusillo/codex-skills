@@ -1007,6 +1007,21 @@ def iter_lines(
 CALL_TYPES = {"function_call", "custom_tool_call", "tool_call", "tool_use", "exec_command_begin"}
 RESULT_TYPES = {"function_call_output", "custom_tool_call_output", "tool_result", "tool_call_end", "exec_command_end"}
 CONTEXT_TYPES = {"user_message", "agent_message", "assistant_message", "reasoning", "session_meta", "thread.started", "turn_context", "compacted"}
+MESSAGE_ROLES = {"user", "assistant", "system", "developer"}
+NATIVE_ITEM_PHASES = {
+    "item.started": "item.started",
+    "item.updated": "item.updated",
+    "item.completed": "item.completed",
+    "item_started": "item.started",
+    "item_updated": "item.updated",
+    "item_completed": "item.completed",
+}
+NATIVE_COMMAND_PHASE_KINDS = {
+    "item.started": "exec_command_begin",
+    "item.updated": "exec_command_end",
+    "item.completed": "exec_command_end",
+}
+NATIVE_COMMAND_ITEM_TYPES = {"command_execution", "CommandExecution"}
 ERROR_STATUSES = {"error", "failed", "failure", "timeout", "timed_out", "cancelled"}
 SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed"}
 EXIT_STATUS_RE = re.compile(r"\b(?:exit[_ -]?code\s*[:=]?\s*|process exited with code\s+)(-?\d+)\b", re.I)
@@ -1215,21 +1230,30 @@ def normalize_events(
                 previous_failure.clear()
                 invocation_retries.clear()
         value = record
-        native_phase = ""
-        native_context = False
-        if (isinstance(record, dict) and record.get("type") in {"item.started", "item.updated", "item.completed"}
-                and record.get("role") not in {"user", "assistant", "system", "developer"}
-                and isinstance(record.get("item"), dict)):
-            value = record["item"]
-            native_phase = str(record["type"])
-            native_context = value.get("type") != "command_execution"
-        while (isinstance(value, dict) and value.get("type") in {"response_item", "event_msg"}
-               and value.get("role") not in {"user", "assistant", "system", "developer"}
-               and isinstance(value.get("payload"), dict)):
+        while isinstance(value, dict):
+            wrapper_type = value.get("type")
+            if (not isinstance(wrapper_type, str) or wrapper_type not in {"response_item", "event_msg"}
+                    or value.get("role") in MESSAGE_ROLES or not isinstance(value.get("payload"), dict)):
+                break
             value = value["payload"]
+        value_type = value.get("type") if isinstance(value, dict) else None
+        malformed_type = value_type is not None and not isinstance(value_type, str)
+        candidate_phase = NATIVE_ITEM_PHASES.get(value_type, "") if isinstance(value_type, str) else ""
+        native_phase = ""
+        native_context = bool(candidate_phase)
+        if candidate_phase and isinstance(value.get("item"), dict):
+            native_phase = candidate_phase
+            item = value["item"]
+            native_context = (
+                value.get("role") in MESSAGE_ROLES
+                or item.get("role") in MESSAGE_ROLES
+                or not isinstance(item.get("type"), str)
+                or item.get("type") not in NATIVE_COMMAND_ITEM_TYPES
+            )
+            value = item
         kind = str(value.get("type", "")) if isinstance(value, dict) else ""
         if native_phase and not native_context:
-            kind = "exec_command_begin" if native_phase == "item.started" else "exec_command_end"
+            kind = NATIVE_COMMAND_PHASE_KINDS[native_phase]
         role = value.get("role") if isinstance(value, dict) else None
         call_id = str(value.get("call_id") or value.get("tool_call_id") or "") if isinstance(value, dict) else ""
         if native_phase and not native_context:
@@ -1237,11 +1261,13 @@ def normalize_events(
         command = command_value(value)
         if line == 0:
             parts = [(value, "", "scanner_diagnostic")]
+        elif native_context or malformed_type:
+            parts = [(value, "", "context")]
         elif kind in CALL_TYPES:
             if call_id:
                 calls[call_id] = command
             parts = [(value, "", "call")]
-        elif (native_context or role in {"user", "assistant", "system", "developer"} or kind in CONTEXT_TYPES
+        elif (role in MESSAGE_ROLES or kind in CONTEXT_TYPES
               or (isinstance(value, str) and value.lstrip().startswith(("{", "[")))):
             parts = [(value, "", "context")]
         else:
@@ -1258,8 +1284,9 @@ def normalize_events(
             event_id = identity(f"{event_kind}:{child_call_id}:{identity_slot}" if child_call_id else f"{event_kind}:{line}:{slot}")
             event = TraceEvent(line, event_id, event_kind, list(json_fragments(payload)), tool_id, event_command)
             event.file_id = file_id
+            payload_type = payload.get("type") if isinstance(payload, dict) else None
             typed_result = (kind in RESULT_TYPES or role == "tool"
-                            or (isinstance(payload, dict) and payload.get("type") in RESULT_TYPES))
+                            or (isinstance(payload_type, str) and payload_type in RESULT_TYPES))
             if native_phase != "item.updated":
                 set_outcome(event, payload, typed_result=typed_result)
             # Correlate preceding calls even when the requested checkpoint excludes them.

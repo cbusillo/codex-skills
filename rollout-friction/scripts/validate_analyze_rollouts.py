@@ -1358,6 +1358,44 @@ def tool_call(call_id: str, command: str | list[str]) -> dict[str, object]:
     }}
 
 
+def native_item_event(phase: str, item: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "event_msg", "payload": {
+        "type": phase,
+        "thread_id": "thread-synthetic",
+        "turn_id": "turn-synthetic",
+        "item": item,
+        "started_at_ms": 1,
+        "completed_at_ms": 2,
+    }}
+
+
+def native_command_item(
+    item_id: str,
+    command: str | list[str],
+    exit_code: int | None,
+    stdout: str = "",
+    stderr: str = "",
+    status: str = "completed",
+) -> dict[str, Any]:
+    display_command = command if isinstance(command, str) else " ".join(command)
+    return {
+        "type": "CommandExecution",
+        "id": item_id,
+        "process_id": f"process-{item_id}",
+        "command": command,
+        "cwd": "/workspace/example",
+        "parsed_cmd": [{"type": "unknown", "cmd": display_command}],
+        "source": "agent",
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+        "aggregated_output": stdout,
+        "exit_code": exit_code,
+        "duration": {"secs": 0, "nanos": 1},
+        "formatted_output": stdout,
+    }
+
+
 def test_result_statuses_survive_noise_filters_and_mirrors() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1561,6 +1599,161 @@ def test_native_codex_command_items_use_identity_and_terminal_status() -> None:
             raise AssertionError("started/completed/updated items must share their command identity")
         if module.outcome_summary(findings.events)["nonzero_exit_count"] != 3:
             raise AssertionError("native stdout JSON must not override the outer command status")
+
+
+def test_wrapped_native_items_preserve_outcomes_kinds_and_mirrors() -> None:
+    module = load_module()
+    historical_failure = "error: historical compiler failure\nProcess exited with code 101"
+    successful = native_command_item("call-success", ["cat", "history.log"], 0, historical_failure)
+    failed_one = native_command_item("call-one", ["build", "example"], 1, "build stopped", status="failed")
+    failed_127 = native_command_item("call-127", ["missing-example-tool"], 127, "tool unavailable", status="failed")
+    file_change = {
+        "type": "FileChange",
+        "id": "change-synthetic",
+        "status": "completed",
+        "changes": {"example.txt": {"type": "add", "content": "error: source example\nCommand failed\nexit_code=1"}},
+        "stdout": "",
+        "stderr": "",
+    }
+    records = [
+        {"type": "session_meta", "payload": {"id": "session-synthetic"}},
+        native_item_event("item_completed", successful),
+        native_item_event("item_completed", failed_one),
+        tool_result("call-one", {"exit_code": 1, "output": "build stopped"}),
+        {"type": "item.completed", "item": {**failed_one, "type": "command_execution"}},
+        native_item_event("item_completed", failed_127),
+        native_item_event("item_completed", file_change),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(Path(tmp), records)
+        events = module.normalize_events(trace, 100_000)
+        findings = module.collect_event_hits(trace, events, 240)
+
+    results = [event for event in events if event.kind == "result"]
+    if len(results) != 3 or len({event.tool_id for event in results}) != 3:
+        raise AssertionError("native results and their same-id response mirrors must share one identity")
+    by_exit = {event.exit_code: event for event in results}
+    if by_exit[0].failed or not by_exit[0].succeeded or by_exit[0].outcome_basis != "result_status":
+        raise AssertionError("a successful native status must override historical failure text")
+    if any(not by_exit[code].failed or by_exit[code].outcome_basis != "result_status" for code in (1, 127)):
+        raise AssertionError("native nonzero exits must keep typed result provenance")
+    change_event = next(event for event in events if "FileChange" in event.evidence_text())
+    if change_event.kind != "context" or change_event.tool_id or change_event.outcome_basis:
+        raise AssertionError("completed FileChange source text must remain non-command context")
+    failure_hits = findings["repeated_command_failure"].hits
+    if len(failure_hits) != 2 or {hit.outcome_basis for hit in failure_hits} != {"result_status"}:
+        raise AssertionError("only genuine native command failures should produce typed failure hits")
+
+
+def test_wrapped_native_lifecycle_aliases_and_roles_are_guarded() -> None:
+    module = load_module()
+    lifecycle = native_command_item("lifecycle", ["build", "example"], 1, "error: pending")
+    records = [
+        {"type": "session_meta", "payload": {"id": "session-lifecycle"}},
+        native_item_event("item_started", lifecycle),
+        {"type": "response_item", "payload": native_item_event("item_updated", lifecycle)["payload"]},
+        {"type": "event_msg", "payload": {"type": "response_item", "payload": {
+            "type": "item.updated", "item": lifecycle,
+        }}},
+    ]
+    malformed = native_item_event("item_completed", lifecycle)
+    malformed["payload"]["item"] = ["not", "an", "item"]
+    malformed_phase = native_item_event("item_completed", lifecycle)
+    malformed_phase["payload"]["type"] = ["item_completed"]
+    records.extend([
+        malformed,
+        malformed_phase,
+        {"type": "item.completed", "exit_code": 1, "status": "failed"},
+        {"type": "event_msg", "payload": {"type": "item_completed", "exit_code": 1, "status": "failed"}},
+        native_item_event("item_completed", {**lifecycle, "id": "unknown-item", "type": "CommandExecutionLike"}),
+        native_item_event("item_started", {"id": "call-collision", "type": "function_call", "call_id": "collision"}),
+        native_item_event("item_started", {"id": "exec-collision", "type": "exec_command_begin", "call_id": "collision"}),
+        native_item_event("item_completed", {**lifecycle, "id": "malformed-item-type", "type": {"name": "CommandExecution"}}),
+        native_item_event("item_finished", {**lifecycle, "id": "unknown-phase"}),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        events = module.normalize_events(write_trace(Path(tmp), records), 100_000)
+    lifecycle_events = [event for event in events if event.tool_id]
+    if (len(lifecycle_events) != 2 or len({event.tool_id for event in lifecycle_events}) != 1
+            or {event.kind for event in lifecycle_events} != {"call", "result"}):
+        raise AssertionError("wrapped started and updated aliases must share one command identity")
+    if any(event.outcome_basis for event in lifecycle_events):
+        raise AssertionError("native starts and updates must never establish terminal outcomes")
+    progress_hits = module.collect_event_hits(Path("synthetic-progress.jsonl"), lifecycle_events, 240)
+    if progress_hits["repeated_command_failure"].count:
+        raise AssertionError("native progress output must not produce command-failure hits")
+    non_lifecycle = [event for event in events if event not in lifecycle_events]
+    if any(event.outcome_basis == "result_status" or event.tool_id or event.kind == "call" for event in non_lifecycle):
+        raise AssertionError("malformed phases and unknown item types must not gain typed tool authority")
+    records.append(native_item_event(
+        "item_completed", native_command_item("lifecycle", ["build", "example"], 2, status="failed")
+    ))
+    with tempfile.TemporaryDirectory() as tmp:
+        completed_events = module.normalize_events(write_trace(Path(tmp), records), 100_000)
+    completed_tool_events = [event for event in completed_events if event.tool_id]
+    terminal = [event for event in completed_tool_events if event.outcome_basis]
+    if (len({event.tool_id for event in completed_tool_events}) != 1 or len(terminal) != 1
+            or not terminal[0].failed or terminal[0].exit_code != 2):
+        raise AssertionError("completion must replace its update with one terminal result on the same invocation")
+
+    for role in module.MESSAGE_ROLES:
+        for placement in ("outer", "intermediate", "item"):
+            guarded_item = native_command_item("guarded", ["rg", "needle", "example.txt"], None, status="in_progress")
+            guarded = native_item_event("item_started", guarded_item)
+            if placement == "outer":
+                guarded["role"] = role
+            elif placement == "intermediate":
+                guarded["payload"]["role"] = role
+            else:
+                guarded_item["role"] = role
+            completed_item = native_command_item("guarded", ["rg", "needle", "example.txt"], 0)
+            completed_guarded = native_item_event("item_completed", completed_item)
+            if placement == "outer":
+                completed_guarded["role"] = role
+            elif placement == "intermediate":
+                completed_guarded["payload"]["role"] = role
+            else:
+                completed_item["role"] = role
+            with tempfile.TemporaryDirectory() as tmp:
+                trace = write_trace(Path(tmp), [
+                    {"type": "session_meta", "payload": {"id": f"session-{role}-{placement}"}},
+                    guarded,
+                    completed_guarded,
+                    tool_result("guarded", {"exit_code": 1, "output": "no match"}),
+                ])
+                guarded_events = module.normalize_events(trace, 100_000)
+            result = next(event for event in guarded_events if event.kind == "result")
+            contexts = [event for event in guarded_events if event.kind == "context"]
+            if (any(event.kind == "call" for event in guarded_events) or result.expected_nonzero or not result.failed
+                    or any(event.failed or event.succeeded or event.outcome_basis for event in contexts)):
+                raise AssertionError(f"{placement} {role} role must not seed later command correlation")
+
+
+def test_wrapped_native_search_and_error_precedence() -> None:
+    module = load_module()
+    cases = [
+        (["rg", "needle", "example.txt"], 1, "", None, "completed", True, False),
+        (["rg", "needle", "example.txt"], 1, "rg: example.txt: Permission denied", None, "completed", False, True),
+        (["/bin/zsh", "-c", "rg needle example.txt"], 1, "", None, "completed", False, True),
+        ("rg needle example.txt | sort", 1, "", None, "completed", False, True),
+        (["build", "example"], 0, "", "reported tool error", "completed", False, True),
+        (["build", "example"], 0, "", None, "failed", False, True),
+        (["missing-example-tool"], 127, "", None, "failed", False, True),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, (command, code, stderr, error, status, expected_search, failed) in enumerate(cases):
+            item = native_command_item(f"precedence-{index}", command, code, stderr=stderr, status=status)
+            if error is not None:
+                item["error"] = error
+            trace = write_trace(Path(tmp), [
+                {"type": "session_meta", "payload": {"id": f"session-precedence-{index}"}},
+                native_item_event("item_completed", item),
+            ])
+            result = next(event for event in module.normalize_events(trace, 100_000) if event.kind == "result")
+            actual = (result.outcome_basis, result.exit_code, result.expected_nonzero, result.failed)
+            expected = ("result_status", code, expected_search, failed)
+            if actual != expected:
+                raise AssertionError(f"incorrect native status/search precedence for {command!r}: {actual}")
 
 
 def test_terminal_headers_precede_investigation_noise_and_printed_statuses() -> None:
@@ -1991,6 +2184,9 @@ def main() -> int:
     test_pending_results_sessions_and_truncated_records()
     test_typed_terminal_text_survives_without_promoting_echoes()
     test_native_codex_command_items_use_identity_and_terminal_status()
+    test_wrapped_native_items_preserve_outcomes_kinds_and_mirrors()
+    test_wrapped_native_lifecycle_aliases_and_roles_are_guarded()
+    test_wrapped_native_search_and_error_precedence()
     test_terminal_headers_precede_investigation_noise_and_printed_statuses()
     test_session_metadata_and_native_progress_are_not_terminal_outcomes()
     test_scanner_diagnostics_survive_record_filters_without_friction()

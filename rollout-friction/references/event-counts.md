@@ -44,13 +44,21 @@ terminal header is read before filtering investigation chatter. Printed `Output`
 content cannot override that header, including a successful zero exit.
 That boundary persists across content fragments; a body without a preceding
 terminal header cannot supply an outcome through fallback text matching.
-Native Codex exec JSONL
-`item.started`/`item.updated`/`item.completed` records whose `item.type` is
-`command_execution` share `item.id` as their invocation identity and use the
-terminal command status. `item.updated` remains progress until `item.completed`,
-even if an update contains error prose or terminal-looking fields.
-Other native item kinds, including agent messages,
-reasoning, and model metadata warnings, remain context.
+Native Codex exec JSONL accepts dotted `item.started`/`item.updated`/
+`item.completed` phases and the equivalent `item_started`/`item_updated`/
+`item_completed` spellings, with either `command_execution` or
+`CommandExecution` as the command item type. These forms may appear directly
+or inside `event_msg`/`response_item` payload envelopes, including nested ones.
+These forms share `item.id` as their invocation identity and use the terminal
+command status. Starts and updates remain non-terminal until completion, even
+if they contain error prose or terminal-looking fields. Native items carrying
+a user, assistant, system, or developer role remain context at every envelope
+level and cannot establish later command correlation.
+Other native item kinds, including `FileChange`, agent messages, reasoning, and
+model metadata warnings, remain context. Their completed status and embedded
+source text do not establish a command outcome.
+Recognized lifecycle envelopes without a valid item remain context; fields on
+an incomplete envelope do not establish a command result.
 
 Mirrors with the same call identity in one source session count once. Separate
 calls and identified sessions remain distinct. Without a call identity, a result
