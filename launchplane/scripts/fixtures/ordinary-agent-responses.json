@@ -1,0 +1,380 @@
+{
+  "_provenance": {
+    "kind": "synthetic_producer_models",
+    "repository": "cbusillo/launchplane",
+    "source_commit": "a83e4407f7911314570adbc726aae8df67a370a4",
+    "model_serialization": "model_dump(mode=json), _client_response for operation wrappers",
+    "runtime_authority": false
+  },
+  "clock": 2000000000,
+  "responses": {
+    "enrollment_pending": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-enrollment",
+        "kind": "initial",
+        "status": "pending",
+        "reason_code": null,
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "terminal_agent",
+        "requester_subject": "fixture-terminal",
+        "requester_token_label": "fixture-label",
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": null,
+        "session_expires_at": null,
+        "lease_selectors": [],
+        "applied": false,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-enrollment"
+    },
+    "enrollment_approved_terminal": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-enrollment",
+        "kind": "initial",
+        "status": "approved",
+        "reason_code": null,
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "terminal_agent",
+        "requester_subject": "fixture-terminal",
+        "requester_token_label": "fixture-label",
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": "fixture-session",
+        "session_expires_at": 2000000600,
+        "lease_selectors": [],
+        "applied": true,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-enrollment"
+    },
+    "initial_session_issued": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-enrollment",
+        "kind": "initial",
+        "status": "approved",
+        "reason_code": null,
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "terminal_agent",
+        "requester_subject": "fixture-terminal",
+        "requester_token_label": "fixture-label",
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": "fixture-session",
+        "session_expires_at": 2000000600,
+        "lease_selectors": [
+          {
+            "lease_id": "fixture-lease-preflight",
+            "action": "preflight",
+            "expires_at": 2000000300,
+            "revoked_at": null
+          },
+          {
+            "lease_id": "fixture-lease-guarded_merge",
+            "action": "guarded_merge",
+            "expires_at": 2000000300,
+            "revoked_at": null
+          }
+        ],
+        "applied": true,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-enrollment"
+    },
+    "session_issued": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-session-operation",
+        "kind": "existing",
+        "status": "approved",
+        "reason_code": null,
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "ordinary_agent",
+        "requester_subject": "fixture-agent",
+        "requester_token_label": null,
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": "fixture-session",
+        "session_expires_at": 2000000600,
+        "lease_selectors": [
+          {
+            "lease_id": "fixture-lease-preflight",
+            "action": "preflight",
+            "expires_at": 2000000300,
+            "revoked_at": null
+          },
+          {
+            "lease_id": "fixture-lease-guarded_merge",
+            "action": "guarded_merge",
+            "expires_at": 2000000300,
+            "revoked_at": null
+          }
+        ],
+        "applied": true,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-session-operation"
+    },
+    "session_revoked": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-session-operation",
+        "kind": "existing",
+        "status": "revoked",
+        "reason_code": "session_revoked",
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "ordinary_agent",
+        "requester_subject": "fixture-agent",
+        "requester_token_label": null,
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": "fixture-session",
+        "session_expires_at": 2000000600,
+        "lease_selectors": [
+          {
+            "lease_id": "fixture-lease-preflight",
+            "action": "preflight",
+            "expires_at": 2000000300,
+            "revoked_at": 2000000030
+          },
+          {
+            "lease_id": "fixture-lease-guarded_merge",
+            "action": "guarded_merge",
+            "expires_at": 2000000300,
+            "revoked_at": 2000000030
+          }
+        ],
+        "applied": true,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-session-operation"
+    },
+    "cancel_acknowledgement": {
+      "schema_version": 1,
+      "operation": {
+        "schema_version": 1,
+        "principal_id": "fixture-agent",
+        "operation_id": "fixture-session-operation",
+        "kind": "existing",
+        "status": "revoked",
+        "reason_code": "session_revoked",
+        "current_policy_actions": [
+          "preflight",
+          "guarded_merge"
+        ],
+        "current_policy_execution_profile": "guarded_executor",
+        "requester_kind": "ordinary_agent",
+        "requester_subject": "fixture-agent",
+        "requester_token_label": null,
+        "credential_expires_at": 2000001200,
+        "delivery_expires_at": 2000000120,
+        "attenuation": {
+          "actions": [
+            "preflight",
+            "guarded_merge"
+          ],
+          "session_expires_at": 2000000600,
+          "lease_expires_at": 2000000300,
+          "action_limit": 4,
+          "pull_request_limit": 2,
+          "refresh_allowance": 1,
+          "continuation_expires_at": 2000000900
+        },
+        "credential_id": "fixture-credential",
+        "credential_version": 1,
+        "target": {
+          "repository_id": 123,
+          "repository": "example/project",
+          "base_branch": "main"
+        },
+        "session_id": "fixture-session",
+        "session_expires_at": 2000000600,
+        "lease_selectors": [],
+        "applied": true,
+        "can_approve": false
+      },
+      "review_url": "/ui/engineering/privileged-operations?principal_id=fixture-agent&operation_id=fixture-session-operation"
+    },
+    "claim": {
+      "schema_version": 1,
+      "status": "ready",
+      "credential": "synthetic-ordinary-credential"
+    },
+    "job_pending": {
+      "schema_version": 1,
+      "request_id": "fixture-job",
+      "principal_id": "fixture-agent",
+      "session_id": "fixture-session",
+      "target": {
+        "repository_id": 123,
+        "repository": "example/project",
+        "base_branch": "main"
+      },
+      "pull_request_numbers": [],
+      "expires_at": 2000000600,
+      "continuation_expires_at": 2000000900,
+      "cancellation_requested": false,
+      "unresolved_effects": 0,
+      "status": "pending",
+      "next_due_at": null,
+      "reason_code": null,
+      "completed_effects": 0,
+      "total_effects": 0
+    },
+    "job_completed": {
+      "schema_version": 1,
+      "request_id": "fixture-job",
+      "principal_id": "fixture-agent",
+      "session_id": "fixture-session",
+      "target": {
+        "repository_id": 123,
+        "repository": "example/project",
+        "base_branch": "main"
+      },
+      "pull_request_numbers": [],
+      "expires_at": 2000000600,
+      "continuation_expires_at": 2000000900,
+      "cancellation_requested": false,
+      "unresolved_effects": 0,
+      "status": "completed",
+      "next_due_at": null,
+      "reason_code": null,
+      "completed_effects": 0,
+      "total_effects": 0
+    }
+  },
+  "receiver_claim_vector": {
+    "description": "Public synthetic interoperability vector produced by the LP receiver authentication implementation. Not a runtime credential.",
+    "random_byte_ascii": "x",
+    "proof": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg",
+    "receiver_claim_sha256": "437fe053620fe3e538a4956bfde774c647fe3e398f539ef9c74af2e287d35985"
+  }
+}

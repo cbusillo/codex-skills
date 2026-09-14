@@ -14,7 +14,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = 1
 NORMALIZATION_VERSION = 1
 DEFAULT_CONTRACT_PATH = (
@@ -26,7 +25,10 @@ DEFAULT_CONTRACT_PATH = (
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_SHA_PATTERN = re.compile(r"^(unknown|[0-9a-f]{40}|[0-9a-f]{64})$")
 _OPERATION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
-_PATH_PATTERN = re.compile(r"^/v1/[a-z0-9_./-]+$")
+_PATH_PATTERN = re.compile(
+    r"^/v1/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*\})"
+    r"(?:/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*\}))*$"
+)
 _CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _STATUS_PATTERN = re.compile(r"^[1-5][0-9]{2}$")
 _WORKFLOW_PATTERN = re.compile(r"^\.github/workflows/[a-z0-9_.-]+\.ya?ml$")
@@ -60,6 +62,70 @@ _OPERATION_KEYS = {
 _WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
 
 EXPECTED_OPERATION_CONTRACTS = {
+    "admit_ordinary_agent_job": {
+        "method": "POST",
+        "purpose": "Admit one finite qualification or guarded-delivery job from authenticated caller intent.",
+        "supported_surfaces": ["ordinary_agent_client"],
+        "modes": ["finite-admission"],
+        "idempotency": "body",
+        "reviewed_evidence": ["purpose_specific_readiness", "idempotent_replay"],
+    },
+    "read_ordinary_agent_job": {
+        "method": "GET",
+        "purpose": "Read this ordinary principal's finite job state.",
+        "supported_surfaces": ["ordinary_agent_client"],
+        "modes": ["read"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "cancel_ordinary_agent_session": {
+        "method": "POST",
+        "purpose": "Cancel this ordinary principal's issued session.",
+        "supported_surfaces": ["ordinary_agent_client"],
+        "modes": ["cancel"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "propose_ordinary_agent_enrollment": {
+        "method": "POST",
+        "purpose": "Propose an exact agent connection for signed administrator review.",
+        "supported_surfaces": ["terminal_agent_client"],
+        "modes": ["plan"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "read_proposed_ordinary_agent_enrollment": {
+        "method": "GET",
+        "purpose": "Read the authenticated terminal client's connection request.",
+        "supported_surfaces": ["terminal_agent_client"],
+        "modes": ["read"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "propose_ordinary_agent_session": {
+        "method": "POST",
+        "purpose": "Propose a bounded session using the current ordinary credential.",
+        "supported_surfaces": ["ordinary_agent_client"],
+        "modes": ["plan"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "read_ordinary_agent_session_operation": {
+        "method": "GET",
+        "purpose": "Read this ordinary principal's session request.",
+        "supported_surfaces": ["ordinary_agent_client"],
+        "modes": ["read"],
+        "idempotency": "none",
+        "reviewed_evidence": [],
+    },
+    "claim_ordinary_agent_credential": {
+        "method": "POST",
+        "purpose": "Recover a receiver-bound credential directly into private client custody.",
+        "supported_surfaces": ["private_agent_client"],
+        "modes": ["claim"],
+        "idempotency": "none",
+        "reviewed_evidence": ["receiver_bound_delivery", "private_response_custody"],
+    },
     "read_agent_context": {
         "method": "GET",
         "purpose": "Read public-safe Launchplane context for an agent task.",
@@ -500,7 +566,22 @@ def _validate_operation_coverage(
         for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
     }
     read_only_operations = {"read_governance_projection"}
-    categories = (helper_operations, workflow_operations, read_only_operations)
+    ordinary_operations = {
+        "admit_ordinary_agent_job",
+        "read_ordinary_agent_job",
+        "cancel_ordinary_agent_session",
+        "propose_ordinary_agent_enrollment",
+        "read_proposed_ordinary_agent_enrollment",
+        "propose_ordinary_agent_session",
+        "read_ordinary_agent_session_operation",
+        "claim_ordinary_agent_credential",
+    }
+    categories = (
+        helper_operations,
+        workflow_operations,
+        read_only_operations,
+        ordinary_operations,
+    )
     covered: set[str] = set()
     for category in categories:
         if covered & category:
