@@ -452,6 +452,26 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["error"], "manifest_invalid")
 
 
+class ProtectedRootContracts(unittest.TestCase):
+    @staticmethod
+    def holds(resolved, platform):
+        return any(part.lower() in cleanup.PRIVATE_PARTS for part in cleanup.named_parts(resolved, platform))
+
+    def test_the_macos_system_directory_is_not_a_private_folder(self):
+        for resolved in ("/private/var/folders/x/T/run/out", "/private/tmp/run/out", "/private/etc/app"):
+            with self.subTest(resolved=resolved):
+                self.assertFalse(self.holds(resolved, "darwin"))
+
+    def test_chosen_private_folders_stay_protected(self):
+        for resolved, platform in (("/Users/someone/private/out", "darwin"),
+                                   ("/private/var/folders/x/T/secrets/out", "darwin"),
+                                   ("/private/notes", "darwin"),
+                                   ("/private", "darwin"),
+                                   ("/private/var/run/out", "linux")):
+            with self.subTest(resolved=resolved, platform=platform):
+                self.assertTrue(self.holds(resolved, platform))
+
+
 class BoundedProbeContracts(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "POSIX process groups")
     def test_hung_child_times_out_without_leaving_it_running(self):
