@@ -96,13 +96,21 @@ def root_git_paths(root: str, repository: dict) -> tuple[set[str], set[str]]:
     return tracked, ignored
 
 
+def named_parts(resolved: str, platform: str = sys.platform) -> tuple[str, ...]:
+    """Path parts someone chose, without the macOS system directory that holds /tmp, /var and /etc."""
+    parts = Path(resolved).parts
+    if platform == "darwin" and parts[:2] == ("/", "private") and parts[2:3] in (("var",), ("tmp",), ("etc",)):
+        return parts[2:]
+    return parts
+
+
 def assess(root: dict, repository: dict, runtime_bindings: list[dict]) -> None:
     reasons = []
     resolved = root.get("resolved", root["requested"])
     for binding in runtime_bindings:
         if within(binding["path"], resolved) or (binding["kind"] != "active_cwd" and within(resolved, binding["path"])):
             reasons.append(binding["kind"])
-    if any(part.lower() in PRIVATE_PARTS for part in Path(resolved).parts):
+    if any(part.lower() in PRIVATE_PARTS for part in named_parts(resolved)):
         reasons.append("protected_root")
     worktree = next((item for item in repository.get("worktrees", []) if item["path"] == resolved), None)
     if worktree:
