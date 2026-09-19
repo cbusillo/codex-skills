@@ -30,6 +30,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = ROOT.parent
 
 
 def require(condition: bool, message: str) -> None:
@@ -1663,7 +1664,7 @@ def test_background_review_reporting_is_point_in_time() -> None:
         .lower()
         .split()
     )
-    metadata = json.loads((ROOT / ".github" / "github.json").read_text())
+    metadata = json.loads((REPO_ROOT / ".github" / "github.json").read_text())
 
     for state in (
         "`not yet observable`",
@@ -1734,8 +1735,8 @@ def test_background_review_reporting_is_point_in_time() -> None:
         "Durable formatting guidance must preserve point-in-time review state",
     )
     require(
-        metadata.get("docs", {}).get("backgroundReviewReporting")
-        == "references/background-review-reporting.md",
+        (REPO_ROOT / metadata.get("docs", {}).get("backgroundReviewReporting", "")).resolve()
+        == (ROOT / "references" / "background-review-reporting.md").resolve(),
         "github.json must route the shared Background Review reporting reference",
     )
 
@@ -2164,7 +2165,7 @@ def test_ide_configuration_policy_is_shared() -> None:
     closeout = " ".join(
         (ROOT / "work-closeout" / "SKILL.md").read_text().lower().split()
     )
-    metadata = json.loads((ROOT / ".github" / "github.json").read_text())
+    metadata = json.loads((REPO_ROOT / ".github" / "github.json").read_text())
 
     require(
         "tracked" in policy
@@ -2210,8 +2211,8 @@ def test_ide_configuration_policy_is_shared() -> None:
         "inspection, readiness, and closeout must share IDE policy and closeout must route cleanup",
     )
     require(
-        metadata.get("docs", {}).get("ideConfigurationPolicy")
-        == "references/ide-configuration-policy.md",
+        (REPO_ROOT / metadata.get("docs", {}).get("ideConfigurationPolicy", "")).resolve()
+        == (ROOT / "references" / "ide-configuration-policy.md").resolve(),
         "github.json must route the shared IDE configuration policy",
     )
     require(

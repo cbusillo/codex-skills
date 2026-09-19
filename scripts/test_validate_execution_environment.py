@@ -88,7 +88,7 @@ jobs:
 ''',
     )
     metadata = {
-        "docs": {"executionEnvironment": "github/references/execution-environment.md"},
+        "docs": {"executionEnvironment": "skills/github/references/execution-environment.md"},
         "qualityGate": {
             "syntax": {
                 "python": "uv run --python 3.12 python -m py_compile tool.py"
@@ -104,7 +104,7 @@ jobs:
         },
     }
     write(root / ".github/github.json", json.dumps(metadata))
-    write(root / "github/references/execution-environment.md", "# Policy\n")
+    write(root / "skills/github/references/execution-environment.md", "# Policy\n")
     for relative_path, fragments in MODULE.EXPECTED_WRAPPER_FRAGMENTS.items():
         write(root / relative_path, "\n".join(fragments))
     script = root / "tool.py"
@@ -977,10 +977,10 @@ def test_validate_skills_manifest_classifies_explicit_validators() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     manifest_path = repo_root / "scripts/validate-skills.sh"
     helper_tests, explicit_validators, skiplist = MODULE._load_helper_tests_manifest(manifest_path)
-    assert "skill-creator/scripts/quick_validate.py" in explicit_validators
-    assert "skill-creator/scripts/validate-command-policy-simulator.py" in explicit_validators
-    assert "skill-creator/scripts/quick_validate.py" not in helper_tests
-    assert "skill-creator/scripts/validate-command-policy-simulator.py" not in helper_tests
+    assert "skills/skill-creator/scripts/quick_validate.py" in explicit_validators
+    assert "skills/skill-creator/scripts/validate-command-policy-simulator.py" in explicit_validators
+    assert "skills/skill-creator/scripts/quick_validate.py" not in helper_tests
+    assert "skills/skill-creator/scripts/validate-command-policy-simulator.py" not in helper_tests
     assert set(helper_tests).isdisjoint(explicit_validators)
     assert set(helper_tests).isdisjoint(skiplist)
     assert set(explicit_validators).isdisjoint(skiplist)
@@ -1085,7 +1085,7 @@ def test_wrapper_runtime_drift_fails() -> None:
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
         script = valid_root(root)
-        write(root / "github/scripts/gh-issue", "exec python3 github_issue.py\n")
+        write(root / "skills/github/scripts/gh-issue", "exec python3 github_issue.py\n")
         assert_contains(
             MODULE.validate_repository(root, python_paths=[script]),
             "execution-environment guard",

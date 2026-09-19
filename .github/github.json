@@ -3,31 +3,31 @@
   "projectType": "codex-skills",
   "docs": {
     "index": "README.md",
-    "executionScope": "references/execution-scope.md",
-    "githubSkill": "github/SKILL.md",
-    "githubWorkflow": "github/references/repo-workflow.md",
-    "githubPostMergeCheckouts": "github/references/post-merge-checkouts.md",
-    "backgroundReviewReporting": "references/background-review-reporting.md",
-    "executionEnvironment": "github/references/execution-environment.md",
-    "ideConfigurationPolicy": "references/ide-configuration-policy.md",
-    "githubConfigSchema": "github/references/config-schema.md",
-    "launchplaneSkill": "launchplane/SKILL.md",
-    "launchplaneDeployIdentity": "launchplane/references/deploy-identity.md",
-    "launchplaneMergeTrain": "launchplane/references/merge-train.md",
-    "launchplaneAgentOperatorContract": "launchplane/references/agent-operator-contract.json",
-    "launchplaneAgentOperatorContractGuide": "launchplane/references/agent-operator-contract.md",
-    "launchplaneOrdinaryAgentClient": "launchplane/references/ordinary-agent-client.md",
-    "launchplaneContextContract": "launchplane/references/context-helper-contract.md",
-    "launchplaneOperatorContract": "launchplane/references/operator-contract.md",
-    "launchplaneOperatorConfigExample": "launchplane/references/launchplane-operator.local.example.json",
-    "launchplaneWriteActionContract": "launchplane/references/write-action-helper-contract.md",
-    "repoReadiness": "repo-readiness/SKILL.md",
-    "inspectionConfiguration": "jetbrains-inspection/references/inspection-config.md",
-    "inspectionOutcomeQualification": "jetbrains-inspection/references/outcome-qualification.md",
-    "workCloseout": "work-closeout/SKILL.md",
-    "repoCleanup": "references/repo-cleanup.md",
-    "cleanupQualification": "work-closeout/evaluations/README.md",
-    "publicSafety": "launchplane/references/public-safety.md"
+    "executionScope": "skills/references/execution-scope.md",
+    "githubSkill": "skills/github/SKILL.md",
+    "githubWorkflow": "skills/github/references/repo-workflow.md",
+    "githubPostMergeCheckouts": "skills/github/references/post-merge-checkouts.md",
+    "backgroundReviewReporting": "skills/references/background-review-reporting.md",
+    "executionEnvironment": "skills/github/references/execution-environment.md",
+    "ideConfigurationPolicy": "skills/references/ide-configuration-policy.md",
+    "githubConfigSchema": "skills/github/references/config-schema.md",
+    "launchplaneSkill": "skills/launchplane/SKILL.md",
+    "launchplaneDeployIdentity": "skills/launchplane/references/deploy-identity.md",
+    "launchplaneMergeTrain": "skills/launchplane/references/merge-train.md",
+    "launchplaneAgentOperatorContract": "skills/launchplane/references/agent-operator-contract.json",
+    "launchplaneAgentOperatorContractGuide": "skills/launchplane/references/agent-operator-contract.md",
+    "launchplaneOrdinaryAgentClient": "skills/launchplane/references/ordinary-agent-client.md",
+    "launchplaneContextContract": "skills/launchplane/references/context-helper-contract.md",
+    "launchplaneOperatorContract": "skills/launchplane/references/operator-contract.md",
+    "launchplaneOperatorConfigExample": "skills/launchplane/references/launchplane-operator.local.example.json",
+    "launchplaneWriteActionContract": "skills/launchplane/references/write-action-helper-contract.md",
+    "repoReadiness": "skills/repo-readiness/SKILL.md",
+    "inspectionConfiguration": "skills/jetbrains-inspection/references/inspection-config.md",
+    "inspectionOutcomeQualification": "skills/jetbrains-inspection/references/outcome-qualification.md",
+    "workCloseout": "skills/work-closeout/SKILL.md",
+    "repoCleanup": "skills/references/repo-cleanup.md",
+    "cleanupQualification": "skills/work-closeout/evaluations/README.md",
+    "publicSafety": "skills/launchplane/references/public-safety.md"
   },
   "qualityGate": {
     "inspection": {
@@ -35,7 +35,7 @@
         "python": {
           "version": "3.12",
           "moduleName": "codex-skills",
-          "testRoots": ["jetbrains-inspection/tests"],
+          "testRoots": ["skills/jetbrains-inspection/tests"],
           "requiredGeneratedState": [".venv", ".idea"]
         }
       },
@@ -70,8 +70,8 @@
       ]
     },
     "syntax": {
-      "python": "uv run --python 3.12 python -m py_compile github/scripts/github_identity.py github/scripts/github_api.py github/scripts/github_comment.py github/scripts/github_issue.py github/scripts/github_milestone.py github/scripts/github_read.py github/scripts/github_workflow_babysit.py github/scripts/test_github_identity.py github/scripts/test_github_api.py github/scripts/test_github_ci_diagnose.py github/scripts/test_github_comment.py github/scripts/test_github_issue.py github/scripts/test_github_milestone.py github/scripts/test_gh_plan_next.py github/scripts/test_github_read.py github/scripts/test_github_workflow_babysit.py github/scripts/validate-operation-matrix.py github/scripts/gh-plan.py github/scripts/gh-pr.py github/scripts/github-ci-diagnose.py github/scripts/reconcile-runtime-checkout.py launchplane/scripts/check-agent-operator-contract.py launchplane/scripts/check-agent-operator-contract-freshness.py launchplane/scripts/launchplane-context.py launchplane/scripts/launchplane-write-action.py launchplane/scripts/launchplane_contract.py launchplane/scripts/launchplane_contract_freshness.py launchplane/scripts/launchplane_safety.py launchplane/scripts/launchplane_ordinary_agent_client.py launchplane/scripts/launchplane-ordinary-agent.py launchplane/scripts/test_launchplane_ordinary_agent_client.py launchplane/scripts/test_launchplane_contract_freshness.py launchplane/scripts/test_launchplane_helpers.py scripts/test_update_pep723_dependencies.py scripts/test_validate_execution_environment.py scripts/test_validate_github_actions_security.py scripts/update_pep723_dependencies.py scripts/validate_execution_environment.py scripts/validate_github_actions_security.py skill-creator/scripts/generate_openai_yaml.py skill-creator/scripts/init_skill.py skill-creator/scripts/quick_validate.py",
-      "shell": "bash -n github/scripts/github-repo-snapshot.sh github/scripts/gh-with-env-token github/scripts/git-commit-as-bot github/scripts/git-push-as-bot github/scripts/gh-issue github/scripts/gh-comment google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
+      "python": "uv run --python 3.12 python -m py_compile skills/github/scripts/github_identity.py skills/github/scripts/github_api.py skills/github/scripts/github_comment.py skills/github/scripts/github_issue.py skills/github/scripts/github_milestone.py skills/github/scripts/github_read.py skills/github/scripts/github_workflow_babysit.py skills/github/scripts/test_github_identity.py skills/github/scripts/test_github_api.py skills/github/scripts/test_github_ci_diagnose.py skills/github/scripts/test_github_comment.py skills/github/scripts/test_github_issue.py skills/github/scripts/test_github_milestone.py skills/github/scripts/test_gh_plan_next.py skills/github/scripts/test_github_read.py skills/github/scripts/test_github_workflow_babysit.py skills/github/scripts/validate-operation-matrix.py skills/github/scripts/gh-plan.py skills/github/scripts/gh-pr.py skills/github/scripts/github-ci-diagnose.py skills/github/scripts/reconcile-runtime-checkout.py skills/launchplane/scripts/check-agent-operator-contract.py skills/launchplane/scripts/check-agent-operator-contract-freshness.py skills/launchplane/scripts/launchplane-context.py skills/launchplane/scripts/launchplane-write-action.py skills/launchplane/scripts/launchplane_contract.py skills/launchplane/scripts/launchplane_contract_freshness.py skills/launchplane/scripts/launchplane_safety.py skills/launchplane/scripts/launchplane_ordinary_agent_client.py skills/launchplane/scripts/launchplane-ordinary-agent.py skills/launchplane/scripts/test_launchplane_ordinary_agent_client.py skills/launchplane/scripts/test_launchplane_contract_freshness.py skills/launchplane/scripts/test_launchplane_helpers.py scripts/test_update_pep723_dependencies.py scripts/test_validate_execution_environment.py scripts/test_validate_github_actions_security.py scripts/update_pep723_dependencies.py scripts/validate_execution_environment.py scripts/validate_github_actions_security.py skills/skill-creator/scripts/generate_openai_yaml.py skills/skill-creator/scripts/init_skill.py skills/skill-creator/scripts/quick_validate.py",
+      "shell": "bash -n skills/github/scripts/github-repo-snapshot.sh skills/github/scripts/gh-with-env-token skills/github/scripts/git-commit-as-bot skills/github/scripts/git-push-as-bot skills/github/scripts/gh-issue skills/github/scripts/gh-comment skills/google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
     },
     "json": {
       "metadata": "jq empty .github/github.json"
@@ -99,15 +99,15 @@
     "service": {
       "contextUrlEnv": "LAUNCHPLANE_CONTEXT_URL",
       "operatorUrlEnv": "LAUNCHPLANE_OPERATOR_URL",
-      "localConfigExample": "launchplane/references/launchplane-operator.local.example.json"
+      "localConfigExample": "skills/launchplane/references/launchplane-operator.local.example.json"
     },
     "context": {
       "enabled": true,
-      "helper": "launchplane/scripts/launchplane-context.py"
+      "helper": "skills/launchplane/scripts/launchplane-context.py"
     },
     "operator": {
       "enabled": true,
-      "helper": "launchplane/scripts/launchplane-write-action.py",
+      "helper": "skills/launchplane/scripts/launchplane-write-action.py",
       "requiresPrivateConfig": true
     },
     "mergeTrain": {

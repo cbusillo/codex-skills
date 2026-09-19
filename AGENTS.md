@@ -2,7 +2,7 @@
 
 ## Instruction maintenance
 
-- Use [references/execution-scope.md](references/execution-scope.md) when
+- Use [references/execution-scope.md](skills/references/execution-scope.md) when
   changing execution guidance. Preserve intentional approval, quality,
   delegation, and output-format policies.
 - Maintain the top-level skill sources. The allowlisted system overrides are
@@ -24,7 +24,7 @@
 - Keep the runtime checkout clean, on the repository default branch, and current
   with its remote. Perform implementation work in focused linked worktrees.
 - After a confirmed merge affecting this repository, run the landed repo-local
-  `github/scripts/reconcile-runtime-checkout.py` helper with the final landing
+  `skills/github/scripts/reconcile-runtime-checkout.py` helper with the final landing
   SHA. Treat remote merge success and local runtime reconciliation as separate
   outcomes.
 
