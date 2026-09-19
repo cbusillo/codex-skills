@@ -1455,17 +1455,17 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
         "operation_marker": {"kind": "request_fingerprint", "value": "abc123"},
     }
 
-    def fake_api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+    def fake_api_json(method: str, path: str, request_payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
         parsed = urllib.parse.urlparse(path)
         query = urllib.parse.parse_qs(parsed.query)
-        api_calls.append({"method": method, "path": path, "payload": payload, "kwargs": kwargs, "query": query})
+        api_calls.append({"method": method, "path": path, "payload": request_payload, "kwargs": kwargs, "query": query})
         if method == "GET" and parsed.path == "/search/issues":
             assert kwargs["bucket"] == "search", kwargs
             assert query["q"] == ['"Durable plan" in:title repo:owner/repo is:issue'], query
             return "automation-gh", {"total_count": 0, "incomplete_results": False, "items": []}
         if method == "GET" and parsed.path == "/repos/owner/repo/labels":
             return "automation-gh", [{"name": "plan"}, {"name": "plan:active"}]
-        raise AssertionError({"method": method, "path": path, "payload": payload})
+        raise AssertionError({"method": method, "path": path, "payload": request_payload})
 
     def fake_create_issue(title: str, body: str, **kwargs: Any) -> dict[str, Any]:
         create_call.update({"title": title, "body": body, **kwargs})
@@ -1524,8 +1524,8 @@ def test_create_dedupes_exact_rest_search_without_writes() -> None:
     plan = load_plan_module()
     calls: list[dict[str, Any]] = []
 
-    def fake_api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
-        calls.append({"method": method, "path": path, "payload": payload, "kwargs": kwargs})
+    def fake_api_json(method: str, path: str, request_payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
+        calls.append({"method": method, "path": path, "payload": request_payload, "kwargs": kwargs})
         assert method == "GET" and urllib.parse.urlparse(path).path == "/search/issues", calls
         return "automation-gh", {
             "total_count": 1,
@@ -2339,7 +2339,7 @@ def test_close_reconciles_unknown_success_before_metadata() -> None:
     def fake_get_issue(_ref: str, _repo: str) -> tuple[str, dict[str, Any]]:
         nonlocal issue_reads
         issue_reads += 1
-        return ("automation-gh", issue if issue_reads == 1 else observed)
+        return "automation-gh", issue if issue_reads == 1 else observed
 
     plan.get_issue = fake_get_issue
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
@@ -3221,7 +3221,6 @@ def test_label_defs_cover_planning_labels_without_generic_fallback() -> None:
 
 def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
     plan = load_plan_module()
-    calls: list[list[str]] = []
     api_calls: list[dict[str, Any]] = []
 
     def fake_api_json(method: str, path: str, payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
@@ -3274,7 +3273,6 @@ def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
 def test_create_allows_existing_extra_labels_without_creating_them() -> None:
     plan = load_plan_module()
     captured: dict[str, Any] = {}
-    calls: list[list[str]] = []
     api_calls: list[dict[str, Any]] = []
     issue = {
         "repo": "owner/repo",
@@ -3290,13 +3288,13 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
         "expected_actor": "shiny-code-bot",
     }
 
-    def fake_api_json(method: str, path: str, payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
-        api_calls.append({"method": method, "path": path, "payload": payload})
+    def fake_api_json(method: str, path: str, request_payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
+        api_calls.append({"method": method, "path": path, "payload": request_payload})
         if method == "GET" and path.startswith("/repos/owner/repo/labels?"):
             return "automation-gh", [{"name": "customer"}]
         if method == "POST" and path == "/repos/owner/repo/labels":
-            return "automation-gh", {"name": payload["name"]}
-        raise AssertionError({"method": method, "path": path, "payload": payload})
+            return "automation-gh", {"name": request_payload["name"]}
+        raise AssertionError({"method": method, "path": path, "payload": request_payload})
 
     plan.load_config = lambda repo: {
         "labels": {"plan": "plan", "active": "plan:active"},
@@ -3390,7 +3388,7 @@ def test_run_raw_retries_matrix_approved_graphql_query_on_same_actor() -> None:
         sleeps.append(duration)
         current_time[0] += duration
 
-    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
         calls.append(command)
         if "/rate_limit" in command:
             return subprocess.CompletedProcess(
@@ -3654,7 +3652,6 @@ def test_retried_pr_edit_emits_retry_fields_on_stdout() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
@@ -3725,7 +3722,6 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
     assert result.returncode == 0, result
     payload = json.loads(result.stdout)
@@ -3779,10 +3775,12 @@ def test_pr_checks_failure_records_reader_retry_summary() -> None:
             self.completed_steps: list[str] = []
             self.failed_results = [failed_result]
 
-        def retry_summary(self) -> Any:
+        @staticmethod
+        def retry_summary() -> Any:
             return summary
 
-        def diagnostics(self) -> dict[str, Any]:
+        @staticmethod
+        def diagnostics() -> dict[str, Any]:
             return {"degraded": True, "degradedComponents": ["checks"]}
 
     original_reader = pr.github_read_core.GitHubReader
@@ -4037,7 +4035,6 @@ def test_retried_project_list_emits_retry_fields_on_stdout() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
@@ -4077,7 +4074,6 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 0, result
@@ -4125,7 +4121,6 @@ def test_plan_project_query_failure_is_not_a_write() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 1, result
@@ -4145,7 +4140,6 @@ def test_python_helper_parser_failures_emit_envelopes() -> None:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=False,
     )
     assert pr_result.returncode == 2, pr_result
     pr_payload = json.loads(pr_result.stdout)
@@ -4159,7 +4153,6 @@ def test_python_helper_parser_failures_emit_envelopes() -> None:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=False,
     )
     assert plan_result.returncode == 2, plan_result
     plan_payload = json.loads(plan_result.stdout)
@@ -4831,7 +4824,6 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 1, result
@@ -4874,7 +4866,6 @@ def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 1, result
@@ -5088,7 +5079,6 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 1, result
@@ -5260,7 +5250,6 @@ def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
         calls = log_path.read_text()
 
@@ -5333,7 +5322,6 @@ def test_pr_helper_supersede_reports_comment_failure_after_close() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
         calls = log_path.read_text().splitlines()
 
@@ -5939,7 +5927,6 @@ def test_pr_helper_paged_rest_failure_preserves_diagnostics() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            check=False,
         )
 
     assert result.returncode == 1, result

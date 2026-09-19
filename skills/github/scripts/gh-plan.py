@@ -19,7 +19,7 @@ import tempfile
 import time
 import urllib.parse
 from dataclasses import replace
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
 import github_comment as github_comment_core
@@ -176,7 +176,7 @@ def die(
     failure: github_api_core.FailureDetail | None = None,
     api_result: dict[str, Any] | None = None,
     extra_payload: dict[str, Any] | None = None,
-) -> None:
+) -> NoReturn:
     if failure is None:
         failure = github_api_core.FailureDetail(
             cause=error_code or "plan_error",
@@ -396,7 +396,7 @@ def run_raw(
             completed_steps=list(completed_steps or []),
             failed_step="auth_selection",
         )
-        result = github_api_core.ApiResult(
+        auth_result = github_api_core.ApiResult(
             ok=False,
             status=0,
             body=None,
@@ -410,7 +410,7 @@ def run_raw(
             failure=failure,
             failed_step="auth_selection",
         )
-        raise PlanError(failure.message, failure=failure, api_result=result.as_dict())
+        raise PlanError(failure.message, failure=failure, api_result=auth_result.as_dict())
 
     route_actor, command = commands[-1]
     inferred = github_api_core.infer_gh_command_context(args, input_text=input_text)
@@ -426,21 +426,21 @@ def run_raw(
     )
 
     if not check:
-        timeout_seconds = github_api_core.remaining_retry_timeout_seconds()
-        if timeout_seconds <= 0:
+        unchecked_timeout = github_api_core.remaining_retry_timeout_seconds()
+        if unchecked_timeout <= 0:
             return route_actor, "", "GitHub command skipped because the retry deadline expired"
         try:
-            proc = subprocess.run(
+            unchecked = subprocess.run(
                 command,
                 input=input_text,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=timeout_seconds,
+                timeout=unchecked_timeout,
             )
         except subprocess.TimeoutExpired:
             return route_actor, "", "GitHub command exceeded the effective retry deadline"
-        return route_actor, proc.stdout, proc.stderr
+        return route_actor, unchecked.stdout, unchecked.stderr
 
     last_proc: subprocess.CompletedProcess[str] | None = None
     last_display_actor = route_actor
@@ -552,8 +552,8 @@ def run_raw(
             )
         return result
 
-    result = github_api_core.run_with_retry(
-        lambda: attempt(None),
+    retried = github_api_core.run_with_retry(
+        lambda: attempt(),
         operation=resolved_operation,
         is_write=resolved_is_write,
         actor=initial_retry_actor,
@@ -561,21 +561,21 @@ def run_raw(
         bucket=resolved_bucket,
         attempt_with_timeout=lambda timeout: attempt(timeout),
     )
-    record_retry_fields(result)
+    record_retry_fields(retried)
     if last_proc is None:
-        raise PlanError("gh command did not execute", failure=result.failure, api_result=result.as_dict())
-    if result.ok:
+        raise PlanError("gh command did not execute", failure=retried.failure, api_result=retried.as_dict())
+    if retried.ok:
         return last_display_actor, last_proc.stdout, last_proc.stderr
     detail = "\n".join(
-        f"[{name}] exit={proc.returncode}\n{proc.stderr.strip()}"
-        for name, proc in tried
-        if proc.stderr.strip()
+        f"[{name}] exit={tried_proc.returncode}\n{tried_proc.stderr.strip()}"
+        for name, tried_proc in tried
+        if tried_proc.stderr.strip()
     )
-    message = result.failure.message if result.failure else detail or last_proc.stdout or "gh command failed"
+    message = retried.failure.message if retried.failure else detail or last_proc.stdout or "gh command failed"
     raise PlanError(
         f"gh command failed: {message}",
-        failure=result.failure,
-        api_result=result.as_dict(),
+        failure=retried.failure,
+        api_result=retried.as_dict(),
     )
 
 
@@ -763,11 +763,11 @@ def ensure_graphql_budget(
     if result.ok:
         return
     payload = result.as_dict()
-    reset = payload.get("retry_at")
+    retry_at = payload.get("retry_at")
     raise ClassifiedPlanError(
         "rate_limited",
         result.failure.message if result.failure else "GraphQL quota preflight failed",
-        retry_at=int(reset) if isinstance(reset, (int, float)) else None,
+        retry_at=int(retry_at) if isinstance(retry_at, (int, float)) else None,
         failure=result.failure,
         api_result=payload,
     )
@@ -1179,11 +1179,11 @@ def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
 
 
 def issue_labels(issue: dict[str, Any]) -> list[str]:
-    labels = issue.get("labels")
-    if not isinstance(labels, list):
+    raw_labels = issue.get("labels")
+    if not isinstance(raw_labels, list):
         return []
     names: list[str] = []
-    for item in labels:
+    for item in raw_labels:
         if isinstance(item, str):
             names.append(item)
         elif isinstance(item, dict) and isinstance(item.get("name"), str):
@@ -1197,15 +1197,15 @@ def rest_edit_issue(
     *,
     body: str | None = None,
     title: str | None = None,
-    labels: list[str] | None = None,
+    label_names: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     payload: dict[str, Any] = {}
     if body is not None:
         payload["body"] = body
     if title is not None:
         payload["title"] = title
-    if labels is not None:
-        payload["labels"] = labels
+    if label_names is not None:
+        payload["labels"] = label_names
     if not payload:
         raise PlanError("No issue fields to update")
     actor, data = api_json(
@@ -2342,16 +2342,16 @@ def evaluate_next_plan(
 
 def rank_next_candidates(candidates: list[dict[str, Any]]) -> None:
     focus_rank = {"now": 0, "next": 1, None: 2}
-    candidates.sort(key=lambda item: int(item.get("number") or 0))
-    candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    candidates.sort(key=lambda candidate: int(candidate.get("number") or 0))
+    candidates.sort(key=lambda candidate: str(candidate.get("updated_at") or ""), reverse=True)
     candidates.sort(
-        key=lambda item: (
+        key=lambda candidate: (
             focus_rank.get(
-                item.get("focus").casefold() if isinstance(item.get("focus"), str) else None,
+                candidate.get("focus").casefold() if isinstance(candidate.get("focus"), str) else None,
                 3,
             ),
-            -len(item.get("blocking") or []),
-            str((item.get("milestone") or {}).get("due_on") or "9999-12-31T00:00:00Z"),
+            -len(candidate.get("blocking") or []),
+            str((candidate.get("milestone") or {}).get("due_on") or "9999-12-31T00:00:00Z"),
         )
     )
     for rank, item in enumerate(candidates, start=1):
@@ -2442,9 +2442,11 @@ def cmd_next(args: argparse.Namespace) -> None:
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     rank_next_candidates(candidates)
-    notes = ["native_blocked_by_relationships_are_authoritative"]
-    notes.append("milestones_are_context_not_execution_order")
-    notes.append("closed_plans_are_excluded_by_the_open_issue_source_query")
+    notes = [
+        "native_blocked_by_relationships_are_authoritative",
+        "milestones_are_context_not_execution_order",
+        "closed_plans_are_excluded_by_the_open_issue_source_query",
+    ]
     if truncated:
         notes.append("scan_limit_truncated_open_plans")
     if not focus_context.get("available"):
@@ -2595,9 +2597,7 @@ def find_project_item(
 
 def set_project_field(
     *,
-    owner: str,
     project: dict[str, Any],
-    project_number: int,
     item: dict[str, Any],
     field: dict[str, Any],
     value: str,
@@ -2687,7 +2687,7 @@ def set_project_fields(
         field = fields.get(field_name)
         if not field:
             raise project_error(f"Project field not found: {field_name}")
-        actor = set_project_field(owner=owner, project=project, project_number=project_number, item=item, field=field, value=value, recoverable=recoverable)
+        actor = set_project_field(project=project, item=item, field=field, value=value, recoverable=recoverable)
         updated[field_name] = value
     return {"actor": actor, "project": project.get("title"), "updated": updated}
 
@@ -2813,9 +2813,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             status_field = fields.get("Status")
             if status_field:
                 set_project_field(
-                    owner=owner,
                     project=project_data,
-                    project_number=project_number,
                     item=item,
                     field=status_field,
                     value="Done",
