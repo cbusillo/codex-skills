@@ -18,7 +18,7 @@ from typing import Any
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-DEFAULT_HARNESS_ROOT = ROOT.parent / "code" / ".tmp" / "code-exec-harness"
+DEFAULT_HARNESS_ROOT = ROOT.parents[1] / "code" / ".tmp" / "code-exec-harness"
 DEFAULT_DURATION_BUDGET_MS = 30_000
 BEGIN_TOOL_EVENT_TYPES = {"browser_open_begin", "exec_command_begin"}
 

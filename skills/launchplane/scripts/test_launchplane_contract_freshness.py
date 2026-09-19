@@ -260,7 +260,7 @@ def test_evidence_and_issues_redact_raw_failures_and_contract_bodies() -> None:
 
 def test_schedule_and_dispatch_share_the_comparison_implementation() -> None:
     workflow = (
-        REPO_ROOT / ".github" / "workflows" / "launchplane-contract-freshness.yml"
+        REPO_ROOT.parent / ".github" / "workflows" / "launchplane-contract-freshness.yml"
     ).read_text(encoding="utf-8")
     assert "schedule:" in workflow
     assert "workflow_dispatch:" in workflow

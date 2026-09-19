@@ -31,7 +31,7 @@ EXPECTED_CURRENT_PYTHON = "3.14"
 EXPECTED_REQUIRES_PYTHON = ">=3.12"
 EXPECTED_UV_REQUIREMENT = ">=0.11.29,<1"
 EXPECTED_CACHE_DEPENDENCY_GLOB = "**/*.py"
-EXPECTED_POLICY_PATH = "github/references/execution-environment.md"
+EXPECTED_POLICY_PATH = "skills/github/references/execution-environment.md"
 EXPECTED_HELPER_TESTS_PATH = "scripts/validate-skills.sh"
 EXPECTED_PYTHON_MATRIX_WORKFLOWS = {
     "launchplane-train-validation.yml",
@@ -51,19 +51,19 @@ EXPECTED_REVISION_EVIDENCE_FIELDS = {
     "landing": "result.landing_plan.entries[].merge_commit_sha",
 }
 EXPECTED_WRAPPER_FRAGMENTS = {
-    "github/scripts/gh-comment": (
+    "skills/github/scripts/gh-comment": (
         "command -v uv",
         'exec uv run --no-project --no-config --python 3.12 python "$script_dir/github_comment.py"',
     ),
-    "github/scripts/gh-issue": (
+    "skills/github/scripts/gh-issue": (
         "command -v uv",
         'exec uv run --no-project --no-config --python 3.12 python "$script_dir/github_issue.py"',
     ),
-    "github/scripts/gh-with-env-token": (
+    "skills/github/scripts/gh-with-env-token": (
         "command -v uv",
         'uv run --no-project --no-config --python 3.12 python "$@"',
     ),
-    "github/scripts/github-repo-snapshot.sh": (
+    "skills/github/scripts/github-repo-snapshot.sh": (
         "GITHUB_REPO_SNAPSHOT_PYTHON",
         "python_command=(uv run --no-project --no-config --python 3.12 python)",
     ),

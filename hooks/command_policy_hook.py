@@ -31,8 +31,8 @@ from types import ModuleType
 from typing import Any
 
 # Resolve through the install link so the catalog is found wherever it is linked from.
-ROOT = Path(__file__).resolve().parents[3]
-SIMULATOR = ROOT / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
+ROOT = Path(__file__).resolve().parents[1]
+SIMULATOR = ROOT / "skills" / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
 OPERATORS = re.compile(r"^[;&|()]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

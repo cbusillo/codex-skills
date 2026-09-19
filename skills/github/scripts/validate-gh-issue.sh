@@ -1224,10 +1224,16 @@ esac
 EOF
 chmod +x "$tmpdir/gh-noisy-json"
 
+# The snapshot reports the repository's own metadata; take the expectation from
+# that file and require the path to exist, rather than restating it here.
+snapshot_metadata_root="$(git rev-parse --show-toplevel)"
+snapshot_local_config_example="$(jq -r '.launchplane.service.localConfigExample' "$snapshot_metadata_root/.github/github.json")"
+test -f "$snapshot_metadata_root/$snapshot_local_config_example"
+
 GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 	GITHUB_REPO_SNAPSHOT_PR_HELPER="$tmpdir/missing-gh-pr.py" \
 	"$repo_root/github/scripts/github-repo-snapshot.sh" --json |
-	jq -e '
+	jq -e --arg localConfigExample "$snapshot_local_config_example" '
 		.github.openPullRequests[0].number == 1 and
 		.github.ghAvailable == 1 and
 		.github.openPullRequests[0].isDraft == false and
@@ -1249,7 +1255,7 @@ GITHUB_REPO_SNAPSHOT_GH="$tmpdir/gh-noisy-json" \
 		.launchplane.status == "configured" and
 		.launchplane.service.contextUrlEnv == "LAUNCHPLANE_CONTEXT_URL" and
 		.launchplane.service.operatorUrlEnv == "LAUNCHPLANE_OPERATOR_URL" and
-		.launchplane.service.localConfigExample == "launchplane/references/launchplane-operator.local.example.json" and
+		.launchplane.service.localConfigExample == $localConfigExample and
 		.launchplane.mergeTrain.readyLabel == "ready-to-merge" and
 		.launchplane.mergeTrain.githubActionsRunner.workflow == "merge-train-runner.yml" and
 		(.launchplane.warnings | length) == 0 and

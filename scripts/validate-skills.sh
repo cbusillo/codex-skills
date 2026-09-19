@@ -28,96 +28,96 @@ uv --version
 printf '  selected '
 uv run python --version
 
-uv run github/scripts/validate-gh-plan.py
-github/scripts/validate-gh-issue.sh
-uv run github/scripts/validate-operation-matrix.py --self-test
-uv run github/scripts/validate-operation-matrix.py
-uv run skill-creator/scripts/validate-skill-behavior.py
-uv run skill-creator/scripts/validate-command-policy-simulator.py --self-test
-uv run skill-creator/scripts/validate-command-policy-simulator.py
-uv run skill-creator/scripts/validate-skill-scorecard.py
+uv run skills/github/scripts/validate-gh-plan.py
+skills/github/scripts/validate-gh-issue.sh
+uv run skills/github/scripts/validate-operation-matrix.py --self-test
+uv run skills/github/scripts/validate-operation-matrix.py
+uv run skills/skill-creator/scripts/validate-skill-behavior.py
+uv run skills/skill-creator/scripts/validate-command-policy-simulator.py --self-test
+uv run skills/skill-creator/scripts/validate-command-policy-simulator.py
+uv run skills/skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
-uv run launchplane/scripts/check-agent-operator-contract.py
+uv run skills/launchplane/scripts/check-agent-operator-contract.py
 uv run scripts/update_pep723_dependencies.py --check
-uv run skill-creator/scripts/quick_validate.py --self-test
-uv run skill-creator/scripts/validate-skill-repo.py
+uv run skills/skill-creator/scripts/quick_validate.py --self-test
+uv run skills/skill-creator/scripts/validate-skill-repo.py
 
 helper_tests=(
-	babysit-pr/scripts/test_gh_pr_watch.py
-	hosts/claude-code/hooks/test_command_policy_hook.py
-	google-seo/scripts/test_bing_webmaster.py
-	google-seo/scripts/test_google_search_console.py
-	github-work-rollup/scripts/test_github_unanswered_comments.py
-	github-work-rollup/scripts/test_github_work_rollup.py
-	github-work-rollup/scripts/test_synthesize_work_brief.py
-	github-work-rollup/scripts/test_verify_work_brief.py
-	github/scripts/test_github_work_evidence.py
-	github/scripts/test_github_api.py
-	github/scripts/test_github_ci_diagnose.py
-	github/scripts/test_github_comment.py
-	github/scripts/test_github_identity.py
-	github/scripts/test_github_issue.py
-	github/scripts/test_github_milestone.py
-	github/scripts/test_gh_plan_next.py
-	github/scripts/test_github_read.py
-	github/scripts/test_github_workflow_babysit.py
-	github/scripts/test_runtime_checkout_reconciliation.py
-	infra-ops/scripts/test_private_context_check.py
-	infra-ops/scripts/test_npmplus_ops.py
-	partdb/scripts/test_partdb_read.py
-	partdb/scripts/test_partdb_write.py
-	launchplane/scripts/test_launchplane_contract_freshness.py
-	launchplane/scripts/test_launchplane_helpers.py
-	launchplane/scripts/test_launchplane_ordinary_agent_client.py
-	local-llm/scripts/validate_local_code_agent.py
-	local-llm/scripts/validate_local_codex_agent.py
-	local-llm/scripts/validate_lm_studio_api.py
-	openai-docs/scripts/test_resolve_latest_model_info.py
-	openai-docs/scripts/test_fetch_codex_manual.py
-	people/scripts/test_resolve_person.py
-	work-closeout/scripts/test_repo_cleanup.py
-	work-closeout/evaluations/test_cleanup_fixtures.py
-	work-closeout/evaluations/test_cleanup_provider.py
-	work-closeout/evaluations/test_run_cleanup_cases.py
-	work-closeout/evaluations/test_score_cleanup_case.py
-	work-closeout/evaluations/test_runtime_cleanup_fixture.py
+	skills/babysit-pr/scripts/test_gh_pr_watch.py
+	hooks/test_command_policy_hook.py
+	skills/google-seo/scripts/test_bing_webmaster.py
+	skills/google-seo/scripts/test_google_search_console.py
+	skills/github-work-rollup/scripts/test_github_unanswered_comments.py
+	skills/github-work-rollup/scripts/test_github_work_rollup.py
+	skills/github-work-rollup/scripts/test_synthesize_work_brief.py
+	skills/github-work-rollup/scripts/test_verify_work_brief.py
+	skills/github/scripts/test_github_work_evidence.py
+	skills/github/scripts/test_github_api.py
+	skills/github/scripts/test_github_ci_diagnose.py
+	skills/github/scripts/test_github_comment.py
+	skills/github/scripts/test_github_identity.py
+	skills/github/scripts/test_github_issue.py
+	skills/github/scripts/test_github_milestone.py
+	skills/github/scripts/test_gh_plan_next.py
+	skills/github/scripts/test_github_read.py
+	skills/github/scripts/test_github_workflow_babysit.py
+	skills/github/scripts/test_runtime_checkout_reconciliation.py
+	skills/infra-ops/scripts/test_private_context_check.py
+	skills/infra-ops/scripts/test_npmplus_ops.py
+	skills/partdb/scripts/test_partdb_read.py
+	skills/partdb/scripts/test_partdb_write.py
+	skills/launchplane/scripts/test_launchplane_contract_freshness.py
+	skills/launchplane/scripts/test_launchplane_helpers.py
+	skills/launchplane/scripts/test_launchplane_ordinary_agent_client.py
+	skills/local-llm/scripts/validate_local_code_agent.py
+	skills/local-llm/scripts/validate_local_codex_agent.py
+	skills/local-llm/scripts/validate_lm_studio_api.py
+	skills/openai-docs/scripts/test_resolve_latest_model_info.py
+	skills/openai-docs/scripts/test_fetch_codex_manual.py
+	skills/people/scripts/test_resolve_person.py
+	skills/work-closeout/scripts/test_repo_cleanup.py
+	skills/work-closeout/evaluations/test_cleanup_fixtures.py
+	skills/work-closeout/evaluations/test_cleanup_provider.py
+	skills/work-closeout/evaluations/test_run_cleanup_cases.py
+	skills/work-closeout/evaluations/test_score_cleanup_case.py
+	skills/work-closeout/evaluations/test_runtime_cleanup_fixture.py
 	scripts/test_validate_github_actions_security.py
 	scripts/test_validate_public_safety.py
 	scripts/test_update_pep723_dependencies.py
 	scripts/test_validate_execution_environment.py
 	scripts/validate_execution_environment.py
 	scripts/validate_github_actions_security.py
-	jetbrains-inspection/tests/test_jb_inspect.py
-	jetbrains-inspection/tests/test_prepare_python_project.py
-	skill-creator/scripts/test_collect_exec_harness_performance.py
-	skill-creator/scripts/test_validate_skill_repo.py
-	skill-creator/scripts/test_validate_skill_scorecard.py
-	rollout-friction/scripts/validate_analyze_rollouts.py
-	rollout-friction/scripts/validate_classify_auto_review_ledger.py
-	rollout-friction/scripts/validate_cluster_rollout_episodes.py
-	rollout-friction/scripts/validate_extract_rollout_memory.py
-	rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py
-	rollout-friction/scripts/validate_reduce_rollout_memory_reviews.py
-	rollout-friction/scripts/validate_review_rollout_memory_batches.py
-	rollout-friction/scripts/validate_run_rollout_memory_long_context_matrix.py
-	rollout-friction/scripts/validate_segment_rollout_episodes.py
-	rollout-friction/scripts/validate_summarize_rollout_memory_reviews.py
-	rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
+	skills/jetbrains-inspection/tests/test_jb_inspect.py
+	skills/jetbrains-inspection/tests/test_prepare_python_project.py
+	skills/skill-creator/scripts/test_collect_exec_harness_performance.py
+	skills/skill-creator/scripts/test_validate_skill_repo.py
+	skills/skill-creator/scripts/test_validate_skill_scorecard.py
+	skills/rollout-friction/scripts/validate_analyze_rollouts.py
+	skills/rollout-friction/scripts/validate_classify_auto_review_ledger.py
+	skills/rollout-friction/scripts/validate_cluster_rollout_episodes.py
+	skills/rollout-friction/scripts/validate_extract_rollout_memory.py
+	skills/rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py
+	skills/rollout-friction/scripts/validate_reduce_rollout_memory_reviews.py
+	skills/rollout-friction/scripts/validate_review_rollout_memory_batches.py
+	skills/rollout-friction/scripts/validate_run_rollout_memory_long_context_matrix.py
+	skills/rollout-friction/scripts/validate_segment_rollout_episodes.py
+	skills/rollout-friction/scripts/validate_summarize_rollout_memory_reviews.py
+	skills/rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
 )
 
 # Validators invoked by dedicated commands above rather than by the zero-argument
 # helper loop. This array classifies the files structurally; the commands and
 # gate trace provide execution evidence.
 explicit_helper_validators=(
-	github/scripts/validate-gh-plan.py
-	github/scripts/validate-operation-matrix.py
+	skills/github/scripts/validate-gh-plan.py
+	skills/github/scripts/validate-operation-matrix.py
 	scripts/validate-public-safety.py
-	skill-creator/scripts/quick_validate.py
-	skill-creator/scripts/validate-command-policy-simulator.py
-	skill-creator/scripts/validate-skill-behavior.py
-	skill-creator/scripts/validate-skill-repo.py
-	skill-creator/scripts/validate-skill-scorecard.py
+	skills/skill-creator/scripts/quick_validate.py
+	skills/skill-creator/scripts/validate-command-policy-simulator.py
+	skills/skill-creator/scripts/validate-skill-behavior.py
+	skills/skill-creator/scripts/validate-skill-repo.py
+	skills/skill-creator/scripts/validate-skill-scorecard.py
 )
 
 # Files matching these names are CLIs or fixtures that require arguments/live
@@ -125,7 +125,7 @@ explicit_helper_validators=(
 # explicit so newly added test_*.py or validate*.py files do not silently miss
 # validation.
 helper_test_skiplist=(
-	rollout-friction/scripts/validate_rollout_memory_llm_results.py
+	skills/rollout-friction/scripts/validate_rollout_memory_llm_results.py
 )
 
 mapfile -t discovered_helper_tests < <(

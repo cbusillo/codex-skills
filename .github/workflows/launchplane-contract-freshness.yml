@@ -42,7 +42,7 @@ jobs:
       - name: Compare semantic contract identity
         run: |
           set -euo pipefail
-          uv run launchplane/scripts/check-agent-operator-contract-freshness.py compare \
+          uv run skills/launchplane/scripts/check-agent-operator-contract-freshness.py compare \
             --timeout 10 \
             --attempts 3 \
             --retry-delay 1 > freshness.json
@@ -94,6 +94,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$FRESHNESS_EVIDENCE" > freshness.json
-          uv run launchplane/scripts/check-agent-operator-contract-freshness.py report \
+          uv run skills/launchplane/scripts/check-agent-operator-contract-freshness.py report \
             --repository "$GITHUB_REPOSITORY" \
             --evidence-file freshness.json

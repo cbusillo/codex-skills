@@ -4,7 +4,8 @@ Reusable skills for OpenAI Codex and compatible hosts such as Codex Lab.
 Every Code is retired; retained traces, fixtures, and artifact readers describe
 historical behavior rather than a supported execution path.
 
-Each skill lives in its own directory with a `SKILL.md` file. Skills can include
+Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
+file; `skills/` is the catalog that hosts load. Skills can include
 supporting references, scripts, agents, assets, and examples when the workflow
 benefits from more than a single instruction file.
 
@@ -16,7 +17,7 @@ use the current user-skill discovery location:
 ```sh
 git clone git@github.com:OWNER/codex-skills.git ~/Developer/codex-skills
 mkdir -p ~/.agents
-ln -s ~/Developer/codex-skills ~/.agents/skills
+ln -s ~/Developer/codex-skills/skills ~/.agents/skills
 ```
 
 Inspect an existing destination before changing it; do not replace an existing
@@ -33,36 +34,43 @@ current Codex locations and plugin-owned alternatives.
 
 Claude Code reads personal skills from a flat `~/.claude/skills/<skill>/`
 folder, which usually holds other content and cannot be replaced by a link to
-this repository. Link the host binding instead, once:
+the catalog. Link the repository itself instead, once:
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -s ~/Developer/codex-skills/hosts/claude-code ~/.claude/skills/shared
+ln -s ~/Developer/codex-skills ~/.claude/skills/shared
 ```
 
-[`hosts/claude-code`](hosts/claude-code) is a small plugin whose `skills` entry
-is a relative link back to the repository root. Claude Code loads it in place
-as a skills-directory plugin, so every skill, including one added later,
-appears after a restart as `shared:<skill>` (for example `shared:github`). The
-prefix keeps catalog skills apart from the host's own skills and commands of
-the same name; a skill that is also installed under its plain name keeps that
-plain name as well. `claude plugin list` shows the binding as
-`shared@skills-dir`, and `claude plugin details shared` lists the skills it
-found.
+The repository root is a Claude Code plugin: `.claude-plugin/plugin.json`, the
+`skills/` catalog, and `hooks/`. Claude Code loads it in place as a
+skills-directory plugin, so every skill, including one added later, appears
+after a restart as `shared:<skill>` (for example `shared:github`). The prefix
+keeps catalog skills apart from the host's own skills and commands of the same
+name. `claude plugin list` shows the binding as `shared@skills-dir`, and
+`claude plugin details shared` lists the skills and hooks it found.
 
 The same install rule applies: inspect an existing destination first and do
 not replace a directory or link automatically.
 
 On invocation Claude Code gives the model the skill's base directory and the
 Markdown body only; frontmatter, including command-policy metadata, is never
-shown. The binding therefore ships a `PreToolUse` hook
-([`hosts/claude-code/hooks`](hosts/claude-code/hooks)) that reads the same
-`policy.command_policies` frontmatter at run time, through the policy
-simulator, and blocks a matching shell command with the policy's message and
-preferred replacement. It splits compound lines and ignores leading environment
-assignments, adds about 0.15 s per shell command, needs `uv` on `PATH`, and
-lets the command run if it cannot read the event or the policies. A policy
-change needs no regeneration step.
+shown. The plugin therefore ships a `PreToolUse` hook ([`hooks`](hooks)) that
+reads the same `policy.command_policies` frontmatter at run time, through the
+policy simulator, and blocks a matching shell command with the policy's message
+and preferred replacement. It splits compound lines and ignores leading
+environment assignments, adds about 0.15 s per shell command, needs `uv` on
+`PATH`, and lets the command run if it cannot read the event or the policies. A
+policy change needs no regeneration step.
+
+### Layout and private local state
+
+Hosts bind to the catalog, not to the repository: a Codex-family `skills` path
+resolves to `<checkout>/skills`. Private, ignored local state that helpers
+resolve through `$CODE_HOME/skills/.local` (then `$CODEX_HOME`, then `~/.code`)
+therefore lives at `<checkout>/skills/.local`. Shared references that several
+skills link as `../references/...` live in `skills/references`. Repository
+tooling (`scripts/`, `.github/`) stays at the root and is not part of an
+install.
 
 The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
 `$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
@@ -83,17 +91,17 @@ compatibility lane, continuously tests current stable Python 3.14, and pins
 GitHub Actions jobs to the Ubuntu 24.04 runner major. Compatible uv/Python patch
 releases and runner image revisions intentionally float within those bounds and
 must keep passing the canonical gate. See
-[`github/references/execution-environment.md`](github/references/execution-environment.md)
+[`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
 
 ## Instruction scope
 
-Execution skills share [task scope and authorization](references/execution-scope.md).
+Execution skills share [task scope and authorization](skills/references/execution-scope.md).
 Existing authorization is reused within its scope; exact-action approvals and
 configured review, quality, delegation, and output requirements remain in force.
 Detailed lifecycle and handoff procedures load only through the relevant skill's
 reference links. Command-policy frontmatter remains in the owning entrypoint.
-Install the shared top-level `references/` directory with these skills; copying
+Install the shared top-level `skills/references/` directory with these skills; copying
 one skill folder alone does not preserve its cross-skill reference dependencies.
 
 ## Local Overrides
@@ -130,7 +138,7 @@ editing `.system/` directly.
 If an injected available-skills list points at a missing repo-local path such as
 `.system/plan/SKILL.md`, treat that as stale runtime metadata. For allowlisted
 overrides, the usable source path is the top-level override, for example
-`plan/SKILL.md`.
+`skills/plan/SKILL.md`.
 
 Preferred patterns:
 
@@ -180,7 +188,7 @@ procedure and leave private values in the local overlay.
 
 ## GitHub Automation Token
 
-The GitHub workflow skill includes `github/scripts/gh-with-env-token`,
+The GitHub workflow skill includes `skills/github/scripts/gh-with-env-token`,
 a small wrapper around `gh` that reads the user's ignored `local.env` file under
 `$CODE_HOME`, `$CODEX_HOME`, or `~/.code` and exports a token only for the
 command it runs.
@@ -226,7 +234,7 @@ tokens.
 ### Protected Workflow Review
 
 Protected operator workflows should use
-`github/scripts/github_workflow_babysit.py`. The helper dispatches with the
+`skills/github/scripts/github_workflow_babysit.py`. The helper dispatches with the
 configured automation token, captures GitHub's exact returned run ID, diagnoses
 `waiting` runs through `pending_deployments`, and stops on a bounded timeout.
 An environment approval requires an exact `--approve-environment` value and is
@@ -257,4 +265,4 @@ It checks tracked files only, so ignored local overlays stay private while
 committed examples and docs are still scanned before PRs merge.
 
 For Launchplane context-specific review, also see
-`launchplane/references/public-safety.md`.
+`skills/launchplane/references/public-safety.md`.

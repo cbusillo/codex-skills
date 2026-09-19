@@ -3,7 +3,7 @@ name: Launchplane Train Validation
 on:
   push:
     branches:
-      - "launchplane/train/**"
+      - "skills/launchplane/train/**"
 
 permissions:
   contents: read

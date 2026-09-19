@@ -312,7 +312,8 @@ def validate_refs(label: str, field: str, value: Any, repo_root: Path, errors: l
             errors.append(f"{label}.{field} entries must be non-empty strings")
             continue
         path_text, separator, fragment = item.partition(":")
-        path = repo_root / path_text
+        # The catalog sits one level below the repository; repository metadata does not.
+        path = (repo_root.parent if path_text.startswith(".github/") else repo_root) / path_text
         if path_text and not path.exists():
             errors.append(f"{label}.{field} references missing path: {item}")
             continue
