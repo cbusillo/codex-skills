@@ -1233,14 +1233,20 @@ def test_project_commands_are_recoverable() -> None:
     plan = load_plan_module()
     calls: list[dict[str, Any]] = []
 
+    budget_calls: list[bool] = []
+    real_budget = plan.ensure_graphql_budget
+
+    def recording_budget(**kwargs: Any) -> None:
+        budget_calls.append(bool(kwargs.get("recoverable")))
+        real_budget(**kwargs)
+
     def fake_gh_json(
         args: list[str],
         *,
         prefer_active: bool = False,
-        recoverable: bool = False,
         **_kwargs: Any,
     ) -> tuple[str, Any]:
-        calls.append({"args": args, "prefer_active": prefer_active, "recoverable": recoverable})
+        calls.append({"args": args, "prefer_active": prefer_active})
         if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
             return "active-gh-user", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
         if args[:2] == ["project", "list"]:
@@ -1250,6 +1256,7 @@ def test_project_commands_are_recoverable() -> None:
         raise AssertionError(f"unexpected gh_json args: {args}")
 
     plan.gh_json = fake_gh_json
+    plan.ensure_graphql_budget = recording_budget
     plan.load_config = lambda repo: {"projects": {"default_project": "Roadmap"}}
     plan.get_issue = lambda ref, repo: (
         "automation-gh",
@@ -1260,10 +1267,11 @@ def test_project_commands_are_recoverable() -> None:
 
     project_calls = [call for call in calls if call["args"] and call["args"][0] == "project"]
     assert project_calls, calls
-    assert all(call["recoverable"] for call in project_calls), project_calls
+    assert budget_calls and all(budget_calls), budget_calls
     assert all(call["prefer_active"] for call in calls), calls
 
     calls.clear()
+    budget_calls.clear()
     with redirect_stdout(StringIO()):
         plan.cmd_project_list(types.SimpleNamespace(owner="owner", limit=30, closed=False))
 
@@ -1271,7 +1279,7 @@ def test_project_commands_are_recoverable() -> None:
     assert calls[0]["args"][-1] == "rate_limit", calls
     assert calls[1]["args"][:2] == ["project", "list"], calls
     assert all(call["prefer_active"] for call in calls), calls
-    assert all(call["recoverable"] for call in calls), calls
+    assert budget_calls and all(budget_calls), budget_calls
 
 
 def test_repo_config_path_skips_missing_home_candidate() -> None:
@@ -1738,7 +1746,6 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
         *,
         input_text: Optional[str] = None,
         prefer_active: bool = False,
-        recoverable: bool = False,
     ) -> tuple[str, Any]:
         if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
             return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
@@ -1746,7 +1753,6 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
             args,
             input_text=input_text,
             prefer_active=prefer_active,
-            recoverable=recoverable,
         )
 
     plan.gh_json = fake_gh_json
@@ -1757,11 +1763,9 @@ def test_create_reports_issue_when_project_sync_fails() -> None:
 
     def fake_run_raw(
         args: list[str],
-        *,
-        recoverable: bool = False,
         **_kwargs: Any,
     ) -> tuple[str, str, str]:
-        if args[:2] == ["project", "item-add"] and recoverable:
+        if args[:2] == ["project", "item-add"]:
             raise plan.PlanError("project sync throttled")
         raise AssertionError(f"unexpected run_raw args: {args}")
 
@@ -1886,7 +1890,6 @@ def test_create_reports_project_auth_denied_as_non_blocking_warning() -> None:
         *,
         input_text: Optional[str] = None,
         prefer_active: bool = False,
-        recoverable: bool = False,
     ) -> tuple[str, Any]:
         if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
             return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
@@ -1894,7 +1897,6 @@ def test_create_reports_project_auth_denied_as_non_blocking_warning() -> None:
             args,
             input_text=input_text,
             prefer_active=prefer_active,
-            recoverable=recoverable,
         )
 
     plan.gh_json = fake_gh_json
@@ -1907,11 +1909,10 @@ def test_create_reports_project_auth_denied_as_non_blocking_warning() -> None:
         args: list[str],
         *,
         prefer_active: bool = False,
-        recoverable: bool = False,
         **_kwargs: Any,
     ) -> tuple[str, str, str]:
-        calls.append({"args": args, "prefer_active": prefer_active, "recoverable": recoverable})
-        if args[:2] == ["project", "item-add"] and recoverable:
+        calls.append({"args": args, "prefer_active": prefer_active})
+        if args[:2] == ["project", "item-add"]:
             raise plan.project_error("HTTP 403: resource not accessible by integration")
         raise AssertionError(f"unexpected run_raw args: {args}")
 
@@ -3353,7 +3354,7 @@ def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
 
     plan.subprocess.run = fake_run
     try:
-        plan.run_raw(["api", "rate_limit"], recoverable=True)
+        plan.run_raw(["api", "rate_limit"])
     except plan.PlanError as exc:
         assert "GraphQL: API rate limit already exceeded" in str(exc), exc
     else:
@@ -3370,7 +3371,7 @@ def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
 
     plan.subprocess.run = fake_non_rate_failure
     try:
-        plan.run_raw(["api", "repos/owner/repo"], recoverable=True)
+        plan.run_raw(["api", "repos/owner/repo"])
     except plan.PlanError as exc:
         assert "resource not accessible" in str(exc), exc
     else:
@@ -3496,7 +3497,7 @@ def test_run_raw_is_bot_first_even_when_prefer_active_is_requested() -> None:
         raise AssertionError(f"active gh should not be called before bot: {command}")
 
     plan.subprocess.run = fake_run
-    actor, stdout, _ = plan.run_raw(["project", "list"], prefer_active=True, recoverable=True)
+    actor, stdout, _ = plan.run_raw(["project", "list"], prefer_active=True)
     assert actor == "automation-gh", actor
     assert json.loads(stdout) == {"bot": True}, stdout
     assert len(calls) == 1, calls
