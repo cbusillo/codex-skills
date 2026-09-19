@@ -51,10 +51,18 @@ plain name as well. `claude plugin list` shows the binding as
 found.
 
 The same install rule applies: inspect an existing destination first and do
-not replace a directory or link automatically. On invocation Claude Code gives
-the model the skill's base directory and the Markdown body only; frontmatter,
-including command-policy metadata, is not shown and is not enforced by that
-host.
+not replace a directory or link automatically.
+
+On invocation Claude Code gives the model the skill's base directory and the
+Markdown body only; frontmatter, including command-policy metadata, is never
+shown. The binding therefore ships a `PreToolUse` hook
+([`hosts/claude-code/hooks`](hosts/claude-code/hooks)) that reads the same
+`policy.command_policies` frontmatter at run time, through the policy
+simulator, and blocks a matching shell command with the policy's message and
+preferred replacement. It splits compound lines and ignores leading environment
+assignments, adds about 0.15 s per shell command, needs `uv` on `PATH`, and
+lets the command run if it cannot read the event or the policies. A policy
+change needs no regeneration step.
 
 The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
 `$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
