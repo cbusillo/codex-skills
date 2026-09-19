@@ -1,0 +1,8 @@
+{
+  "name": "shared",
+  "description": "Shared agent skills catalog, read in place from this repository.",
+  "version": "0.1.0",
+  "author": {
+    "name": "codex-skills maintainers"
+  }
+}
