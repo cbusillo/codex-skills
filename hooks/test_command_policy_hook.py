@@ -81,6 +81,30 @@ class CommandPolicyHookTests(unittest.TestCase):
                     with self.subTest(policy=entry["id"], line=line):
                         self.assertEqual(bash(line).returncode, 0, bash(line).stderr)
 
+    def test_the_replacement_shown_names_a_script_that_exists_here(self) -> None:
+        for entry in SIMULATOR.policy_catalog():
+            for preferred in entry["preferred"]:
+                for token in map(str, preferred.get("example_argv") or []):
+                    if not token.endswith((".py", ".sh")) or token.startswith("/"):
+                        continue
+                    with self.subTest(policy=entry["id"], token=token):
+                        shown = command_policy_hook.runnable(token, entry["skill"])
+                        self.assertTrue(Path(shown).is_absolute(), shown)
+                        self.assertTrue(Path(shown).is_file(), shown)
+
+    def test_the_block_message_shows_the_resolved_replacement_and_it_is_allowed(self) -> None:
+        result = bash("gh issue list")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("$CODE_HOME", result.stderr)
+        shown = next(line for line in result.stderr.splitlines() if line.startswith("Run instead: "))
+        self.assertTrue(Path(shlex.split(shown.removeprefix("Run instead: "))[2]).is_file(), shown)
+        self.assertEqual(bash(shown.removeprefix("Run instead: ")).returncode, 0)
+
+    def test_placeholders_and_flags_are_shown_as_written(self) -> None:
+        for token in ("<query>", "--body-file", "uv", "/path/to/repo", "$HOME/x/y.py", "missing/script.py"):
+            with self.subTest(token=token):
+                self.assertEqual(command_policy_hook.runnable(token, "github-plan"), token)
+
     def test_other_tools_and_unreadable_events_are_let_through(self) -> None:
         self.assertEqual(run_hook(json.dumps({"tool_name": "Read", "tool_input": {}})).returncode, 0)
         for payload in ("not json", json.dumps({"tool_name": "Bash"})):

@@ -32,7 +32,9 @@ from typing import Any
 
 # Resolve through the install link so the catalog is found wherever it is linked from.
 ROOT = Path(__file__).resolve().parents[1]
-SIMULATOR = ROOT / "skills" / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
+CATALOG = ROOT / "skills"
+SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
+CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -66,6 +68,22 @@ def simple_commands(shell: str) -> list[list[str]]:
     return stripped
 
 
+def runnable(token: str, skill: str) -> str:
+    """Point a policy's script path at this catalog.
+
+    Policies name scripts the way Codex resolves them: under `$CODE_HOME/skills`,
+    or relative to the skill or the catalog. Claude Code sets no `CODE_HOME` and
+    runs from the user's project, so neither form runs as written.
+    """
+    if token.startswith(CODE_HOME_SKILLS):
+        candidates = [CATALOG / token.removeprefix(CODE_HOME_SKILLS)]
+    elif "/" in token and not token.startswith(("/", "$", "<", "-")):
+        candidates = [CATALOG / skill / token, CATALOG / token]
+    else:
+        return token
+    return next((str(path) for path in candidates if path.is_file()), token)
+
+
 def describe(policy: dict[str, Any], skill: str) -> str:
     lines = [f"Blocked by the `{skill}` skill's command policy `{policy['id']}`."]
     if policy.get("message"):
@@ -74,8 +92,9 @@ def describe(policy: dict[str, Any], skill: str) -> str:
         if preferred.get("kind") == "skill":
             lines.append(f"Use the `{preferred.get('name')}` skill: {preferred.get('purpose', '')}".rstrip(": "))
         elif preferred.get("example_argv"):
-            lines.append(f"Run instead: {shlex.join(str(token) for token in preferred['example_argv'])}")
-    lines.append(f"Relative script paths are inside the `{skill}` skill's base directory.")
+            argv = [runnable(str(token), skill) for token in preferred["example_argv"]]
+            lines.append(f"Run instead: {shlex.join(argv)}")
+    lines.append(f"Any remaining relative script path is inside the `{skill}` skill's base directory.")
     return "\n".join(lines)
 
 
