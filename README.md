@@ -29,6 +29,33 @@ verify that host's current discovery rules before adding a new binding.
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
 
+### Claude Code
+
+Claude Code reads personal skills from a flat `~/.claude/skills/<skill>/`
+folder, which usually holds other content and cannot be replaced by a link to
+this repository. Link the host binding instead, once:
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s ~/Developer/codex-skills/hosts/claude-code ~/.claude/skills/shared
+```
+
+[`hosts/claude-code`](hosts/claude-code) is a small plugin whose `skills` entry
+is a relative link back to the repository root. Claude Code loads it in place
+as a skills-directory plugin, so every skill, including one added later,
+appears after a restart as `shared:<skill>` (for example `shared:github`). The
+prefix keeps catalog skills apart from the host's own skills and commands of
+the same name; a skill that is also installed under its plain name keeps that
+plain name as well. `claude plugin list` shows the binding as
+`shared@skills-dir`, and `claude plugin details shared` lists the skills it
+found.
+
+The same install rule applies: inspect an existing destination first and do
+not replace a directory or link automatically. On invocation Claude Code gives
+the model the skill's base directory and the Markdown body only; frontmatter,
+including command-policy metadata, is not shown and is not enforced by that
+host.
+
 The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
 `$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
 `~/.agents/skills`-only installation. For that installation, verify and refresh
