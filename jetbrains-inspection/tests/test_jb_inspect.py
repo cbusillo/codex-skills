@@ -7732,6 +7732,13 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
             "internal_retries": [
                 {
                     "inspection_run_id": 47,
+                    "status": "stale_results",
+                    "verdict": "UNKNOWN",
+                    "bucket": "stale_results",
+                    "verdict_reason": "stale_results",
+                    "snapshot_change_kind": "project_changed_since_inspection",
+                    "stale_reasons": ["project_changed_since_inspection"],
+                    "wait_completion_reason": "stale_results",
                     "inspection_stage": "result_settling",
                     "inspection_run_elapsed_ms": 15_000,
                     "inspection_failure_diagnostic": first_failure,
@@ -7743,6 +7750,13 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
             [attempt["inspection_run_id"] for attempt in single_diagnostic["inspection_attempts"]],
             [47, 48],
         )
+        retried_attempt = single_diagnostic["inspection_attempts"][0]
+        self.assertEqual(retried_attempt["attempt_index"], 0)
+        self.assertEqual(retried_attempt["bucket"], "stale_results")
+        self.assertEqual(retried_attempt["verdict_reason"], "stale_results")
+        self.assertEqual(retried_attempt["stale_reasons"], ["project_changed_since_inspection"])
+        self.assertEqual(retried_attempt["snapshot_change_kind"], "project_changed_since_inspection")
+        self.assertIs(retried_attempt["retry"], True)
         self.assertEqual(
             single_diagnostic["inspection_attempts"][0]["inspection_failure_diagnostic"]["source"],
             "capture_deadline",

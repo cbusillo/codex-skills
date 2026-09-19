@@ -231,6 +231,20 @@ INSPECTION_STAGE_EVIDENCE_KEYS = (
     "inspection_failure_history",
 )
 INSPECTION_STAGE_RUN_ID_KEY = "inspection_stage_run_id"
+INSPECTION_ATTEMPT_SUMMARY_KEYS = (
+    "attempt_index",
+    "status",
+    "bucket",
+    "verdict",
+    "verdict_reason",
+    "retry",
+    "phase",
+    "proof_failures",
+    "wait_completion_reason",
+    "snapshot_change_kind",
+    "stale_reasons",
+    "capture_incomplete_reason",
+)
 INSPECTION_DIAGNOSTIC_CHILD_KEYS = (
     "inspection_failure",
     "wait",
@@ -7437,7 +7451,12 @@ def compact_inspection_attempt_diagnostics(payload: dict[str, Any]) -> list[dict
             "terminal": attempt.get("terminal"),
             **{
                 key: attempt.get(key)
-                for key in ("inspection_run_id", INSPECTION_STAGE_RUN_ID_KEY, *INSPECTION_STAGE_EVIDENCE_KEYS)
+                for key in (
+                    "inspection_run_id",
+                    INSPECTION_STAGE_RUN_ID_KEY,
+                    *INSPECTION_ATTEMPT_SUMMARY_KEYS,
+                    *INSPECTION_STAGE_EVIDENCE_KEYS,
+                )
                 if attempt.get(key) not in (None, {}, [])
             },
         }
@@ -7504,6 +7523,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
             "inspection_run_id": (lane.get("evidence_ids") or {}).get("inspection_run_id"),
             "inspection_outcome": lane.get("inspection_outcome"),
             "lifecycle_outcome": lane.get("lifecycle_outcome"),
+            "inspection_attempts": (lane.get("diagnostic") or {}).get("inspection_attempts"),
             **inspection_stage_diagnostics(
                 lane,
                 positive_run_id((lane.get("evidence_ids") or {}).get("inspection_run_id")),
