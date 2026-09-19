@@ -29,7 +29,7 @@
   outcomes.
 
   ```sh
-  uv run github/scripts/reconcile-runtime-checkout.py \
+  uv run skills/github/scripts/reconcile-runtime-checkout.py \
     --merged-worktree "$PWD" \
     --repo OWNER/REPO \
     --landing-sha <full-landing-sha>
