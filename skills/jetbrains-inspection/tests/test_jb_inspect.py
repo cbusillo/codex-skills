@@ -7495,6 +7495,34 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
         jb_inspect.apply_verdict(payload)
         return jb_inspect.compact_agent_result_payload(payload, jb_inspect.classify_run_exit(payload))
 
+    def test_stage_names_are_opaque_progress_labels_bounded_by_shape(self):
+        payload = {
+            "inspection_run_id": 41,
+            "inspection_stage": "stage_added_by_a_newer_plugin",
+            "inspection_stage_history": [
+                {"stage": "sync", "elapsed_ms": 10},
+                {"stage": "stage_added_by_a_newer_plugin", "elapsed_ms": 20},
+                {"stage": "Not A Label; rm -rf", "elapsed_ms": 30},
+                {"stage": "x" * 65, "elapsed_ms": 40},
+                {"stage": 7, "elapsed_ms": 50},
+            ],
+        }
+
+        diagnostic = jb_inspect.inspection_stage_diagnostics(payload)
+
+        self.assertEqual(diagnostic["inspection_stage"], "stage_added_by_a_newer_plugin")
+        self.assertEqual(
+            diagnostic["inspection_stage_history"],
+            [
+                {"stage": "sync", "elapsed_ms": 10},
+                {"stage": "stage_added_by_a_newer_plugin", "elapsed_ms": 20},
+            ],
+        )
+        self.assertNotIn(
+            "inspection_stage",
+            jb_inspect.inspection_stage_diagnostics({"inspection_run_id": 41, "inspection_stage": "Not A Label"}),
+        )
+
     def test_wait_command_carries_stage_and_primary_failure_into_agent_diagnostic(self):
         route = {"project_key": "path:/repo", "session_id": "session", "port": 63342}
         wait_body = {
