@@ -262,8 +262,11 @@ If the helpers are unavailable, use `gh` directly with body files and compact
 JSON reads. Do not fall back to repo docs or local plan files for durable
 GitHub-backed planning.
 
-The machine-readable `policy.command_policies` frontmatter owns common raw
-planning lookup, Project, and GraphQL-to-helper mappings. This prose keeps the
+The `policy.command_policies` block in this file's frontmatter owns the mapping
+from raw planning lookup, Project, and GraphQL commands to helpers. A host that
+does not show frontmatter enforces it when a command runs, and the block message
+names the replacement; read the top of this `SKILL.md` for the whole mapping.
+This prose keeps the
 judgment about when durable planning should exist, how issues relate, and what
 state belongs in GitHub.
 

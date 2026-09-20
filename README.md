@@ -57,8 +57,12 @@ Markdown body only; frontmatter, including command-policy metadata, is never
 shown. The plugin therefore ships a `PreToolUse` hook ([`hooks`](hooks)) that
 reads the same `policy.command_policies` frontmatter at run time, through the
 policy simulator, and blocks a matching shell command with the policy's message
-and preferred replacement. It splits compound lines and ignores leading
-environment assignments, adds about 0.15 s per shell command, needs `uv` on
+and preferred replacement. It splits compound lines and looks behind what an
+agent commonly puts in front of a tool: environment assignments, `command`,
+`exec`, `time`, `nohup`, `env`, `uv run`, a directory before the tool name, and
+one `bash -c '...'` wrapper. It is a guardrail for habits, not a security
+boundary; `xargs` and `sudo` are not unwrapped. It adds about 0.15 s per shell
+command, needs `uv` on
 `PATH`, and lets the command run if it cannot read the event or the policies. A
 policy change needs no regeneration step.
 
