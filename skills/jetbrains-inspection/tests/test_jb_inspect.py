@@ -13000,6 +13000,17 @@ class Issue458RegressionTest(unittest.TestCase):
                     self.assertIn("Do not repeat the failed assessment unchanged", action)
                     self.assertNotIn("then rerun inspection", action)
 
+    def test_missing_ide_route_recommends_recording_the_ide_in_repo_metadata(self):
+        for reason in ("ide_selection_required", "ide_config_ambiguous", "ide_config_missing"):
+            with self.subTest(reason=reason):
+                action = jb_inspect.next_action_for_unknown(reason, {})
+
+                self.assertIn(".github/github.json", action)
+                self.assertIn("qualityGate.inspection", action)
+                self.assertIn("--ide", action)
+                self.assertIn("ask before writing", action)
+                self.assertNotIn("include helper diagnostics", action)
+
     def test_configuration_blockers_keep_fallback_without_repository_preparation(self):
         language_action = jb_inspect.next_action_for_unknown("language_sdk_missing", {})
         content_root_action = jb_inspect.next_action_for_unknown(
