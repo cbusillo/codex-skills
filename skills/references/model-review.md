@@ -25,6 +25,10 @@ These points apply to a review you commission, not to one that already ran.
   Mention the harness only to explain how a run was invoked or a sandbox effect.
 - Give the reviewer the change, the paths to read, and what the change is for.
   Withhold the author's argument that it is right, and the expected answer.
+- Let the reviewer read the files with its own tools instead of pasting their
+  content into the prompt. Pasted content hides the neighboring files where
+  conflicts live, and fills the reviewer's context with text it cannot search.
+  If a reviewer cannot read files, fix its access or give it absolute paths.
 - Ask for a concrete, realistic way each problem would occur, and a severity.
   Let the reviewer answer "none". A prompt that demands a list gets one.
 

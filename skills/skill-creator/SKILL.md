@@ -148,6 +148,11 @@ language only for true invariants; use decision rules for judgment calls.
 
 You may use subagents during iteration to validate whether a skill works on realistic tasks or whether a suspected problem is real. This is most useful when you want an independent pass on the skill's behavior, outputs, or failure modes after a revision. Only do this when it is possible to start new subagents.
 
+When a skill change alters approval, safety, or destructive behavior, read
+[reviews by another model](../references/model-review.md) before merging it: it
+says when to ask a different provider's model for a review and how to weigh the
+findings without adding cases nobody can produce.
+
 When using subagents for validation, treat that as an evaluation surface. The goal is to learn whether the skill generalizes, not whether another agent can reconstruct the answer from leaked context.
 
 Prefer raw artifacts such as example prompts, outputs, diffs, logs, or traces. Give the minimum task-local context needed to perform the validation. Avoid passing the intended answer, suspected bug, intended fix, or your prior conclusions unless the validation explicitly requires them.

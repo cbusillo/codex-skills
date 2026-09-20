@@ -177,6 +177,9 @@ or pending checks explicit without copying large logs. Use
 - Narrow code change: run targeted tests/checks for touched behavior.
 - Shared contract, deployment, release, or security-sensitive change: run the
   broader repo gate and any required inspection/security checks.
+- Shared agent instructions, approval or safety rules, or a destructive helper:
+  nothing executable catches a mistake here, so also get a review by another
+  model and weigh it under `../references/model-review.md`.
 - Frontend/UI change: run browser validation in addition to build/type/test
   checks required by the repo.
 - Docker image change: prefer real image build/smoke/inspection over static
