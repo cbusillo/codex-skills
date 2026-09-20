@@ -52,7 +52,7 @@ commands:
         "run",
         "rollout-friction/scripts/analyze_rollouts.py",
         "--root",
-        "~/.code/sessions",
+        "<sessions-dir>",
       ]
     purpose: Analyze local rollout/session traces for workflow friction signals.
   - name: segment-rollout-episodes
@@ -120,7 +120,7 @@ commands:
         "run",
         "rollout-friction/scripts/extract_rollout_memory.py",
         "--root",
-        "~/.code/sessions",
+        "<sessions-dir>",
         "--trusted-originals",
         "--output-dir",
         ".local/rollout-memory/<run-id>",
@@ -234,7 +234,13 @@ rollout files, session traces, runout files, or agent workflow friction.
 ## Audit Workflow
 
 1. Identify the relevant trace sources. Prefer recent, scoped rollout/session
-   files over broad historical scans.
+   files over broad historical scans. Each host keeps its own: Codex writes
+   rollout files under its home's `sessions` folder, and Claude Code writes
+   transcripts under its `projects` folder. Ask for the location when it is not
+   evident; there is no default. The helpers classify tool outcomes from Codex
+   rollout records. Given another host's transcript they still report text
+   signals, but they cannot tell a failed command from a successful one, so say
+   that outcome evidence is unavailable instead of reporting that nothing failed.
 2. Run `uv run rollout-friction/scripts/analyze_rollouts.py` with explicit paths
    or an explicit bounded `--root`. For many recent files, write the paths to a
    newline- or NUL-delimited file and pass `--paths-file`; do not pass one
