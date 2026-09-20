@@ -2763,6 +2763,10 @@ def run_with_retry(
                 exhausted_reason=reason,
             )
 
+    # The loop only leaves by returning. PyCharm's flow analysis treats `continue` inside
+    # `while True` as able to fall through, and would otherwise infer an implicit None return.
+    raise AssertionError("run_with_retry left its retry loop without returning")
+
 
 # ---------------------------------------------------------------------------
 # Transport
