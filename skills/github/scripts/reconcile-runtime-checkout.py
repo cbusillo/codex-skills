@@ -123,36 +123,32 @@ def reconcile_runtime_checkout(
         }
     )
 
-    runtime_path, home_source = resolve_runtime_skills_path()
-    receipt["runtime_home_source"] = home_source
-    if not runtime_path.exists():
-        return finish(receipt, "not_applicable", "runtime_path_missing", applicable=False)
+    # Several hosts can bind this catalog. A binding qualifies when it is a worktree of the merged
+    # clone other than the merged worktree itself. A developer may also link a work-in-progress
+    # worktree for testing, so one already on the default branch is preferred over one that is not.
+    matches: list[tuple[Path, Path, str]] = []
+    checked: list[dict[str, str]] = []
+    for candidate, home_source, primary in runtime_skills_paths():
+        status, reason, candidate_root = inspect_binding(candidate, source_common_dir)
+        if candidate_root == source_root:
+            status, reason, candidate_root = "not_applicable", "binding_is_merged_worktree", None
+        checked.append({"source": home_source, "status": status, "reason_code": reason})
+        if candidate_root is not None:
+            matches.append((candidate, candidate_root, home_source))
+        elif status == "failed" and not primary:
+            # Another plugin's broken checkout under a host's skills folder is not this helper's failure.
+            checked[-1]["status"] = "not_applicable"
+    receipt["bindings_checked"] = checked
+    if not matches:
+        first = next((item for item in checked if item["status"] == "failed"), checked[0])
+        receipt["runtime_home_source"] = first["source"]
+        status = first["status"]
+        return finish(receipt, status, first["reason_code"], applicable=False if status == "not_applicable" else None)
 
-    try:
-        resolved_runtime_path = runtime_path.resolve(strict=True)
-    except OSError:
-        return finish(receipt, "failed", "runtime_path_unavailable")
-
-    runtime_root_result = run_git(
-        resolved_runtime_path,
-        "rev-parse",
-        "--show-toplevel",
-        check=False,
+    runtime_path, runtime_root, receipt["runtime_home_source"] = next(
+        (item for item in matches if current_branch(item[1]) == default_branch), matches[0]
     )
-    if runtime_root_result.returncode != 0:
-        stderr = runtime_root_result.stderr.decode(errors="replace")
-        if "not a git repository" in stderr.lower():
-            return finish(receipt, "not_applicable", "runtime_path_not_git", applicable=False)
-        return finish(receipt, "failed", "runtime_git_unavailable")
-
-    runtime_root = Path(runtime_root_result.stdout.decode().strip()).resolve()
-    try:
-        runtime_common_dir = git_common_dir(runtime_root)
-    except GitCommandError:
-        return finish(receipt, "failed", "runtime_git_unavailable")
-
-    if runtime_common_dir != source_common_dir:
-        return finish(receipt, "not_applicable", "runtime_repo_mismatch", applicable=False)
+    runtime_common_dir = source_common_dir  # a matching binding shares it by definition
 
     receipt["binding"] = "shared_git_common_dir"
     receipt["applicable"] = True
@@ -374,14 +370,50 @@ def finish(
     return receipt
 
 
-def resolve_runtime_skills_path() -> tuple[Path, str]:
-    code_home = os.environ.get("CODE_HOME")
-    if code_home:
-        return Path(code_home).expanduser() / "skills", "CODE_HOME"
-    codex_home = os.environ.get("CODEX_HOME")
-    if codex_home:
-        return Path(codex_home).expanduser() / "skills", "CODEX_HOME"
-    return Path.home() / ".code" / "skills", "HOME/.code"
+def runtime_skills_paths() -> list[tuple[Path, str, bool]]:
+    """Each place a supported host binds the catalog, its label, and whether it is a primary binding.
+
+    Primary bindings are the ones this helper has always owned; a failure inspecting one is reported.
+    Entries under Claude Code's skills folder can be anyone's plugin, so a failure there is skipped.
+    """
+    paths: list[tuple[Path, str, bool]] = []
+    for variable in ("CODE_HOME", "CODEX_HOME"):
+        if os.environ.get(variable):
+            paths.append((Path(os.environ[variable]).expanduser() / "skills", variable, True))
+    paths.append((Path.home() / ".code" / "skills", "HOME/.code", True))
+    # Claude Code loads a catalog linked under its skills folder by any name the user chose.
+    claude_config = os.environ.get("CLAUDE_CONFIG_DIR")
+    claude_skills = (Path(claude_config).expanduser() if claude_config else Path.home() / ".claude") / "skills"
+    source = "CLAUDE_CONFIG_DIR" if claude_config else "HOME/.claude"
+    try:
+        entries = sorted(entry for entry in claude_skills.iterdir() if entry.is_dir())
+    except OSError:
+        entries = []
+    paths.extend((entry, f"{source}/skills/{entry.name}", False) for entry in entries)
+    return paths
+
+
+def inspect_binding(runtime_path: Path, source_common_dir: Path) -> tuple[str, str, Path | None]:
+    """Status and reason for a binding, and its checkout root when it belongs to the merged repository."""
+    if not runtime_path.exists():
+        return "not_applicable", "runtime_path_missing", None
+    try:
+        resolved_runtime_path = runtime_path.resolve(strict=True)
+    except OSError:
+        return "failed", "runtime_path_unavailable", None
+    runtime_root_result = run_git(resolved_runtime_path, "rev-parse", "--show-toplevel", check=False)
+    if runtime_root_result.returncode != 0:
+        stderr = runtime_root_result.stderr.decode(errors="replace")
+        if "not a git repository" in stderr.lower():
+            return "not_applicable", "runtime_path_not_git", None
+        return "failed", "runtime_git_unavailable", None
+    runtime_root = Path(runtime_root_result.stdout.decode().strip()).resolve()
+    try:
+        if git_common_dir(runtime_root) != source_common_dir:
+            return "not_applicable", "runtime_repo_mismatch", None
+    except GitCommandError:
+        return "failed", "runtime_git_unavailable", None
+    return "synchronized", "binding_matches", runtime_root
 
 
 def repository_from_remote_url(remote_url: str) -> str:

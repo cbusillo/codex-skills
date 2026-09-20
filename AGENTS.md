@@ -22,7 +22,7 @@
 ## Runtime Checkout Discipline
 
 - Resolve the active skills directory with `CODE_HOME`, then `CODEX_HOME`, then
-  `~/.code`. If its `skills` path resolves into this repository, that exact
+  `~/.code`, then any catalog linked under Claude Code's `skills` folder. If one of those resolves into this repository, that exact
   worktree is a runtime checkout, not a development checkout.
 - Keep the runtime checkout clean, on the repository default branch, and current
   with its remote. Perform implementation work in focused linked worktrees.

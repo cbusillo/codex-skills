@@ -479,8 +479,9 @@ Merge success is not the finish line. After a PR merges, wait for relevant
 post-merge Actions/check suites on the target/default branch when repo config
 says to or when the task affects readiness, deploy, security, or shared quality.
 
-When the merged repository is bound into an active local runtime such as the
-skills checkout behind `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills`, run the
+When the merged repository is bound into an active local runtime, such as a
+skills checkout behind `$CODE_HOME/skills`, `$CODEX_HOME/skills`,
+`~/.code/skills`, or a link under Claude Code's `skills` folder, run the
 landed repo-local runtime reconciler after the final landing SHA is known. Use
 the merge result's `merge.sha` or a fresh merged-PR view's `mergeCommitOid`,
 never the PR head SHA:
@@ -497,8 +498,9 @@ runtime checkout. Preserve two independent receipts: the remote merge/landing
 result and local runtime reconciliation. `blocked`, `retryable`, or `failed`
 runtime reconciliation does not undo the merge and must not trigger another
 merge attempt. It does block claims that installed runtime behavior or
-provenance-sensitive evidence is current. `not_applicable` is normal when the
-active runtime belongs to another repository.
+provenance-sensitive evidence is current. `not_applicable` is normal when no
+host binding is a worktree of the merged clone; `bindings_checked` shows what was
+looked at.
 
 Before evaluating or executing a local default-branch refresh, read
 [post-merge checkouts](post-merge-checkouts.md). Runtime-bound checkouts use only

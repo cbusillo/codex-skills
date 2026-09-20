@@ -47,6 +47,7 @@ class RuntimeFixture:
         env = os.environ.copy()
         env["CODE_HOME"] = str(code_home or self.code_home)
         env["CODEX_HOME"] = str(self.code_home.parent / "ignored-codex-home")
+        env["CLAUDE_CONFIG_DIR"] = str(self.code_home.parent / "no-claude-config")
         env.update(extra_env or {})
         proc = subprocess.run(
             [
@@ -457,6 +458,91 @@ def test_reconcile_skips_unrelated_runtime_binding(tmp_path: Path) -> None:
     assert receipt["status"] == "not_applicable"
     assert receipt["reason_code"] == "runtime_repo_mismatch"
     assert receipt["applicable"] is False
+
+
+def build_unrelated_repository(tmp_path: Path) -> Path:
+    unrelated = tmp_path / "unrelated"
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(unrelated)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    configure_git(unrelated)
+    commit_file(unrelated, "unrelated.txt", "unrelated\n", "unrelated")
+    return unrelated
+
+
+def test_reconcile_finds_a_claude_code_binding_when_no_codex_home_exists(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    unrelated = build_unrelated_repository(tmp_path)
+    # The user chose the link's name, and another plugin sits beside it.
+    claude_skills = tmp_path / "claude-config" / "skills"
+    claude_skills.mkdir(parents=True)
+    (claude_skills / "a-different-plugin").symlink_to(unrelated, target_is_directory=True)
+    (claude_skills / "team-catalog").symlink_to(fixture.runtime, target_is_directory=True)
+
+    proc, receipt = fixture.run(
+        code_home=tmp_path / "no-such-code-home",
+        extra_env={"CLAUDE_CONFIG_DIR": str(claude_skills.parent)},
+    )
+
+    assert proc.returncode == 0
+    assert receipt["status"] == "synchronized"
+    assert receipt["runtime_home_source"] == "CLAUDE_CONFIG_DIR/skills/team-catalog"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
+def test_reconcile_reports_the_primary_binding_when_no_host_binds_this_repository(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+
+    proc, receipt = fixture.run(code_home=tmp_path / "no-such-code-home")
+
+    assert proc.returncode == 0
+    assert (receipt["status"], receipt["reason_code"]) == ("not_applicable", "runtime_path_missing")
+    assert receipt["runtime_home_source"] == "CODE_HOME"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_reconcile_falls_through_codex_bindings_that_belong_to_another_repository(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    unrelated = build_unrelated_repository(tmp_path)
+    other_home = tmp_path / "other-code-home"
+    other_home.mkdir()
+    (other_home / "skills").symlink_to(unrelated, target_is_directory=True)
+
+    # CODE_HOME points at another catalog; this repository is bound through CODEX_HOME.
+    proc, receipt = fixture.run(code_home=other_home, extra_env={"CODEX_HOME": str(fixture.code_home)})
+
+    assert proc.returncode == 0
+    assert (receipt["status"], receipt["runtime_home_source"]) == ("synchronized", "CODEX_HOME")
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
+def test_reconcile_prefers_the_install_over_a_linked_work_in_progress_worktree(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    wip = tmp_path / "wip"
+    git(fixture.runtime, "worktree", "add", "-b", "feature/wip", str(wip))
+    broken = tmp_path / "claude-config" / "skills" / "broken-plugin"
+    broken.mkdir(parents=True)
+    (broken / ".git").write_text("not a gitfile\n")
+    # Sorted first, on a feature branch, and sharing the clone: it must not shadow or block the install.
+    (broken.parent / "a-wip").symlink_to(wip, target_is_directory=True)
+    (broken.parent / "team-catalog").symlink_to(fixture.runtime, target_is_directory=True)
+
+    proc, receipt = fixture.run(
+        code_home=tmp_path / "no-such-code-home",
+        extra_env={"CLAUDE_CONFIG_DIR": str(broken.parent.parent)},
+    )
+
+    assert proc.returncode == 0
+    assert (receipt["status"], receipt["runtime_home_source"]) == ("synchronized", "CLAUDE_CONFIG_DIR/skills/team-catalog")
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+    # Another plugin's unreadable checkout is recorded, not reported as this helper's failure.
+    checked = receipt["bindings_checked"]
+    assert isinstance(checked, list)
+    statuses = {item["source"]: item["status"] for item in checked}
+    assert statuses["CLAUDE_CONFIG_DIR/skills/broken-plugin"] == "not_applicable"
 
 
 if __name__ == "__main__":

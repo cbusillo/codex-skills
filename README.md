@@ -76,8 +76,12 @@ skills link as `../references/...` live in `skills/references`. Repository
 tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.
 
-The repository's runtime reconciler currently resolves `$CODE_HOME/skills`, then
-`$CODEX_HOME/skills`, then `~/.code/skills`; it does not discover an
+The repository's runtime reconciler checks `$CODE_HOME/skills`, then
+`$CODEX_HOME/skills`, then `~/.code/skills`, then each entry under Claude Code's
+`skills` folder (`$CLAUDE_CONFIG_DIR` or `~/.claude`). It acts on one that is a
+worktree of the same clone as the merged worktree, preferring one already on
+the default branch, and lists every binding it looked at in the receipt's
+`bindings_checked`. A separate clone is not matched. It does not discover an
 `~/.agents/skills`-only installation. For that installation, verify and refresh
 the clean default-branch checkout through the normal GitHub post-merge checkout
 workflow. A reconciler `not_applicable` result does not prove it is current.
