@@ -65,8 +65,11 @@ Babysit a PR persistently until one of these terminal outcomes occurs:
 Do not stop merely because a single snapshot returns `idle` while checks are still pending.
 
 This skill never merges a PR. Merge execution belongs to the `github` skill and
-requires explicit user approval plus a fresh PR/readiness check. If the watcher
-reports `ready_to_merge`, read that as `ready_for_merge_decision`.
+requires merge authorization as defined in `../references/execution-scope.md`
+plus a fresh PR/readiness check. If the watcher
+reports `ready_to_merge`, read that as `ready_for_merge_decision`. When that
+authorization already exists, hand the merge to `github` without asking again,
+then keep watching until the merge or closure is confirmed.
 
 Before reporting an unconditional ready, merged, or closed all-clear, run
 `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`;
