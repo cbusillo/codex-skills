@@ -79,7 +79,9 @@ $CODE_HOME/skills/.local/people/<person-id>.md
 ```
 
 When `CODE_HOME` is unset, helpers fall back to `$CODEX_HOME` and then
-`~/.code`. Repo-local people data is an overlay for project-specific contacts,
+`~/.code`. On a machine with none of those, such as one that installs the
+catalog only through another host, they use `.local/` inside the catalog the
+helper ships in. Repo-local people data is an overlay for project-specific contacts,
 client-only context, or intentional overrides:
 
 ```text

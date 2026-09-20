@@ -64,6 +64,10 @@ def default_code_home() -> tuple[Path, str]:
 
 def default_global_index() -> tuple[Path, str]:
     home, label = default_code_home()
+    if label == "~/.code" and not (home / "skills").exists():
+        # No Codex-family binding on this machine. Private state lives in the catalog this helper ships in,
+        # which a host such as Claude Code links from somewhere else entirely.
+        return ROOT / ".local" / "people.yaml", "catalog"
     return home / "skills" / ".local" / "people.yaml", label
 
 

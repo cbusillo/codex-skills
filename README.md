@@ -71,7 +71,16 @@ policy change needs no regeneration step.
 Hosts bind to the catalog, not to the repository: a Codex-family `skills` path
 resolves to `<checkout>/skills`. Private, ignored local state that helpers
 resolve through `$CODE_HOME/skills/.local` (then `$CODEX_HOME`, then `~/.code`)
-therefore lives at `<checkout>/skills/.local`. Shared references that several
+therefore lives at `<checkout>/skills/.local`. On a machine with no
+Codex-family binding, such as one that installs only through Claude Code, the
+helpers that read that state find it relative to themselves, so nothing needs
+setting.
+
+Configuration and caches outside the catalog (`local.env`, `state/`) use one
+order everywhere: `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`. Those are
+only directory names and work on any host. One helper also reads an optional
+`github-planning.json` from `~/.codex` when `~/.code` holds neither skills nor
+plans, so that a stock Codex home keeps working. Shared references that several
 skills link as `../references/...` live in `skills/references`. Repository
 tooling (`scripts/`, `.github/`) stays at the root and is not part of an
 install.

@@ -58,10 +58,22 @@ def public(value):
     return value
 
 
+def skills_runtime_paths() -> list[str]:
+    """Every place a supported host binds the catalog; the reconciler checks the same ones."""
+    homes = [os.environ.get("CODE_HOME"), os.environ.get("CODEX_HOME"), "~/.code"]
+    paths = [absolute(home) + "/skills" for home in homes if home]
+    # Claude Code loads a catalog linked under its skills folder by any name the user chose.
+    claude_skills = absolute(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude") + "/skills"
+    try:
+        paths.extend(entry.path for entry in os.scandir(claude_skills) if entry.is_dir())
+    except OSError:
+        pass
+    return sorted({os.path.realpath(path) for path in paths})
+
+
 def bindings(preserved: list[str]) -> list[dict]:
-    code_home = os.environ.get("CODE_HOME") or os.environ.get("CODEX_HOME") or "~/.code"
-    result = [{"kind": "active_cwd", "path": os.path.realpath(os.getcwd())},
-              {"kind": "skills_runtime", "path": os.path.realpath(absolute(code_home) + "/skills")}]
+    result = [{"kind": "active_cwd", "path": os.path.realpath(os.getcwd())}]
+    result.extend({"kind": "skills_runtime", "path": path} for path in skills_runtime_paths())
     result.extend({"kind": "explicit_preserve", "path": os.path.realpath(absolute(path))} for path in preserved)
     # Other installed apps, IDEs, agents and shared caches may have bindings we cannot observe.
     return result
