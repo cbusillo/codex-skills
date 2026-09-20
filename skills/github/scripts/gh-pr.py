@@ -1209,7 +1209,21 @@ def delete_ref(repo: str, ref: str) -> dict[str, Any]:
         bucket="rest_core",
         reconcile=reconcile_delete,
     )
-    if not result.ok and result.failure and result.failure.cause == "not_found":
+    already_absent = bool(not result.ok and result.failure and result.failure.cause == "not_found")
+    if not result.ok and result.status == 422 and not already_absent:
+        # GitHub answers a delete of a missing ref with 422, not 404, for example after its own
+        # auto-delete of a merged branch. Confirm by reading the ref rather than trusting the message.
+        ref_check = github_api_core.call_gh_with_retry(
+            "GET",
+            f"/repos/{repo}/git/ref/{ref}",
+            gh_cmd=GH,
+            operation=operation,
+            expected_actor=EXPECTED_ACTOR,
+            bucket="rest_core",
+            is_write=False,
+        )
+        already_absent = bool(not ref_check.ok and ref_check.failure and ref_check.failure.cause == "not_found")
+    if already_absent:
         result.ok = True
         result.status = 204
         result.body = {"ref": ref, "deleted": True}
@@ -1225,7 +1239,7 @@ def delete_ref(repo: str, ref: str) -> dict[str, Any]:
             }
             result.retry_summary.recommended_next_action = "none"
             result.retry_summary.exhausted_reason = None
-    deleted = {"ref": ref, "deleted": result.ok, "stderr": ""}
+    deleted: dict[str, Any] = {"ref": ref, "deleted": result.ok, "already_absent": already_absent, "stderr": ""}
     if not result.ok:
         deleted["stderr"] = result.failure.message if result.failure else "GitHub API request failed"
         deleted["api_result"] = result.as_dict()

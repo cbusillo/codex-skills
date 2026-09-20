@@ -187,7 +187,10 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py merge <pr> --method merge`: Merge a PR. The expected head
   SHA guards retries; an unknown response is reconciled by re-reading the PR,
   recovering only a trustworthy final merge SHA and failing closed on head
-  drift or ambiguous state.
+  drift or ambiguous state. Read the merge itself from `merge.sha`; the
+  top-level `outcome_certainty` summarizes every step, including an optional
+  `--delete-branch`. A branch GitHub had already removed is reported as
+  `deleted: true` with `already_absent: true`, not as a failed delete.
 - `scripts/gh-pr.py supersede <pr> --by <canonical-pr>`: Comment on a
   superseded PR, rewrite issue-closing keywords to `Refs`, and close it unless
   `--keep-open` is supplied. Add `--delete-branch` to delete the stale same-repo

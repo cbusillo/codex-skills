@@ -5188,7 +5188,12 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
     payload = json.loads(result.stdout)
     assert payload["bodyUpdated"] is True, payload
     assert payload["closed"] is True, payload
-    assert payload["deletedBranch"] == {"deleted": True, "ref": "heads/old-topic", "stderr": ""}, payload
+    assert payload["deletedBranch"] == {
+        "already_absent": False,
+        "deleted": True,
+        "ref": "heads/old-topic",
+        "stderr": "",
+    }, payload
     assert payload["commentUrl"].endswith("#issuecomment-1"), payload
     assert payload["neutralizedClosingReferences"] == [
         {"from": "Resolves https://github.com/owner/repo/issues/146", "to": "Refs owner/repo#146"},
@@ -5409,6 +5414,78 @@ def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None
             "stderr": "gh: Forbidden (HTTP 403)",
         }
     ], payload
+
+
+def delete_ref_with_fake_responses(delete_status: int, delete_cause: str, probe_found: bool) -> tuple[Any, dict[str, Any], list[tuple[str, str]]]:
+    pr = load_pr_module()
+    calls: list[tuple[str, str]] = []
+    original_call = pr.github_api_core.call_gh
+    original_policy = pr.github_api_core.default_retry_policy
+
+    def response(kwargs: dict[str, Any], *, ok: bool, status: int, cause: str | None, write_outcome: str | None) -> Any:
+        failure = None if ok else pr.github_api_core.FailureDetail(
+            cause=cause or "unknown",
+            message="fixture",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome=write_outcome,
+        )
+        return pr.github_api_core.ApiResult(
+            ok=ok,
+            status=status,
+            body=None,
+            operation=kwargs.get("operation"),
+            actor="octocat",
+            expected_actor=None,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+            failure=failure,
+        )
+
+    def fake_call(method: str, path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append((method, path))
+        if method == "DELETE":
+            return response(kwargs, ok=False, status=delete_status, cause=delete_cause, write_outcome="rejected")
+        if probe_found:
+            return response(kwargs, ok=True, status=200, cause=None, write_outcome=None)
+        return response(kwargs, ok=False, status=404, cause="not_found", write_outcome=None)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pr.github_api_core.call_gh = fake_call
+        pr.github_api_core.default_retry_policy = lambda: pr.github_api_core.RetryPolicy(
+            max_wait_seconds=10.0,
+            max_attempts=2,
+            base_backoff_seconds=0.0,
+            max_backoff_seconds=0.0,
+            jitter_seconds=0.0,
+            state_dir=Path(temp_dir),
+        )
+        try:
+            payload = pr.delete_ref("owner/repo", "heads/topic")
+        finally:
+            pr.github_api_core.call_gh = original_call
+            pr.github_api_core.default_retry_policy = original_policy
+    return pr, payload, calls
+
+
+def test_delete_ref_treats_a_branch_github_already_removed_as_done() -> None:
+    # GitHub answers a delete of a missing ref with 422, as after its own auto-delete of a merged branch.
+    pr, payload, calls = delete_ref_with_fake_responses(422, "validation_error", probe_found=False)
+    assert payload["deleted"] is True and payload["already_absent"] is True, payload
+    assert calls == [
+        ("DELETE", "/repos/owner/repo/git/refs/heads/topic"),
+        ("GET", "/repos/owner/repo/git/ref/heads/topic"),
+    ], calls
+    assert pr.CURRENT_RETRY_FIELDS["outcome_certainty"] == "reconciled_applied", pr.CURRENT_RETRY_FIELDS
+    assert pr.CURRENT_RETRY_FIELDS["reconciliation"]["state"] == "absent", pr.CURRENT_RETRY_FIELDS
+
+
+def test_delete_ref_keeps_a_rejected_delete_failed_when_the_branch_still_exists() -> None:
+    _pr, payload, calls = delete_ref_with_fake_responses(422, "validation_error", probe_found=True)
+    assert payload["deleted"] is False and payload["already_absent"] is False, payload
+    assert [method for method, _path in calls] == ["DELETE", "GET"], calls
+    assert payload["api_result"]["ok"] is False, payload
 
 
 def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
@@ -6173,6 +6250,8 @@ def main() -> None:
         test_pr_helper_list_paginates_only_when_limit_exceeds_one_page,
         test_pr_helper_delete_branch_uses_rest_ref_delete,
         test_delete_ref_reconciles_unknown_outcome,
+        test_delete_ref_treats_a_branch_github_already_removed_as_done,
+        test_delete_ref_keeps_a_rejected_delete_failed_when_the_branch_still_exists,
         test_merge_reconciles_accepted_unknown_outcome_to_final_sha,
         test_merge_reconciliation_rejects_head_drift,
         test_merge_identity_reread_rejects_head_drift,
