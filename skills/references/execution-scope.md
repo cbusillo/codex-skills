@@ -10,6 +10,14 @@ Apply these rules when using the repository execution skills that link here.
   already present. Fresh readiness checks do not by themselves require renewed
   user approval. Preserve narrower requirements such as approval of an exact
   comment, production target, release, plan digest, or immediate device restart.
+- For a merge, the scope is the change the user approved, not a pull request
+  number. Approval of an approach, or an instruction to carry work through,
+  covers merging the pull request that delivers that change once its required
+  checks, review state, and human-comment gate are clear. A standing grant, such
+  as merge approval for the session, covers later pull requests in the same
+  workstream until the user narrows it. Ask again when the delivered change
+  materially exceeds what was approved, a required gate is failing or
+  unavailable, or the merge would also release, deploy, or change production.
 - A skill match is not authorization to expand the task. A read-only assessment
   remains read-only; a readiness check does not itself authorize a merge, release,
   deployment, cleanup, or message to another person.
