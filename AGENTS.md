@@ -5,6 +5,9 @@
 - Use [references/execution-scope.md](skills/references/execution-scope.md) when
   changing execution guidance. Preserve intentional approval, quality,
   delegation, and output-format policies.
+- Before merging a change to execution guidance, approval or safety rules, or
+  a destructive helper, get a review by another model and weigh it as described
+  in [references/model-review.md](skills/references/model-review.md).
 - Maintain the top-level skill sources. The allowlisted system overrides are
   documented in [README.md](README.md#system-skill-overrides); generated
   `.system` caches and installed plugin caches are not development targets.
