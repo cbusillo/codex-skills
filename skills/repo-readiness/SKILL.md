@@ -67,8 +67,7 @@ inspection, browser, CI, deployment, or security gates.
    as optional readiness context for the active repo/branch/PR:
 
    ```bash
-   skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
-   uv run "$skills_home/launchplane/scripts/launchplane-context.py" --repo OWNER/REPO
+   uv run <skill-dir>/../launchplane/scripts/launchplane-context.py --repo OWNER/REPO
    ```
 
    Use `available` context only as a hint for product mapping, preview readiness,

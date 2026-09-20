@@ -116,7 +116,7 @@ def runnable(token: str, skill: str) -> str:
         candidates = [CATALOG / skill / token, CATALOG / token]
     else:
         return token
-    return next((str(path) for path in candidates if path.is_file()), token)
+    return next((str(path.resolve()) for path in candidates if path.is_file()), token)
 
 
 def describe(policy: dict[str, Any], skill: str) -> str:

@@ -1006,7 +1006,8 @@ def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
     ).lower()
 
     require(
-        close_argv[:3] == ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py"],
+        close_argv[:2] == ["uv", "run"]
+        and (ROOT / "github-plan" / str(close_argv[2])).resolve() == (ROOT / "github" / "scripts" / "gh-plan.py").resolve(),
         "github-plan close command metadata must invoke gh-plan.py through uv",
     )
     require(
@@ -1043,7 +1044,7 @@ def test_github_plan_prefers_plan_close_for_completed_plans() -> None:
     )
     require(
         "if the target is a completed durable plan issue, switch to `github-plan`" in normalized_github
-        and "uv run $code_home/skills/github/scripts/gh-plan.py close 123 --comment-file comment.md" in normalized_github,
+        and "gh-plan.py close 123 --comment-file comment.md" in normalized_github,
         "github raw issue close policy must mention the durable-plan exception without owning it",
     )
     require(

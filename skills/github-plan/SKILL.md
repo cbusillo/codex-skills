@@ -6,51 +6,51 @@ metadata:
 commands:
   - name: github-plan-index
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
     purpose: Lists durable planning issues through paged REST reads with compact status, label, and milestone fields.
   - name: github-plan-search
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "search", "<query>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
     purpose: Searches planning issues with normalized compact output.
   - name: github-plan-create
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
     purpose: Creates a durable plan issue with helper-owned labels and Project fields.
   - name: github-plan-update-section
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
     purpose: Updates one markdown section of a planning issue safely.
   - name: github-plan-project-set
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
     purpose: Updates configured Project fields through the planning helper.
   - name: github-plan-close
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "close", "<issue>", "--comment-file", "<file>"]
     purpose: Closes a completed or explicitly not-planned durable plan through relationship preflight and recoverable metadata reconciliation.
   - name: github-plan-next
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "next", "--limit", "5"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "next", "--limit", "5"]
     purpose: Ranks actionable plans from native blockers, plan state, Project Focus, sub-issues, and milestone context without mutating planning state.
   - name: github-plan-milestone-list
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
     purpose: Lists repository milestones with bounded pagination and normalized due dates and issue counts.
   - name: github-plan-milestone-show
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-show", "<number-or-exact-title>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-show", "<number-or-exact-title>"]
     purpose: Shows one milestone by number or exact title through the shared REST helper.
   - name: github-plan-milestone-create
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-create", "<title>", "--due-on", "YYYY-MM-DD"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-create", "<title>", "--due-on", "YYYY-MM-DD"]
     purpose: Creates an exact-title-idempotent milestone with actor-aware, conflict-safe writes.
   - name: github-plan-milestone-update
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-update", "<number-or-exact-title>", "--state", "open"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-update", "<number-or-exact-title>", "--state", "open"]
     purpose: Updates milestone metadata or reopens a milestone; closing is intentionally refused here.
   - name: github-plan-milestone-close
     source: repo
-    example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-close", "<number-or-exact-title>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-close", "<number-or-exact-title>"]
     purpose: Closes a milestone only when no open issue or pull request remains assigned.
 policy:
   command_policies:
@@ -62,7 +62,7 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "index"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
           purpose: Lists durable planning issues with compact status, label, and milestone fields while excluding pull requests.
     - id: prefer-gh-plan-search-for-issue-search
       match:
@@ -72,7 +72,7 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "search", "<query>"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
           purpose: Searches planning issues with compact normalized output and state handling.
     - id: prefer-gh-plan-helper-for-project-commands
       match:
@@ -82,15 +82,15 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-list", "--owner", "<owner>"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-list", "--owner", "<owner>"]
           purpose: Lists configured Projects with compact JSON.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-add", "<issue>"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-add", "<issue>"]
           purpose: Adds a planning issue to the configured Project.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Now"]
           purpose: Updates planning Project fields through configured names and values.
     - id: prefer-gh-plan-helper-for-planning-graphql
       match:
@@ -100,11 +100,11 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "project-set", "<issue>", "--focus", "Next"]
           purpose: Updates Project fields with helper-owned config and rate-limit handling.
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "link", "<issue>", "blocked-by", "<target>"]
           purpose: Creates native planning relationships through the helper.
     - id: prefer-gh-plan-helper-for-milestone-commands
       match:
@@ -114,7 +114,7 @@ policy:
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
-          example_argv: ["uv", "run", "$CODE_HOME/skills/github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
           purpose: Lists, shows, creates, updates, and guarded-closes milestones through the maintained REST helper.
 ---
 
@@ -250,12 +250,11 @@ Reuse the sibling `github` skill's helpers instead of duplicating scripts:
 - `../github/references/issue-templates.md` and
   `../github/references/github-projects.md` for issue shape and Project fields.
 
-When running these helpers from a client repository, resolve the installed
-skills directory first and invoke Python helpers with `uv run`:
+Run these helpers from the client repository, which is how they find the
+repository, and name them through this skill's base directory. `<skill-dir>` is this skill's base directory, the folder that holds this `SKILL.md`; your host shows it when the skill loads.
 
 ```bash
-skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
-uv run "$skills_home/github/scripts/gh-plan.py" index
+uv run <skill-dir>/../github/scripts/gh-plan.py index
 ```
 
 If the helpers are unavailable, use `gh` directly with body files and compact
@@ -282,8 +281,7 @@ Any attention result or degraded coverage requires a response
 or explicit handoff; a bot response never proves owner acknowledgement.
 
 ```bash
-skills_home="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills"
-uv run "$skills_home/github/scripts/gh-plan.py" close <issue> --comment-file <file>
+uv run <skill-dir>/../github/scripts/gh-plan.py close <issue> --comment-file <file>
 ```
 
 The generic `github/scripts/gh-issue close` helper is for non-plan issues, or as
