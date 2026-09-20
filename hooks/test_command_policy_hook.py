@@ -26,7 +26,7 @@ SIMULATOR = command_policy_hook.load_simulator()
 
 def run_hook(payload: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(HOOK)], input=payload, capture_output=True, text=True, check=False
+        [sys.executable, str(HOOK)], input=payload, capture_output=True, text=True
     )
 
 
@@ -104,6 +104,31 @@ class CommandPolicyHookTests(unittest.TestCase):
         for token in ("<query>", "--body-file", "uv", "/path/to/repo", "$HOME/x/y.py", "missing/script.py"):
             with self.subTest(token=token):
                 self.assertEqual(command_policy_hook.runnable(token, "github-plan"), token)
+
+    def test_a_policy_command_is_found_behind_what_agents_put_in_front_of_it(self) -> None:
+        entry = next(e for e in SIMULATOR.policy_catalog() if "argv_prefix" in e["match"])
+        prefix = [str(token) for token in entry["match"]["argv_prefix"]]
+        command = shlex.join(prefix)
+        tool, rest = prefix[0], shlex.join(prefix[1:])
+        for line in (
+            f"command {command} 5",
+            f"exec {command} 5",
+            f"time {command} 5",
+            f"uv run --quiet {command} 5",
+            f"env -i FOO=1 {command} 5",
+            f"FOO=1 command /opt/homebrew/bin/{tool} {rest} 5",
+            f"bash -lc {shlex.quote(f'cd /tmp && {command} 5')}",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
+    def test_unwrapping_does_not_block_what_no_policy_names(self) -> None:
+        entry = next(e for e in SIMULATOR.policy_catalog() if "argv_prefix" in e["match"])
+        command = shlex.join(str(token) for token in entry["match"]["argv_prefix"])
+        # The last two are wrappers the hook deliberately does not unwrap; see its docstring.
+        for line in ("env", "uv run", "bash -c 'git status'", f"echo {command}", f"xargs {command}", f"sudo {command}"):
+            with self.subTest(line=line):
+                self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
 
     def test_other_tools_and_unreadable_events_are_let_through(self) -> None:
         self.assertEqual(run_hook(json.dumps({"tool_name": "Read", "tool_input": {}})).returncode, 0)
