@@ -363,7 +363,6 @@ def run_raw(
     input_text: str | None = None,
     check: bool = True,
     prefer_active: bool = False,
-    recoverable: bool = False,
     operation: str | None = None,
     is_write: bool | None = None,
     bucket: str | None = None,
@@ -680,7 +679,6 @@ def ensure_graphql_budget(
             actor, data = gh_json(
                 ["api", *API_VERSION_ARGS, "rate_limit"],
                 prefer_active=prefer_active,
-                recoverable=recoverable,
             )
         except PlanError as exc:
             if isinstance(exc, ClassifiedPlanError):
@@ -778,7 +776,6 @@ def gh_json(
     *,
     input_text: str | None = None,
     prefer_active: bool = False,
-    recoverable: bool = False,
     operation: str | None = None,
     is_write: bool | None = None,
     bucket: str | None = None,
@@ -788,7 +785,6 @@ def gh_json(
         args,
         input_text=input_text,
         prefer_active=prefer_active,
-        recoverable=recoverable,
         operation=operation,
         is_write=is_write,
         bucket=bucket,
@@ -1953,7 +1949,7 @@ def cmd_create(args: argparse.Namespace) -> None:
             _, number, _ = resolve_project(owner, project, recoverable=True)
             project_steps.append("resolve_project")
             ensure_graphql_budget(prefer_active=True, recoverable=True)
-            _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue_url, "--format", "json"], prefer_active=True, recoverable=True)
+            _, added_stdout, _ = run_raw(["project", "item-add", str(number), "--owner", owner, "--url", issue_url, "--format", "json"], prefer_active=True)
             project_steps.append("add_project_item")
             added_item = json.loads(added_stdout) if added_stdout.strip() else {}
             added_item_id = added_item.get("id") if isinstance(added_item, dict) else None
@@ -2488,7 +2484,6 @@ def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = Fal
     actor, data = gh_json(
         ["project", "list", "--owner", owner, "--format", "json", "--limit", "100"],
         prefer_active=True,
-        recoverable=recoverable,
     )
     projects = data.get("projects", data) if isinstance(data, dict) else data
     for item in projects or []:
@@ -2508,7 +2503,7 @@ def project_meta(owner: str, title_or_number: str, *, recoverable: bool = False)
     if cache_key in PROJECT_CACHE and PROJECT_CACHE[cache_key][2]:
         return PROJECT_CACHE[cache_key]
     ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
-    actor, data = gh_json(["project", "view", str(number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
+    actor, data = gh_json(["project", "view", str(number), "--owner", owner, "--format", "json"], prefer_active=True)
     PROJECT_CACHE[cache_key] = (actor, number, data)
     return actor, number, data
 
@@ -2518,7 +2513,7 @@ def project_fields(owner: str, project_number: int, *, recoverable: bool = False
     if cache_key in PROJECT_CACHE:
         return PROJECT_CACHE[cache_key]
     ensure_graphql_budget(prefer_active=True, recoverable=recoverable)
-    _, data = gh_json(["project", "field-list", str(project_number), "--owner", owner, "--format", "json"], prefer_active=True, recoverable=recoverable)
+    _, data = gh_json(["project", "field-list", str(project_number), "--owner", owner, "--format", "json"], prefer_active=True)
     fields = {item["name"]: item for item in data.get("fields", [])}
     PROJECT_CACHE[cache_key] = fields
     return fields
@@ -2549,7 +2544,7 @@ def project_items(
     ]
     if query:
         args.extend(["--query", query])
-    _, data = gh_json(args, prefer_active=True, recoverable=recoverable)
+    _, data = gh_json(args, prefer_active=True)
     items = data.get("items", [])
     PROJECT_CACHE[cache_key] = items
     return items
@@ -2601,7 +2596,6 @@ def set_project_field(
     item: dict[str, Any],
     field: dict[str, Any],
     value: str,
-    recoverable: bool = False,
 ) -> str:
     args = [
         "project",
@@ -2623,7 +2617,7 @@ def set_project_field(
     else:
         args.extend(["--text", value])
     try:
-        actor, _, _ = run_raw(args, prefer_active=True, recoverable=recoverable)
+        actor, _, _ = run_raw(args, prefer_active=True)
         return actor
     except PlanError as exc:
         if isinstance(exc, ClassifiedPlanError):
@@ -2636,7 +2630,6 @@ def clear_project_field(
     project: dict[str, Any],
     item: dict[str, Any],
     field: dict[str, Any],
-    recoverable: bool = False,
 ) -> str:
     try:
         actor, _, _ = run_raw([
@@ -2651,7 +2644,7 @@ def clear_project_field(
             "--clear",
             "--format",
             "json",
-        ], prefer_active=True, recoverable=recoverable)
+        ], prefer_active=True)
         return actor
     except PlanError as exc:
         if isinstance(exc, ClassifiedPlanError):
@@ -2687,7 +2680,7 @@ def set_project_fields(
         field = fields.get(field_name)
         if not field:
             raise project_error(f"Project field not found: {field_name}")
-        actor = set_project_field(project=project, item=item, field=field, value=value, recoverable=recoverable)
+        actor = set_project_field(project=project, item=item, field=field, value=value)
         updated[field_name] = value
     return {"actor": actor, "project": project.get("title"), "updated": updated}
 
@@ -2705,7 +2698,7 @@ def cmd_project_add(args: argparse.Namespace) -> None:
     ensure_graphql_budget(prefer_active=True, recoverable=True)
     actor, data = gh_json([
         "project", "item-add", str(number), "--owner", owner, "--url", issue["html_url"], "--format", "json"
-    ], prefer_active=True, recoverable=True)
+    ], prefer_active=True)
     emit({"ok": True, "actor": actor, "owner": owner, "project": project_data or {"number": number}, "item": data})
 
 
@@ -2817,13 +2810,12 @@ def cmd_close(args: argparse.Namespace) -> None:
                     item=item,
                     field=status_field,
                     value="Done",
-                    recoverable=True,
                 )
                 updated["Status"] = "Done"
                 project_steps.append("set_project_status")
             focus_field = fields.get((config.get("project_fields") or {}).get("focus", "Focus"))
             if focus_field:
-                clear_project_field(project=project_data, item=item, field=focus_field, recoverable=True)
+                clear_project_field(project=project_data, item=item, field=focus_field)
                 updated["Focus"] = None
                 project_steps.append("clear_project_focus")
             project_result = {"project": project_data.get("title"), "updated": updated}
@@ -3046,7 +3038,6 @@ def cmd_project_list(args: argparse.Namespace) -> None:
     actor, data = gh_json(
         cmd,
         prefer_active=True,
-        recoverable=True,
     )
     emit({"ok": True, "actor": actor, "owner": owner, "projects": data})
 
