@@ -98,6 +98,28 @@ must keep passing the canonical gate. See
 [`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
 
+## Reviews By Another Model
+
+The `model-review` skill asks a model from another provider to review a change
+read-only. It drives whichever of the OpenAI (`codex`), Anthropic (`claude`), and
+Google (`agy`) CLIs are installed; none is required, and a missing one is
+reported rather than blocking. Before relying on it, see what works on your
+machine:
+
+```bash
+uv run skills/model-review/scripts/review_with_model.py check --repo .
+```
+
+`agy` is the one that needs setup. Run headless it stops at the first tool that
+needs permission and returns an empty answer with exit code 0, which looks like
+a reviewer that found nothing. The helper reports that as a failure and prints
+the exact read-only allow rules to add to your own `agy` settings. They name
+the repository being reviewed; point them at a directory that holds your
+repositories to cover them all, and never at your home directory, because the
+rule applies to every `agy` session. The helper changes that file only when you
+run its `configure` subcommand, and refuses to start `agy` at all when your
+settings already allow it to write files.
+
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).

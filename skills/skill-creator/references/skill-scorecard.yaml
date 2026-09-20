@@ -867,6 +867,29 @@ skills:
           notes: Manual-only metadata covered by repo validation.
     known_gaps:
       - No advisory scenario yet for explicit memory distillation request.
+  model-review:
+    status: active
+    risk_classes:
+      - command_execution
+      - script_helper
+    checks:
+      - check_id: review-with-model-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Fake provider CLIs cover the model reported per provider, a locked-out
+            reviewer failing with a fix computed from the repository path, empty
+            answers and provider errors never passing as no findings, and
+            configure editing user settings only when asked.
+    known_gaps:
+      - Reviewer read-only containment depends on each provider's CLI and was
+        verified by hand on 2026-09-20, not in CI.
   openai-docs:
     status: active
     risk_classes:

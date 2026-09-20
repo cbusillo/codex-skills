@@ -14,7 +14,9 @@ shared instructions, approval and safety rules, destructive or irreversible
 helpers, and contracts other repositories depend on. Routine code that tests
 already cover does not need one; the tests are the review.
 
-These points apply to a review you commission, not to one that already ran.
+These points apply to a review you commission, not to one that already ran. The
+`model-review` skill runs one: it starts each provider's model read-only and
+fails loudly when a reviewer could not read or returned nothing.
 
 - Include at least one reviewer from a different provider than the author. A
   model from the same provider shares the author's blind spots. When no other

@@ -73,6 +73,7 @@ helper_tests=(
 	skills/local-llm/scripts/validate_local_code_agent.py
 	skills/local-llm/scripts/validate_local_codex_agent.py
 	skills/local-llm/scripts/validate_lm_studio_api.py
+	skills/model-review/scripts/test_review_with_model.py
 	skills/openai-docs/scripts/test_resolve_latest_model_info.py
 	skills/openai-docs/scripts/test_fetch_codex_manual.py
 	skills/people/scripts/test_resolve_person.py

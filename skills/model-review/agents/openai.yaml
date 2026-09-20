@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Review"
+  short_description: "Get a read-only review from another provider's model"
+  default_prompt: "Use $model-review to have a model from another provider review this change, then weigh the findings."
