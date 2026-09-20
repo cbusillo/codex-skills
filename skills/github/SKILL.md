@@ -545,7 +545,7 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "close"]
       action: require_preferred
-      message: Raw `gh issue close` can mangle close comments. For ordinary non-plan issues, run `github/scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin. If the target is a completed durable plan issue, switch to `github-plan` and use `uv run $CODE_HOME/skills/github/scripts/gh-plan.py close 123 --comment-file comment.md` so planning labels and Project focus stay in sync.
+      message: Raw `gh issue close` can mangle close comments. For ordinary non-plan issues, run `scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin. If the target is a completed durable plan issue, switch to `github-plan` and use `uv run scripts/gh-plan.py close 123 --comment-file comment.md` so planning labels and Project focus stay in sync.
       preferred:
         - kind: script
           path: scripts/gh-issue

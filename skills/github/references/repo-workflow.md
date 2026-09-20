@@ -15,10 +15,14 @@ contract; this reference continues to own GitHub execution and remote actions.
 Start with a factual snapshot before making claims about readiness, PR state,
 reviews, Actions, deploys, or cleanup.
 
+`<skill-dir>` is the `github` skill's base directory, the folder that holds its
+`SKILL.md`; your host shows it when the skill loads. Run these from the client
+repository.
+
 ```sh
-~/.code/skills/github/scripts/github-repo-snapshot.sh
-~/.code/skills/github/scripts/github-repo-snapshot.sh --json
-~/.code/skills/github/scripts/github-repo-snapshot.sh --fetch --json
+<skill-dir>/scripts/github-repo-snapshot.sh
+<skill-dir>/scripts/github-repo-snapshot.sh --json
+<skill-dir>/scripts/github-repo-snapshot.sh --fetch --json
 ```
 
 The snapshot keeps local git evidence local, but reads issues, Actions runs,
@@ -44,11 +48,11 @@ merge-readiness reads. Normal agent polling should let one maintained script
 manage REST-first defaults, quota pressure, and degraded output:
 
 ```sh
-~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO view <pr-or-url>
-~/.code/skills/github/scripts/gh-pr.py \
+<skill-dir>/scripts/gh-pr.py --repo OWNER/REPO view <pr-or-url>
+<skill-dir>/scripts/gh-pr.py \
   --repo OWNER/REPO list --state open --limit 20
-~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO checks <pr-or-url>
-~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO rate-limit
+<skill-dir>/scripts/gh-pr.py --repo OWNER/REPO checks <pr-or-url>
+<skill-dir>/scripts/gh-pr.py --repo OWNER/REPO rate-limit
 ```
 
 The PR helper is REST-first for normal orientation. Its snapshot-compatible
@@ -147,7 +151,7 @@ Do not guess GitHub CLI JSON field names. If needed, ask `gh` for available
 fields before composing a large query:
 
 ```sh
-helper=~/.code/skills/github/scripts/gh-with-env-token
+helper=<skill-dir>/scripts/gh-with-env-token
 $helper pr view <number> --repo OWNER/REPO --json 2>&1 |
   sed -n '/Available fields:/,$p'
 $helper pr view <number> --repo OWNER/REPO \
@@ -301,7 +305,7 @@ open competing PRs that reference the same issue number, title phrase, branch
 prefix, Launchplane request id, or workstream. At minimum, inspect:
 
 ```sh
-~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO list \
+<skill-dir>/scripts/gh-pr.py --repo OWNER/REPO list \
   --state open --limit 50
 gh search prs 'repo:OWNER/REPO is:pr is:open 123 OR "workstream phrase"'
 ```
@@ -312,7 +316,7 @@ when available because it also rewrites issue-closing keywords to `Refs` on the
 superseded PR body:
 
 ```sh
-~/.code/skills/github/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
+<skill-dir>/scripts/gh-pr.py --repo OWNER/REPO supersede 70 \
   --by 71 \
   --reason 'PR #71 matches the agreed taxonomy and includes the missing tests.'
 ```
@@ -421,8 +425,8 @@ two PRs deep or expensive checks would rerun at every layer.
 When checks fail, inspect logs before guessing from check names or status alone.
 
 ```sh
-~/.code/skills/github/scripts/github-ci-diagnose.py --pr <number-or-url>
-~/.code/skills/github/scripts/github-ci-diagnose.py --pr <number-or-url> --json
+<skill-dir>/scripts/github-ci-diagnose.py --pr <number-or-url>
+<skill-dir>/scripts/github-ci-diagnose.py --pr <number-or-url> --json
 ```
 
 Classify failures before acting:

@@ -170,21 +170,19 @@ failed run unchanged.
 
 ## Primary Helper
 
-Run the helper from this skill's `scripts/jb-inspect.py` path with `uv run`.
-In the common user-skill install, that path is:
+Run the helper from the client repository with `uv run`, naming it through this
+skill's base directory. `<skill-dir>` is the folder that holds this `SKILL.md`;
+your host shows it when the skill loads.
 
 ```bash
-uv run ~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py \
+uv run <skill-dir>/scripts/jb-inspect.py \
   agent-inspect --repo "$PWD" --scope changed_files
 ```
-
-If this skill was loaded from a repo-local or temporary path, use that loaded
-skill path instead of `~/.code/skills/...`.
 
 Useful commands:
 
 ```bash
-HELPER=~/.code/skills/jetbrains-inspection/scripts/jb-inspect.py
+HELPER=<skill-dir>/scripts/jb-inspect.py
 uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
 uv run "$HELPER" list-projects
 uv run "$HELPER" resolve-route --repo "$PWD"

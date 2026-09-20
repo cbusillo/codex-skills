@@ -543,6 +543,46 @@ def test_command_labels_allow_runnable_paths_and_real_executables() -> None:
         raise AssertionError(f"runnable paths and real script names should pass: {errors}")
 
 
+def write_skill_with_body(root: Path, body: str) -> Path:
+    skill_dir = root / "demo-skill"
+    (skill_dir / "references").mkdir(parents=True)
+    put_text(skill_dir / "SKILL.md", f"---\nname: demo-skill\ndescription: Demo.\n---\n\n# Demo\n\n{body}\n")
+    return skill_dir
+
+
+def test_install_paths_to_catalog_files_are_rejected_wherever_they_appear() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_body(
+            root,
+            "Run `~/.code/skills/demo-skill/scripts/run.py`.\n"
+            'skills_home="${CODE_HOME:-$HOME/.code}/skills"\n'
+            'uv run "$skills_home/other-skill/scripts/run.py" index\n',
+        )
+        put_text(skill_dir / "references" / "more.md", "Use `$CODE_HOME/skills/demo-skill/references/x.md`.\n")
+        errors = module.validate_no_install_paths(skill_dir)
+    if len(errors) != 3 or not any("references/more.md" in error for error in errors):
+        raise AssertionError(f"each install path should be reported, in references too: {errors}")
+
+
+def test_skill_relative_paths_and_state_locations_are_not_install_paths() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = write_skill_with_body(
+            root,
+            "Run `uv run <skill-dir>/scripts/run.py` or `../other-skill/scripts/run.py`.\n"
+            "Configuration lives in `$CODE_HOME/local.env` and state in `$CODE_HOME/state/retry`.\n"
+            "Ignore `~/.code/working/<repo>/branches/auto-review*`.\n",
+        )
+        errors = module.validate_no_install_paths(skill_dir)
+    if errors:
+        raise AssertionError(f"skill-relative paths and state homes are not install paths: {errors}")
+
+
 def main() -> int:
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()
@@ -560,6 +600,8 @@ def main() -> int:
     test_pep723_helper_examples_allow_uv_and_direct_invocation()
     test_command_labels_reject_bodies_that_name_no_runnable_script()
     test_command_labels_allow_runnable_paths_and_real_executables()
+    test_install_paths_to_catalog_files_are_rejected_wherever_they_appear()
+    test_skill_relative_paths_and_state_locations_are_not_install_paths()
     print("ok test-validate-skill-repo")
     return 0
 

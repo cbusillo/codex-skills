@@ -31,6 +31,12 @@ SYSTEM_OVERRIDE_NAMES = {
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SIBLING_PATH_RE = re.compile(r"`(\.\./[^`\s]+)`")
+# A skill reaching a catalog file through one host's install location: a home-directory skills
+# folder or a host variable, followed by a skill's scripts or references.
+INSTALL_PATH_RE = re.compile(
+    r"(?:~|\$HOME|\$\{?(?:CODE_HOME|CODEX_HOME|CLAUDE_CONFIG_DIR|skills_home)[^}\s/]*}?)"
+    r"[^\s`\"']*?/(?:skills/)?[a-z0-9-]+/(?:scripts|references)/"
+)
 # A code span may wrap across a line.
 COMMAND_SPAN_RE = re.compile(r"`([^`]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
@@ -586,6 +592,26 @@ def validate_command_label_invocations(skill_dirs: list[Path]) -> list[str]:
     return errors
 
 
+def validate_no_install_paths(skill_dir: Path) -> list[str]:
+    """Catalog files are named relative to the skill, never through one host's install location.
+
+    Only one host installs under `~/.code/skills`, and another may link the catalog anywhere, so a
+    fixed install path sends every other host's agent to a file that is not there.
+    """
+    errors: list[str] = []
+    for path in [skill_dir / "SKILL.md", *sorted((skill_dir / "references").glob("*.md"))]:
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            match = INSTALL_PATH_RE.search(line)
+            if match:
+                errors.append(
+                    f"{path.relative_to(ROOT)}:{number}: reaches a catalog file through an install path "
+                    f"({match.group()}); name it from the skill's base directory instead"
+                )
+    return errors
+
+
 def validate_markdown_links(skill_dir: Path) -> list[str]:
     errors: list[str] = []
     for markdown_path in sorted(skill_dir.rglob("*.md")):
@@ -696,6 +722,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
         )
 
     errors.extend(validate_referenced_paths(skill_dir))
+    errors.extend(validate_no_install_paths(skill_dir))
     errors.extend(validate_markdown_links(skill_dir))
     errors.extend(validate_skill_command_policy_paths(skill_dir))
     errors.extend(validate_skill_command_policy_command_coverage(skill_dir))
