@@ -392,6 +392,13 @@ scope, never source code or a mixed scope containing source code.
 - `get-status` is informational and exits zero only when the helper can retrieve
   a route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
   indexing, running, timed out, or session-drifted.
+- `ide_selection_required`, `ide_config_ambiguous`, or `ide_config_missing`: the
+  repository has no usable IDE route, so repeating the inspection cannot succeed.
+  Recommend, in the same report, that the repository record its IDE under
+  `qualityGate.inspection` in `.github/github.json`, naming the IDE that fits its
+  main language, and ask before writing it because it is durable repository
+  policy. If the user names an IDE, rerun once with `--ide`. Do not keep
+  reporting that inspection is unavailable without making that recommendation.
 - `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
   ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
   when `retry_policy.retry=true`; otherwise narrow scope, open the project in

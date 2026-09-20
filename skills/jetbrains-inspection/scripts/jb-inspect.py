@@ -6429,6 +6429,17 @@ def unknown_reason(payload: dict[str, Any], wait: dict[str, Any], cleanup: dict[
     return str(payload.get("status") or wait.get("completion_reason") or "unknown")
 
 
+IDE_ROUTE_CONFIGURATION_REASONS = frozenset({"ide_selection_required", "ide_config_ambiguous", "ide_config_missing"})
+IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
+    "This repository has no usable JetBrains IDE route, so repeating the inspection cannot succeed. "
+    "Recommend to the user that the repository record its IDE in .github/github.json under "
+    'qualityGate.inspection, for example {"tool": "jetbrains", "ide": "PyCharm"}; name the IDE that fits the '
+    "repository's main language and ask before writing it, because it is durable repository policy. "
+    "For this one assessment, rerun once with --ide <IDE name> if the user names an IDE. "
+    "Report the verdict as UNKNOWN with this recommendation; do not keep reporting that inspection is unavailable."
+)
+
+
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
@@ -6438,6 +6449,8 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     execution_proof_reason = normalize_reason(
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
     )
+    if reason in IDE_ROUTE_CONFIGURATION_REASONS:
+        return IDE_ROUTE_CONFIGURATION_NEXT_ACTION
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
