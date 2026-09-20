@@ -314,6 +314,10 @@ Safe to exit: yes
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
 - PR, issue, GitHub plan, and any explicit local plan state is current.
+- Every branch and worktree this session created is removed once its work has
+  merged or been abandoned, or is named with the reason it stays and what will
+  remove it. Compare against `git worktree list`; a merged task checkout left
+  registered is unfinished closeout, not a detail.
 - No important untracked artifacts, transient processes, or hidden follow-up
   remain.
 
@@ -420,6 +424,10 @@ checks below as relevant.
   Removing a worktree is not approval to lose its branch or local edits.
 - Use `github` for PR-backed branch/worktree cleanup and GitHub
   state.
+- Removing this session's own completed task checkouts is ordinary closeout and
+  needs no new question. A registered worktree this session did not create has
+  an unresolved owner: leave it, and report it as another session's rather than
+  omitting it, so the owner or the user can see it is still there.
 - After merged PRs, include relevant post-merge Actions and GitHub
   security/quality signal outcomes when GitHub data is available. Report signals
   as clean, findings, unavailable, or not enabled; do not treat unavailable or
