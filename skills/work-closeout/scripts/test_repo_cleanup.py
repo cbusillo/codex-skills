@@ -215,6 +215,16 @@ class CleanupContracts(unittest.TestCase):
             report = self.inventory()
         self.assertIn("skills_runtime", report["roots"][0]["holds"])
 
+    def test_a_runtime_bound_only_through_claude_code_is_kept(self):
+        skills = self.base / "claude-config" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "team-catalog").symlink_to(self.output, target_is_directory=True)
+        environment = {"CODE_HOME": "", "CODEX_HOME": "", "CLAUDE_CONFIG_DIR": str(skills.parent)}
+        with patch.dict(os.environ, environment):
+            report = self.inventory()
+        self.assertIn("skills_runtime", report["roots"][0]["holds"])
+        self.assertEqual(report["roots"][0]["disposition"], "Keep")
+
     def test_absent_and_unreadable_roots_have_explicit_coverage(self):
         absent = self.base / "absent-volume"
         result = self.inventory(absent)

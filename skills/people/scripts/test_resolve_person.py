@@ -309,6 +309,21 @@ people:
         self.assertEqual(payload["status"], "matched")
         self.assertNotIn("sources", payload)
 
+    def test_global_index_without_a_codex_binding_is_the_catalog_the_helper_ships_in(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            clean = {key: value for key, value in os.environ.items() if key not in ("CODE_HOME", "CODEX_HOME")}
+            with patch.dict(os.environ, clean, clear=True), patch.object(Path, "home", return_value=home):
+                # A host such as Claude Code links the catalog from its own folder, so ~/.code/skills is absent.
+                path, label = resolve_person.default_global_index()
+                self.assertEqual((path, label), (resolve_person.ROOT / ".local" / "people.yaml", "catalog"))
+                # An existing Codex-family binding keeps its established location.
+                (home / ".code" / "skills").mkdir(parents=True)
+                path, label = resolve_person.default_global_index()
+                self.assertEqual((path, label), (home / ".code" / "skills" / ".local" / "people.yaml", "~/.code"))
+
     def test_writer_defaults_to_global_code_home_scope(self) -> None:
         env = os.environ.copy()
         with tempfile.TemporaryDirectory() as tmp:
