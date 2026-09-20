@@ -373,7 +373,8 @@ Keep planning state separate from PR execution state:
   when the repo documents a manual tester workflow, usually in `qaLabels`.
 - `ready-to-merge` is a repo-configured merge readiness signal, often used by
   merge trains. It does not replace a fresh PR read, passing required checks,
-  review accounting, and explicit user approval for the merge action.
+  review accounting, and merge authorization as defined in
+  `../../references/execution-scope.md`.
 
 Discourage generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless
 the repo documents a narrow local convention. When auditing a repo, compare

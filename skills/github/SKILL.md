@@ -812,7 +812,8 @@ invocation rules.
   `references/repo-workflow.md`: `preview-ready` means a preview is available
   for review, `awaiting-qa` is an optional repo-local QA handoff label, and
   `ready-to-merge` is a configured merge readiness signal that still requires a
-  fresh readiness check and explicit merge approval.
+  fresh readiness check and merge authorization as defined in
+  `../references/execution-scope.md`.
 - **Refs Closeout**: Treat `Refs #...` as intentionally non-closing. After the
   canonical PR merges, sweep referenced issues and close only those whose finish
   line is conclusively satisfied; otherwise comment/update durable state and
