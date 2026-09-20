@@ -847,7 +847,7 @@ def api_json(
     if status == 0:
         status = 200
     rate_limit = github_api_core.RateLimitInfo.from_headers(headers)
-    if not 200 <= status < 300 or (status == 200 and github_api_core._is_graphql_rate_limit_body(body)):
+    if not 200 <= status < 300 or (status == 200 and github_api_core.is_graphql_rate_limit_body(body)):
         failure = github_api_core.classify_error(status, headers, body, is_write=resolved_is_write)
         failure.completed_steps = completed_steps or []
         failure.failed_step = failed_step or f"http_{status}"

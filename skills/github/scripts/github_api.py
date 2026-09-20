@@ -42,7 +42,7 @@ import time
 import tomllib
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, NoReturn, Optional
 
 import github_identity
 
@@ -302,7 +302,7 @@ class ArgumentParsingError(Exception):
 
 
 class TerminalArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         raise ArgumentParsingError(message)
 
 
@@ -720,7 +720,7 @@ def parse_gh_include_output(raw: str) -> tuple[int, dict[str, str], Any]:
     carried_diagnostics: dict[str, str] = {}
     while i < len(lines) and lines[i].startswith("HTTP/"):
         status_line = lines[i]
-        parts = status_line.split(None, 2)
+        parts = status_line.split(maxsplit=2)
         try:
             status = int(parts[1]) if len(parts) >= 2 else 0
         except (ValueError, IndexError):
@@ -796,7 +796,7 @@ def _extract_message(body: Any) -> str:
     return " ".join(text.split())[:1000]
 
 
-def _is_graphql_rate_limit_body(body: Any) -> bool:
+def is_graphql_rate_limit_body(body: Any) -> bool:
     """Detect GraphQL rate-limit inside an HTTP-200 JSON body."""
     if not isinstance(body, dict):
         return False
@@ -1029,7 +1029,7 @@ def classify_error(
             request_id=request_id,
         )
 
-    if status == 200 and _is_graphql_rate_limit_body(body):
+    if status == 200 and is_graphql_rate_limit_body(body):
         return FailureDetail(
             cause="graphql_primary_rate_limited",
             message="GraphQL primary rate limit exceeded (HTTP 200 errors array)",
@@ -1103,7 +1103,7 @@ def classify_error(
         ):
             cause = (
                 "graphql_primary_rate_limited"
-                if (rl.resource or "").lower() == "graphql" or _is_graphql_rate_limit_body(body)
+                if (rl.resource or "").lower() == "graphql" or is_graphql_rate_limit_body(body)
                 else "rest_primary_rate_limited"
             )
             return FailureDetail(
@@ -1117,7 +1117,7 @@ def classify_error(
                 rate_limit=rl_dict,
             )
 
-        if _is_graphql_rate_limit_body(body):
+        if is_graphql_rate_limit_body(body):
             return FailureDetail(
                 cause="graphql_primary_rate_limited",
                 message=f"GraphQL rate limit exceeded (HTTP 403): {msg}",
@@ -1293,7 +1293,7 @@ def classify_legacy_failure(
         if delegated_failure is not None:
             return delegated_failure
         status, headers, body = parse_gh_include_output(stdout)
-        if status or _is_graphql_rate_limit_body(body):
+        if status or is_graphql_rate_limit_body(body):
             if not _extract_message(body) and stderr.strip():
                 body = {"message": stderr.strip()}
             return classify_error(status or 200, headers, body, is_write=is_write)
@@ -1545,15 +1545,8 @@ def build_gh_command(
     PATCH carry a body; callers may also provide one for DELETE endpoints that
     require JSON input.
 
-    Args:
-        method: HTTP method string ("GET", "POST", …).
-        path: API path starting with "/" or a full URL.
-        gh_cmd: Path to the gh binary or wrapper (default "gh").
-        gh_prefix_args: Wrapper-specific arguments inserted before ``api``.
-        extra_headers: Additional -H headers to include in the request.
-
-    Returns:
-        Command list ready for subprocess.run.
+    ``path`` is an API path or a full URL. ``gh_prefix_args`` are wrapper-specific
+    arguments inserted before ``api``. Returns the argv for ``subprocess.run``.
     """
     if not path.startswith("/") and not path.startswith("http"):
         path = f"/{path}"
@@ -1664,7 +1657,7 @@ class SharedCooldownStore:
         self.state_dir = state_dir
 
     def _paths(self, key: str) -> tuple[pathlib.Path, pathlib.Path]:
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(key.encode()).hexdigest()
         return self.state_dir / f"{digest}.lock", self.state_dir / f"{digest}.json"
 
     def _prepare(self) -> None:
@@ -1693,8 +1686,8 @@ class SharedCooldownStore:
             raise
         return _CooldownLease(key=key, handle=handle, state_path=state_path)
 
+    @staticmethod
     def _read_state(
-        self,
         lease: _CooldownLease,
         *,
         now: float,
@@ -1758,7 +1751,8 @@ class SharedCooldownStore:
             except FileNotFoundError:
                 pass
 
-    def release(self, lease: Optional[_CooldownLease]) -> None:
+    @staticmethod
+    def release(lease: Optional[_CooldownLease]) -> None:
         if lease is None:
             return
         try:
@@ -2059,7 +2053,7 @@ def subprocess_output_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+        return value.decode(errors="replace")
     return str(value)
 
 
@@ -2235,7 +2229,8 @@ def run_with_retry(
         remaining = max(0.0, effective_deadline - runtime.now())
         return attempt_with_timeout(remaining)
 
-    if not eligible:
+    # Past this guard a matrix rule exists, which the retry loop below relies on.
+    if rule is None or not eligible:
         result = execute_attempt()
         context_actor = expected_actor or actor
         if (
@@ -2322,15 +2317,15 @@ def run_with_retry(
     last_result: Optional[ApiResult] = None
     cooldown_error: Optional[str] = None
 
-    def finish_cooldown(lease: Optional[_CooldownLease]) -> None:
+    def finish_cooldown(held: Optional[_CooldownLease]) -> None:
         try:
-            store.finish(now=runtime.now(), policy=policy, lease=lease)
+            store.finish(now=runtime.now(), policy=policy, lease=held)
         except OSError:
             pass
 
-    def release_cooldown(lease: Optional[_CooldownLease]) -> None:
+    def release_cooldown(held: Optional[_CooldownLease]) -> None:
         try:
-            store.release(lease)
+            store.release(held)
         except OSError:
             pass
 
@@ -2354,7 +2349,7 @@ def run_with_retry(
             )
             elapsed_wait += waited
             if not completed:
-                result = last_result or _local_retry_failure(
+                result = last_result if last_result is not None else _local_retry_failure(
                     operation=operation,
                     actor=context_actor or actor,
                     expected_actor=expected_actor,
@@ -2394,7 +2389,7 @@ def run_with_retry(
         )
         if pre_attempt_reason is not None:
             release_cooldown(lease)
-            result = last_result or _local_retry_failure(
+            result = last_result if last_result is not None else _local_retry_failure(
                 operation=operation,
                 actor=context_actor or actor,
                 expected_actor=expected_actor,
@@ -2800,19 +2795,13 @@ def call_gh(
     The request body (if any) is serialised to JSON and sent via stdin.
     The response is parsed from ``gh api --include`` stdout.
 
-    Args:
-        method: HTTP method ("GET", "POST", "PUT", "PATCH", "DELETE").
-        path: API path (e.g. "/repos/owner/repo/pulls") or full URL.
-        body: Python object to serialise as the JSON request body.
-        gh_cmd: Path to the gh binary or wrapper script.
-        gh_prefix_args: Wrapper-specific arguments inserted before ``api``.
-        extra_headers: Additional headers to pass as ``-H name: value``.
-        completed_steps: Steps already done before this call (for partial-success tracking).
-        failed_step: Label for the step this call represents (appended to FailureDetail on error).
-        is_write: Override write detection (default: True for POST/PUT/PATCH/DELETE).
+    ``completed_steps`` are steps already done before this call, for
+    partial-success tracking; ``failed_step`` labels this call in the
+    FailureDetail on error. ``is_write`` overrides write detection, which
+    otherwise treats POST, PUT, PATCH and DELETE as writes.
 
-    Returns:
-        ApiResult with ok=True on 2xx, ok=False with a populated FailureDetail otherwise.
+    Returns an ApiResult with ok=True on 2xx, and ok=False with a populated
+    FailureDetail otherwise.
     """
     if completed_steps is None:
         completed_steps = []
@@ -2907,8 +2896,9 @@ def call_gh(
     try:
         proc = subprocess.run(
             cmd,
+            input=stdin_bytes,
             # Without a body the child must not inherit an open, idle stdin from an agent host.
-            **({"input": stdin_bytes} if stdin_bytes is not None else {"stdin": subprocess.DEVNULL}),
+            stdin=None if stdin_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,
@@ -2976,8 +2966,8 @@ def call_gh(
             ),
         )
 
-    raw_stdout = proc.stdout.decode("utf-8", errors="replace")
-    raw_stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    raw_stdout = proc.stdout.decode(errors="replace")
+    raw_stderr = proc.stderr.decode(errors="replace").strip()
     reported_actor = actor_from_gh_stderr(raw_stderr)
     if reported_actor:
         actor = reported_actor
@@ -3040,7 +3030,7 @@ def call_gh(
     response_bucket = normalized_provider_bucket(rate_limit.resource) or resolved_bucket
 
     # HTTP-200 GraphQL error (rate limit embedded in success response)
-    if status == 200 and _is_graphql_rate_limit_body(parsed_body):
+    if status == 200 and is_graphql_rate_limit_body(parsed_body):
         failure = classify_error(
             status,
             headers,
@@ -3216,14 +3206,10 @@ def rate_limit_probe(
     timeout_seconds: Optional[float] = None,
 ) -> ApiResult:
     """
-    Fetch ``/rate_limit`` from GitHub.  At most one live call is made per
-    process; subsequent calls return the cached result immediately.
-
-    Args:
-        gh_cmd: Path to the gh binary or wrapper (used only on the first call).
-
-    Returns:
-        ApiResult from ``GET /rate_limit``.
+    Fetch ``/rate_limit`` from GitHub. One live call is made per process for
+    each distinct command, API version, actor, host and operation; later calls
+    with the same values return the cached ApiResult. ``timeout_seconds`` applies
+    only to that live call.
     """
     cache_key = (gh_cmd, api_version, actor, expected_actor, host, operation)
     if cache_key in _rate_limit_cache:
@@ -3480,7 +3466,6 @@ def main() -> int:
             body=None,
             operation=getattr(args, "operation", f"github.api.{args.cmd.replace('-', '_')}"),
             host=getattr(args, "host", None) or DEFAULT_HOST,
-            transport=TRANSPORT,
             failure=failure,
             failed_step="input_validation",
         )
@@ -3499,7 +3484,6 @@ def main() -> int:
             body=None,
             operation=getattr(args, "operation", f"github.api.{args.cmd.replace('-', '_')}"),
             host=getattr(args, "host", None) or DEFAULT_HOST,
-            transport=TRANSPORT,
             failure=failure,
             failed_step="cancelled",
         )
