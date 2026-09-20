@@ -88,7 +88,19 @@ elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$GITHUB_TOKEN
 fi
 
-if [ ! -t 0 ]; then
+# Capture stdin only when the command is going to read it, so the same body can
+# be replayed to the actor check and to the real call. Agent hosts leave stdin
+# open and idle; reading it unconditionally would wait forever for an end of
+# file that never comes. A command that reads stdin without saying so in its
+# arguments still inherits it, just without replay.
+reads_stdin=0
+for argument in "$@"; do
+	case $argument in
+	- | @- | *=@- | --with-token) reads_stdin=1 ;;
+	esac
+done
+
+if [ "$reads_stdin" -eq 1 ] && [ ! -t 0 ]; then
 	cat >"$stdin_file"
 	stdin_captured=1
 fi
