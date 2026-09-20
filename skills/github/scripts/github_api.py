@@ -2907,7 +2907,8 @@ def call_gh(
     try:
         proc = subprocess.run(
             cmd,
-            input=stdin_bytes,
+            # Without a body the child must not inherit an open, idle stdin from an agent host.
+            **({"input": stdin_bytes} if stdin_bytes is not None else {"stdin": subprocess.DEVNULL}),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,

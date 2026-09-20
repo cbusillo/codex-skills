@@ -1417,6 +1417,7 @@ def run_gh(
     return subprocess.run(
         [GH, *args],
         text=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout_seconds,

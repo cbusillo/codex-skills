@@ -240,6 +240,37 @@ env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME
 
 grep -qx 'workspace-token' "$env_log"
 
+# An agent host leaves stdin open and idle. A command that does not read stdin
+# must not wait for an end of file that never comes; one that does must still
+# get the piped body. The writer end of the fifo stays open for the whole check.
+idle_fifo="$tmpdir/idle-stdin"
+mkfifo "$idle_fifo"
+exec 9<>"$idle_fifo"
+: >"$env_log"
+env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME \
+	PATH="$tmpdir:$PATH" \
+	HOME="$tmpdir" \
+	GH_ISSUE_ENV_LOG="$env_log" \
+	GH_WITH_ENV_TOKEN_GH="$tmpdir/path-gh" \
+	"$generated_worktree/github/scripts/gh-with-env-token" auth status >/dev/null <"$idle_fifo" &
+idle_pid=$!
+idle_waited=0
+while kill -0 "$idle_pid" 2>/dev/null && [ "$idle_waited" -lt 100 ]; do
+	sleep 0.1
+	idle_waited=$((idle_waited + 1))
+done
+if kill -0 "$idle_pid" 2>/dev/null; then
+	# Stop the blocked reader too, or it keeps this script's output open after it exits.
+	pkill -P "$idle_pid" 2>/dev/null || true
+	kill "$idle_pid" 2>/dev/null || true
+	exec 9>&-
+	echo "error: gh-with-env-token waited on an open, idle stdin for a command that does not read it" >&2
+	exit 1
+fi
+wait "$idle_pid"
+exec 9>&-
+grep -qx 'workspace-token' "$env_log"
+
 : >"$env_log"
 env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN \
 	PATH="$tmpdir:$PATH" \
