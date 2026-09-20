@@ -1184,6 +1184,12 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
     closeout = " ".join((ROOT / "work-closeout" / "SKILL.md").read_text().lower().split())
     babysit = " ".join((ROOT / "babysit-pr" / "SKILL.md").read_text().lower().split())
     watcher = (ROOT / "babysit-pr" / "scripts" / "gh_pr_watch.py").read_text()
+    # The scanner's location comes from its owning skill, not from a copy kept here.
+    rollup_source = (ROOT / "github-work-rollup" / "SKILL.md").read_text()
+    commands = load_yaml(rollup_source.split("---", 2)[1])["commands"]
+    scanner = next(item["resource_path"] for item in commands if item["name"] == "github-unanswered-comments")
+    require((ROOT / "github-work-rollup" / scanner).is_file(), "the unanswered-comment scanner must exist")
+    sibling_scanner = f"../github-work-rollup/{scanner}".lower()
     scanner = ROOT / "github-work-rollup" / "scripts" / "github_unanswered_comments.py"
 
     require(scanner.exists(), "GitHub work rollup must bundle the unanswered-comment scanner")
@@ -1203,7 +1209,7 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
         ("work-closeout", closeout),
     ):
         require(
-            "github-unanswered-comments" in text,
+            sibling_scanner in text,
             f"{skill_name} must route close/closeout work through the unanswered-comment scanner",
         )
         require(
@@ -1220,7 +1226,7 @@ def test_github_unanswered_comment_gate_is_shared() -> None:
         "PR babysitting must not filter external humans by repository association",
     )
     require(
-        "github-unanswered-comments --thread owner/repo#number" in babysit
+        f"{sibling_scanner} --thread owner/repo#number" in babysit
         and "any attention or degraded result" in babysit,
         "PR readiness handoffs must run the full-history comment radar",
     )

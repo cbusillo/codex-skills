@@ -31,6 +31,8 @@ SYSTEM_OVERRIDE_NAMES = {
 SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SIBLING_PATH_RE = re.compile(r"`(\.\./[^`\s]+)`")
+# A code span may wrap across a line.
+COMMAND_SPAN_RE = re.compile(r"`([^`]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)?\[[^\]\n]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 ALLOWED_OPENAI_INTERFACE_KEYS = {
@@ -540,6 +542,50 @@ def validate_referenced_paths(skill_dir: Path) -> list[str]:
     return errors
 
 
+def declared_command_labels(skill_dirs: list[Path]) -> dict[str, tuple[Path, str]]:
+    """Map each skill-owned command name to its owning skill and script path."""
+    labels: dict[str, tuple[Path, str]] = {}
+    for skill_dir in skill_dirs:
+        commands = read_frontmatter(skill_dir / "SKILL.md").get("commands")
+        for command in commands if isinstance(commands, list) else []:
+            if not isinstance(command, dict) or command.get("source") != "skill":
+                continue
+            name, resource_path = command.get("name"), command.get("resource_path")
+            if isinstance(name, str) and isinstance(resource_path, str):
+                labels[name] = (skill_dir, resource_path)
+    return labels
+
+
+def validate_command_label_invocations(skill_dirs: list[Path]) -> list[str]:
+    """A command's frontmatter name is a label, not something on PATH.
+
+    Hosts that never show frontmatter to the model give it no way to resolve one,
+    so a body that names a label must also name the script it stands for, by a
+    path that resolves from that skill.
+    """
+    labels = declared_command_labels(skill_dirs)
+    executables = {path.name for skill_dir in skill_dirs for path in (skill_dir / "scripts").glob("*")}
+    errors: list[str] = []
+    for skill_dir in skill_dirs:
+        skill_md = skill_dir / "SKILL.md"
+        body = re.sub(r"^---\n.*?\n---", "", skill_md.read_text(), count=1, flags=re.DOTALL)
+        prose = re.sub(r"^```.*?^```", "", body, flags=re.DOTALL | re.MULTILINE)
+        fenced = re.findall(r"^```[^\n]*\n(.*?)^```", body, flags=re.DOTALL | re.MULTILINE)
+        invoked = [span.split() for span in COMMAND_SPAN_RE.findall(prose)]
+        invoked += [line.split() for block in fenced for line in block.splitlines()]
+        for name in sorted({tokens[0] for tokens in invoked if tokens}):
+            if name not in labels or name in executables:
+                continue
+            owner, resource_path = labels[name]
+            expected = resource_path if owner == skill_dir else f"../{owner.name}/{resource_path}"
+            if expected not in body:
+                errors.append(
+                    f"{skill_md.relative_to(ROOT)}: names the command label {name} without its script; "
+                    f"give the runnable path {expected}"
+                )
+    return errors
+
+
 def validate_markdown_links(skill_dir: Path) -> list[str]:
     errors: list[str] = []
     for markdown_path in sorted(skill_dir.rglob("*.md")):
@@ -669,6 +715,7 @@ def main() -> int:
     for skill_dir in skill_dirs:
         errors.extend(validate_skill_dir(skill_dir))
     errors.extend(validate_system_override_paths(skill_dirs))
+    errors.extend(validate_command_label_invocations(skill_dirs))
 
     active_names = {skill_dir.name for skill_dir in skill_dirs}
     overlapping_system_names = active_names & system_skill_names()

@@ -273,8 +273,9 @@ planning helper owns `plan:done` labels, cleanup of stale `plan:active`,
 `plan:blocked`, `plan:waiting`, and `plan:stale` labels, and Project focus
 updates. It also owns relationship preflight and close-comment reconciliation:
 
-Before closing a planning issue, run `github-unanswered-comments --thread
-OWNER/REPO#NUMBER`. Any attention result or degraded coverage requires a response
+Before closing a planning issue, run
+`uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
+Any attention result or degraded coverage requires a response
 or explicit handoff; a bot response never proves owner acknowledgement.
 
 ```bash

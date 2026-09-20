@@ -493,6 +493,56 @@ print("ok")
         raise AssertionError(f"uv run sibling PEP 723 examples should pass: {errors}")
 
 
+def write_command_label_catalog(root: Path, owner_body: str, caller_body: str) -> list[Path]:
+    owner, caller = root / "owner-skill", root / "caller-skill"
+    (owner / "scripts").mkdir(parents=True)
+    caller.mkdir()
+    put_text(owner / "scripts" / "scan_things.py", "print('ok')\n")
+    put_text(owner / "scripts" / "real-tool", "#!/bin/sh\n")
+    put_text(
+        owner / "SKILL.md",
+        "---\nname: owner-skill\ndescription: Demo.\ncommands:\n"
+        "  - name: scan-things\n    source: skill\n    resource_path: scripts/scan_things.py\n"
+        "  - name: real-tool\n    source: skill\n    resource_path: scripts/real-tool\n"
+        f"---\n\n# Owner\n\n{owner_body}\n",
+    )
+    put_text(caller / "SKILL.md", f"---\nname: caller-skill\ndescription: Demo.\n---\n\n# Caller\n\n{caller_body}\n")
+    return [caller, owner]
+
+
+def test_command_labels_reject_bodies_that_name_no_runnable_script() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        # The caller's span wraps across a line; the owner uses a fenced block.
+        skill_dirs = write_command_label_catalog(
+            root,
+            owner_body="```bash\nscan-things --all\n```",
+            caller_body="Before closing, run `scan-things --thread\nOWNER/REPO#1`.",
+        )
+        errors = module.validate_command_label_invocations(skill_dirs)
+    if len(errors) != 2:
+        raise AssertionError(f"both bodies name only the label: {errors}")
+    if "../owner-skill/scripts/scan_things.py" not in errors[0] or "give the runnable path scripts/scan_things.py" not in errors[1]:
+        raise AssertionError(f"each error should give the path that resolves from that skill: {errors}")
+
+
+def test_command_labels_allow_runnable_paths_and_real_executables() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dirs = write_command_label_catalog(
+            root,
+            owner_body="Run `uv run scripts/scan_things.py --all` (the `scan-things` command), or `real-tool --all`.",
+            caller_body="Run `uv run ../owner-skill/scripts/scan_things.py --thread OWNER/REPO#1`. A `scan-thingsx` span is not a label.",
+        )
+        errors = module.validate_command_label_invocations(skill_dirs)
+    if errors:
+        raise AssertionError(f"runnable paths and real script names should pass: {errors}")
+
+
 def main() -> int:
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()
@@ -508,6 +558,8 @@ def main() -> int:
     test_pep723_metadata_rejects_invalid_toml()
     test_pep723_metadata_rejects_multiple_blocks()
     test_pep723_helper_examples_allow_uv_and_direct_invocation()
+    test_command_labels_reject_bodies_that_name_no_runnable_script()
+    test_command_labels_allow_runnable_paths_and_real_executables()
     print("ok test-validate-skill-repo")
     return 0
 

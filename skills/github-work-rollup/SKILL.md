@@ -229,8 +229,8 @@ reports.
 
 ## External Comment Radar
 
-Run `github-unanswered-comments` for missed external comments; use `--thread
-OWNER/REPO#NUMBER` for a full-history merge or closeout gate. The read-only
+Run `uv run scripts/github_unanswered_comments.py` for missed external comments;
+use `--thread OWNER/REPO#NUMBER` for a full-history merge or closeout gate. The read-only
 report tracks owner acknowledgement separately from public response. Owner
 awareness requires an owner reaction after the latest edit, an owner reply with
 the exact comment permalink, or an owner inline-review reply when only one
