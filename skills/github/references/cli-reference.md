@@ -264,8 +264,11 @@ uv run github/scripts/reconcile-runtime-checkout.py \
   --landing-sha <full-landing-sha>
 ```
 
-The helper resolves the active runtime skills path using `CODE_HOME`, then
-`CODEX_HOME`, then `~/.code`. It acts only when that path belongs to the same Git
+The helper checks every host binding: `CODE_HOME`, `CODEX_HOME`, `~/.code`, and
+each entry under Claude Code's `skills` folder (`CLAUDE_CONFIG_DIR` or
+`~/.claude`). `bindings_checked` in the receipt lists each with its outcome. A
+work-in-progress worktree linked for testing does not shadow an install on the
+default branch, and another plugin's unreadable checkout is skipped. It acts only when that path belongs to the same Git
 repository as `--merged-worktree` and its `origin` identifies `--repo`. It
 requires a clean runtime checkout already on the configured default branch,
 fetches only that branch from the captured origin URL, requires the landing
