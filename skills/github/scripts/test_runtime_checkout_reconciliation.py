@@ -543,6 +543,8 @@ def test_reconcile_prefers_the_install_over_a_linked_work_in_progress_worktree(t
     assert isinstance(checked, list)
     statuses = {item["source"]: item["status"] for item in checked}
     assert statuses["CLAUDE_CONFIG_DIR/skills/broken-plugin"] == "not_applicable"
+    # A binding that merely qualifies is "matched"; only the receipt as a whole says what was synchronized.
+    assert statuses["CLAUDE_CONFIG_DIR/skills/a-wip"] == statuses["CLAUDE_CONFIG_DIR/skills/team-catalog"] == "matched"
 
 
 if __name__ == "__main__":

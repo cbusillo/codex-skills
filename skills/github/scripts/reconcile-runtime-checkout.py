@@ -413,7 +413,8 @@ def inspect_binding(runtime_path: Path, source_common_dir: Path) -> tuple[str, s
             return "not_applicable", "runtime_repo_mismatch", None
     except GitCommandError:
         return "failed", "runtime_git_unavailable", None
-    return "synchronized", "binding_matches", runtime_root
+    # "matched" only: nothing has been reconciled yet, and at most one matching binding will be.
+    return "matched", "binding_matches", runtime_root
 
 
 def repository_from_remote_url(remote_url: str) -> str:
