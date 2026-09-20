@@ -17,6 +17,13 @@ Contract: JSON on stdin (`tool_name`, `tool_input.command`). Exit 0 lets the
 command run. Exit 2 blocks it and stderr is returned to the model. Anything the
 hook cannot read or parse lets the command run: a broken entrypoint must not
 stop every shell command on the host.
+
+Policies match an argv prefix, so the hook first removes what an agent commonly
+puts in front of a tool: leading assignments, `command`/`exec`/`time`/`nohup`,
+`env` with its flags and assignments, `uv run` with its flags, a directory in
+front of the tool name, and one `sh`/`bash`/`zsh -c '...'` wrapper. This is a
+guardrail for habits, not a security boundary. Forms that need real option
+parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
 """
 
 from __future__ import annotations
@@ -37,6 +44,9 @@ SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-sim
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+TRANSPARENT = {"command", "exec", "time", "nohup"}
+SHELLS = {"sh", "bash", "zsh"}
+SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 
 
 def load_simulator() -> ModuleType:
@@ -49,7 +59,7 @@ def load_simulator() -> ModuleType:
     return module
 
 
-def simple_commands(shell: str) -> list[list[str]]:
+def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
     """Split a shell line into the argv of each simple command it runs."""
     lexer = shlex.shlex(shell, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -59,13 +69,38 @@ def simple_commands(shell: str) -> list[list[str]]:
             commands.append([])
         else:
             commands[-1].append(token)
-    stripped = []
+    unwrapped: list[list[str]] = []
     for argv in commands:
-        while argv and ASSIGNMENT.match(argv[0]):
+        unwrapped.extend(unwrap(argv, nested))
+    return unwrapped
+
+
+def drop_flags(argv: list[str]) -> list[str]:
+    while argv and argv[0].startswith("-"):
+        argv = argv[1:]
+    return argv
+
+
+def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
+    """Return the command or commands an argv really runs, per the module docstring."""
+    while argv:
+        head = argv[0]
+        if ASSIGNMENT.match(head) or head in TRANSPARENT:
             argv = argv[1:]
-        if argv:
-            stripped.append(argv)
-    return stripped
+        elif head == "env":
+            argv = drop_flags(argv[1:])
+        elif argv[:2] == ["uv", "run"]:
+            argv = drop_flags(argv[2:])
+        else:
+            break
+    if not argv:
+        return []
+    argv = [Path(argv[0]).name, *argv[1:]]
+    if argv[0] in SHELLS and not nested:
+        for index, token in enumerate(argv[1:-1], start=1):
+            if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
+                return simple_commands(argv[index + 1], nested=True)
+    return [argv]
 
 
 def runnable(token: str, skill: str) -> str:

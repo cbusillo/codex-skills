@@ -688,8 +688,11 @@ current behavior, configuration, or operational policy.
 Use PRs for all non-trivial code changes.
 
 Use the bundled `gh-*`, `git-*`, and `github-*` helper scripts first for GitHub work. The
-machine-readable `policy.command_policies` frontmatter owns the common raw `gh`
-write/check-to-helper mapping; this prose keeps the judgment around branch
+`policy.command_policies` block in this file's frontmatter owns the mapping from
+raw `gh` write and check commands to helpers. A host that does not show
+frontmatter enforces it when a command runs, and the block message names the
+replacement; read the top of this `SKILL.md` for the whole mapping. This prose
+keeps the judgment around branch
 discipline, merge method, formatting, verification, and exceptions. Reach for raw
 `gh` only when no helper covers the operation, and route those calls through
 `scripts/gh-with-env-token`.
@@ -899,7 +902,8 @@ invocation rules.
 
 ## Tools & Scripts
 
-Use the bundled scripts and structured command metadata above for state,
+Use the bundled scripts and the `commands` entries in this file's frontmatter
+(read the top of this `SKILL.md` if your host did not show them) for state,
 authentication, and writes. For an operation's arguments, transport, or response
 contract, read the relevant section of [CLI reference](references/cli-reference.md).
 Do not load unrelated command recipes or rebuild helper behavior in ad hoc code.
