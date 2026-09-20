@@ -41,7 +41,9 @@ absence.
   for the current task.
 - Preserve an observed terminal state exactly. A cancellation or supersession
   is terminal but is not a clean review, and a completed review still requires
-  its findings or no-findings result to be accounted for.
+  its findings or no-findings result to be accounted for. Weigh them under
+  [reviews by another model](model-review.md): fixed, deferred, tracked, and
+  declined with a recorded reason all count as accounted for.
 
 ## Durable Wording
 

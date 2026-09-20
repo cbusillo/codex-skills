@@ -773,8 +773,9 @@ invocation rules.
   is available in the session context or repo tooling. First match each review
   target to the active branch/PR head SHA, for example `git rev-parse HEAD` for
   the active checkout or `gh pr view --json headRefOid` for a PR. Treat blocking
-  findings against that current target as review feedback to address or
-  explicitly defer; do not merge or release solely on CI-green when relevant
+  findings against that current target as review feedback to address,
+  explicitly defer, or decline with a recorded reason under
+  `../references/model-review.md`; do not merge or release solely on CI-green when relevant
   current-target findings are still in-flight or unresolved. Findings whose
   branch/path points at a detached generated `auto-review-<hex>` worktree are
   still current-target findings when their snapshot SHA matches the active

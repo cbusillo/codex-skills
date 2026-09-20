@@ -309,7 +309,8 @@ Safe to exit: yes
 - The owning durable surface was named as closed/updated with evidence, or no
   owning PR, issue, GitHub plan, or saved local plan was in play.
 - Background review state follows the point-in-time contract above.
-  Current-target findings are resolved, non-blocking, or explicitly tracked;
+  Current-target findings are resolved, non-blocking, explicitly tracked, or
+  declined with a recorded reason under `../references/model-review.md`;
   no matching review is `in flight`. `Not yet observable` is permitted when a
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
