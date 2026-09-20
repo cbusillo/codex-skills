@@ -69,8 +69,8 @@ requires explicit user approval plus a fresh PR/readiness check. If the watcher
 reports `ready_to_merge`, read that as `ready_for_merge_decision`.
 
 Before reporting an unconditional ready, merged, or closed all-clear, run
-`github-unanswered-comments --thread OWNER/REPO#NUMBER`; any attention or
-degraded result requires a response or explicit handoff.
+`uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`;
+any attention or degraded result requires a response or explicit handoff.
 
 This skill also does not reconcile or mutate a local runtime checkout, and it
 does not fast-forward an ordinary local default checkout itself. When a watcher

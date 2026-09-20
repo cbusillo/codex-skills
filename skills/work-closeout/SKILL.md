@@ -194,7 +194,8 @@ preserved, or intentionally left in place.
    and planning issue closure. This skill owns closeout judgment and hygiene;
    the GitHub skills own helper-backed GitHub writes and planning mutations.
    Before declaring an owning GitHub issue or PR settled, run
-   `github-unanswered-comments --thread OWNER/REPO#NUMBER`. Any attention result
+   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
+   Any attention result
    or degraded coverage requires a response or explicit handoff before an
    all-clear; a bot response never proves owner acknowledgement.
    When an open PR still needs ongoing CI, review, mergeability, or

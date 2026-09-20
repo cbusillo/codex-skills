@@ -80,7 +80,8 @@ instance's OpenAPI contract before relying on version-sensitive endpoints.
 3. For proposals, gather the operator's evidence and produce a reviewable
    draft. Keep item type, category, physical location, quantity, unit, and
    source evidence separate.
-4. Run `partdb-context-check`, then a schema probe before querying inventory.
+4. Run `uv run scripts/partdb-read.py context-check`, then a schema probe before
+   querying inventory.
    For a mutation, generate a plan from a private intent file, render its exact
    diff, and wait for explicit approval of that plan digest.
 5. Keep durable local taxonomy and location decisions in the private source of
@@ -94,12 +95,14 @@ plan, approval, and receipt files in a private ignored directory.
 
 1. Create an intent with only `op`, `lot_id`, and `amount`; `op` must be
    `part-lot-amount-set`.
-2. Run `partdb-write-plan`. It validates the installed OpenAPI schema, reads
-   the current amount, and emits a plan with an exact digest.
+2. Run `uv run scripts/partdb-write.py plan --intent ... --output ...`. It
+   validates the installed OpenAPI schema, reads the current amount, and emits a
+   plan with an exact digest.
 3. Show the plan's `prior_amount` and `target_amount` to the user. Do not run
    the next step until the user explicitly approves that exact digest.
-4. Run `partdb-write.py approve --plan ... --approve <digest> --output ...`.
-5. Run `partdb-write.py apply --plan ... --approval ... --apply`.
+4. Run `uv run scripts/partdb-write.py approve --plan ... --approve <digest>
+   --output ...`.
+5. Run `uv run scripts/partdb-write.py apply --plan ... --approval ... --apply`.
    It reads again, refuses drift, patches only after those checks, reads back to
    verify, and records a redacted digest-keyed receipt beside the plan. Each approval is single-use;
    a failed apply leaves a `needs-reconciliation` receipt instead of retrying a
