@@ -1,6 +1,6 @@
 ---
 name: docs-lookup
-description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations such as DNS or Cloudflare records, but not performing infrastructure actions or mutations.
+description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations such as DNS or Cloudflare records, and finding where a credential, API token, or secret is stored, but not performing infrastructure actions or mutations.
 metadata:
   short-description: Find external docs and ops context
 ---
@@ -29,6 +29,8 @@ Use this skill for:
 - tasks that ask where to make private DNS or Cloudflare changes, such as
   verification records, zone ownership, token location, or provider access
   paths.
+- tasks that need a credential, API token, or secret: where it is stored, which
+  repo owns it, how to validate it, or how to rotate it.
 - tasks where the answer depends on environment-specific operational context or
   discovering source-of-truth docs or access paths for private operations.
 

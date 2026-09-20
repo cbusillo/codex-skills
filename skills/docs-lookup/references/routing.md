@@ -53,6 +53,16 @@ do not start by scanning product repo `.env` files, shell history, or common
 provider-token locations. After the docs/access path is known, use `infra-ops`
 for live record inspection, mutation, rollback, and verification.
 
+Credential, API token, and secret location requests are local-infrastructure
+routes too. Use `[docs].local_infra` to find that environment's credentials
+index, which records the owner, each storage location, a read-only validation
+check, and the rotation path. Then read the owning repo's declared key names in
+its checked-in `.env.example` and the `env` block of its `.github/github.json`.
+Read a value only from the location the index names, never print it, and pass
+it to a command through standard input rather than an argument. If the index
+has no entry, say so before searching, search narrowly by key name, and route a
+new entry back to the local information source.
+
 If the file or key is missing and local infrastructure context is required, say
 that the local docs source is not configured instead of guessing. Do not fall
 back to shell environment variables or repo `.env` files for this routing.
