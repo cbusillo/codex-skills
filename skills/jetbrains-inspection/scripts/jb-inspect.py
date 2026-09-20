@@ -203,18 +203,7 @@ VERDICT_SOURCE_KEYS = (
     "inspection_attribution",
     "proof_failures",
 )
-INSPECTION_STAGE_VALUES = frozenset(
-    {
-        "sync",
-        "smart_wait",
-        "python_sdk_readiness",
-        "native_configure",
-        "native_execute",
-        "exact_proof",
-        "result_settling",
-        "publish",
-    }
-)
+INSPECTION_STAGE_LABEL_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed", "timed_out", "preempted"})
 INSPECTION_FAILURE_SOURCES = frozenset(
     {"wait_timeout", "capture_deadline", "cancellation", "exact_proof_deadline", "exact_proof_write_preempted"}
@@ -3492,6 +3481,10 @@ def nonnegative_int(value: Any) -> int | None:
     return None
 
 
+def is_inspection_stage_label(value: Any) -> bool:
+    return isinstance(value, str) and INSPECTION_STAGE_LABEL_PATTERN.fullmatch(value) is not None
+
+
 def bounded_inspection_stage_history(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -3501,7 +3494,7 @@ def bounded_inspection_stage_history(value: Any) -> list[dict[str, Any]]:
             continue
         stage = entry.get("stage")
         elapsed_ms = nonnegative_int(entry.get("elapsed_ms"))
-        if stage not in INSPECTION_STAGE_VALUES or elapsed_ms is None:
+        if not is_inspection_stage_label(stage) or elapsed_ms is None:
             continue
         history.append({"stage": stage, "elapsed_ms": elapsed_ms})
     return history
@@ -3516,7 +3509,7 @@ def bounded_inspection_failure_diagnostic(value: Any) -> dict[str, Any]:
         return {}
     diagnostic: dict[str, Any] = {"source": source, "outcome": outcome}
     stage = value.get("inspection_stage_at_failure")
-    if stage in INSPECTION_STAGE_VALUES:
+    if is_inspection_stage_label(stage):
         diagnostic["inspection_stage_at_failure"] = stage
     for key in ("inspection_stage_elapsed_ms", "inspection_run_elapsed_ms"):
         elapsed_ms = nonnegative_int(value.get(key))
@@ -3595,7 +3588,7 @@ def inspection_stage_diagnostics(payload: Any, target_run_id: int | None = None)
     for index, candidate in candidates:
         snapshot: dict[str, Any] = {}
         stage = candidate.get("inspection_stage")
-        if stage in INSPECTION_STAGE_VALUES:
+        if is_inspection_stage_label(stage):
             snapshot["inspection_stage"] = stage
         for key in ("inspection_stage_elapsed_ms", "inspection_run_elapsed_ms"):
             elapsed_ms = nonnegative_int(candidate.get(key))

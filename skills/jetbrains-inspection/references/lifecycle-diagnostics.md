@@ -24,7 +24,10 @@ keeps the owned project warm instead of closing it blindly.
 
 Current plugins report the active inspection phase as `inspection_stage`, with
 `inspection_stage_elapsed_ms`, `inspection_run_elapsed_ms`, and a chronological
-`inspection_stage_history`. Terminal status may also include
+`inspection_stage_history`. Stage names are progress labels owned by the plugin:
+the helper keeps any short lowercase `snake_case` label and drops anything else,
+so a newer plugin can add or rename a stage without a helper change. Terminal
+outcomes and failure sources remain closed sets. Terminal status may also include
 `inspection_terminal_outcome`, including `timed_out` and `preempted`. Timeout,
 capture-deadline, exact-proof deadline, exact-proof write-preemption, and
 cancellation records use `inspection_failure_diagnostic`; when more than one
