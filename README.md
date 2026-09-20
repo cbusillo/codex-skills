@@ -1,6 +1,9 @@
 # Codex Skills
 
-Reusable skills for OpenAI Codex and compatible hosts such as Codex Lab.
+Reusable skills for coding agents. Claude Code and OpenAI Codex are both
+supported hosts, along with Codex-compatible hosts such as Codex Lab. Skills and
+helpers are written to behave the same on each; a skill that only makes sense on
+one host says so in its description.
 Every Code is retired; retained traces, fixtures, and artifact readers describe
 historical behavior rather than a supported execution path.
 
@@ -245,6 +248,10 @@ Configure the automation role separately from the token:
 - `CODEX_AUTOMATION_EMAIL`
 - `CODEX_AUTOMATION_BOT_LOGINS` for an optional quoted, space-separated list
   of additional automation accounts used only for bot classification
+
+The `CODEX_` prefix on these, and the `CODE_HOME` and `CODEX_HOME` names, are
+historical. They are stable names that mean the same thing on every host and are
+not renamed.
 
 `GH_WITH_ENV_TOKEN_EXPECTED_LOGIN`, `GIT_COMMIT_AS_BOT_NAME`, and
 `GIT_COMMIT_AS_BOT_EMAIL` remain supported as higher-precedence per-tool
