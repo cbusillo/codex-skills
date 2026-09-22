@@ -29,6 +29,11 @@ printf '%s' "$FAKE_CLAUDE_JSON"
 """
 FAKE_AGY = """#!/bin/sh
 pwd > "$FAKE_AGY_CWD_FILE"
+[ -n "$FAKE_AGY_PROMPT_FILE" ] && printf '%s' "$2" > "$FAKE_AGY_PROMPT_FILE"
+[ -n "$FAKE_AGY_DIFF_FILE" ] && {
+  diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\([^ ]*\\). Read.*/\\1/p')
+  [ -n "$diff_path" ] && cat "$diff_path" > "$FAKE_AGY_DIFF_FILE"
+}
 echo "jetski: some banner text"
 printf '%s' "$FAKE_AGY_JSON"
 """
@@ -83,8 +88,9 @@ class ReviewWithModelTests(unittest.TestCase):
             with self.subTest(provider=provider):
                 code, result = self.review(provider, **env)
                 self.assertEqual((code, result["ok"], result["model"], result["response"]), (0, True, model, "none"))
-        # The Google reviewer runs from a scratch directory, never from inside the repository it reads.
-        self.assertNotIn(str(self.repo), cwd_file.read_text())
+        # The Google shell is confined to a temporary directory, not the repository root.
+        self.assertNotEqual(str(self.repo), cwd_file.read_text().strip())
+        self.assertFalse(list(self.repo.glob(".model-review-*")))
         # agy does not say which model ran, so the result must not pretend it did.
         self.assertIn("not reported", result["model_source"])
 
@@ -97,6 +103,50 @@ class ReviewWithModelTests(unittest.TestCase):
         # `--allowedTools` only extends a user's own allowlist; `--tools` is what removes the write tools.
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
+
+    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
+        self.install("agy", FAKE_AGY)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        source = self.repo / "example.txt"
+        source.write_text("before\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "example.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
+        prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": "none"}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_PROMPT_FILE": str(prompt_file), "FAKE_AGY_DIFF_FILE": str(diff_file)}
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertNotIn("The changes to review are in", prompt_file.read_text())
+        self.assertFalse(diff_file.exists())
+        source.write_text("after\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("uncommitted", result["error"])
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("do not run shell commands", prompt_file.read_text())
+        self.assertIn("The changes to review are in", prompt_file.read_text())
+        self.assertIn("+after", diff_file.read_text())
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "the temporary diff must be removed")
+        subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], check=True)
+        diff_file.unlink()
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("+after", diff_file.read_text(), "origin/main works without origin/HEAD")
+        source.write_bytes(b"after\xff\n")
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "binary change"], check=True)
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("after\\xff", diff_file.read_text(), "non-UTF-8 bytes remain legible to reviewers")
+        (self.repo / "new.py").write_text("print('new')\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("untracked", result["error"])
 
     def test_a_reviewer_that_could_write_or_was_denied_a_read_is_a_failure(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -111,6 +161,11 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
         self.assertEqual((code, result["rules"]), (1, [f"write_file({self.repo})"]))
         self.assertFalse(cwd_file.exists(), "agy must not be started when it could write")
+        for write_tool in ("write_to_file", "replace_file_content"):
+            settings.write_text(json.dumps({"permissions": {"allow": [f"{write_tool}({self.repo})"]}}))
+            code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
+            self.assertEqual((code, result["rules"]), (1, [f"{write_tool}({self.repo})"]))
+            self.assertFalse(cwd_file.exists())
 
     def test_check_probes_any_text_file_and_does_not_pass_when_nothing_is_usable(self) -> None:
         (self.repo / "a.md").write_text("\n  \n")
