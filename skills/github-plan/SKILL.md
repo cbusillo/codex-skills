@@ -210,6 +210,12 @@ theme labels or alternate backlogs.
   empty.
 - If milestone size keeps growing, cut scope before silently extending the
   gate.
+- When the repository has a root `DIRECTION.md`, milestones are waypoints on
+  its journey and exist only for titles listed there; `milestone-create`
+  refuses any other title and `milestone-update` refuses a rename to one.
+  Propose a new waypoint through the `direction` skill, not by creating the
+  milestone first. Closing a shipped milestone stays normal; the stale line in
+  the file is then removed by a direction pull request.
 
 Use `gh-plan.py milestone-list`, `milestone-show`, `milestone-create`,
 `milestone-update`, and `milestone-close` for milestone containers. These

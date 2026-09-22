@@ -114,6 +114,9 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_check_probes_any_text_file_and_does_not_pass_when_nothing_is_usable(self) -> None:
         (self.repo / "a.md").write_text("\n  \n")
+        # A JSON file's first non-empty line is a lone brace. A reviewer that reads it answers "{",
+        # so the probe must skip this file instead of expecting a later line the prompt never asked for.
+        (self.repo / "a.json").write_text('{\n  "name": "shared"\n}\n')
         (self.repo / "b.txt").write_text("\nthe probe line\n")
         code, report = self.run_helper("check", "--repo", str(self.repo))
         self.assertEqual((code, report["probe"]), (1, str(self.repo / "b.txt")))

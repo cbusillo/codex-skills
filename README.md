@@ -136,6 +136,21 @@ rule applies to every `agy` session. The helper changes that file only when you
 run its `configure` subcommand, and refuses to start `agy` at all when your
 settings already allow it to write files.
 
+## Direction
+
+The `direction` skill holds a repository's direction in one owner-approved
+`DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
+there, and tells an executing agent to escalate a reviewer finding that would
+delete, retire, or redirect work instead of judging it. Its read-only audit
+reports drift:
+
+```bash
+uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO
+```
+
+Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
+title the file does not list, and `milestone-update` refuses a rename to one.
+
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
