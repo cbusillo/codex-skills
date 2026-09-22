@@ -50,23 +50,47 @@ class AuditError(Exception):
 
 
 def parse_direction(text: str) -> dict[str, Any]:
-    """Return headings found and the milestone titles listed under Milestones."""
+    """Return headings and owner-approved milestone lines."""
     headings: list[str] = []
     milestones: list[str] = []
+    milestone_lines: dict[str, str] = {}
     current: str | None = None
+    current_milestone: str | None = None
     for line in text.splitlines():
         heading = HEADING.match(line)
         if heading:
             name = heading.group(1)
             current = name
+            current_milestone = None
             headings.append(name)
             continue
         if current == "Milestones":
             item = MILESTONE_LINE.match(line)
             if item:
-                milestones.append(item.group(1).strip())
+                current_milestone = item.group(1).strip()
+                milestones.append(current_milestone)
+                milestone_lines[current_milestone] = line.strip()
+            elif current_milestone and line[:1].isspace() and line.strip():
+                milestone_lines[current_milestone] += " " + line.strip()
     missing = [name for name in REQUIRED_HEADINGS if name not in headings]
-    return {"headings": headings, "missing_headings": missing, "milestones": milestones}
+    return {"headings": headings, "missing_headings": missing, "milestones": milestones, "milestone_lines": milestone_lines}
+
+
+def direction_quotes(body: str) -> list[str]:
+    """Read quoted evidence from Markdown blockquotes in an issue body."""
+    return [match.group(1).strip() for line in body.splitlines()
+            if (match := re.match(r"^\s*>\s?(.+?)\s*$", line))]
+
+
+def automated_milestone_admission(issue: dict[str, Any], events: list[dict[str, Any]], bots: set[str]) -> bool:
+    """Use the latest admission to the issue's current milestone."""
+    title = ((issue.get("milestone") or {}).get("title"))
+    admissions = [event for event in events if event.get("event") == "milestoned"
+                  and ((event.get("milestone") or {}).get("title")) == title]
+    if not admissions:
+        return False
+    actor = str(((admissions[-1].get("actor") or {}).get("login")) or "").lower()
+    return actor in bots
 
 
 def gate_phrases(text: str) -> list[str]:
@@ -92,9 +116,11 @@ def audit(
     if direction_text is None:
         findings.append({"kind": "direction_missing", "detail": "DIRECTION.md not found at the repository root"})
         listed: list[str] = []
+        milestone_lines: dict[str, str] = {}
     else:
         parsed = parse_direction(direction_text)
         listed = parsed["milestones"]
+        milestone_lines = parsed["milestone_lines"]
         if parsed["missing_headings"]:
             findings.append({"kind": "direction_shape", "detail": "missing headings", "headings": parsed["missing_headings"]})
         if rulesets is not None:
@@ -106,7 +132,8 @@ def audit(
                 })
 
     # The owner's automation can span identities, such as a bot user and a later App.
-    trusted = {owner.lower()} | {login.lower() for login in (automation, *bot_logins) if login}
+    bots = {login.lower() for login in (automation, *bot_logins) if login}
+    trusted = {owner.lower()} | bots
     open_titles: set[str] = set()
     closed_titles: dict[str, Any] = {}
     for milestone in milestones:
@@ -149,6 +176,16 @@ def audit(
             continue
         labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
         number = issue.get("number")
+        milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
+        author = str(((issue.get("user") or {}).get("login")) or "").lower()
+        bot_authored = author in bots
+        if milestone_title in milestone_lines and (bot_authored or issue.get("_automation_admitted")):
+            quotes = direction_quotes(str(issue.get("body") or ""))
+            line = " ".join(milestone_lines[milestone_title].split())
+            if not quotes:
+                findings.append({"kind": "milestone_issue_quote_missing", "number": number, "milestone": milestone_title})
+            elif not any(len(quote) >= 12 and " ".join(quote.split()) in line for quote in quotes):
+                findings.append({"kind": "milestone_issue_quote_mismatch", "number": number, "milestone": milestone_title})
         if ESCALATION_LABEL in labels:
             opened = _parse_time(issue.get("created_at"))
             age_days = (now - opened).days if opened else None
@@ -168,7 +205,9 @@ def audit(
         "milestone_closed_listed": 5,
         "milestone_pending": 6,
         "milestone_creator": 7,
-        "gate_phrase": 8,
+        "milestone_issue_quote_missing": 8,
+        "milestone_issue_quote_mismatch": 8,
+        "gate_phrase": 9,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
     return {
@@ -314,6 +353,18 @@ def main(argv: list[str] | None = None) -> int:
         truncated += ["milestones"] if cut else []
         issues, cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
         truncated += ["issues"] if cut else []
+        listed_titles = set(parse_direction(direction_text)["milestones"]) if direction_text else set()
+        automation_logins = {login.lower() for login in (automation, *github_identity.configured_bot_logins()) if login}
+        for issue in issues:
+            if "pull_request" in issue or ((issue.get("milestone") or {}).get("title")) not in listed_titles:
+                continue
+            author = str(((issue.get("user") or {}).get("login")) or "").lower()
+            if author in automation_logins:
+                continue
+            number = issue.get("number")
+            events, cut = fetch_paginated(f"repos/{repo}/issues/{number}/events", fetch=fetch)
+            truncated += [f"issue_{number}_events"] if cut else []
+            issue["_automation_admitted"] = automated_milestone_admission(issue, events, automation_logins)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
         rulesets, cut = fetch_paginated(

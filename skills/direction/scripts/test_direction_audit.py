@@ -83,6 +83,35 @@ def test_parse_reads_only_backticked_titles_under_milestones() -> None:
     assert parsed["missing_headings"] == []
 
 
+def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> None:
+    module = load()
+    assigned = {"title": "Thin fork decision"}
+    base = {**issue(10, "Choose the engine"), "user": {"login": "bot"}, "milestone": assigned}
+    missing = run(module, issues=[base])
+    assert ("milestone_issue_quote_missing", 10) in {(item["kind"], item.get("number")) for item in missing["findings"]}
+
+    wrong = run(module, issues=[{**base, "body": "> proves a different engine choice"}])
+    assert ("milestone_issue_quote_mismatch", 10) in {(item["kind"], item.get("number")) for item in wrong["findings"]}
+
+    quoted = run(module, issues=[{**base, "body": "> proves the engine choice"}])
+    assert quoted["ok"] is True, quoted
+
+    human = {**base, "user": {"login": "someone-else"}}
+    assert run(module, issues=[human])["ok"] is True
+    admitted = run(module, issues=[{**human, "_automation_admitted": True}])
+    assert "milestone_issue_quote_missing" in kinds(admitted)
+
+
+def test_automation_admission_uses_the_latest_event_for_the_current_milestone() -> None:
+    module = load()
+    assigned = {**issue(10, "Choose the engine"), "milestone": {"title": "Thin fork decision"}}
+    old = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "bot"}}
+    owner = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "owner"}}
+    assert module.automated_milestone_admission(assigned, [old], {"bot"}) is True
+    assert module.automated_milestone_admission(assigned, [old, owner], {"bot"}) is False
+    assert module.automated_milestone_admission(assigned, [owner, old], {"bot"}) is True
+
+
 def test_missing_file_and_missing_heading() -> None:
     module = load()
     assert kinds(run(module, direction_text=None)) == ["direction_missing"]

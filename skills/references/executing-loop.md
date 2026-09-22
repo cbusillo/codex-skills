@@ -23,7 +23,11 @@ Use [reviews by another model](model-review.md) to decide when a review is
 needed. For milestone work, honor the same authorization and direction stop
 boundaries on each issue. If one issue must pause or escalate, continue other
 independent milestone issues. Put close-out follow-ups outside the current
-milestone unless the owner adds them; do not start them in that close-out.
+milestone by default. An executing agent may admit one to a milestone listed in
+`DIRECTION.md` when its issue body blockquotes an exact phrase from that
+milestone's line that the issue proves or protects. Admission is checked by the
+direction audit afterward; it needs no owner step. Do not start a follow-up in
+the same close-out.
 If `next` finds no actionable milestone issue, report what is waiting and do
 not claim the milestone is complete until its exit criteria are met.
 Preserve unsafe or active worktrees and runtime checkouts under their owning
