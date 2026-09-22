@@ -32,7 +32,7 @@ from typing import Any
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
-AGY_READ_ONLY_COMMANDS = ("grep", "rg", "ls", "find", "wc")
+AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
@@ -113,9 +113,10 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
 
 
 def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path) -> dict[str, Any]:
-    # `--sandbox` confines the shell to the working directory, so that directory is an empty scratch one.
-    # It does not confine agy's own write tool; leaving that tool without an allow rule is what denies it.
-    # A write rule the user added for their own work would be inherited by the reviewer.
+    # Use an empty scratch directory for the sandboxed CLI session. Do not rely on
+    # sandbox confinement to make command permissions safe: find can delete or
+    # execute, and rg --pre can execute a program. A user-added write rule would
+    # also be inherited by the reviewer.
     allow = (agy_settings().get("permissions") or {}).get("allow") or []
     safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
     unsafe = sorted(
@@ -183,7 +184,7 @@ def branch_diff(repo: Path) -> bytes:
         capture_output=True,
     )
     project_files = [name for name in untracked.stdout.split(b"\0") if name and not re.fullmatch(
-        rb"\.model-review-[a-z0-9_]+/.*", name,
+        rb"\.model-review-[A-Za-z0-9_]+/.*", name,
     )]
     if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
@@ -212,7 +213,12 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
             diff = branch_diff(repo)
             preamble = PREAMBLE.format(repo=repo)
             if provider == "google":
-                preamble += "Read files directly with read_file; do not run shell commands.\n\n"
+                permitted = ", ".join(f"`{name}`" for name in AGY_READ_ONLY_COMMANDS)
+                preamble += (
+                    f"The only commands you may run are {permitted}. "
+                    "Use read_file to inspect file contents and for anything those commands cannot read. "
+                    "Do not run other commands.\n\n"
+                )
             if diff:
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
