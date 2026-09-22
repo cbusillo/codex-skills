@@ -160,8 +160,8 @@ and writes nothing. For each finding:
 - `milestone_closed_listed`: a milestone that shipped and closed while the file
   still lists it. Remove the line by direction pull request. Never reopen or
   recreate it.
-- `milestone_creator`: a milestone created by an account other than the owner
-  or the acting automation. Ask how it got there.
+- `milestone_creator`: an open milestone created by an account other than the
+  owner, the acting automation, or a configured bot login. Ask how it got there.
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit owner-admin mutation.

@@ -119,7 +119,7 @@ def audit(
                 findings.append({"kind": "milestone_unlisted", "title": title, "number": milestone.get("number")})
         else:
             closed_titles[title] = milestone.get("number")
-        if creator and creator.lower() not in trusted:
+        if state == "open" and creator and creator.lower() not in trusted:
             findings.append({"kind": "milestone_creator", "title": title, "number": milestone.get("number"), "creator": creator})
         if state == "open":
             phrases = gate_phrases(str(milestone.get("description") or ""))
