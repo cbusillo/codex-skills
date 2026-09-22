@@ -2862,6 +2862,9 @@ def cmd_close(args: argparse.Namespace) -> None:
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
+    owner_decision: dict[str, Any] | None = None
+    if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
+        owner_decision = check_owner_decides_not_planned(issue_repo, number, issue)
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
@@ -3092,6 +3095,8 @@ def cmd_close(args: argparse.Namespace) -> None:
         closed_result["reconciliation"] = close_result.get("reconciliation")
     if "close_issue_already_complete" in completed_steps:
         closed_result["already_complete"] = True
+    if owner_decision is not None:
+        closed_result["owner_decision"] = owner_decision
 
     emit({
         "ok": True,
@@ -3326,6 +3331,101 @@ def cmd_milestone_update(args: argparse.Namespace) -> None:
             expected_actor=expected_actor,
             gh_cmd=gh_cmd,
         )
+    )
+
+
+ISSUE_LAST_EDITED_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) { lastEditedAt }
+  }
+}
+"""
+
+
+def owner_decision_refusal(message: str, *, cause: str = "validation_error") -> PlanError:
+    return PlanError(
+        message,
+        failure=github_api_core.FailureDetail(
+            cause=cause,
+            message="not-planned close of direction milestone work needs the owner's comment",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="check_owner_decision",
+        ),
+    )
+
+
+def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[str, Any]) -> dict[str, Any]:
+    """Refuse to drop milestone work the owner admitted unless the owner said so.
+
+    Applies only to an issue in a milestone listed in the merged DIRECTION.md.
+    The decision is a comment authored by the repository owner after the body,
+    which holds Current Status, was last edited. Automation cannot author as
+    the owner, so no session can satisfy this by itself.
+    """
+    milestone = issue.get("milestone")
+    title = milestone.get("title") if isinstance(milestone, dict) else None
+    if not isinstance(title, str):
+        return {"required": False, "reason": "no_milestone"}
+    direction_text = load_direction(issue_repo)
+    if direction_text is None or title not in direction_milestone_titles(direction_text):
+        return {"required": False, "reason": "milestone_not_listed_in_direction"}
+
+    repo_owner, repo_name = issue_repo.split("/", 1)
+    try:
+        _, data = api_json(
+            "POST",
+            "/graphql",
+            {
+                "query": ISSUE_LAST_EDITED_QUERY,
+                "variables": {"owner": repo_owner, "name": repo_name, "number": number},
+            },
+            is_write=False,
+            failed_step="read_issue_last_edited",
+        )
+        last_edited = data["data"]["repository"]["issue"]["lastEditedAt"]
+    except (PlanError, KeyError, TypeError) as exc:
+        raise owner_decision_refusal(
+            f"Cannot close {issue_repo}#{number} as not planned: could not read when its "
+            f"Current Status was last updated ({github_api_core.redact_string(str(exc))}).",
+            cause="read_failure",
+        ) from exc
+    status_updated_at = last_edited or issue.get("created_at")
+    if not isinstance(status_updated_at, str):
+        raise owner_decision_refusal(
+            f"Cannot close {issue_repo}#{number} as not planned: the issue has no creation or edit time.",
+            cause="read_failure",
+        )
+
+    _, comments = collect_paged_rest_items(
+        f"/repos/{issue_repo}/issues/{number}/comments",
+        query={"since": status_updated_at},
+        bucket="rest_core",
+        step_prefix="owner_decision_comments",
+    )
+    for comment in comments:
+        author = (comment.get("user") or {}).get("login")
+        created_at = comment.get("created_at")
+        if (
+            isinstance(author, str)
+            and author.casefold() == repo_owner.casefold()
+            and isinstance(created_at, str)
+            and created_at > status_updated_at
+        ):
+            return {
+                "required": True,
+                "milestone": title,
+                "status_updated_at": status_updated_at,
+                "comment_url": comment.get("html_url"),
+            }
+    raise owner_decision_refusal(
+        f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
+        f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
+        f"last Current Status update ({status_updated_at}) records the decision. Ask the owner to comment "
+        "on the issue with the decision, then rerun; do not close it another way."
     )
 
 
