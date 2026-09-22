@@ -1,0 +1,8 @@
+# Code owners
+#
+# Only these two paths require code-owner review. DIRECTION.md changes only by
+# a pull request the owner approves; this file is protected so an ordinary
+# pull request cannot remove that rule first. See skills/direction/SKILL.md.
+
+/DIRECTION.md @cbusillo
+/.github/CODEOWNERS @cbusillo
