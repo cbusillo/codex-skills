@@ -306,7 +306,10 @@ def cmd_view(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(pr, dict):
         raise PrHelperError("PR metadata response was not an object", diagnostics=reader.diagnostics(), repo=repo, pr=number)
     record_retry_summary(reader.retry_summary())
-    return {"ok": True, "repo": repo, "pr": normalize_pr(pr), "diagnostics": reader.diagnostics()}
+    return {
+        "ok": True, "repo": repo, "pr": normalize_pr(pr),
+        **merge_observations(pr), "diagnostics": reader.diagnostics(),
+    }
 
 
 def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
@@ -472,6 +475,19 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
         "expected_actor": EXPECTED_ACTOR,
         "completed_steps": reader.completed_steps,
         "diagnostics": reader.diagnostics(),
+        **merge_observations(
+            payload.get("pr"),
+            readiness={
+                "state": (
+                    "reads_complete" if payload["summary"].get("countsComplete") is True
+                    and payload["summary"].get("countsAreLowerBounds") is False
+                    and not payload["summary"].get("unavailableComponents")
+                    else "reads_degraded"
+                ),
+                "head_sha": payload.get("headSha"),
+                "unavailable_components": payload["summary"].get("unavailableComponents") or [],
+            },
+        ),
     }
     if reader.diagnostics()["degraded"]:
         failed_result = reader.failed_results[0] if reader.failed_results else None
@@ -562,9 +578,22 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         result = rest_result("PUT", merge_path, payload, reconcile=reconcile_merge).body
     except HelperError as exc:
         api_result = exc.payload.get("api_result") if isinstance(exc, PrHelperError) else None
+        merge_failure = exc.failure if isinstance(exc, PrHelperError) else None
+        if merge_failure and merge_failure.cause == "permission_denied":
+            capability = {
+                "observed_outcome": "denied",
+                "authority": "denied_for_operation",
+                "cause": merge_failure.cause,
+            }
+        else:
+            capability = {
+                "observed_outcome": "rejected" if merge_failure and merge_failure.write_outcome == "rejected" else "unknown",
+                "authority": "unknown",
+                "cause": merge_failure.cause if merge_failure else None,
+            }
         raise PrHelperError(
             "PR merge failed",
-            failure=exc.failure if isinstance(exc, PrHelperError) else None,
+            failure=merge_failure,
             detail=str(exc),
             operation="merge",
             repo=repo,
@@ -572,11 +601,9 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             endpoint=merge_path,
             method=args.method,
             headSha=pr["head"]["sha"],
-            hint=merge_failure_hint(
-                str(exc),
-                cause=exc.failure.cause if isinstance(exc, PrHelperError) and exc.failure else None,
-            ),
+            hint=merge_failure_hint(str(exc), cause=merge_failure.cause if merge_failure else None),
             api_result=api_result,
+            **merge_observations(pr, capability=capability),
         ) from exc
     if not result.get("merged"):
         message = str(result.get("message") or "GitHub did not merge the pull request")
@@ -595,6 +622,10 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
             repo=repo,
             pr=number,
             merge=result,
+            **merge_observations(
+                pr,
+                capability={"observed_outcome": "rejected", "authority": "unknown", "cause": "merge_rejected"},
+            ),
         )
     merge_sha = str(result.get("sha") or "")
     if not FULL_SHA_PATTERN.fullmatch(merge_sha):
@@ -625,6 +656,13 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
                 pr=number,
                 merge=result,
                 refreshedPr=normalize_pr(refreshed_pr),
+                **merge_observations(
+                    pr,
+                    capability={
+                        "observed_outcome": "accepted_unverified",
+                        "authority": "confirmed_for_operation",
+                    },
+                ),
             )
         pr = refreshed_pr
         merge_sha = refreshed_sha
@@ -647,6 +685,16 @@ def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "repo": repo,
         "pr": normalize_pr(pr),
+        **merge_observations(
+            pr,
+            capability={
+                "observed_outcome": "merged",
+                "authority": (
+                    "not_attributed_to_actor" if result.get("message") == "Merge confirmed by PR re-read"
+                    else "confirmed_for_operation"
+                ),
+            },
+        ),
         "merge": result,
         "mergeCommitOid": merge_sha,
         "deletedBranch": deleted,
@@ -915,6 +963,28 @@ MERGE_STATE_STATUS = {
     "unknown": "UNKNOWN",
     "unstable": "UNSTABLE",
 }
+
+
+def merge_observations(
+    pr: Optional[dict[str, Any]],
+    *,
+    readiness: Optional[dict[str, Any]] = None,
+    capability: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    item = pr or {}
+    state = item.get("mergeable_state") or item.get("mergeStateStatus")
+    normalized_state = MERGE_STATE_STATUS.get(str(state), str(state).upper()) if state else None
+    return {
+        "readiness_evidence": readiness or {"state": "not_read"},
+        "mergeability": {
+            "state": normalized_state or "UNKNOWN",
+            "mergeable": item.get("mergeable"),
+            "source": "pull_request_metadata" if pr else "not_read",
+        },
+        "observed_merge_capability": capability or {
+            "observed_outcome": "not_attempted", "authority": "unknown",
+        },
+    }
 
 
 def merge_failure_hint(message: str, *, cause: Optional[str] = None) -> str:
