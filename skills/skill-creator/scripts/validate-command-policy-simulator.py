@@ -173,6 +173,10 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
     (["git", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper"),
     (["git", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
     (["git", "push", "--force", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
+    (["git", "-c", "commit.gpgsign=false", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper-with-git-options"),
+    (["git", "-C", "path", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper-with-git-options"),
+    (["git", "-c", "http.extraHeader=x", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper-with-git-options"),
+    (["git", "-C", "path", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper-with-git-options"),
     (["gh", "issue", "list", "--label", "plan"], None, "github-plan", "prefer-gh-plan-index-for-issue-list"),
     (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan", "prefer-gh-plan-search-for-issue-search"),
     (["gh", "project", "item-list", "1"], None, "github-plan", "prefer-gh-plan-helper-for-project-commands"),
@@ -185,6 +189,8 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
 
 NEGATIVE_EXPECTATIONS: tuple[tuple[list[str], str | None], ...] = (
     (["git", "reset", "--hard"], None),
+    (["git", "-C", "path", "commit-graph", "write"], None),
+    (["git", "-C", "path", "log", "--grep", "push"], None),
     (["gh", "issue", "view", "123"], None),
     (["gh", "api", "graphql"], "gh api graphql -f query='{ viewer { login } }'"),
     (["curl", "https://example.invalid/health"], None),
