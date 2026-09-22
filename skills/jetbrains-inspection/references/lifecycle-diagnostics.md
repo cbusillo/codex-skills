@@ -71,6 +71,10 @@ helper preserves the first `UNKNOWN`, skips the second inspection, and reports
 contract: terminal execution-proof failures must not tell agents to rerun, and
 retryable native-run interruption may request only the single maintained fresh
 run. Never infer permission to retry from prose when `retry_policy.retry=false`.
+The `go <milestone>` landing exception in `repo-readiness` is a separate later
+assessment after proven preemption or a foreign run ends. It allows at most one
+additional assessment per revision beyond the helper's internal retry; it does
+not treat a generic timeout or an unresolved cleanup lease as ready to retry.
 Preparation is failure-atomic for handled failures and interrupts. With plugin
 protocol `lease_bound_v1`, the helper persists `state=open_requesting` before
 sending its local `lease_id` to `lifecycle/open`. An open response registers the

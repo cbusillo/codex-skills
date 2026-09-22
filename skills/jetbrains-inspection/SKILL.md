@@ -403,13 +403,15 @@ scope, never source code or a mixed scope containing source code.
   the preferred IDE, or report the blocker. Before a new helper invocation,
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
-  For a `go <milestone>` landing with passing executable checks, a previous
-  `UNKNOWN` caused by contention or preemption may receive one fresh assessment
-  after the IDE becomes idle, even when the earlier terminal response said not
-  to retry unchanged. If that fresh result is still `UNKNOWN`, record the
-  inconclusive scope and reason in the PR and continue an already authorized
-  landing as described in `repo-readiness`; do not call the inspection clean.
-  A `RED` finding on changed lines still blocks.
+  A separate `go <milestone>` landing exception in `repo-readiness` permits at
+  most one additional assessment per revision after the IDE becomes idle when
+  an earlier run proved preemption (`inspection_terminal_outcome=preempted` or
+  `exact_proof_write_preempted`) or adopted a foreign run. A generic timeout
+  does not qualify. This is a later assessment after external state changes,
+  not another immediate retry of an unchanged failure. Even then, preserve
+  the `UNKNOWN` verdict and any actionable findings under the normal policy;
+  resolve deferred lifecycle cleanup before worktree removal. Other terminal
+  failures remain governed by the helper's `retry_policy`.
 - A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
   after the initial readiness wait if IDE auto-configuration is still registering
   the generated `.venv`. Preparation binds an existing SDK by interpreter home
