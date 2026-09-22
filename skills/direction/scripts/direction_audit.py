@@ -82,10 +82,12 @@ def direction_quotes(body: str) -> list[str]:
     quotes: list[str] = []
     fenced = False
     for line in body.splitlines():
-        if line.lstrip().startswith("```"):
+        if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             continue
-        if not fenced and (match := re.match(r"^\s*>\s+([^>].*?)\s*$", line)):
+        if line.startswith(("    ", "\t")):
+            continue
+        if not fenced and (match := re.match(r"^\s{0,3}>\s*([^>].*?)\s*$", line)):
             quotes.append(match.group(1).strip())
     return quotes
 
@@ -94,6 +96,23 @@ def plain_direction_text(value: str) -> str:
     """Compare a copied rendered phrase with its Markdown source."""
     value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
     return " ".join(re.sub(r"[`*_]", "", value).split()).lower()
+
+
+def has_direction_quote(body: str, milestone_line: str) -> bool:
+    evidence_line = re.sub(r"^\s*[-*]\s+`[^`]+`\s*", "", milestone_line)
+    source = plain_direction_text(evidence_line)
+    for quote in direction_quotes(body):
+        phrase = plain_direction_text(quote)
+        if len(phrase) < 12:
+            continue
+        position = source.find(phrase)
+        if position < 0:
+            continue
+        before = source[position - 1] if position else " "
+        after = source[position + len(phrase):position + len(phrase) + 1] or " "
+        if not before.isalnum() and not after.isalnum():
+            return True
+    return False
 
 
 def milestone_admission_actor(events: list[dict[str, Any]]) -> str | None:
@@ -146,6 +165,12 @@ def audit(
     # The owner's automation can span identities, such as a bot user and a later App.
     bots = {login.lower() for login in (automation, *bot_logins) if login} - {owner.lower()}
     trusted = {owner.lower()} | bots
+    if direction_text is not None and listed and not bots:
+        findings.append({
+            "kind": "coverage_incomplete",
+            "detail": "automation identity is indistinguishable from the owner; milestone admission audit cannot classify actors",
+            "listings": ["milestone_admission_identity"],
+        })
     open_titles: set[str] = set()
     closed_titles: dict[str, Any] = {}
     for milestone in milestones:
@@ -196,11 +221,9 @@ def audit(
         if (not issue.get("_admission_unknown") and milestone_title in milestone_lines
                 and (bot_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))
-            line = re.sub(r"^\s*[-*]\s+`[^`]+`\s*", "", milestone_lines[milestone_title])
-            line = plain_direction_text(line)
             if not quotes:
                 findings.append({"kind": "milestone_issue_quote_missing", "number": number, "milestone": milestone_title})
-            elif not any(len(plain_direction_text(quote)) >= 12 and plain_direction_text(quote) in line for quote in quotes):
+            elif not has_direction_quote(str(issue.get("body") or ""), milestone_lines[milestone_title]):
                 findings.append({"kind": "milestone_issue_quote_mismatch", "number": number, "milestone": milestone_title})
         if ESCALATION_LABEL in labels and issue.get("state", "open") == "open":
             opened = _parse_time(issue.get("created_at"))
@@ -282,7 +305,7 @@ def fetch_paginated(path: str, *, fetch: Callable[[list[str]], Any], max_pages: 
 
 
 def enrich_admission_actors(
-    issues: list[dict[str, Any]], listed_titles: set[str], repo: str,
+    issues: list[dict[str, Any]], milestone_lines: dict[str, str], repo: str,
     *, fetch: Callable[[list[str]], Any], max_issues: int = MAX_ADMISSION_ISSUES,
 ) -> bool:
     """Add last admission actors within a bounded event-read budget."""
@@ -290,7 +313,10 @@ def enrich_admission_actors(
     examined = 0
     recent_first = sorted(issues, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
     for issue in recent_first:
-        if "pull_request" in issue or ((issue.get("milestone") or {}).get("title")) not in listed_titles:
+        title = ((issue.get("milestone") or {}).get("title"))
+        if "pull_request" in issue or title not in milestone_lines:
+            continue
+        if has_direction_quote(str(issue.get("body") or ""), milestone_lines[title]):
             continue
         if examined >= max_issues:
             issue["_admission_unknown"] = True
@@ -367,6 +393,48 @@ def record_audit(repo: str) -> str | None:
         return None
 
 
+def previous_audit_stamp(repo: str) -> dt.datetime | None:
+    """Read the previous audit marker without changing it."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("direction_mark", pathlib.Path(__file__).with_name("direction_mark.py"))
+        if spec is None or spec.loader is None:
+            return None
+        mark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mark)
+        audits = mark.load(mark.marker_path()).get("audits", {})
+        return _parse_time(audits.get(repo)) if isinstance(audits, dict) else None
+    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def fetch_audit_issues(
+    repo: str, milestones: list[dict[str, Any]], milestone_lines: dict[str, str],
+    since: dt.datetime, *, fetch: Callable[[list[str]], Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Open issues plus bounded closed milestone issues since the last audit."""
+    issues, open_cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
+    truncated = ["issues"] if open_cut else []
+    since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    closed_cut = False
+    for milestone in milestones:
+        if str(milestone.get("title") or "") not in milestone_lines:
+            continue
+        closed, cut = fetch_paginated(
+            f"repos/{repo}/issues?milestone={milestone.get('number')}&state=closed&since={since_text}",
+            fetch=fetch, max_pages=2,
+        )
+        issues.extend(closed)
+        closed_cut = closed_cut or cut
+    if closed_cut:
+        truncated.append("recent_closed_milestone_issues")
+    issues = list({issue.get("number"): issue for issue in issues}.values())
+    if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch):
+        truncated.append("milestone_issue_events")
+    return issues, truncated
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
@@ -392,11 +460,12 @@ def main(argv: list[str] | None = None) -> int:
         truncated: list[str] = []
         milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
         truncated += ["milestones"] if cut else []
-        issues, cut = fetch_paginated(f"repos/{repo}/issues?state=all", fetch=fetch)
-        truncated += ["issues"] if cut else []
-        listed_titles = set(parse_direction(direction_text)["milestones"]) if direction_text else set()
-        if enrich_admission_actors(issues, listed_titles, repo, fetch=fetch):
-            truncated.append("milestone_issue_events")
+        milestone_lines = parse_direction(direction_text)["milestone_lines"] if direction_text else {}
+        previous = previous_audit_stamp(repo)
+        now = dt.datetime.now(dt.timezone.utc)
+        since = previous if previous and previous <= now else now - dt.timedelta(days=7)
+        issues, issue_truncation = fetch_audit_issues(repo, milestones, milestone_lines, since, fetch=fetch)
+        truncated.extend(issue_truncation)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
         rulesets, cut = fetch_paginated(
@@ -422,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
         bot_logins=github_identity.configured_bot_logins(),
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
-    result["marked"] = record_audit(repo)
+    result["marked"] = None if "coverage_incomplete" in result["counts"] else record_audit(repo)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 

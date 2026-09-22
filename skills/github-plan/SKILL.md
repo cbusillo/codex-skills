@@ -208,7 +208,9 @@ theme labels or alternate backlogs.
   that determines when it can close.
 - Treat removal as normal scope control. Record why an incomplete issue no
   longer blocks, then return it to the backlog or deliberately admit it to a
-  later milestone.
+  later milestone. For an agent admission to a milestone listed in
+  `DIRECTION.md`, blockquote the exact phrase from that line the issue proves
+  or protects as described in the direction skill.
 - Close the milestone when the release or phase ships. Triage and remove
   survivors instead of keeping the milestone open until every themed issue is
   empty.

@@ -57,9 +57,9 @@ or closed. Issues are a work list, not instructions.
 An executing agent may admit an issue to a milestone already listed in the
 merged `DIRECTION.md` when the issue body contains a Markdown blockquote of an
 exact phrase from that milestone's line explaining what the issue proves or
-protects. The direction audit reports missing or mismatched quotes on
-automation-created or automation-admitted milestone issues, including ones
-closed between audits; the direction turn
+protects. The direction audit reports missing or mismatched quotes on open
+automation-created or automation-admitted milestone issues and on issues closed
+since the prior audit (the last seven days on a first audit); the direction turn
 keeps the issue or moves it out. This is an after-the-fact finding, not a
 preapproval gate. An issue admitted during close-out waits for a later
 `go <milestone>` run. Adding a milestone or changing what it proves remains
@@ -177,9 +177,11 @@ and writes nothing. For each finding:
   or closed issue created or admitted to a listed milestone by automation does not
   blockquote an exact phrase from that milestone's merged direction line.
   Check the issue's actual purpose, then keep it with a matching quote or move
-  it outside the milestone. Existing issues admitted before this rule may
-  produce a one-time batch of findings. This is an audit finding, not an
-  admission gate; an owner-admitted issue is outside this check.
+  it outside the milestone. Existing open issues admitted before this rule or
+  old quotes after a direction-line edit may produce a one-time batch of
+  findings. The owner may accept an issue as written by assigning the milestone
+  again; the latest assignment actor then exempts it. This is an audit finding,
+  not an admission gate; an owner-admitted issue is outside this check.
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit owner-admin mutation.

@@ -81,6 +81,8 @@ def test_parse_reads_only_backticked_titles_under_milestones() -> None:
     parsed = module.parse_direction(DIRECTION + "\n## Notes\n- `Not a milestone` here\n")
     assert parsed["milestones"] == ["Thin fork decision", "Dogfood week"]
     assert parsed["missing_headings"] == []
+    wrapped = DIRECTION.replace("proves the engine choice; ends", "proves the engine choice;\n  ends")
+    assert module.has_direction_quote("> ends if the spikes fail.", module.parse_direction(wrapped)["milestone_lines"]["Thin fork decision"])
 
 
 def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> None:
@@ -103,13 +105,20 @@ def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> 
     owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
     assert owner_admitted["ok"] is True
     owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])
-    assert owner_fallback["ok"] is True
+    assert "coverage_incomplete" in kinds(owner_fallback)
+    assert "milestone_issue_quote_missing" not in kinds(owner_fallback)
     closed = run(module, issues=[{**base, "state": "closed"}])
     assert "milestone_issue_quote_missing" in kinds(closed)
     title_only = run(module, issues=[{**base, "body": "> Thin fork decision"}])
     assert "milestone_issue_quote_mismatch" in kinds(title_only)
     rendered = run(module, issues=[{**base, "body": "> Proves the engine choice"}])
     assert rendered["ok"] is True
+    no_space = run(module, issues=[{**base, "body": ">proves the engine choice"}])
+    assert no_space["ok"] is True
+    fenced = run(module, issues=[{**base, "body": "```text\n> proves the engine choice\n```"}])
+    assert "milestone_issue_quote_missing" in kinds(fenced)
+    fragment = run(module, issues=[{**base, "body": ">roves the engine choic"}])
+    assert "milestone_issue_quote_mismatch" in kinds(fragment)
 
 
 def test_automation_admission_uses_the_latest_event_across_renames() -> None:
@@ -130,12 +139,43 @@ def test_event_reads_are_bounded_and_skip_pull_requests() -> None:
     def fetch(args: list[str]) -> list[dict[str, Any]]:
         calls.append(args)
         return [{"event": "milestoned", "actor": {"login": "bot"}}]
-    cut = module.enrich_admission_actors([first, second, pull], {"Thin fork decision"}, "o/r", fetch=fetch, max_issues=1)
+    cut = module.enrich_admission_actors(
+        [first, second, pull], {"Thin fork decision": "- `Thin fork decision` proves the engine choice; ends if the spikes fail."},
+        "o/r", fetch=fetch, max_issues=1,
+    )
     assert cut is True
     assert first["_milestone_admitted_by"] == "bot"
     assert second["_admission_unknown"] is True
     assert "_milestone_admitted_by" not in pull
     assert len(calls) == 1
+
+
+def test_issue_fetch_keeps_open_findings_and_recent_closed_admissions() -> None:
+    module = load()
+    open_issue = {**issue(10, "Open", body="> proves the engine choice"), "milestone": {"title": "Thin fork decision"}, "state": "open"}
+    closed_issue = {**issue(11, "Closed"), "milestone": {"title": "Thin fork decision"}, "state": "closed"}
+    calls: list[str] = []
+    def fetch(args: list[str]) -> list[dict[str, Any]]:
+        path = args[1]
+        calls.append(path)
+        if "state=open" in path:
+            return [open_issue]
+        if "state=closed" in path:
+            return [closed_issue]
+        if "/issues/11/events" in path:
+            return [{"event": "milestoned", "actor": {"login": "bot"}}]
+        raise AssertionError(path)
+    found, truncated = module.fetch_audit_issues(
+        "o/r", [milestone(1, "Thin fork decision")],
+        {"Thin fork decision": "- `Thin fork decision` proves the engine choice; ends if the spikes fail."},
+        NOW, fetch=fetch,
+    )
+    assert truncated == []
+    assert {item["number"] for item in found} == {10, 11}
+    assert closed_issue["_milestone_admitted_by"] == "bot"
+    assert not any("/issues/10/events" in path for path in calls), "a matching quote needs no event read"
+    assert any("state=open" in path for path in calls)
+    assert any("state=closed&since=" in path for path in calls)
 
 
 def test_missing_file_and_missing_heading() -> None:
