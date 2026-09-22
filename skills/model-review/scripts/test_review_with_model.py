@@ -161,7 +161,7 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertIn("after\\xff", diff_file.read_text(), "non-UTF-8 bytes remain legible to reviewers")
-        leftover = self.repo / ".model-review-ab12_cd" / "change.diff"
+        leftover = self.repo / ".model-review-Ab12_cd" / "change.diff"
         leftover.parent.mkdir()
         leftover.write_text("left by a killed or parallel reviewer\n")
         code, result = self.review("google", **env)
@@ -202,6 +202,13 @@ class ReviewWithModelTests(unittest.TestCase):
             code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
             self.assertEqual((code, result["rules"]), (1, [f"command({command})"]))
             self.assertFalse(cwd_file.exists(), "agy must not start with an executable command allow rule")
+        settings.write_text(json.dumps({"permissions": {"allow": ["command(grep)", "command(ls)", "command(wc)"]}}))
+        code, result = self.review(
+            "google", FAKE_AGY_JSON=json.dumps({"response": "reviewed", "denied_actions": []}),
+            FAKE_AGY_CWD_FILE=str(cwd_file),
+        )
+        self.assertEqual((code, result["response"]), (0, "reviewed"))
+        self.assertTrue(cwd_file.exists(), "safe command rules must let the reviewer run")
 
     def test_check_probes_any_text_file_and_does_not_pass_when_nothing_is_usable(self) -> None:
         (self.repo / "a.md").write_text("\n  \n")

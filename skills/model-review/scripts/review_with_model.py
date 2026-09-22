@@ -184,7 +184,7 @@ def branch_diff(repo: Path) -> bytes:
         capture_output=True,
     )
     project_files = [name for name in untracked.stdout.split(b"\0") if name and not re.fullmatch(
-        rb"\.model-review-[a-z0-9_]+/.*", name,
+        rb"\.model-review-[A-Za-z0-9_]+/.*", name,
     )]
     if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
