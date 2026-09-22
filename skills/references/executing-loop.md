@@ -9,7 +9,7 @@ still governs every action.
 Executing loop for this repository (from DIRECTION.md):
   next          report the ranked item and stop
   go            start it: linked worktree, bot commits, review by another model when the review reference says so
-  go <milestone title>  work that milestone's issues in next order without stopping; stop only at a DIRECTION.md stop boundary or escalation
+  go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
   land          open the PR, babysit it until merged, reconcile the runtime checkout
@@ -19,6 +19,13 @@ Executing loop for this repository (from DIRECTION.md):
 `go` authorizes implementation; merge still requires authorization for the
 change and destination under [task scope and authorization](execution-scope.md).
 When that authorization exists, carry `land` through without asking again.
+Use [reviews by another model](model-review.md) to decide when a review is
+needed. For milestone work, honor the same authorization and direction stop
+boundaries on each issue. If one issue must pause or escalate, continue other
+independent milestone issues. Put close-out follow-ups outside the current
+milestone unless the owner adds them; do not start them in that close-out.
+If `next` finds no actionable milestone issue, report what is waiting and do
+not claim the milestone is complete until its exit criteria are met.
 Preserve unsafe or active worktrees and runtime checkouts under their owning
 skills rather than forcing cleanup. Preserve dirty or divergent default
 checkouts too; report when they cannot be safely fast-forwarded.
