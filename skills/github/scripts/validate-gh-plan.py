@@ -2207,8 +2207,9 @@ def owner_decision_close(
     reason: str,
     milestone: str | None,
     comments: list[dict[str, Any]],
+    plan: Any = None,
 ) -> tuple[Any, list[str], StringIO]:
-    plan = load_plan_module()
+    plan = plan or load_plan_module()
     allow_close_relationships(plan)
     issue = close_plan_issue()
     issue["created_at"] = "2026-09-01T00:00:00Z"
@@ -2265,12 +2266,10 @@ def test_close_not_planned_refuses_direction_milestone_work_without_owner_commen
         owner_comment("owner", "2026-09-19T00:00:00Z"),
         owner_comment("shiny-code-bot", "2026-09-21T00:00:00Z"),
     ]
+    plan = load_plan_module()
     try:
-        owner_decision_close(reason="not_planned", milestone="Holds in use", comments=stale_or_foreign)
-    except SystemExit as exc:
-        raise AssertionError("expected PlanError, not exit") from exc
-    except Exception as exc:
-        assert type(exc).__name__ == "PlanError", exc
+        owner_decision_close(reason="not_planned", milestone="Holds in use", comments=stale_or_foreign, plan=plan)
+    except plan.PlanError as exc:
         message = str(exc)
         assert "repository owner 'owner'" in message and "Holds in use" in message, message
         assert exc.failure.failed_step == "check_owner_decision", exc.failure
