@@ -12,7 +12,7 @@ resources:
     description: Read-only audit of DIRECTION.md against GitHub milestones, escalations, and approval-gate text in open issues.
   - path: scripts/direction_mark.py
     kind: script
-    description: Records the end of a daily turn or weekly audit in the local marker the session-start reminder reads.
+    description: Records the end of a daily turn in the local marker the session-start reminder reads; audits are stamped by the audit script itself.
 commands:
   - name: direction-audit
     source: skill
@@ -23,7 +23,7 @@ commands:
     source: skill
     resource_path: scripts/direction_mark.py
     example_argv: ["uv", "run", "scripts/direction_mark.py", "turn"]
-    purpose: Marks a daily turn or weekly audit as done so every host stops reminding the owner.
+    purpose: Marks a daily turn as done so every host stops reminding the owner until the next day.
 ---
 
 # Direction
@@ -105,16 +105,27 @@ A **daily turn** is steps 1 and 2 alone, ending in "on course" or a named
 deviation. A **weekly audit** is the full session, opened by running the audit
 script and reading its findings before anything else.
 
-End every turn or audit by recording it, so the reminder goes quiet:
+End every daily turn by recording it, so the reminder goes quiet:
 
 ```bash
-uv run <skill-dir>/scripts/direction_mark.py turn    # or: audit
+uv run <skill-dir>/scripts/direction_mark.py turn
 ```
 
+Only the direction agent runs that, at the end of a turn the owner took part
+in; an executing agent that runs it clears a reminder the owner never acted
+on. Weekly audits are not marked by hand. The audit script stamps its own
+completion for the repository it audited, so an audit stamp means a real
+read-only audit ran.
+
 The catalog's session-start hook reads that marker on every host and opens a
-session with one line when a turn is more than a day old or an audit more
-than a week old. A reminder that will not clear means the marker was not
-written, not that the check does not count.
+session with one line when the last turn is more than a day old, or when the
+repository the session opened in has a `DIRECTION.md` whose last audit is
+more than a week old. The turn is one habit shared across repositories; the
+audit is per repository, and a fresh audit of one never silences another. A
+reminder that will not clear means the marker was not written where the hook
+reads it; the reminder names the path. The marker is one file for every host,
+`~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,
+on purpose: host home variables differ between Claude Code and Codex.
 
 ## Weekly Audit
 

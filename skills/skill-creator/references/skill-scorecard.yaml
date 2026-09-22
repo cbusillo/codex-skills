@@ -149,9 +149,13 @@ skills:
           last_validated_ref: main
           notes: >-
             The marker writer and the session-start hook agree on the marker
-            path and format; the hook prints one line only while a turn is
-            over a day old or an audit over a week old, treats a missing or
-            malformed marker as overdue, and exits 0 in every case.
+            path and format; the hook prints one line only while the turn is
+            over a day old or the current repository's audit over a week old,
+            an audit of one repository never silences another, a missing,
+            malformed, or naive stamp never crashes it, only a turn can be
+            marked by hand, both scripts resolve one shared marker path
+            whatever host home variables are set, and it exits 0 without
+            reading stdin.
       - check_id: milestone-create-direction-gate
         kind: script_test
         mode: ci

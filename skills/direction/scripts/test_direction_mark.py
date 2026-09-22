@@ -32,27 +32,30 @@ def test_turn_updates_turn_only_and_audit_updates_both() -> None:
     mark = load(SCRIPT, "direction_mark_under_test")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "nested" / "direction-last-check.json"
-        first = mark.mark(path, "turn", NOW)
-        assert first == {"turn": "2026-09-22T12:00:30Z"}, first
-        later = mark.mark(path, "audit", NOW + dt.timedelta(days=1))
-        assert later == {"turn": "2026-09-23T12:00:30Z", "audit": "2026-09-23T12:00:30Z"}, later
-        again = mark.mark(path, "turn", NOW + dt.timedelta(days=2))
-        assert again["audit"] == "2026-09-23T12:00:30Z", "a turn must not touch the audit stamp"
-        assert json.loads(path.read_text()) == again
+        first = mark.mark_turn(path, NOW)
+        assert first == {"turn": "2026-09-22T12:00:30Z", "audits": {}}, first
+        later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=1))
+        assert later == {"turn": "2026-09-23T12:00:30Z", "audits": {"owner/repo": "2026-09-23T12:00:30Z"}}, later
+        again = mark.mark_turn(path, NOW + dt.timedelta(days=2))
+        assert again["audits"] == {"owner/repo": "2026-09-23T12:00:30Z"}, "a turn must not touch audit stamps"
+        other = mark.mark_audit(path, "owner/other", NOW + dt.timedelta(days=3))
+        assert set(other["audits"]) == {"owner/repo", "owner/other"}, "audits are kept per repository"
+        assert json.loads(path.read_text()) == other
 
 
 def test_hook_reads_what_the_marker_writes() -> None:
     mark = load(SCRIPT, "direction_mark_under_test2")
     hook = load(HOOK, "direction_check_hook_under_test")
     assert hook.MARKER_NAME == mark.MARKER_NAME
-    env = {"CODE_HOME": "/x"}
-    assert hook.marker_path(env) == mark.marker_path(env)
+    for env in ({"HOME": "/h"}, {"CODEX_HOME": "/h/.codex", "HOME": "/h"}, {"DIRECTION_MARKER": "/s/m.json"}):
+        assert hook.marker_path(env) == mark.marker_path(env), env
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / mark.MARKER_NAME
-        mark.mark(path, "audit", NOW)
-        stamps = hook.read_marker(path)
-        assert hook.reminder(stamps, NOW + dt.timedelta(hours=1)) == ""
-        assert "last weekly audit was 8 days ago" in hook.reminder(stamps, NOW + dt.timedelta(days=8))
+        mark.mark_audit(path, "owner/repo", NOW)
+        read = hook.read_marker(path)
+        assert hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/repo", path) == ""
+        assert "last weekly audit of owner/repo was 8 days ago" in hook.reminder(read, NOW + dt.timedelta(days=8), "owner/repo", path)
+        assert "owner/other has a DIRECTION.md but no recorded weekly audit" in hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/other", path)
 
 
 def test_malformed_marker_is_replaced_not_crashed() -> None:
@@ -60,7 +63,17 @@ def test_malformed_marker_is_replaced_not_crashed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "m.json"
         path.write_text("[1, 2]")
-        assert mark.mark(path, "turn", NOW) == {"turn": "2026-09-22T12:00:30Z"}
+        assert mark.mark_turn(path, NOW) == {"turn": "2026-09-22T12:00:30Z", "audits": {}}
+
+
+def test_only_a_turn_can_be_marked_by_hand() -> None:
+    mark = load(SCRIPT, "direction_mark_under_test4")
+    try:
+        mark.main(["audit"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("audit must not be markable from the command line")
 
 
 def main() -> int:

@@ -246,6 +246,27 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
+def record_audit(repo: str) -> str | None:
+    """Stamp this repository's audit in the local marker the session-start hook reads.
+
+    The stamp is written here, not by hand, so an audit stamp means an audit ran.
+    GitHub is untouched; the marker is local state under the catalog home.
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("direction_mark", pathlib.Path(__file__).with_name("direction_mark.py"))
+        if spec is None or spec.loader is None:
+            return None
+        mark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mark)
+        path = mark.marker_path()
+        mark.mark_audit(path, repo, dt.datetime.now(dt.timezone.utc))
+        return str(path)
+    except Exception:  # noqa: BLE001 - the audit result matters more than the reminder marker
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
@@ -290,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         truncated=truncated,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
+    result["marked"] = record_audit(repo)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
