@@ -269,14 +269,30 @@ def test_unknown_author_fails_closed_into_preservation_mode() -> None:
     assert not plan.issue_body_is_fully_managed(issue)
 
 
-def test_only_acting_bot_issues_are_fully_managed() -> None:
+def test_configured_automation_authors_are_fully_managed() -> None:
     plan = load_plan_module()
-    issue = plan_issue(body="## Objective\n\nOld\n", login=plan.EXPECTED_ACTOR)
+    previous = os.environ.get("CODEX_AUTOMATION_BOT_LOGINS")
+    os.environ["CODEX_AUTOMATION_BOT_LOGINS"] = "legacy-bot"
+    try:
+        for login in (plan.EXPECTED_ACTOR, "LEGACY-BOT"):
+            issue = plan_issue(body="## Objective\n\nOld\n", login=login)
 
-    updated = plan.replace_issue_plan_section(issue, "Objective", "New")
+            updated = plan.replace_issue_plan_section(issue, "Objective", "New")
 
-    assert plan.PLAN_ORIGINAL_START not in updated, updated
-    assert plan.section_map(updated)["Objective"] == "New", updated
+            assert plan.PLAN_ORIGINAL_START not in updated, updated
+            assert plan.section_map(updated)["Objective"] == "New", updated
+            _, provenance = plan.read_plan_sections(issue)
+            assert provenance["ownership"] == "automation_managed", provenance
+
+        outside = plan_issue(body="Human-authored request", login="outside-user")
+        assert not plan.issue_body_is_fully_managed(outside)
+        _, provenance = plan.read_plan_sections(outside)
+        assert provenance["ownership"] == "contributor_unmanaged", provenance
+    finally:
+        if previous is None:
+            os.environ.pop("CODEX_AUTOMATION_BOT_LOGINS", None)
+        else:
+            os.environ["CODEX_AUTOMATION_BOT_LOGINS"] = previous
 
 
 def test_human_repository_roles_do_not_grant_plan_body_ownership() -> None:
@@ -6146,7 +6162,7 @@ def main() -> None:
         test_legacy_contributor_plan_sections_require_explicit_migration,
         test_contributor_original_request_section_is_immutable,
         test_unknown_author_fails_closed_into_preservation_mode,
-        test_only_acting_bot_issues_are_fully_managed,
+        test_configured_automation_authors_are_fully_managed,
         test_human_repository_roles_do_not_grant_plan_body_ownership,
         test_noncanonical_legacy_member_body_uses_preservation_mode,
         test_noncanonical_provenance_marker_does_not_grant_managed_ownership,

@@ -516,8 +516,10 @@ an explicitly approved one-off command whose human-owned actor is acceptable.
 it overrides the fallback setting even when an env file enables fallback.
 Set `CODEX_AUTOMATION_LOGIN` and `CODEX_AUTOMATION_EMAIL` in the ignored
 `local.env`; use a quoted `CODEX_AUTOMATION_BOT_LOGINS` value for optional
-additional bot classification. Values from the selected local env file override
-ambient values for the same identity key.
+additional owner-controlled automation accounts. Those logins are used for bot
+classification and trusted managed-plan authorship, so do not list third-party
+bots. Values from the selected local env file override ambient values for the
+same identity key.
 Automation-only Python readers use the equivalent wrapper prefix
 `--require-automation-auth`, avoiding an explicit process-environment copy while
 preserving the same fail-closed behavior.

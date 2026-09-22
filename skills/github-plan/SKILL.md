@@ -155,8 +155,8 @@ second planning backend.
   Prefer a bot-authored planning comment or a linked maintainer-owned plan. If
   planning must remain in the contributor issue body, preserve the original
   request verbatim and update only the marker-delimited automation-owned plan
-  block. Unknown authors and issues created by bots other than the acting
-  planning bot fail closed into this preservation mode. Do not retitle
+  block. Unknown authors and issues created outside the configured automation
+  login set fail closed into this preservation mode. Do not retitle
   human-authored issues as part of plan expansion. A managed-provenance marker
   alone never transfers a human-authored body to automation ownership.
 - Allow `show` to read human-authored planning sections, but report their
@@ -164,10 +164,10 @@ second planning backend.
   Read permission never grants title or body ownership.
 - Treat generic GitHub operation comments such as
   `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
-  they never establish ownership of an issue body. Association-based managed
-  bodies establish ownership only when the issue was authored by the acting
-  planning bot. Existing contributor envelopes remain contributor-owned even
-  if the author's repository association changes later.
+  they never establish ownership of an issue body. A body is fully managed only
+  when the issue was authored by the acting planning bot or an owner-controlled
+  login in `CODEX_AUTOMATION_BOT_LOGINS`. Existing contributor envelopes remain
+  contributor-owned even if the author's repository association changes later.
 - Keep issue bodies structured and current; `Current Status` is the recovery
   point for future sessions and the preferred durable handoff surface for
   GitHub-backed planning work.
