@@ -151,6 +151,12 @@ uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO
 Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
 title the file does not list, and `milestone-update` refuses a rename to one.
 
+The plugin also ships a `SessionStart` hook, `hooks/direction_check_hook.py`,
+that reads the marker `direction_mark.py` writes and opens a session with one
+reminder line while a direction turn is more than a day old or a weekly audit
+more than a week old. For Codex, register the same script as a session-start
+hook in its hooks configuration; it reads and ignores the hook input.
+
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).

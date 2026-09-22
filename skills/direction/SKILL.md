@@ -10,12 +10,20 @@ resources:
   - path: scripts/direction_audit.py
     kind: script
     description: Read-only audit of DIRECTION.md against GitHub milestones, escalations, and approval-gate text in open issues.
+  - path: scripts/direction_mark.py
+    kind: script
+    description: Records the end of a daily turn or weekly audit in the local marker the session-start reminder reads.
 commands:
   - name: direction-audit
     source: skill
     resource_path: scripts/direction_audit.py
     example_argv: ["uv", "run", "scripts/direction_audit.py", "--repo", "OWNER/REPO"]
     purpose: Reports direction drift as JSON without writing anything.
+  - name: direction-mark
+    source: skill
+    resource_path: scripts/direction_mark.py
+    example_argv: ["uv", "run", "scripts/direction_mark.py", "turn"]
+    purpose: Marks a daily turn or weekly audit as done so every host stops reminding the owner.
 ---
 
 # Direction
@@ -96,6 +104,17 @@ asks; that is execution.
 A **daily turn** is steps 1 and 2 alone, ending in "on course" or a named
 deviation. A **weekly audit** is the full session, opened by running the audit
 script and reading its findings before anything else.
+
+End every turn or audit by recording it, so the reminder goes quiet:
+
+```bash
+uv run <skill-dir>/scripts/direction_mark.py turn    # or: audit
+```
+
+The catalog's session-start hook reads that marker on every host and opens a
+session with one line when a turn is more than a day old or an audit more
+than a week old. A reminder that will not clear means the marker was not
+written, not that the check does not count.
 
 ## Weekly Audit
 

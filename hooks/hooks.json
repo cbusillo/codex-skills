@@ -10,6 +10,16 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\""
+          }
+        ]
+      }
     ]
   }
 }
