@@ -639,11 +639,33 @@ policy:
           example_argv:
             ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
           purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
+    - id: prefer-bot-commit-helper-with-git-options
+      match:
+        shell_regex: "(?<![\\w.-])git(?:\\s+(?:-[cC]\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+)|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+)|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+))?|-[pP]))+\\s+commit(?![\\w-])"
+      action: require_preferred
+      message: Global options such as `git -c` or `git -C` before `commit` still commit as the local human Git identity. Use the bot commit helper, from the target directory, so agent-authored commits are owned by the configured automation identity.
+      preferred:
+        - kind: script
+          path: scripts/git-commit-as-bot
+          example_argv:
+            ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+          purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
     - id: prefer-bot-push-helper
       match:
         argv_prefix: ["git", "push"]
       action: require_preferred
       message: Raw `git push` uses the local human Git credential or SSH key. Use the bot push helper so push events and resulting Actions runs are owned by the configured automation identity.
+      preferred:
+        - kind: script
+          path: scripts/git-push-as-bot
+          example_argv:
+            ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+          purpose: Pushes to GitHub using the configured automation token while restoring the normal remote URL afterward.
+    - id: prefer-bot-push-helper-with-git-options
+      match:
+        shell_regex: "(?<![\\w.-])git(?:\\s+(?:-[cC]\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+)|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+)|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"]+))?|-[pP]))+\\s+push(?![\\w-])"
+      action: require_preferred
+      message: Global options such as `git -c` or `git -C` before `push` still push with the local human Git credential or SSH key. Use the bot push helper, from the target directory, so push events and resulting Actions runs are owned by the configured automation identity.
       preferred:
         - kind: script
           path: scripts/git-push-as-bot

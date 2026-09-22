@@ -95,6 +95,21 @@ class CommandPolicyHookTests(unittest.TestCase):
                 if line.startswith("gh-with-env-token"):
                     self.assertIn("prefer-standard-ruleset-helper", result.stderr)
 
+    def test_git_global_options_do_not_hide_commit_or_push(self) -> None:
+        for line, policy in (
+            ("git -c commit.gpgsign=false commit -m demo", "prefer-bot-commit-helper-with-git-options"),
+            ("cd /tmp && git -C 'a path' commit -m demo", "prefer-bot-commit-helper-with-git-options"),
+            ("bash -lc 'git --no-pager -C repo commit'", "prefer-bot-commit-helper-with-git-options"),
+            ("git -C repo push origin branch", "prefer-bot-push-helper-with-git-options"),
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(policy, result.stderr)
+        for line in ("git -C repo status", "git -C repo commit-graph write", "git -C repo log --grep commit"):
+            with self.subTest(line=line):
+                self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
+
     def test_a_preferred_replacement_is_itself_allowed(self) -> None:
         for entry in SIMULATOR.policy_catalog():
             for preferred in entry["preferred"]:
