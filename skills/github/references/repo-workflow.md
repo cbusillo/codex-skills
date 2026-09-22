@@ -406,19 +406,17 @@ Before merging any PR, do a fresh PR read and account for feedback:
   session, covers this merge; ask only when that authorization is missing or no
   longer covers the action and scope
 
-If the fresh PR state is `BEHIND`, and the approved change is on an
-automation-owned branch in the same repository, use
+If the fresh PR state is `BEHIND`, first use `gh-pr.py view` to verify
+`headRepository` matches the PR repository, the head branch is automation-owned,
+and its own diff remains within the approved change. Then use
 `scripts/gh-with-env-token pr update-branch <pr>` before attempting merge.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's
 branch without its owner's approval. `BLOCKED` alone does not identify a
 behind branch: inspect base/head state and required-check evidence before
-choosing an action. A check-read 403 means readiness evidence is unavailable;
-it does not establish that the same actor cannot merge. With explicit merge
-authorization and all independently available gates satisfied, the SHA-guarded
-`gh-pr.py merge` call is the bounded capability probe. Treat a confirmed 405
-required-check rejection as a stop and wait for new readiness evidence.
+choosing an action. Treat a confirmed 405 required-check rejection as a stop
+and wait for new readiness evidence.
 
 When the user approves a merge and does not specify the method, use
 `scripts/gh-pr.py merge <pr> --method merge` for a normal merge commit.
