@@ -4379,13 +4379,17 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             check=True,
         )
         calls = log_path.read_text()
-    view_pr = json.loads(view.stdout)["pr"]
+    view_payload = json.loads(view.stdout)
+    view_pr = view_payload["pr"]
     assert view_pr["number"] == 12
     assert view_pr["labels"] == []
     assert view_pr["isDraft"] is False
     assert view_pr["mergeStateStatus"] == "CLEAN"
     assert "reviewDecision" in view_pr and view_pr["reviewDecision"] is None
     assert "statusCheckRollup" in view_pr and view_pr["statusCheckRollup"] is None
+    assert view_payload["readiness_evidence"]["state"] == "not_read"
+    assert view_payload["mergeability"]["state"] == "CLEAN"
+    assert view_payload["observed_merge_capability"]["observed_outcome"] == "not_attempted"
     list_prs = json.loads(list_result.stdout)["pullRequests"]
     assert len(list_prs) == 1
     assert list_prs[0]["number"] == 12
@@ -4393,15 +4397,23 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert list_prs[0]["mergeStateStatus"] == "CLEAN"
     assert "reviewDecision" in list_prs[0] and list_prs[0]["reviewDecision"] is None
     assert "statusCheckRollup" in list_prs[0] and list_prs[0]["statusCheckRollup"] is None
-    checks_summary = json.loads(checks.stdout)["summary"]
+    checks_payload = json.loads(checks.stdout)
+    checks_summary = checks_payload["summary"]
     assert checks_summary["combinedState"] is None
     assert checks_summary["combinedStateRaw"] == "success"
     assert checks_summary["legacyStatusesPresent"] is False
+    assert checks_payload["readiness_evidence"] == {
+        "state": "complete", "head_sha": "head-sha", "unavailable_components": [],
+    }
+    assert checks_payload["observed_merge_capability"]["authority"] == "unknown"
     merge_payload = json.loads(merge.stdout)
     assert merge_payload["merge"]["merged"] is True
     assert merge_payload["mergeCommitOid"] == "a" * 40
     assert merge_payload["pr"]["merged"] is True
     assert merge_payload["pr"]["mergeCommitOid"] == "a" * 40
+    assert merge_payload["observed_merge_capability"] == {
+        "observed_outcome": "merged", "authority": "confirmed_for_operation",
+    }
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
     assert "/repos/owner/repo/pulls?state=open" in calls
@@ -4993,6 +5005,8 @@ def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
     assert payload["failure"]["cause"] == "merge_rejected", payload
     assert payload["write_outcome"] == "rejected", payload
     assert payload["merge"]["merged"] is False, payload
+    assert payload["observed_merge_capability"]["observed_outcome"] == "rejected", payload
+    assert payload["observed_merge_capability"]["authority"] == "unknown", payload
     assert result.stderr.strip() == "error: PR merge was not completed", result.stderr
 
 
@@ -5057,6 +5071,8 @@ def test_required_check_rejection_stops_without_cooldown_until_readiness_changes
         assert rejected.returncode == 1, rejected
         rejected_payload = json.loads(rejected.stdout)
         assert rejected_payload["failure"]["cause"] == "required_status_checks_expected", rejected_payload
+        assert rejected_payload["observed_merge_capability"]["observed_outcome"] == "rejected", rejected_payload
+        assert rejected_payload["observed_merge_capability"]["authority"] == "unknown", rejected_payload
         assert rejected_payload["write_outcome"] == "rejected", rejected_payload
         assert rejected_payload["fallback_eligible"] is False, rejected_payload
         assert rejected_payload["recommended_next_action"] == "wait_for_required_checks", rejected_payload
@@ -5214,6 +5230,50 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
     assert api_result["failure"]["request_id"] == "request-123", payload
     assert "body" not in api_result, payload
     assert "[REDACTED]" in api_result["failure"]["message"], payload
+
+
+def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        gh_path = Path(tmp) / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/pulls/12/merge'* ]]; then\n"
+            "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
+            "elif [[ \"$*\" == *'/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"state\":\"open\",\"mergeable\":true,\"mergeable_state\":\"blocked\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "elif [[ \"$*\" == *'/check-runs'* ]]; then\n"
+            "  printf 'HTTP/2.0 403 \\r\\ncontent-type: application/json\\r\\n\\r\\n'\n"
+            "  printf '{\"message\":\"Resource not accessible by integration\"}\\n'\n"
+            "  exit 1\n"
+            "elif [[ \"$*\" == *'/statuses'* ]]; then\n"
+            "  printf '[]\\n'\n"
+            "elif [[ \"$*\" == *'/status'* ]]; then\n"
+            "  printf '{\"state\":\"success\"}\\n'\n"
+            "fi\n"
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path))
+        def invoke(command: str) -> subprocess.CompletedProcess[str]:
+            return REAL_SUBPROCESS_RUN(
+                [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", command, "12"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+            )
+        view = invoke("view")
+        checks = invoke("checks")
+        merge = invoke("merge")
+
+    view_payload = json.loads(view.stdout)
+    assert view.returncode == 0, view
+    assert view_payload["mergeability"]["state"] == "BLOCKED", view_payload
+    assert view_payload["observed_merge_capability"]["authority"] == "unknown", view_payload
+    checks_payload = json.loads(checks.stdout)
+    assert checks.returncode == 1, checks
+    assert checks_payload["readiness_evidence"]["state"] == "degraded", checks_payload
+    assert checks_payload["observed_merge_capability"]["authority"] == "unknown", checks_payload
+    merge_payload = json.loads(merge.stdout)
+    assert merge.returncode == 0, merge
+    assert merge_payload["observed_merge_capability"]["authority"] == "confirmed_for_operation", merge_payload
 
 
 def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
@@ -6381,6 +6441,7 @@ def main() -> None:
         test_required_check_rejection_stops_without_cooldown_until_readiness_changes,
         test_ambiguous_405_reconciles_same_head_before_bounded_retry,
         test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets,
+        test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial,
         test_pr_helper_supersede_comments_neutralizes_and_closes,
         test_pr_helper_supersede_does_not_comment_when_close_fails,
         test_pr_helper_supersede_reports_comment_failure_after_close,

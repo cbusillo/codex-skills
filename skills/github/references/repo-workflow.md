@@ -418,6 +418,20 @@ behind branch: inspect base/head state and required-check evidence before
 choosing an action. Treat a confirmed 405 required-check rejection as a stop
 and wait for new readiness evidence.
 
+Read the PR helper's `readiness_evidence`, `mergeability`, and
+`observed_merge_capability` separately. `BLOCKED` is provider mergeability
+metadata, not proof that the acting App lacks merge authority; an App check-read
+403 is degraded readiness evidence, not a merge denial. If App check reads are
+denied, use a separately authorized read-only identity to verify the required
+checks on the exact PR head and record which actor supplied that evidence.
+Confirm the branch protection or ruleset checks that apply. With explicit merge
+authorization, a clean exact-head check result, and accounted-for review
+feedback, one SHA-guarded `gh-pr.py merge` call is the authoritative App
+capability observation even if metadata remains `BLOCKED`. Do not probe by
+merging when required checks are unknown, incomplete, or failing; do not treat
+a bypass permission as check evidence. A confirmed 405 required-check rejection
+is one rejected attempt, followed by waiting for new exact-head evidence.
+
 When the user approves a merge and does not specify the method, use
 `scripts/gh-pr.py merge <pr> --method merge` for a normal merge commit.
 Avoid squash merges by default because normal merge commits keep branch ancestry
