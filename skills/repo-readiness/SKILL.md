@@ -206,16 +206,23 @@ evidence for a configured code gate means the readiness answer is not fully
 ready.
 
 In an executing `go <milestone>` landing, a current `UNKNOWN` inspection with
-proven run preemption or an adopted foreign run is still unknown, never clean.
-Once the competing IDE activity ends, make at most one additional exact-worktree
-assessment per revision beyond the helper's own retry, if executable checks for
-the change passed. A generic timeout is not proof of contention. If the fresh
-result remains `UNKNOWN`, record its scope, reason, and any findings in the PR
-and final report; readiness stays not fully ready, but continue the already
-authorized landing without turning this tool failure into an owner question.
-Handle findings under the normal RED policy. This exception does not apply to
-missing executable checks, an unsafe worktree, unresolved lifecycle cleanup,
-or a different inspection failure.
+proven run preemption or an adopted foreign run whose timeout reports
+`cancellation.reason=foreign_run_not_owned` is still unknown, never clean.
+When the helper's bounded readiness gate shows the competing IDE activity has
+ended, make at most one additional exact-worktree assessment per revision in
+addition to any internal retry. If activity does not settle within that gate,
+skip the extra assessment. A generic timeout is not proof of contention. If
+the fresh result is still `UNKNOWN`, record its scope, reason, and any findings
+in the PR and final report; readiness stays not fully ready, but the recorded
+result is the explicit inspection exception for the `github` merge and
+`work-closeout` gates. Open a focused follow-up outside the milestone unless
+one already owns the IDE failure. Continue the already authorized landing
+without turning this tool failure into an owner question. Handle findings under
+the normal RED policy. Failing or missing executable checks, an unsafe
+worktree, unresolved lifecycle cleanup, or a different inspection failure
+disqualifies this exception. Resolve deferred cleanup through the later
+assessment or the stale-lease helper before landing; if it remains unresolved,
+stop and report it.
 
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If

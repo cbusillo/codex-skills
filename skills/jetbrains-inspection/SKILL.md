@@ -406,11 +406,14 @@ scope, never source code or a mixed scope containing source code.
   A separate `go <milestone>` landing exception in `repo-readiness` permits at
   most one additional assessment per revision after the IDE becomes idle when
   an earlier run proved preemption (`inspection_terminal_outcome=preempted` or
-  `exact_proof_write_preempted`) or adopted a foreign run. A generic timeout
-  does not qualify. This is a later assessment after external state changes,
-  not another immediate retry of an unchanged failure. Even then, preserve
-  the `UNKNOWN` verdict and any actionable findings under the normal policy;
-  resolve deferred lifecycle cleanup before worktree removal. Other terminal
+  `exact_proof_write_preempted`) or an adopted foreign run timed out with
+  `cancellation.reason=foreign_run_not_owned`. A generic timeout does not
+  qualify. This is a later assessment after external state changes, not another
+  immediate retry of an unchanged failure. If the helper's bounded readiness
+  gate does not show the IDE idle, skip the extra assessment. Preserve the
+  `UNKNOWN` verdict and any actionable findings under the normal policy.
+  Deferred cleanup must resolve in the later assessment or stale-lease helper
+  before landing continues; otherwise stop and report it. Other terminal
   failures remain governed by the helper's `retry_policy`.
 - A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
   after the initial readiness wait if IDE auto-configuration is still registering
