@@ -73,6 +73,28 @@ class CommandPolicyHookTests(unittest.TestCase):
                 result = bash(line)
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
 
+    def test_ruleset_policy_blocks_writes_but_allows_reads(self) -> None:
+        for line in (
+            "gh ruleset list",
+            "gh ruleset view 123",
+            "gh-with-env-token api repos/owner/repo/rulesets --method GET",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
+        for line in (
+            "gh api -X POST repos/owner/repo/rulesets --input payload.json",
+            "gh-with-env-token api repos/owner/repo/rulesets/123 --method PUT --input payload.json",
+            "gh-with-env-token api repos/owner/repo/rulesets --input payload.json",
+            "gh-with-env-token api repos/owner/repo/rulesets -f name=x -f target=branch",
+            "gh-with-env-token api --method=PUT repos/owner/repo/rulesets/123 --input payload.json",
+            "gh-with-env-token api -XDELETE repos/owner/repo/rulesets/123",
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                if line.startswith("gh-with-env-token"):
+                    self.assertIn("prefer-standard-ruleset-helper", result.stderr)
+
     def test_a_preferred_replacement_is_itself_allowed(self) -> None:
         for entry in SIMULATOR.policy_catalog():
             for preferred in entry["preferred"]:

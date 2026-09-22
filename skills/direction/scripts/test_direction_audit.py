@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
-NOW = dt.datetime(2026, 9, 21, 12, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 9, 21, 12, tzinfo=dt.timezone.utc)
 
 DIRECTION = """# Direction
 
@@ -165,6 +165,29 @@ def test_direction_pull_requests_and_truncation_are_reported() -> None:
     assert result["findings"][1]["pull_request"] is True and result["findings"][1]["age_days"] == 2
 
 
+def test_standard_rulesets_are_required_for_adopted_repositories() -> None:
+    module = load()
+    standard = [
+        {"name": name, "target": "branch", "enforcement": "active"}
+        for name in module.github_rulesets.required_ruleset_names()
+    ]
+    assert run(module, rulesets=standard)["ok"] is True
+
+    result = run(module, rulesets=[standard[0]])
+    assert kinds(result) == ["ruleset_missing"]
+    assert result["findings"][0]["name"] == standard[1]["name"]
+
+    disabled = [{**item, "enforcement": "disabled"} for item in standard]
+    result = run(module, rulesets=disabled)
+    assert kinds(result) == ["ruleset_missing", "ruleset_missing"]
+
+
+def test_rulesets_are_not_required_before_direction_is_adopted() -> None:
+    module = load()
+    result = run(module, direction_text=None, rulesets=[])
+    assert kinds(result) == ["direction_missing"]
+
+
 def test_direction_pull_request_discovery_uses_label_or_changed_file() -> None:
     module = load()
     files = {
@@ -192,12 +215,12 @@ def test_merged_direction_reads_the_default_branch_and_treats_404_as_not_adopted
     encoded = {"content": base64.b64encode(DIRECTION.encode()).decode(), "encoding": "base64"}
     assert module.merged_direction("o/r", fetch=lambda args: encoded) == DIRECTION
 
-    def missing(args: list[str]) -> Any:
+    def missing(_args: list[str]) -> Any:
         raise module.AuditError("contents read failed: HTTP 404: Not Found")
 
     assert module.merged_direction("o/r", fetch=missing) is None
 
-    def broken(args: list[str]) -> Any:
+    def broken(_args: list[str]) -> Any:
         raise module.AuditError("contents read failed: HTTP 502")
 
     try:

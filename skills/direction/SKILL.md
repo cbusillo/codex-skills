@@ -9,7 +9,7 @@ resources:
     description: The DIRECTION.md shape and the milestone line format the helpers parse.
   - path: scripts/direction_audit.py
     kind: script
-    description: Read-only audit of DIRECTION.md against GitHub milestones, escalations, and approval-gate text in open issues.
+    description: Read-only audit of DIRECTION.md against GitHub milestones, standard rulesets, escalations, and approval-gate text in open issues.
   - path: scripts/direction_mark.py
     kind: script
     description: Records the end of a daily turn in the local marker the session-start reminder reads; audits are stamped by the audit script itself.
@@ -158,6 +158,9 @@ and writes nothing. For each finding:
   recreate it.
 - `milestone_creator`: a milestone created by an account other than the owner
   or the acting automation. Ask how it got there.
+- `ruleset_missing`: an adopted repository lacks either active standard branch
+  ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
+  explicit owner-admin mutation.
 - `escalation_open`: a `direction` issue, or a pull request that changes
   `DIRECTION.md`, waiting on the owner. Decide it in this session or say why
   not.
@@ -216,10 +219,15 @@ request path above.
    the root. The owner writes or approves every line; the direction agent may
    draft.
 2. Add `/DIRECTION.md @owner` and the `CODEOWNERS` file itself to
-   `CODEOWNERS`, and require code-owner review on the default branch. An
+   `CODEOWNERS`, then plan and explicitly apply the standard pair with
+   `github/scripts/gh-rulesets.py`. An
    unprotected `CODEOWNERS` lets an ordinary pull request remove the rule
    first. Scope the requirement to these two paths, not to every pull request:
    a review required everywhere trains the owner to click through.
+   The direction rule has no bypass. If the owner is the sole code owner, use an
+   automation-authored pull request for the owner to approve; an owner-authored
+   pull request needs a distinct eligible code owner because authors cannot
+   approve their own changes.
 3. Create the listed milestones with `gh-plan.py milestone-create`.
 4. Run the audit script for this repository once and clear its findings. That
    first run also enters the repository in the marker's `audits` map, which is
