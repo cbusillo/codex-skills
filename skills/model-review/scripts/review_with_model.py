@@ -35,7 +35,7 @@ AGY_READ_ONLY_COMMANDS = ("grep", "rg", "ls", "find", "wc")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
-    "Do not run shell commands or modify, create, or delete anything.\n\n"
+    "Do not modify, create, or delete anything.\n\n"
 )
 
 
@@ -156,7 +156,7 @@ REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": r
 
 
 def branch_diff(repo: Path) -> bytes:
-    """Return tracked branch and working-tree changes against the remote default branch."""
+    """Return committed branch changes against the remote default branch."""
     remote_head = subprocess.run(
         ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD"],
         capture_output=True, text=True,
@@ -176,6 +176,12 @@ def branch_diff(repo: Path) -> bytes:
         if branch.stdout.strip() not in {"main", "master"}:
             raise RuntimeError("could not identify the default branch for the review diff")
         default = "HEAD"
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True, text=True,
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "HEAD", default],
         capture_output=True, text=True,
@@ -194,20 +200,22 @@ def branch_diff(repo: Path) -> bytes:
 def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
-    # Keep the diff under the allowed repository read root; the directory is removed after review.
-    with tempfile.TemporaryDirectory(prefix=".model-review-", dir=repo) as scratch:
-        try:
+    # Google's diff must be under its allowed read root; other providers use system scratch.
+    try:
+        with tempfile.TemporaryDirectory(prefix=".model-review-", dir=repo if provider == "google" else None) as scratch:
             diff = branch_diff(repo)
             preamble = PREAMBLE.format(repo=repo)
+            if provider == "google":
+                preamble += "Read files directly with read_file; do not run shell commands.\n\n"
             if diff:
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
-                preamble += f"The changes to review are in {diff_path}. Read that file directly; do not run git.\n\n"
+                preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
             result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
-        except subprocess.TimeoutExpired:
-            return failed(provider, f"no answer within {timeout} seconds")
-        except RuntimeError as exc:
-            return failed(provider, str(exc))
+    except subprocess.TimeoutExpired:
+        return failed(provider, f"no answer within {timeout} seconds")
+    except (OSError, RuntimeError) as exc:
+        return failed(provider, str(exc))
     if result["ok"] and not result["response"].strip():
         return failed(provider, "the reviewer returned nothing", model=result.get("model"))
     return result
