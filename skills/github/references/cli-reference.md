@@ -498,11 +498,19 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
-`$CODEX_HOME/local.env` and then `~/.code/local.env`, then prefers
-`CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` in that order. Commands fail
-closed without changing actor when automation auth is missing, rejected, or
-rate-limited. Write-like commands also require the authenticated login to match
-the configured automation account. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
+`$CODEX_HOME/local.env` and then `~/.code/local.env`. When
+`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
+`GITHUB_APP_PRIVATE_KEY_PATH` are all configured, it verifies the App identity,
+mints and caches an owner-only installation token, and uses the App for every
+command. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
+`GITHUB_TOKEN` in that order. `--check` reports the selected credential source
+and verifies the current App installation and actor without performing a write.
+For a non-`github.com` `GH_HOST`, configure the matching
+`GITHUB_APP_API_URL`; the wrapper fails closed instead of sending the App JWT to
+the public GitHub API. Commands fail closed without
+changing actor when automation auth is missing, rejected, or rate-limited.
+Write-like commands also require the authenticated login to match the configured
+automation account. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
 an explicitly approved one-off command whose human-owned actor is acceptable.
 `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
 it overrides the fallback setting even when an env file enables fallback.

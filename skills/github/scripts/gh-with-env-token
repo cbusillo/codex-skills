@@ -3,6 +3,7 @@ set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 classifier=${GH_WITH_ENV_TOKEN_CLASSIFIER:-$script_dir/github_api.py}
+identity_helper=${GH_WITH_ENV_TOKEN_IDENTITY_HELPER:-$script_dir/github_identity.py}
 python_command=${GH_WITH_ENV_TOKEN_PYTHON:-}
 
 if [ -z "$python_command" ] && ! command -v uv >/dev/null 2>&1; then
@@ -31,6 +32,7 @@ else
 fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
 print_auth_account=0
+check_auth=0
 require_automation_auth=0
 require_automation_auth_from_process=0
 stdout_file=$(mktemp)
@@ -51,6 +53,10 @@ while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
 	--print-auth-account)
 		print_auth_account=1
+		shift
+		;;
+	--check)
+		check_auth=1
 		shift
 		;;
 	--require-automation-auth)
@@ -82,7 +88,32 @@ readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
-if [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
+app_variable_count=0
+for app_variable in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH; do
+	eval "app_variable_value=\${$app_variable:-}"
+	if [ -n "$app_variable_value" ]; then
+		app_variable_count=$((app_variable_count + 1))
+	fi
+done
+auth_source=user_token
+if [ "$app_variable_count" -gt 0 ]; then
+	if [ "$app_variable_count" -ne 3 ]; then
+		echo "error: incomplete GitHub App configuration; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH" >&2
+		exit 1
+	fi
+	if [ -n "$python_command" ]; then
+		app_auth_output=$($python_command "$identity_helper" app-auth)
+	else
+		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth)
+	fi
+	app_login=$(printf '%s\n' "$app_auth_output" | sed -n '1p')
+	GH_TOKEN=$(printf '%s\n' "$app_auth_output" | sed -n '2p')
+	if [ -z "$app_login" ] || [ -z "$GH_TOKEN" ] || [ "$(printf '%s\n' "$app_auth_output" | sed -n '3p')" != "" ]; then
+		echo "error: GitHub App authentication helper returned an invalid response; refusing GitHub command" >&2
+		exit 1
+	fi
+	auth_source=github_app
+elif [ -n "${CODEX_GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$CODEX_GITHUB_TOKEN
 elif [ -z "${GH_TOKEN:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
 	GH_TOKEN=$GITHUB_TOKEN
@@ -425,6 +456,14 @@ verify_bot_login_for_write() {
 		fi
 		return 1
 	fi
+	if [ "$auth_source" = github_app ]; then
+		if same_login "$app_login" "$expected_login"; then
+			return 0
+		fi
+		echo "error: GitHub write would run as '${app_login:-unknown}', expected '$expected_login'" >&2
+		echo "hint: configure CODEX_AUTOMATION_LOGIN for the GitHub App bot identity" >&2
+		return 1
+	fi
 	login_status=0
 	run_python "$classifier" --gh "$gh_command" call \
 		--method GET \
@@ -522,7 +561,119 @@ retry_with_active_auth() {
 print_account() {
 	label=$1
 	echo "gh auth status ($label):" >&2
+	if [ "$auth_source" = github_app ]; then
+		printf 'GitHub automation actor: %s (source: %s)\n' "$app_login" "$auth_source" >&2
+		return 0
+	fi
 	"$gh_command" auth status >&2 || true
+}
+
+check_account() {
+	if [ "$auth_source" = github_app ]; then
+		if [ -n "$python_command" ]; then
+			checked_login=$($python_command "$identity_helper" app-check)
+		else
+			checked_login=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-check)
+		fi
+		if [ -z "$checked_login" ]; then
+			echo "error: GitHub App authentication check returned no actor" >&2
+			return 1
+		fi
+		if [ -n "$expected_login" ] && ! same_login "$checked_login" "$expected_login"; then
+			echo "error: GitHub authentication probe reported '$checked_login', expected '$expected_login'" >&2
+			return 1
+		fi
+		printf 'GitHub automation actor: %s (source: %s)\n' "$checked_login" "$auth_source"
+		return 0
+	fi
+	login_status=0
+	run_python "$classifier" --gh "$gh_command" call \
+		--method GET \
+		--read \
+		--operation github.auth.check \
+		/user >"$classification_file" 2>"$stderr_file" || login_status=$?
+	if [ "$login_status" -ne 0 ]; then
+		print_classified_message
+		return "$login_status"
+	fi
+	login=$(classified_value login "" 2>/dev/null) || login=
+	if [ -z "$login" ]; then
+		echo "error: GitHub authentication probe returned no actor" >&2
+		return 1
+	fi
+	if [ -n "$expected_login" ] && [ "$login" != "$expected_login" ]; then
+		echo "error: GitHub authentication probe reported '$login', expected '$expected_login'" >&2
+		return 1
+	fi
+	printf 'GitHub automation actor: %s (source: %s)\n' "$login" "$auth_source"
+}
+
+same_login() {
+	left=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+	right=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+	[ "$left" = "$right" ]
+}
+
+is_actor_probe() {
+	[ "${1:-}" = api ] || return 1
+	shift
+	endpoint_count=0
+	method=GET
+	actor_probe_include=0
+	actor_probe_jq=0
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		user | /user)
+			endpoint_count=$((endpoint_count + 1))
+			shift
+			;;
+		--method | -X)
+			[ "$#" -ge 2 ] || return 1
+			method=$2
+			shift 2
+			;;
+		--method=* | -XGET | -Xget)
+			case "$1" in --method=*) method=${1#*=} ;; esac
+			shift
+			;;
+		--include | -i)
+			actor_probe_include=1
+			shift
+			;;
+		-H | --header)
+			[ "$#" -ge 2 ] || return 1
+			shift 2
+			;;
+		--jq)
+			[ "$#" -ge 2 ] && [ "$2" = .login ] || return 1
+			actor_probe_jq=1
+			shift 2
+			;;
+		-q)
+			[ "$#" -ge 2 ] && [ "$2" = .login ] || return 1
+			actor_probe_jq=1
+			shift 2
+			;;
+		--jq=.login | -q=.login)
+			actor_probe_jq=1
+			shift
+			;;
+		-H* | --header=*) shift ;;
+		*) return 1 ;;
+		esac
+	done
+	[ "$endpoint_count" -eq 1 ] && { [ "$method" = GET ] || [ "$method" = get ]; }
+}
+
+print_app_actor_probe() {
+	if [ "$actor_probe_include" -eq 1 ]; then
+		printf 'HTTP/2.0 200\r\ncontent-type: application/json\r\n\r\n'
+	fi
+	if [ "$actor_probe_jq" -eq 1 ]; then
+		printf '%s\n' "$app_login"
+	else
+		printf '{"login":"%s","type":"Bot"}\n' "$app_login"
+	fi
 }
 
 if ! validate_sensitive_read_policy "$@"; then
@@ -558,6 +709,20 @@ if [ -z "${GH_TOKEN:-}" ]; then
 fi
 
 export GH_TOKEN
+
+if [ "$auth_source" = github_app ] && is_actor_probe "$@"; then
+	print_app_actor_probe "$@"
+	exit 0
+fi
+
+if [ "$check_auth" -eq 1 ]; then
+	if [ "$#" -ne 0 ]; then
+		echo "error: --check does not accept a gh command" >&2
+		exit 2
+	fi
+	check_account
+	exit $?
+fi
 
 if [ "$print_auth_account" -eq 1 ]; then
 	print_account "automation token"
