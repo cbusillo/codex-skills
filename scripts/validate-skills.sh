@@ -60,6 +60,8 @@ helper_tests=(
 	skills/github/scripts/test_github_issue.py
 	skills/github/scripts/test_github_milestone.py
 	skills/github/scripts/test_gh_plan_next.py
+	skills/github/scripts/test_gh_plan_direction.py
+	skills/direction/scripts/test_direction_audit.py
 	skills/github/scripts/test_github_read.py
 	skills/github/scripts/test_github_workflow_babysit.py
 	skills/github/scripts/test_runtime_checkout_reconciliation.py

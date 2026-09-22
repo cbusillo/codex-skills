@@ -181,10 +181,12 @@ def find_probe(repo: Path) -> tuple[Path | None, str]:
         try:
             if not path.is_file() or path.stat().st_size > 200_000:
                 continue
-            line = next((text.strip() for text in path.read_text().splitlines() if len(text.strip()) > 3), None)
+            # The prompt asks for the first non-empty line, so that exact line is the expectation.
+            # A file whose first line is a lone brace or dash is skipped, not read past.
+            line = next((text.strip() for text in path.read_text().splitlines() if text.strip()), None)
         except (OSError, UnicodeDecodeError):
             continue
-        if line:
+        if line and len(line) > 3:
             return path, line
     return None, ""
 

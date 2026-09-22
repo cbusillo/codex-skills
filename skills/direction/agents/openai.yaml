@@ -1,0 +1,7 @@
+interface:
+  display_name: "Direction"
+  short_description: "Hold, argue, and audit a repo's direction"
+  default_prompt: "Use $direction for a dead-reckoning check of this repository against DIRECTION.md and its milestones."
+
+policy:
+  allow_implicit_invocation: true

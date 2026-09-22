@@ -3098,11 +3098,102 @@ def cmd_milestone_show(args: argparse.Namespace) -> None:
     )
 
 
+DIRECTION_FILE = "DIRECTION.md"
+DIRECTION_MILESTONE_LINE = re.compile(r"^\s*[-*]\s+`([^`]+)`")
+DIRECTION_HEADING = re.compile(r"^##\s+(.+?)\s*$")
+
+
+def direction_milestone_titles(text: str) -> list[str]:
+    """Exact milestone titles listed under `## Milestones` in a DIRECTION.md body."""
+    titles: list[str] = []
+    current: str | None = None
+    for line in text.splitlines():
+        heading = DIRECTION_HEADING.match(line)
+        if heading:
+            current = heading.group(1)
+            continue
+        if current == "Milestones":
+            item = DIRECTION_MILESTONE_LINE.match(line)
+            if item:
+                titles.append(item.group(1).strip())
+    return titles
+
+
+def load_direction(repo: str) -> str | None:
+    """The target repository's merged DIRECTION.md, or None when it has none.
+
+    The merged default-branch copy is the owner-approved one. A local checkout
+    is never consulted: it may belong to another repository, or hold an edit
+    nobody approved. Any failure other than a clean 404 refuses the write.
+    """
+    _, stdout, stderr = run_raw(
+        ["api", f"repos/{repo}/contents/{DIRECTION_FILE}", "--method", "GET"],
+        check=False,
+        operation="github.plan.direction_read",
+        is_write=False,
+        bucket="rest_core",
+    )
+    body: Any = None
+    if stdout.strip():
+        try:
+            body = json.loads(stdout)
+        except json.JSONDecodeError:
+            body = None
+    if isinstance(body, dict) and isinstance(body.get("content"), str):
+        import base64
+
+        return base64.b64decode(body["content"]).decode("utf-8")
+    message = str(body.get("message") if isinstance(body, dict) else "") + " " + stderr
+    if "Not Found" in message or "HTTP 404" in message or "(404)" in message:
+        return None
+    raise PlanError(
+        f"could not read {DIRECTION_FILE} from {repo}; refusing to change milestones without it: {message.strip()[:300]}",
+        failure=github_api_core.FailureDetail(
+            cause="read_failure",
+            message="direction file unreadable",
+            retryable=True,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="read_direction",
+        ),
+    )
+
+
+def check_direction_lists_milestone(title: str, direction_text: str | None, *, repo: str) -> dict[str, Any]:
+    """Refuse a milestone the repository's merged direction file does not name.
+
+    No file means the repository has not adopted one, and the write proceeds as
+    before. Once the file exists it is the only source of milestone titles, so
+    an agent cannot add, rename to, or reopen a waypoint the owner never approved.
+    """
+    if direction_text is None:
+        return {"direction": "not_adopted"}
+    listed = direction_milestone_titles(direction_text)
+    if title in listed:
+        return {"direction": "listed", "direction_source": f"{repo}:{DIRECTION_FILE}"}
+    raise PlanError(
+        f"milestone title is not listed under '## Milestones' in {repo}:{DIRECTION_FILE}: {title!r}. "
+        "Add the line by a direction pull request first (see the direction skill).",
+        failure=github_api_core.FailureDetail(
+            cause="validation_error",
+            message="milestone not listed in DIRECTION.md",
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+            write_outcome="not_started",
+            failed_step="check_direction",
+        ),
+    )
+
+
 def cmd_milestone_create(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
+    direction = check_direction_lists_milestone(args.title, load_direction(repo), repo=repo)
     gh_cmd, expected_actor = milestone_route()
     emit(
-        github_milestone_core.create_milestone(
+        direction
+        | github_milestone_core.create_milestone(
             repo,
             args.title,
             description=milestone_description(args),
@@ -3119,6 +3210,22 @@ def cmd_milestone_create(args: argparse.Namespace) -> None:
 def cmd_milestone_update(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     gh_cmd, expected_actor = milestone_route()
+    direction: dict[str, Any] = {}
+    if args.title is not None or args.state == "open":
+        # A rename is a create by another name, and reopening a retired milestone
+        # is a create by yet another; the effective title must be listed.
+        effective = args.title
+        if effective is None:
+            shown = github_milestone_core.show_milestone(
+                repo,
+                args.milestone,
+                operation=CURRENT_OPERATION,
+                actor=None,
+                expected_actor=expected_actor,
+                gh_cmd=gh_cmd,
+            )
+            effective = str(shown["milestone"]["title"])
+        direction = check_direction_lists_milestone(effective, load_direction(repo), repo=repo)
     description = milestone_description(args)
     updates: dict[str, Any] = {}
     if description is not None:
@@ -3132,7 +3239,8 @@ def cmd_milestone_update(args: argparse.Namespace) -> None:
     if args.state is not None:
         updates["state"] = args.state
     emit(
-        github_milestone_core.update_milestone(
+        direction
+        | github_milestone_core.update_milestone(
             repo,
             args.milestone,
             **updates,

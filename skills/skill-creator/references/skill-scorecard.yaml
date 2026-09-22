@@ -117,6 +117,45 @@ skills:
           notes: Metadata and references covered by repo validation.
     known_gaps:
       - No advisory scenario yet for design handoff routing.
+  direction:
+    status: active
+    risk_classes:
+      - planning
+      - script_helper
+    checks:
+      - check_id: direction-audit-tests
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            Planted drift covers a missing or misshapen DIRECTION.md, open
+            milestones the file does not list, listed milestones never
+            created, shipped milestones still listed, foreign milestone
+            creators, open escalations with age, approval-gate phrases in
+            open issues, and pagination.
+      - check_id: milestone-create-direction-gate
+        kind: script_test
+        mode: ci
+        dimension: helper_behavior
+        gate: required
+        baseline:
+          outcome: pass
+          score: 1000
+          last_validated_ref: main
+          notes: >-
+            gh-plan milestone-create accepts only titles listed under the
+            Milestones heading, milestone-update refuses a rename to an
+            unlisted title before any write, and both proceed unchanged when
+            no DIRECTION.md exists.
+    known_gaps:
+      - Whether an executing agent escalates a delete or redirect finding
+        instead of acting on it is instruction behavior, not covered by a
+        script test.
   docs-lookup:
     status: active
     risk_classes:
