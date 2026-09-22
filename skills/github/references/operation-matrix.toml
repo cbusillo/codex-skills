@@ -1083,3 +1083,105 @@ reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; the guarded milestone close contract is implemented entirely with REST reads and writes."
 source_refs = ["github/scripts/gh-plan.py:cmd_milestone_close", "github/scripts/github_milestone.py:close_milestone", "github/scripts/github_milestone.py:_open_assigned_items", "github/scripts/github_milestone.py:_verified_write_response", "github/scripts/github_milestone.py:_reconcile_close"]
 test_refs = ["github/scripts/test_github_milestone.py:test_close_refuses_open_issue_and_pull_request", "github/scripts/test_github_milestone.py:test_close_patches_empty_milestone", "github/scripts/test_github_milestone.py:test_reconciliation_callbacks_match_only_verified_state", "github/scripts/validate-operation-matrix.py:self-test"]
+
+[[operations]]
+id = "github.rulesets.actor.read"
+entrypoint = "github/scripts/gh-rulesets.py plan|apply"
+intent = "Verify that the active human GitHub account is the owner whose repository rulesets may be inspected or changed."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /user with automation-token variables cleared"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST /user supplies the active owner identity."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:resolve_repositories"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_client_uses_active_human_auth_and_clears_token_overrides"]
+
+[[operations]]
+id = "github.rulesets.repository.list"
+entrypoint = "github/scripts/gh-rulesets.py plan|apply --all-owned"
+intent = "List the active owner's non-archived repositories for a bounded complete ruleset inventory."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Paged GET /user/repos?affiliation=owner"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No retained GraphQL transport; paged REST returns ownership and archived state."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:resolve_repositories"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_cli_all_owned_uses_owner_identity_and_sorted_inventory"]
+
+[[operations]]
+id = "github.rulesets.list"
+entrypoint = "github/scripts/gh-rulesets.py plan|apply"
+intent = "List repository-owned branch rulesets before planning or applying the standard pair."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/rulesets?includes_parents=false&targets=branch"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST exposes repository ruleset summaries."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:plan_repository"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and_accepts_server_omission_for_false_update_parameter"]
+
+[[operations]]
+id = "github.rulesets.detail"
+entrypoint = "github/scripts/gh-rulesets.py plan|apply"
+intent = "Read complete ruleset conditions, rules, and bypass actors under the verified active owner identity."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/rulesets/{ruleset_id}?includes_parents=false"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL transport; the REST detail endpoint returns bypass actors only to an authorized ruleset writer."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:plan_repository"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and_accepts_server_omission_for_false_update_parameter"]
+
+[[operations]]
+id = "github.rulesets.create"
+entrypoint = "github/scripts/gh-rulesets.py apply --confirm-owner-admin-write"
+intent = "Create one missing standard repository ruleset only after exact-name planning and explicit owner-admin authorization."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/rulesets"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "create"
+idempotency = "non_idempotent"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No retained GraphQL transport; repository rulesets have a maintained REST create endpoint."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:apply_repository"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_apply_converges_and_second_apply_writes_nothing", "github/scripts/test_github_rulesets.py:test_cli_requires_explicit_write_confirmation"]
+
+[[operations]]
+id = "github.rulesets.update"
+entrypoint = "github/scripts/gh-rulesets.py apply --confirm-owner-admin-write"
+intent = "Replace a recognized managed ruleset with the standard payload and verify convergence by a fresh read."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "PUT /repos/{repo}/rulesets/{ruleset_id} followed by fresh ruleset reads"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "update"
+idempotency = "idempotent"
+retry_eligibility = "conditional"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No retained GraphQL transport; repository rulesets have a maintained REST update endpoint."
+source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:apply_repository"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_plan_creates_missing_and_updates_known_manual_alias", "github/scripts/test_github_rulesets.py:test_apply_converges_and_second_apply_writes_nothing"]

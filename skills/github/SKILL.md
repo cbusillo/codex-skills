@@ -43,6 +43,9 @@ resources:
   - path: scripts/github-work-evidence.py
     kind: script
     description: Collect bounded read-only cross-repo GitHub work evidence as JSON for planning, readiness, closeout, or LLM-led reporting.
+  - path: scripts/gh-rulesets.py
+    kind: script
+    description: Plans or explicitly applies the standard owner, automation, and direction ruleset pair with active-owner verification.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
@@ -247,6 +250,16 @@ commands:
         "24h",
       ]
     purpose: Collects JSON-only GitHub work evidence across repositories, subjects, releases, workflow runs, and mechanical buckets.
+  - name: github-rulesets-plan
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
+    purpose: Reads the active owner's full ruleset state and reports the idempotent standard-pair changes without writing.
+  - name: github-rulesets-apply
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "apply", "--repo", "OWNER/REPO", "--confirm-owner-admin-write"]
+    purpose: Applies the standard pair only after active-owner verification and an explicit repository-admin write acknowledgement.
 policy:
   command_policies:
     - id: prefer-gh-pr-create-helper
@@ -647,6 +660,16 @@ policy:
           path: scripts/gh-plan.py
           example_argv: ["uv", "run", "scripts/gh-plan.py", "milestone-list", "--state", "all"]
           purpose: Lists, shows, creates, updates, and guarded-closes milestones through the maintained REST helper.
+    - id: prefer-standard-ruleset-helper
+      match:
+        shell_regex: "\\bgh(?:-with-env-token)?\\s+api\\b(?=[\\s\\S]*(?:(?:-X|--method)(?:=|\\s+)(?:POST|PUT|PATCH|DELETE)\\b|-X(?:POST|PUT|PATCH|DELETE)\\b|(?:--input|-f|-F|--field|--raw-field)(?:=|\\s+)))[\\s\\S]*\\brepos/[^/\\s]+/[^/\\s]+/rulesets(?:/[^\\s]+)?\\b"
+      action: require_preferred
+      message: Direct ruleset operations bypass active-owner verification, standard-pair drift checks, explicit admin-write confirmation, and post-write idempotence verification. Use the maintained ruleset helper.
+      preferred:
+        - kind: script
+          path: scripts/gh-rulesets.py
+          example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
+          purpose: Plans or applies the standard repository ruleset pair through the guarded helper.
 ---
 
 # GitHub Expert

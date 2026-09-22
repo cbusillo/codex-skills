@@ -20,6 +20,15 @@ import subprocess
 import sys
 from typing import Any, Callable
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+GITHUB_SCRIPTS = REPO_ROOT / "skills" / "github" / "scripts"
+if str(GITHUB_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(GITHUB_SCRIPTS))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from skills.github.scripts import github_rulesets
+
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
 MILESTONE_LINE = re.compile(r"^\s*[-*]\s+`([^`]+)`")
@@ -74,6 +83,7 @@ def audit(
     now: dt.datetime,
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
+    rulesets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     if truncated:
@@ -86,6 +96,13 @@ def audit(
         listed = parsed["milestones"]
         if parsed["missing_headings"]:
             findings.append({"kind": "direction_shape", "detail": "missing headings", "headings": parsed["missing_headings"]})
+        if rulesets is not None:
+            for name in github_rulesets.missing_standard_rulesets(rulesets):
+                findings.append({
+                    "kind": "ruleset_missing",
+                    "name": name,
+                    "detail": "an active repository branch ruleset with this standard name was not found",
+                })
 
     trusted = {owner.lower()} | ({automation.lower()} if automation else set())
     open_titles: set[str] = set()
@@ -143,12 +160,13 @@ def audit(
         "coverage_incomplete": -1,
         "direction_missing": 0,
         "direction_shape": 1,
-        "escalation_open": 2,
-        "milestone_unlisted": 3,
-        "milestone_closed_listed": 4,
-        "milestone_pending": 5,
-        "milestone_creator": 6,
-        "gate_phrase": 7,
+        "ruleset_missing": 2,
+        "escalation_open": 3,
+        "milestone_unlisted": 4,
+        "milestone_closed_listed": 5,
+        "milestone_pending": 6,
+        "milestone_creator": 7,
+        "gate_phrase": 8,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
     return {
@@ -217,7 +235,7 @@ def merged_direction(repo: str, *, fetch: Callable[[list[str]], Any]) -> str | N
             return None
         raise
     if isinstance(body, dict) and isinstance(body.get("content"), str):
-        return base64.b64decode(body["content"]).decode("utf-8")
+        return base64.b64decode(body["content"]).decode()
     return None
 
 
@@ -263,7 +281,7 @@ def record_audit(repo: str) -> str | None:
         path = mark.marker_path()
         mark.mark_audit(path, repo, dt.datetime.now(dt.timezone.utc))
         return str(path)
-    except Exception:  # noqa: BLE001 - the audit result matters more than the reminder marker
+    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
 
 
@@ -287,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
         automation = args.automation
         if automation is None:
             me = fetch(["api", "user", "--method", "GET"])
-            automation = str(me.get("login")) if isinstance(me, dict) else None
+            login = me.get("login") if isinstance(me, dict) else None
+            automation = login if isinstance(login, str) else None
         truncated: list[str] = []
         milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
         truncated += ["milestones"] if cut else []
@@ -295,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
         truncated += ["issues"] if cut else []
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
+        rulesets, cut = fetch_paginated(
+            f"repos/{repo}/rulesets?includes_parents=false&targets=branch",
+            fetch=fetch,
+        )
+        truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
     except AuditError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
@@ -309,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         now=dt.datetime.now(dt.timezone.utc),
         direction_pulls=direction_pulls,
         truncated=truncated,
+        rulesets=rulesets,
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["marked"] = record_audit(repo)

@@ -335,6 +335,45 @@ one-off command whose human-owned actor is acceptable.
 The `local.env` file is local to the user account. Do not commit real
 tokens.
 
+### Standard Repository Rulesets
+
+`skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
+default branch: one reserves updates for the repository owner and the configured
+automation App, and the other requires code-owner review for `DIRECTION.md` and
+`CODEOWNERS` without an App bypass. The helper clears automation-token variables
+and verifies that the active `gh` account is the repository owner before reading
+the full bypass configuration or writing anything. The configured App ID is
+printed in every plan so the operator can verify the intended bypass actor.
+
+Plan one or more repositories without changing GitHub:
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py plan --repo OWNER/REPO
+```
+
+Apply requires an explicit acknowledgement of the owner-admin mutation. Applying
+to more than one resolved repository also requires the exact count printed by a
+fresh plan:
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py apply \
+  --repo OWNER/REPO \
+  --confirm-owner-admin-write
+```
+
+Use `--all-owned --owner OWNER` for a complete non-archived inventory. Plan and
+pilot first; do not use a broad apply as a discovery command. A repository where
+the configured App is not installed will reject the App bypass actor; treat that
+as a pilot finding, install or deliberately exclude the repository, and rerun
+the idempotent plan before continuing. The direction audit reports
+`ruleset_missing` when an adopted repository lacks either active standard
+branch ruleset.
+
+The direction rule intentionally has no bypass. An owner who is the sole code
+owner cannot approve their own pull request, so direction changes should normally
+arrive on an automation-authored branch for owner approval. An owner-authored
+direction pull request requires a distinct eligible code owner to review it.
+
 ### Protected Workflow Review
 
 Protected operator workflows should use
