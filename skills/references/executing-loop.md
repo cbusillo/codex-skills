@@ -8,11 +8,12 @@ still governs every action.
 ```text
 Executing loop for this repository (from DIRECTION.md):
   next          report the ranked item and stop
-  go            start it: linked worktree, bot commits, review by another model
+  go            start it: linked worktree, bot commits, review by another model when the review reference says so
+  go <milestone title>  work that milestone's issues in next order without stopping; stop only at a DIRECTION.md stop boundary or escalation
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
   land          open the PR, babysit it until merged, reconcile the runtime checkout
-  close out     update the plan issue, remove the worktree, leave main clean
+  close out     update the plan issue, open follow-up issues without starting them, remove the worktree, leave main clean
 ```
 
 `go` authorizes implementation; merge still requires authorization for the
