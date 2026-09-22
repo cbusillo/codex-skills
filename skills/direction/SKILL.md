@@ -65,9 +65,9 @@ one.
   executing agent: an executing agent choosing what the direction agent sees
   and judging its answer is the failure this skill exists to prevent. It reads
   GitHub and session history itself and writes its output to GitHub, never back
-  into another agent's prompt. It runs on a model other than the one the
-  executing agent runs on, so the agent that judges a run is never the agent
-  that produced it.
+  into another agent's prompt. It runs on a model other than the one that
+  produced the run it is scoring, so the agent that judges a run is never the
+  agent that produced it.
 - **Executing agents** work inside the current milestone, weigh reviewer
   findings, and escalate what is not theirs to decide.
 
