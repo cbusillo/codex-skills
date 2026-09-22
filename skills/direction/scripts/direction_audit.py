@@ -43,6 +43,7 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
+MAX_ADMISSION_ISSUES = 50
 
 
 class AuditError(Exception):
@@ -78,19 +79,30 @@ def parse_direction(text: str) -> dict[str, Any]:
 
 def direction_quotes(body: str) -> list[str]:
     """Read quoted evidence from Markdown blockquotes in an issue body."""
-    return [match.group(1).strip() for line in body.splitlines()
-            if (match := re.match(r"^\s*>\s?(.+?)\s*$", line))]
+    quotes: list[str] = []
+    fenced = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced and (match := re.match(r"^\s*>\s+([^>].*?)\s*$", line)):
+            quotes.append(match.group(1).strip())
+    return quotes
 
 
-def automated_milestone_admission(issue: dict[str, Any], events: list[dict[str, Any]], bots: set[str]) -> bool:
-    """Use the latest admission to the issue's current milestone."""
-    title = ((issue.get("milestone") or {}).get("title"))
-    admissions = [event for event in events if event.get("event") == "milestoned"
-                  and ((event.get("milestone") or {}).get("title")) == title]
+def plain_direction_text(value: str) -> str:
+    """Compare a copied rendered phrase with its Markdown source."""
+    value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
+    return " ".join(re.sub(r"[`*_]", "", value).split()).lower()
+
+
+def milestone_admission_actor(events: list[dict[str, Any]]) -> str | None:
+    """The last milestone assignment actor, including across milestone renames."""
+    admissions = [event for event in events if event.get("event") == "milestoned"]
     if not admissions:
-        return False
-    actor = str(((admissions[-1].get("actor") or {}).get("login")) or "").lower()
-    return actor in bots
+        return None
+    latest = max(enumerate(admissions), key=lambda pair: (str(pair[1].get("created_at") or ""), pair[0]))[1]
+    return str(((latest.get("actor") or {}).get("login")) or "").lower() or None
 
 
 def gate_phrases(text: str) -> list[str]:
@@ -132,7 +144,7 @@ def audit(
                 })
 
     # The owner's automation can span identities, such as a bot user and a later App.
-    bots = {login.lower() for login in (automation, *bot_logins) if login}
+    bots = {login.lower() for login in (automation, *bot_logins) if login} - {owner.lower()}
     trusted = {owner.lower()} | bots
     open_titles: set[str] = set()
     closed_titles: dict[str, Any] = {}
@@ -178,21 +190,25 @@ def audit(
         number = issue.get("number")
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
         author = str(((issue.get("user") or {}).get("login")) or "").lower()
-        bot_authored = author in bots
-        if milestone_title in milestone_lines and (bot_authored or issue.get("_automation_admitted")):
+        admission_actor = issue.get("_milestone_admitted_by")
+        bot_admitted = admission_actor in bots
+        bot_authored_without_known_admission = author in bots and admission_actor is None
+        if (not issue.get("_admission_unknown") and milestone_title in milestone_lines
+                and (bot_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))
-            line = " ".join(milestone_lines[milestone_title].split())
+            line = re.sub(r"^\s*[-*]\s+`[^`]+`\s*", "", milestone_lines[milestone_title])
+            line = plain_direction_text(line)
             if not quotes:
                 findings.append({"kind": "milestone_issue_quote_missing", "number": number, "milestone": milestone_title})
-            elif not any(len(quote) >= 12 and " ".join(quote.split()) in line for quote in quotes):
+            elif not any(len(plain_direction_text(quote)) >= 12 and plain_direction_text(quote) in line for quote in quotes):
                 findings.append({"kind": "milestone_issue_quote_mismatch", "number": number, "milestone": milestone_title})
-        if ESCALATION_LABEL in labels:
+        if ESCALATION_LABEL in labels and issue.get("state", "open") == "open":
             opened = _parse_time(issue.get("created_at"))
             age_days = (now - opened).days if opened else None
             findings.append({"kind": "escalation_open", "number": number, "title": issue.get("title"), "age_days": age_days})
         text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"
         phrases = gate_phrases(text)
-        if phrases:
+        if phrases and issue.get("state", "open") == "open":
             findings.append({"kind": "gate_phrase", "number": number, "title": issue.get("title"), "phrases": phrases})
 
     order = {
@@ -248,7 +264,7 @@ def gh_json(args: list[str], *, gh: str) -> Any:
 MAX_PAGES = 20
 
 
-def fetch_paginated(path: str, *, fetch: Callable[[list[str]], Any]) -> tuple[list[dict[str, Any]], bool]:
+def fetch_paginated(path: str, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES) -> tuple[list[dict[str, Any]], bool]:
     """All pages of a listing, and whether the page cap cut it short."""
     items: list[dict[str, Any]] = []
     page = 1
@@ -260,9 +276,34 @@ def fetch_paginated(path: str, *, fetch: Callable[[list[str]], Any]) -> tuple[li
         items.extend(body)
         if len(body) < 100:
             return items, False
-        if page >= MAX_PAGES:
+        if page >= max_pages:
             return items, True
         page += 1
+
+
+def enrich_admission_actors(
+    issues: list[dict[str, Any]], listed_titles: set[str], repo: str,
+    *, fetch: Callable[[list[str]], Any], max_issues: int = MAX_ADMISSION_ISSUES,
+) -> bool:
+    """Add last admission actors within a bounded event-read budget."""
+    incomplete = False
+    examined = 0
+    recent_first = sorted(issues, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    for issue in recent_first:
+        if "pull_request" in issue or ((issue.get("milestone") or {}).get("title")) not in listed_titles:
+            continue
+        if examined >= max_issues:
+            issue["_admission_unknown"] = True
+            incomplete = True
+            continue
+        examined += 1
+        events, cut = fetch_paginated(f"repos/{repo}/issues/{issue.get('number')}/events", fetch=fetch, max_pages=2)
+        if cut:
+            issue["_admission_unknown"] = True
+            incomplete = True
+            continue
+        issue["_milestone_admitted_by"] = milestone_admission_actor(events)
+    return incomplete
 
 
 def merged_direction(repo: str, *, fetch: Callable[[list[str]], Any]) -> str | None:
@@ -351,20 +392,11 @@ def main(argv: list[str] | None = None) -> int:
         truncated: list[str] = []
         milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
         truncated += ["milestones"] if cut else []
-        issues, cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
+        issues, cut = fetch_paginated(f"repos/{repo}/issues?state=all", fetch=fetch)
         truncated += ["issues"] if cut else []
         listed_titles = set(parse_direction(direction_text)["milestones"]) if direction_text else set()
-        automation_logins = {login.lower() for login in (automation, *github_identity.configured_bot_logins()) if login}
-        for issue in issues:
-            if "pull_request" in issue or ((issue.get("milestone") or {}).get("title")) not in listed_titles:
-                continue
-            author = str(((issue.get("user") or {}).get("login")) or "").lower()
-            if author in automation_logins:
-                continue
-            number = issue.get("number")
-            events, cut = fetch_paginated(f"repos/{repo}/issues/{number}/events", fetch=fetch)
-            truncated += [f"issue_{number}_events"] if cut else []
-            issue["_automation_admitted"] = automated_milestone_admission(issue, events, automation_logins)
+        if enrich_admission_actors(issues, listed_titles, repo, fetch=fetch):
+            truncated.append("milestone_issue_events")
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
         rulesets, cut = fetch_paginated(

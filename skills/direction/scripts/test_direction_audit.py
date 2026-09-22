@@ -98,18 +98,44 @@ def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> 
 
     human = {**base, "user": {"login": "someone-else"}}
     assert run(module, issues=[human])["ok"] is True
-    admitted = run(module, issues=[{**human, "_automation_admitted": True}])
+    admitted = run(module, issues=[{**human, "_milestone_admitted_by": "bot"}])
     assert "milestone_issue_quote_missing" in kinds(admitted)
+    owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
+    assert owner_admitted["ok"] is True
+    owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])
+    assert owner_fallback["ok"] is True
+    closed = run(module, issues=[{**base, "state": "closed"}])
+    assert "milestone_issue_quote_missing" in kinds(closed)
+    title_only = run(module, issues=[{**base, "body": "> Thin fork decision"}])
+    assert "milestone_issue_quote_mismatch" in kinds(title_only)
+    rendered = run(module, issues=[{**base, "body": "> Proves the engine choice"}])
+    assert rendered["ok"] is True
 
 
-def test_automation_admission_uses_the_latest_event_for_the_current_milestone() -> None:
+def test_automation_admission_uses_the_latest_event_across_renames() -> None:
     module = load()
-    assigned = {**issue(10, "Choose the engine"), "milestone": {"title": "Thin fork decision"}}
-    old = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "bot"}}
-    owner = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "owner"}}
-    assert module.automated_milestone_admission(assigned, [old], {"bot"}) is True
-    assert module.automated_milestone_admission(assigned, [old, owner], {"bot"}) is False
-    assert module.automated_milestone_admission(assigned, [owner, old], {"bot"}) is True
+    old = {"event": "milestoned", "milestone": {"title": "Old title"}, "actor": {"login": "bot"}, "created_at": "2026-09-01T00:00:00Z"}
+    owner = {"event": "milestoned", "milestone": {"title": "Thin fork decision"}, "actor": {"login": "owner"}, "created_at": "2026-09-02T00:00:00Z"}
+    assert module.milestone_admission_actor([old]) == "bot"
+    assert module.milestone_admission_actor([owner, old]) == "owner"
+    assert module.milestone_admission_actor([old, owner]) == "owner"
+
+
+def test_event_reads_are_bounded_and_skip_pull_requests() -> None:
+    module = load()
+    first = {**issue(10, "One"), "milestone": {"title": "Thin fork decision"}}
+    second = {**issue(11, "Two"), "milestone": {"title": "Thin fork decision"}}
+    pull = {**issue(12, "PR"), "milestone": {"title": "Thin fork decision"}, "pull_request": {}}
+    calls: list[list[str]] = []
+    def fetch(args: list[str]) -> list[dict[str, Any]]:
+        calls.append(args)
+        return [{"event": "milestoned", "actor": {"login": "bot"}}]
+    cut = module.enrich_admission_actors([first, second, pull], {"Thin fork decision"}, "o/r", fetch=fetch, max_issues=1)
+    assert cut is True
+    assert first["_milestone_admitted_by"] == "bot"
+    assert second["_admission_unknown"] is True
+    assert "_milestone_admitted_by" not in pull
+    assert len(calls) == 1
 
 
 def test_missing_file_and_missing_heading() -> None:

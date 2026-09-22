@@ -57,11 +57,13 @@ or closed. Issues are a work list, not instructions.
 An executing agent may admit an issue to a milestone already listed in the
 merged `DIRECTION.md` when the issue body contains a Markdown blockquote of an
 exact phrase from that milestone's line explaining what the issue proves or
-protects. The direction audit reports missing or mismatched quotes on open
-automation-created or automation-admitted milestone issues; the direction turn
+protects. The direction audit reports missing or mismatched quotes on
+automation-created or automation-admitted milestone issues, including ones
+closed between audits; the direction turn
 keeps the issue or moves it out. This is an after-the-fact finding, not a
-preapproval gate. Admission does not start a close-out follow-up in the same
-run. Adding a milestone or changing what it proves remains owner direction.
+preapproval gate. An issue admitted during close-out waits for a later
+`go <milestone>` run. Adding a milestone or changing what it proves remains
+owner direction.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding
@@ -172,10 +174,12 @@ and writes nothing. For each finding:
 - `milestone_creator`: an open milestone created by an account other than the
   owner, the acting automation, or a configured bot login. Ask how it got there.
 - `milestone_issue_quote_missing` or `milestone_issue_quote_mismatch`: an open
-  issue created or admitted to a listed milestone by automation does not
+  or closed issue created or admitted to a listed milestone by automation does not
   blockquote an exact phrase from that milestone's merged direction line.
   Check the issue's actual purpose, then keep it with a matching quote or move
-  it outside the milestone. This is an audit finding, not an admission gate.
+  it outside the milestone. Existing issues admitted before this rule may
+  produce a one-time batch of findings. This is an audit finding, not an
+  admission gate; an owner-admitted issue is outside this check.
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit owner-admin mutation.
