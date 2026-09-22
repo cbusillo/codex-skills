@@ -4403,7 +4403,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert checks_summary["combinedStateRaw"] == "success"
     assert checks_summary["legacyStatusesPresent"] is False
     assert checks_payload["readiness_evidence"] == {
-        "state": "complete", "head_sha": "head-sha", "unavailable_components": [],
+        "state": "reads_complete", "head_sha": "head-sha", "unavailable_components": [],
     }
     assert checks_payload["observed_merge_capability"]["authority"] == "unknown"
     merge_payload = json.loads(merge.stdout)
@@ -4778,6 +4778,7 @@ def test_merge_reconciles_accepted_unknown_outcome_to_final_sha() -> None:
     ], calls
     assert payload["mergeCommitOid"] == merge_sha, payload
     assert payload["merge"]["merged"] is True, payload
+    assert payload["observed_merge_capability"]["authority"] == "not_attributed_to_actor", payload
     assert pr.CURRENT_RETRY_FIELDS["attempts"] == 3, pr.CURRENT_RETRY_FIELDS
     assert pr.CURRENT_RETRY_FIELDS["outcome_certainty"] == "reconciled_applied", pr.CURRENT_RETRY_FIELDS
 
@@ -4925,6 +4926,7 @@ def test_merge_identity_reread_rejects_head_drift() -> None:
         except pr.PrHelperError as exc:
             assert exc.failure is not None
             assert exc.failure.cause == "merge_identity_unavailable", exc.failure
+            assert exc.payload["observed_merge_capability"]["observed_outcome"] == "accepted_unverified"
         else:
             raise AssertionError("head drift must invalidate merge identity reread")
     finally:
@@ -5239,6 +5241,11 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "if [[ \"$*\" == *'/pulls/12/merge'* ]]; then\n"
+            "  if [[ -n \"${GH_PR_DENY_MERGE:-}\" ]]; then\n"
+            "    printf 'HTTP/2.0 403 \\r\\ncontent-type: application/json\\r\\n\\r\\n'\n"
+            "    printf '{\"message\":\"Resource not accessible by integration\"}\\n'\n"
+            "    exit 1\n"
+            "  fi\n"
             "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
             "elif [[ \"$*\" == *'/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"state\":\"open\",\"mergeable\":true,\"mergeable_state\":\"blocked\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
@@ -5262,6 +5269,8 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
         view = invoke("view")
         checks = invoke("checks")
         merge = invoke("merge")
+        env["GH_PR_DENY_MERGE"] = "1"
+        denied_merge = invoke("merge")
 
     view_payload = json.loads(view.stdout)
     assert view.returncode == 0, view
@@ -5269,11 +5278,15 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
     assert view_payload["observed_merge_capability"]["authority"] == "unknown", view_payload
     checks_payload = json.loads(checks.stdout)
     assert checks.returncode == 1, checks
-    assert checks_payload["readiness_evidence"]["state"] == "degraded", checks_payload
+    assert checks_payload["readiness_evidence"]["state"] == "reads_degraded", checks_payload
     assert checks_payload["observed_merge_capability"]["authority"] == "unknown", checks_payload
     merge_payload = json.loads(merge.stdout)
     assert merge.returncode == 0, merge
     assert merge_payload["observed_merge_capability"]["authority"] == "confirmed_for_operation", merge_payload
+    denied_payload = json.loads(denied_merge.stdout)
+    assert denied_merge.returncode == 1, denied_merge
+    assert denied_payload["observed_merge_capability"]["observed_outcome"] == "denied", denied_payload
+    assert denied_payload["observed_merge_capability"]["authority"] == "denied_for_operation", denied_payload
 
 
 def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
