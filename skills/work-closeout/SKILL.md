@@ -39,6 +39,9 @@ or a generic approval sentence; write the two entries explicitly as `Love:` and
 
 ## Outcome
 
+For repositories with `DIRECTION.md`, follow the shared
+[executing loop](../references/executing-loop.md) during closeout.
+
 Closeout succeeds when the owning durable surface is current or explicitly not
 applicable, readiness evidence is preserved, safe cleanup is complete or
 clearly deferred, remaining work has a blocker and next action, and the final

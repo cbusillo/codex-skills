@@ -696,6 +696,10 @@ policy:
 
 # GitHub Expert
 
+For repositories with `DIRECTION.md`, follow the shared
+[executing loop](../references/executing-loop.md) through PR landing and
+runtime reconciliation.
+
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
 

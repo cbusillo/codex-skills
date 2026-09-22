@@ -56,6 +56,9 @@ using this workflow; it defines how existing approval and task boundaries apply.
 
 ## Objective
 
+For repositories with `DIRECTION.md`, follow the shared
+[executing loop](../references/executing-loop.md) for PR follow-through.
+
 Babysit a PR persistently until one of these terminal outcomes occurs:
 
 - The PR is merged or closed.

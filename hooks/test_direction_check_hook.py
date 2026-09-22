@@ -3,17 +3,20 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""The session-start reminder nags only while a direction check is overdue."""
+"""Session start prints the shared loop only for adopted direction repositories."""
 
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HOOK = Path(__file__).resolve().parent / "direction_check_hook.py"
 sys.path.insert(0, str(HOOK.parent))
@@ -95,11 +98,40 @@ class ReminderTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             nested = root / "a"
             nested.mkdir()
-            self.assertIsNone(hook.adopted_repo(nested))
+            self.assertIsNone(hook.direction_root(nested))
             (root / "DIRECTION.md").write_text("# Direction\n")
-            self.assertIsNone(hook.adopted_repo(nested), "no origin, no repo key")
+            self.assertEqual(hook.direction_root(nested), root.resolve())
+            self.assertIsNone(hook.adopted_repo(root.resolve()), "no origin, no repo key")
             subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "git@github.com:owner/repo.git"], check=True)
-            self.assertEqual(hook.adopted_repo(nested), "owner/repo")
+            self.assertEqual(hook.adopted_repo(root.resolve()), "owner/repo")
+
+    def test_loop_prints_from_reference_only_in_direction_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            nested = root / "nested"
+            nested.mkdir()
+            marker_path = root / hook.MARKER_NAME
+            marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
+            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            def run(cwd: Path) -> subprocess.CompletedProcess[str]:
+                return subprocess.run([sys.executable, str(HOOK)], cwd=cwd, env=env, capture_output=True, text=True, check=True)
+
+            self.assertEqual(run(nested).stdout, "")
+            (root / "DIRECTION.md").write_text("# Direction\n")
+            expected = hook.LOOP_PATH.read_text().strip()
+            self.assertEqual(run(nested).stdout.strip(), expected)
+            self.assertEqual(run(root).stdout.strip(), expected)
+
+    def test_missing_loop_reference_keeps_overdue_reminder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "DIRECTION.md").write_text("# Direction\n")
+            output = io.StringIO()
+            with mock.patch.object(hook, "LOOP_PATH", root / "missing.md"), mock.patch.object(hook, "marker_path", return_value=root / "missing-marker.json"), mock.patch("pathlib.Path.cwd", return_value=root), contextlib.redirect_stdout(output):
+                self.assertEqual(hook.main(), 0)
+            self.assertIn("Direction check overdue", output.getvalue())
 
     def test_hook_process_never_blocks_and_ignores_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
