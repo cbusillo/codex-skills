@@ -34,7 +34,8 @@ AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "rg", "ls", "find", "wc")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
-    "Do not modify, create, or delete anything.\n\n"
+    "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
+    "Do not run shell commands or modify, create, or delete anything.\n\n"
 )
 
 
@@ -115,12 +116,16 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     # It does not confine agy's own write tool; leaving that tool without an allow rule is what denies it.
     # A write rule the user added for their own work would be inherited by the reviewer.
     allow = (agy_settings().get("permissions") or {}).get("allow") or []
-    writable = sorted(rule for rule in allow if isinstance(rule, str) and rule.startswith("write_file"))
-    if writable:
+    safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
+    unsafe = sorted(
+        str(rule) for rule in allow
+        if not (isinstance(rule, str) and (rule.startswith("read_file(") or rule in safe_commands))
+    )
+    if unsafe:
         return failed(
             "google",
-            "your agy settings allow file writes, so a headless reviewer could change the repository",
-            rules=writable,
+            "your agy settings allow tools outside the reviewer's read-only set",
+            rules=unsafe,
             hint=f"Remove these rules from {AGY_SETTINGS} for the review, or use another provider.",
         )
     argv = ["agy", "-p", prompt, "--sandbox", "--output-format", "json", "--print-timeout", f"{timeout}s"]
@@ -150,14 +155,59 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
 
 
+def branch_diff(repo: Path) -> bytes:
+    """Return tracked branch and working-tree changes against the remote default branch."""
+    remote_head = subprocess.run(
+        ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True,
+    )
+    candidates = [remote_head.stdout.strip()] if remote_head.returncode == 0 else []
+    candidates += ["refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]
+    default = next((ref for ref in candidates if subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+        capture_output=True,
+    ).returncode == 0), None)
+    if default is None:
+        branch = subprocess.run(
+            ["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True,
+        )
+        if branch.returncode != 0:
+            return b""  # A directory without Git can still be reviewed by named paths.
+        if branch.stdout.strip() not in {"main", "master"}:
+            raise RuntimeError("could not identify the default branch for the review diff")
+        default = "HEAD"
+    base = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "HEAD", default],
+        capture_output=True, text=True,
+    )
+    if base.returncode != 0:
+        raise RuntimeError("could not find a review diff base")
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-color", "--binary", base.stdout.strip(), "--"],
+        capture_output=True,
+    )
+    if diff.returncode != 0:
+        raise RuntimeError(f"could not prepare review diff: {diff.stderr.decode(errors='replace').strip()}")
+    return diff.stdout
+
+
 def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
-    with tempfile.TemporaryDirectory(prefix="model-review-") as scratch:
+    # Keep the diff under the allowed repository read root; the directory is removed after review.
+    with tempfile.TemporaryDirectory(prefix=".model-review-", dir=repo) as scratch:
         try:
-            result = REVIEWERS[provider](PREAMBLE.format(repo=repo) + prompt, repo, model, timeout, Path(scratch))
+            diff = branch_diff(repo)
+            preamble = PREAMBLE.format(repo=repo)
+            if diff:
+                diff_path = Path(scratch) / "change.diff"
+                diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
+                preamble += f"The changes to review are in {diff_path}. Read that file directly; do not run git.\n\n"
+            result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
         except subprocess.TimeoutExpired:
             return failed(provider, f"no answer within {timeout} seconds")
+        except RuntimeError as exc:
+            return failed(provider, str(exc))
     if result["ok"] and not result["response"].strip():
         return failed(provider, "the reviewer returned nothing", model=result.get("model"))
     return result

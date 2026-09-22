@@ -40,9 +40,12 @@ one.
 ## Run A Review
 
 1. Write a prompt file that names the change, the paths to read, and what the
-   change is for. Do not paste file contents, your argument that the change is
-   right, or the answer you expect. Ask for a realistic trigger and a severity
-   for each finding, and allow the answer "none".
+   change is for. Never ask the reviewer to run a command. The helper names a
+   temporary diff file in its preamble when the branch has tracked changes;
+   ask the reviewer to read it directly. Do not paste file contents, your
+   argument that the change is right, or the answer you expect. Ask for a
+   realistic trigger and a severity for each finding, and allow the answer
+   "none".
 2. Run each reviewer from this skill's base directory:
 
    ```bash
