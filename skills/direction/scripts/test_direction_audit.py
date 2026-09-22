@@ -112,6 +112,21 @@ def test_unlisted_pending_and_foreign_creator() -> None:
     assert ("milestone_pending", "Thin fork decision") not in found
 
 
+def test_configured_bot_logins_are_trusted_creators() -> None:
+    module = load()
+    milestones = [
+        milestone(1, "Thin fork decision", creator="app[bot]"),
+        milestone(2, "Dogfood week", creator="Legacy-Bot"),
+        milestone(3, "Old phase", state="closed", creator="stranger"),
+    ]
+    result = run(module, milestones=milestones, automation="app[bot]", bot_logins=("legacy-bot",))
+    creators = [item["creator"] for item in result["findings"] if item["kind"] == "milestone_creator"]
+    assert creators == ["stranger"], "both automation identities are trusted; any other account is still reported"
+    result = run(module, milestones=milestones, automation="other", bot_logins=("legacy-bot",))
+    creators = [item["creator"] for item in result["findings"] if item["kind"] == "milestone_creator"]
+    assert creators == ["app[bot]", "stranger"], "the automation override replaces the acting identity only"
+
+
 def test_listed_but_never_created_is_pending() -> None:
     module = load()
     result = run(module, milestones=[milestone(1, "Thin fork decision")])

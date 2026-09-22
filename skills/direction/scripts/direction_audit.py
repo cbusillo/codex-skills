@@ -27,7 +27,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_rulesets
+from skills.github.scripts import github_identity, github_rulesets
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
@@ -81,6 +81,7 @@ def audit(
     owner: str,
     automation: str | None,
     now: dt.datetime,
+    bot_logins: tuple[str, ...] = (),
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
     rulesets: list[dict[str, Any]] | None = None,
@@ -104,7 +105,8 @@ def audit(
                     "detail": "an active repository branch ruleset with this standard name was not found",
                 })
 
-    trusted = {owner.lower()} | ({automation.lower()} if automation else set())
+    # The owner's automation can span identities, such as a bot user and a later App.
+    trusted = {owner.lower()} | {login.lower() for login in (automation, *bot_logins) if login}
     open_titles: set[str] = set()
     closed_titles: dict[str, Any] = {}
     for milestone in milestones:
@@ -334,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         direction_pulls=direction_pulls,
         truncated=truncated,
         rulesets=rulesets,
+        bot_logins=github_identity.configured_bot_logins(),
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["marked"] = record_audit(repo)
