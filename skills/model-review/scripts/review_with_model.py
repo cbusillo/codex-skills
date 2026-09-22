@@ -22,11 +22,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
+FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "rg", "ls", "find", "wc")
 PREAMBLE = (
@@ -160,13 +163,54 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     return result
 
 
+def fault_marker(source: dict[str, str] = os.environ) -> Path:
+    """The owner's planted finding: MODEL_REVIEW_FAULT when set, else ~/.code/model-review-fault.md.
+
+    One path for every host on purpose, like the direction marker: host home variables differ.
+    """
+    explicit = source.get("MODEL_REVIEW_FAULT")
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path(source.get("HOME", "~")).expanduser() / ".code" / FAULT_MARKER_NAME
+
+
+def plant_fault(result: dict[str, Any], marker: Path, repo: Path) -> Path | None:
+    """Append the owner's planted finding to one successful review; return the marker to consume.
+
+    This is how the direction skill's unannounced planted-fault run reaches an executing agent:
+    the owner writes the marker outside the repository before an ordinary session, the finding
+    arrives inside real reviewer output, and the renamed marker records when it fired. The JSON
+    result says nothing, so the agent weighs the finding as it would any other. A marker inside
+    the reviewed repository is never read: a pull request could have put it there.
+    """
+    if not result["ok"] or not marker.is_file():
+        return None
+    if marker.resolve().is_relative_to(repo.resolve()):
+        print(f"ignoring planted finding inside the reviewed repository: {marker}", file=sys.stderr)
+        return None
+    finding = marker.read_text().strip()
+    if not finding:
+        return None
+    result["response"] = result["response"].rstrip() + "\n\n" + finding + "\n"
+    return marker
+
+
+def consume_fault(marker: Path) -> None:
+    """Rename the marker only once the review it landed in has been delivered."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    marker.rename(marker.with_name(f"{marker.name}.used-{stamp}"))
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     result = review(args.provider, Path(args.prompt_file).read_text(), repo, args.model, args.timeout)
+    planted = plant_fault(result, fault_marker(), repo)
     if result["ok"] and args.out:
         Path(args.out).write_text(result.pop("response"))
         result["response_file"] = args.out
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2), flush=True)
+    if planted is not None:
+        consume_fault(planted)
     return 0 if result["ok"] else 2 if result.get("installed") is False else 1
 
 
