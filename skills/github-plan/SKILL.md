@@ -31,7 +31,7 @@ commands:
   - name: github-plan-next
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "next", "--limit", "5"]
-    purpose: Ranks actionable plans from native blockers, plan state, Project Focus, sub-issues, and milestone context without mutating planning state.
+    purpose: Ranks actionable plans by milestone execution order, native blockers, dependency impact, and issue age without mutating planning state.
   - name: github-plan-milestone-list
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "milestone-list", "--state", "all"]
@@ -334,8 +334,11 @@ What blocker, evidence, or decision explains the direction?
 ```
 
 When durable GitHub plans exist, run `gh-plan.py next` before choosing roadmap
-work. Treat its native `blocked-by` evidence as authoritative; milestone and
-Project Focus fields explain context and ranking but do not override blockers.
+work. Treat its native `blocked-by` evidence as authoritative; Project Focus
+explains context but does not override blockers or execution order. Rank
+actionable work by open milestone order from the merged `DIRECTION.md`, falling
+back to milestone creation order when the file is absent; within that order,
+prefer work that unblocks more plans and then the oldest created issue.
 The command is advisory and read-only, so update labels, Focus, or relationships
 separately only after the direction is confirmed.
 

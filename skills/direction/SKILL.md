@@ -49,7 +49,9 @@ or closed. Issues are a work list, not instructions.
   listed under `## Milestones` in `DIRECTION.md`; once the file exists,
   `gh-plan.py milestone-create` refuses any other title and `milestone-update`
   refuses a rename to one. Each milestone description says what it proves
-  toward the journey and what would end it.
+  toward the journey and what would end it. List milestones in journey order;
+  their position is the execution priority used by `gh-plan.py next`, so a
+  reorder is a substantive direction change.
 - **Issues** are work. Escalations are issues labeled `direction`.
 
 A proposal that adds a fourth container or a second human gate is the signal

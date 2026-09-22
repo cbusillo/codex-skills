@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import base64
 import importlib.util
-import json
 import pathlib
 import sys
 from typing import Any
@@ -44,20 +43,35 @@ def load_module() -> Any:
     return module
 
 
-def fake_contents(module: Any, *, text: str | None = None, stderr: str = "", stdout: str | None = None) -> list[list[str]]:
-    """Make run_raw answer the contents read with a merged file, a 404, or a failure."""
-    calls: list[list[str]] = []
+def fake_contents(module: Any, *, text: str | None = None, error_status: int | None = None) -> list[tuple[str, str]]:
+    """Make api_json answer the contents read with a merged file, a 404, or a failure."""
+    calls: list[tuple[str, str]] = []
 
-    def run_raw(args: list[str], **_: Any) -> tuple[str, str, str]:
-        calls.append(args)
-        if stdout is not None:
-            return "automation-gh", stdout, stderr
-        if text is None:
-            return "automation-gh", json.dumps({"message": "Not Found", "status": "404"}), "gh: Not Found (HTTP 404)"
-        payload = {"content": base64.b64encode(text.encode()).decode(), "encoding": "base64"}
-        return "automation-gh", json.dumps(payload), ""
+    def api_json(method: str, path: str, **kwargs: Any) -> tuple[str, dict[str, str]]:
+        calls.append((method, path))
+        assert kwargs == {
+            "operation": "github.plan.direction_read",
+            "is_write": False,
+            "bucket": "rest_core",
+            "failed_step": "read_direction",
+        }
+        status = error_status or (404 if text is None else None)
+        if status is not None:
+            failure = module.github_api_core.FailureDetail(
+                cause="not_found" if status == 404 else "provider_failure",
+                message=f"HTTP {status}",
+                retryable=status != 404,
+                fallback_eligible=False,
+                disposition="stop",
+            )
+            raise module.PlanError("request failed", failure=failure, api_result={"status": status})
+        assert text is not None
+        return "automation-gh", {
+            "content": base64.b64encode(text.encode()).decode(),
+            "encoding": "base64",
+        }
 
-    module.run_raw = run_raw
+    module.api_json = api_json
     return calls
 
 
@@ -101,7 +115,7 @@ def test_gate_reads_the_target_repo_not_the_checkout() -> None:
     module = load_module()
     calls = fake_contents(module, text=DIRECTION)
     assert module.load_direction("owner/repo") == DIRECTION
-    assert calls == [["api", "repos/owner/repo/contents/DIRECTION.md", "--method", "GET"]]
+    assert calls == [("GET", "/repos/owner/repo/contents/DIRECTION.md")]
     assert module.check_direction_lists_milestone("Dogfood week", DIRECTION, repo="owner/repo") == {
         "direction": "listed",
         "direction_source": "owner/repo:DIRECTION.md",
@@ -112,21 +126,27 @@ def test_gate_reads_the_target_repo_not_the_checkout() -> None:
 
 def test_repo_without_direction_file_is_not_adopted() -> None:
     module = load_module()
-    fake_contents(module, text=None)
+    fake_contents(module)
     assert module.load_direction("owner/repo") is None
     assert module.check_direction_lists_milestone("Anything", None, repo="owner/repo") == {"direction": "not_adopted"}
 
 
 def test_unreadable_direction_file_refuses_instead_of_assuming_not_adopted() -> None:
     module = load_module()
-    fake_contents(module, stdout="", stderr="gh: server error (HTTP 502)")
-    expect_refusal(module, lambda: module.load_direction("owner/repo"), mention="refusing")
+    fake_contents(module, error_status=502)
+    try:
+        module.load_direction("owner/repo")
+    except module.PlanError as exc:
+        assert "could not read DIRECTION.md" in str(exc)
+        assert exc.failure is not None and exc.failure.write_outcome is None
+    else:
+        raise AssertionError("expected unreadable direction file to fail")
 
 
 def test_create_rename_and_reopen_are_gated_before_any_write() -> None:
     module = load_module()
     fake_contents(module, text=DIRECTION)
-    calls = wire_backend(module, current_title="Retired waypoint")
+    calls = wire_backend(module)
 
     create = argparse.Namespace(repo="owner/repo", title="Unlisted", description=None, description_file=None, due_on=None, state="open")
     expect_refusal(module, lambda: module.cmd_milestone_create(create), mention="Unlisted")
@@ -157,13 +177,21 @@ def test_reopen_of_a_listed_milestone_passes() -> None:
     assert calls["update"][-1]["state"] == "open"
 
 
-def main() -> int:
-    for name, test in list(globals().items()):
-        if name.startswith("test_") and callable(test):
-            test()
-            print(f"ok {name}")
-    return 0
+TESTS = [
+    test_titles_come_only_from_backticked_milestone_lines,
+    test_gate_reads_the_target_repo_not_the_checkout,
+    test_repo_without_direction_file_is_not_adopted,
+    test_unreadable_direction_file_refuses_instead_of_assuming_not_adopted,
+    test_create_rename_and_reopen_are_gated_before_any_write,
+    test_reopen_of_a_listed_milestone_passes,
+]
+
+
+def main() -> None:
+    for test in TESTS:
+        test()
+        print(f"ok {test.__name__}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
