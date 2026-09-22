@@ -2199,6 +2199,109 @@ def test_close_not_planned_retains_and_reports_open_relationships() -> None:
     assert close_call["state_reason"] == "not_planned", close_call
 
 
+OWNER_DECISION_DIRECTION = "# Direction\n\n## Milestones\n\n- `Holds in use` proves it.\n"
+
+
+def owner_decision_close(
+    *,
+    reason: str,
+    milestone: str | None,
+    comments: list[dict[str, Any]],
+) -> tuple[Any, list[str], StringIO]:
+    plan = load_plan_module()
+    allow_close_relationships(plan)
+    issue = close_plan_issue()
+    issue["created_at"] = "2026-09-01T00:00:00Z"
+    if milestone is not None:
+        issue["milestone"] = {"title": milestone}
+    calls: list[str] = []
+    plan.load_config = lambda _repo: {"labels": {"active": "plan:active", "done": "plan:done"}, "projects": {}}
+    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+
+    def fake_direction(_repo: str) -> str:
+        calls.append("direction")
+        return OWNER_DECISION_DIRECTION
+
+    def fake_api_json(method: str, path: str, *_args: Any, **_kwargs: Any) -> tuple[str, Any]:
+        assert (method, path) == ("POST", "/graphql"), (method, path)
+        calls.append("last_edited")
+        return "automation-gh", {"data": {"repository": {"issue": {"lastEditedAt": "2026-09-20T00:00:00Z"}}}}
+
+    def fake_comments(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+        assert path == "/repos/owner/repo/issues/10/comments", path
+        assert kwargs["query"] == {"since": "2026-09-20T00:00:00Z"}, kwargs
+        calls.append("comments")
+        return "automation-gh", comments
+
+    def fake_close(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        calls.append("close")
+        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
+
+    def fake_edit(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        calls.append("edit")
+        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
+
+    plan.load_direction = fake_direction
+    plan.api_json = fake_api_json
+    plan.collect_paged_rest_items = fake_comments
+    output = StringIO()
+    with patched_issue_core(plan, edit_issue=fake_edit, set_issue_state=fake_close):
+        with redirect_stdout(output):
+            plan.cmd_close(close_args(reason=reason))
+    return plan, calls, output
+
+
+def owner_comment(login: str, created_at: str) -> dict[str, Any]:
+    return {
+        "user": {"login": login},
+        "created_at": created_at,
+        "html_url": f"https://github.com/owner/repo/issues/10#issuecomment-{created_at}",
+    }
+
+
+def test_close_not_planned_refuses_direction_milestone_work_without_owner_comment() -> None:
+    stale_or_foreign = [
+        owner_comment("owner", "2026-09-19T00:00:00Z"),
+        owner_comment("shiny-code-bot", "2026-09-21T00:00:00Z"),
+    ]
+    try:
+        owner_decision_close(reason="not_planned", milestone="Holds in use", comments=stale_or_foreign)
+    except SystemExit as exc:
+        raise AssertionError("expected PlanError, not exit") from exc
+    except Exception as exc:
+        assert type(exc).__name__ == "PlanError", exc
+        message = str(exc)
+        assert "repository owner 'owner'" in message and "Holds in use" in message, message
+        assert exc.failure.failed_step == "check_owner_decision", exc.failure
+        assert exc.failure.write_outcome == "not_started", exc.failure
+    else:
+        raise AssertionError("not-planned close of direction milestone work must need the owner's comment")
+
+
+def test_close_not_planned_allows_direction_milestone_work_with_owner_comment() -> None:
+    comments = [owner_comment("OWNER", "2026-09-21T00:00:00Z")]
+    _plan, calls, output = owner_decision_close(reason="not_planned", milestone="Holds in use", comments=comments)
+    payload = json.loads(output.getvalue())
+    decision = payload["closed"]["owner_decision"]
+    assert decision["required"] is True and decision["status_updated_at"] == "2026-09-20T00:00:00Z", decision
+    assert calls[:4] == ["direction", "last_edited", "comments", "close"], calls
+
+
+def test_close_completed_and_unlisted_milestones_skip_owner_decision() -> None:
+    _plan, calls, output = owner_decision_close(reason="completed", milestone="Holds in use", comments=[])
+    assert "direction" not in calls and "close" in calls, calls
+    assert "owner_decision" not in json.loads(output.getvalue())["closed"]
+
+    _plan, calls, output = owner_decision_close(reason="not_planned", milestone="Someday", comments=[])
+    assert calls[:2] == ["direction", "close"], calls
+    decision = json.loads(output.getvalue())["closed"]["owner_decision"]
+    assert decision == {"required": False, "reason": "milestone_not_listed_in_direction"}, decision
+
+    _plan, calls, _output = owner_decision_close(reason="not_planned", milestone=None, comments=[])
+    assert calls[0] == "close", calls
+
+
 def test_close_known_failure_reports_project_split_and_stops_metadata() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
@@ -6223,6 +6326,9 @@ def main() -> None:
         test_close_allows_closed_relationships_and_ignores_issues_it_blocks,
         test_close_relationship_preflight_fails_closed_on_unavailable_and_ambiguous_reads,
         test_close_not_planned_retains_and_reports_open_relationships,
+        test_close_not_planned_refuses_direction_milestone_work_without_owner_comment,
+        test_close_not_planned_allows_direction_milestone_work_with_owner_comment,
+        test_close_completed_and_unlisted_milestones_skip_owner_decision,
         test_close_known_failure_reports_project_split_and_stops_metadata,
         test_close_unknown_outcome_reports_unavailable_reconciliation,
         test_close_reconciles_unknown_success_before_metadata,

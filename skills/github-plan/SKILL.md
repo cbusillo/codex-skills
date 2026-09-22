@@ -301,7 +301,10 @@ also bypasses the no-write relationship preflight. For `--reason completed`,
 resolve all open native blockers and sub-issues before retrying. Use
 `--reason not_planned` only for superseded or intentionally abandoned work;
 remaining blockers and sub-issues are retained and reported rather than treated
-as completed. For other multiline writes, prefer body files or stdin. Do not
+as completed. A `not_planned` close of an issue in a milestone listed in the
+merged `DIRECTION.md` is refused until the repository owner comments the
+decision after the last Current Status update; never close it another way.
+For other multiline writes, prefer body files or stdin. Do not
 pass escaped `\n` through shell-quoted flags. Follow
 `../references/every-code-formatting.md` when writing durable issue bodies,
 planning comments, handoffs, or closeout evidence.
