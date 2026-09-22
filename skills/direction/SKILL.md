@@ -102,8 +102,13 @@ asks; that is execution.
    `next`, so the handoff needs no copy and paste.
 
 A **daily turn** is steps 1 and 2 alone, ending in "on course" or a named
-deviation. A **weekly audit** is the full session, opened by running the audit
-script and reading its findings before anything else.
+deviation, and one turn anywhere on the machine covers every repository. A
+**weekly audit** is the full session, and it is also one session: run the
+audit script once per adopted repository, from the same checkout, with
+`--repo OWNER/REPO` for each, and read all the findings before anything else.
+Nobody opens a session per repository; the per-repository reminder line only
+fires when a session happens to open inside an adopted repository whose audit
+is stale.
 
 End every daily turn by recording it, so the reminder goes quiet:
 
