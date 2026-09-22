@@ -100,13 +100,19 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("git -c commit.gpgsign=false commit -m demo", "prefer-bot-commit-helper-with-git-options"),
             ("cd /tmp && git -C 'a path' commit -m demo", "prefer-bot-commit-helper-with-git-options"),
             ("bash -lc 'git --no-pager -C repo commit'", "prefer-bot-commit-helper-with-git-options"),
+            ("git -c user.name=\"Shiny Code\" commit -m demo", "prefer-bot-commit-helper-with-git-options"),
             ("git -C repo push origin branch", "prefer-bot-push-helper-with-git-options"),
         ):
             with self.subTest(line=line):
                 result = bash(line)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(policy, result.stderr)
-        for line in ("git -C repo status", "git -C repo commit-graph write", "git -C repo log --grep commit"):
+        for line in (
+            "git -C repo status",
+            "git -C repo commit-graph write",
+            "git -C repo log --grep commit",
+            "rg -n 'git -C repo commit' docs/",
+        ):
             with self.subTest(line=line):
                 self.assertEqual((bash(line).returncode, bash(line).stderr), (0, ""))
 
