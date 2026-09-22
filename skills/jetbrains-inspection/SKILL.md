@@ -403,6 +403,13 @@ scope, never source code or a mixed scope containing source code.
   the preferred IDE, or report the blocker. Before a new helper invocation,
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
+  For a `go <milestone>` landing with passing executable checks, a previous
+  `UNKNOWN` caused by contention or preemption may receive one fresh assessment
+  after the IDE becomes idle, even when the earlier terminal response said not
+  to retry unchanged. If that fresh result is still `UNKNOWN`, record the
+  inconclusive scope and reason in the PR and continue an already authorized
+  landing as described in `repo-readiness`; do not call the inspection clean.
+  A `RED` finding on changed lines still blocks.
 - A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
   after the initial readiness wait if IDE auto-configuration is still registering
   the generated `.venv`. Preparation binds an existing SDK by interpreter home

@@ -205,6 +205,15 @@ blocked indexing, docs-only scope, or user-approved parking. Missing inspection
 evidence for a configured code gate means the readiness answer is not fully
 ready.
 
+In an executing `go <milestone>` landing, an `UNKNOWN` inspection caused by
+IDE contention or preemption is still unknown, never clean. Once the IDE is
+idle, make one fresh exact-worktree assessment if executable checks for the
+change passed. If it remains `UNKNOWN`, record its reason and scope in the PR
+and continue the already authorized landing without turning the tool failure
+into an owner question. An actionable `RED` finding on changed lines still
+blocks landing until fixed. This exception does not apply to missing executable
+checks, an unsafe worktree, or a different inspection failure.
+
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
 findings are broad but real, call them out and decide whether to include a
