@@ -102,6 +102,10 @@ def test_automation_milestone_admission_needs_a_quote_from_the_merged_line() -> 
     assert run(module, issues=[human])["ok"] is True
     admitted = run(module, issues=[{**human, "_milestone_admitted_by": "bot"}])
     assert "milestone_issue_quote_missing" in kinds(admitted)
+    other_agent = run(module, issues=[{**human, "_milestone_admitted_by": "another-app[bot]"}])
+    assert "milestone_issue_quote_missing" in kinds(other_agent)
+    unknown_actor = run(module, issues=[{**human, "_milestone_admitted_by": ""}])
+    assert "milestone_issue_quote_missing" in kinds(unknown_actor)
     owner_admitted = run(module, issues=[{**base, "_milestone_admitted_by": "owner"}])
     assert owner_admitted["ok"] is True
     owner_fallback = run(module, automation="owner", issues=[{**base, "_milestone_admitted_by": "owner"}])

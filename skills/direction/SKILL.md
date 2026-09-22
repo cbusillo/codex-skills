@@ -59,7 +59,7 @@ merged `DIRECTION.md` when the issue body contains a Markdown blockquote of an
 exact phrase from that milestone's line explaining what the issue proves or
 protects. The direction audit reports missing or mismatched quotes on open
 automation-created or automation-admitted milestone issues and on issues closed
-since the prior audit (the last seven days on a first audit); the direction turn
+since the prior audit (at least the last seven days); the direction turn
 keeps the issue or moves it out. This is an after-the-fact finding, not a
 preapproval gate. An issue admitted during close-out waits for a later
 `go <milestone>` run. Adding a milestone or changing what it proves remains
@@ -174,14 +174,16 @@ and writes nothing. For each finding:
 - `milestone_creator`: an open milestone created by an account other than the
   owner, the acting automation, or a configured bot login. Ask how it got there.
 - `milestone_issue_quote_missing` or `milestone_issue_quote_mismatch`: an open
-  or closed issue created or admitted to a listed milestone by automation does not
+  or recently closed issue admitted to a listed milestone by an agent does not
   blockquote an exact phrase from that milestone's merged direction line.
   Check the issue's actual purpose, then keep it with a matching quote or move
   it outside the milestone. Existing open issues admitted before this rule or
   old quotes after a direction-line edit may produce a one-time batch of
-  findings. The owner may accept an issue as written by assigning the milestone
-  again; the latest assignment actor then exempts it. This is an audit finding,
-  not an admission gate; an owner-admitted issue is outside this check.
+  findings. The owner may accept an issue as written by removing its milestone
+  and then adding it back; the latest assignment actor then exempts it. An
+  issue admitted by an agent can be worked before the weekly audit runs; the
+  quote is evidence for a later direction turn, not a preapproval gate. An
+  owner-admitted issue is outside this check.
 - `ruleset_missing`: an adopted repository lacks either active standard branch
   ruleset. Plan the guarded repair with `gh-rulesets.py`; applying it remains an
   explicit owner-admin mutation.

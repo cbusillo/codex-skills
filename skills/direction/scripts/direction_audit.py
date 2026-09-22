@@ -121,7 +121,7 @@ def milestone_admission_actor(events: list[dict[str, Any]]) -> str | None:
     if not admissions:
         return None
     latest = max(enumerate(admissions), key=lambda pair: (str(pair[1].get("created_at") or ""), pair[0]))[1]
-    return str(((latest.get("actor") or {}).get("login")) or "").lower() or None
+    return str(((latest.get("actor") or {}).get("login")) or "").lower()
 
 
 def gate_phrases(text: str) -> list[str]:
@@ -216,10 +216,10 @@ def audit(
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
         author = str(((issue.get("user") or {}).get("login")) or "").lower()
         admission_actor = issue.get("_milestone_admitted_by")
-        bot_admitted = admission_actor in bots
+        non_owner_admitted = admission_actor is not None and admission_actor != owner.lower()
         bot_authored_without_known_admission = author in bots and admission_actor is None
         if (not issue.get("_admission_unknown") and milestone_title in milestone_lines
-                and (bot_admitted or bot_authored_without_known_admission)):
+                and (non_owner_admitted or bot_authored_without_known_admission)):
             quotes = direction_quotes(str(issue.get("body") or ""))
             if not quotes:
                 findings.append({"kind": "milestone_issue_quote_missing", "number": number, "milestone": milestone_title})
@@ -463,7 +463,8 @@ def main(argv: list[str] | None = None) -> int:
         milestone_lines = parse_direction(direction_text)["milestone_lines"] if direction_text else {}
         previous = previous_audit_stamp(repo)
         now = dt.datetime.now(dt.timezone.utc)
-        since = previous if previous and previous <= now else now - dt.timedelta(days=7)
+        week_ago = now - dt.timedelta(days=7)
+        since = min(previous, week_ago) if previous and previous <= now else week_ago
         issues, issue_truncation = fetch_audit_issues(repo, milestones, milestone_lines, since, fetch=fetch)
         truncated.extend(issue_truncation)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
@@ -491,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         bot_logins=github_identity.configured_bot_logins(),
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
-    result["marked"] = None if "coverage_incomplete" in result["counts"] else record_audit(repo)
+    result["marked"] = record_audit(repo)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
