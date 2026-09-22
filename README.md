@@ -152,9 +152,13 @@ Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
 title the file does not list, and `milestone-update` refuses a rename to one.
 
 The plugin also ships a `SessionStart` hook, `hooks/direction_check_hook.py`.
+In a repository with a root `DIRECTION.md`, it prints the shared
+[executing loop](skills/references/executing-loop.md) at session start. The loop
+defines `next`, `go`, escalation, landing, and closeout for either harness
+when its session-start hook is registered.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,
-and it opens a session with one reminder line while the turn is more than a
+and it also prints a reminder line while the turn is more than a
 day old or the current repository's audit more than a week old. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and is bounded to 15 seconds with Python downloads

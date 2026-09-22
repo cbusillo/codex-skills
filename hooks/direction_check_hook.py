@@ -3,14 +3,16 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Session-start reminder that a direction turn or audit is overdue.
+"""Session-start executing loop and overdue direction reminder.
 
 The `direction` skill records the end of every daily turn in a small local
 marker, and the audit script records each weekly audit there per repository.
-At session start this hook reads the marker and prints one line when the last
+At session start this hook prints the executing loop for repositories with a
+root DIRECTION.md. It reads the marker and prints one line when the last
 turn is older than a day, or when the repository the session opened in has a
-`DIRECTION.md` and its last audit is older than a week. It prints nothing when
-the checks are current, never reads stdin, never blocks, and exits 0 whatever
+`DIRECTION.md` and its last audit is older than a week. Outside a direction
+repository it prints nothing when checks are current. It never reads stdin,
+never blocks, and exits 0 whatever
 it finds, so the same script serves Claude Code's SessionStart hook and a
 Codex session-start hook.
 """
@@ -29,6 +31,7 @@ from pathlib import Path
 MARKER_NAME = "direction-last-check.json"
 TURN_STALE = dt.timedelta(hours=24)
 AUDIT_STALE = dt.timedelta(days=7)
+LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -73,15 +76,23 @@ def read_marker(path: Path) -> dict[str, object]:
     return {"turn": parse_stamp(raw.get("turn")), "audits": audits}
 
 
-def adopted_repo(cwd: Path) -> str | None:
-    """OWNER/REPO for the checkout at cwd when it has a root DIRECTION.md, else None."""
+def direction_root(cwd: Path) -> Path | None:
+    """Checkout root when cwd belongs to a repository with DIRECTION.md."""
     try:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True, capture_output=True, timeout=5)
         if top.returncode != 0 or not top.stdout.strip():
             return None
         root = Path(top.stdout.strip())
-        if not (root / "DIRECTION.md").is_file():
-            return None
+        return root if (root / "DIRECTION.md").is_file() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def adopted_repo(root: Path | None) -> str | None:
+    """OWNER/REPO for a direction checkout with a GitHub origin, if available."""
+    if root is None:
+        return None
+    try:
         remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, text=True, capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -119,9 +130,15 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
 def main() -> int:
     try:
         path = marker_path()
-        text = reminder(read_marker(path), dt.datetime.now(dt.timezone.utc), adopted_repo(Path.cwd()), path)
-        if text:
-            print(text)
+        root = direction_root(Path.cwd())
+        if root is not None:
+            try:
+                print(LOOP_PATH.read_text().strip())
+            except OSError:
+                pass  # A missing loop reference must not hide an overdue reminder.
+        reminder_text = reminder(read_marker(path), dt.datetime.now(dt.timezone.utc), adopted_repo(root), path)
+        if reminder_text:
+            print(reminder_text)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
         pass
     return 0

@@ -125,6 +125,10 @@ using this workflow; it defines how existing approval and task boundaries apply.
 
 ## Outcome
 
+For repositories with `DIRECTION.md`, follow the shared
+[executing loop](../references/executing-loop.md) when an owner says `next`,
+`go`, or both.
+
 Use GitHub issues as the durable planning database. Keep chat planning
 ephemeral until the work should survive the current conversation.
 

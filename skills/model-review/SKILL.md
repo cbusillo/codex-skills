@@ -22,6 +22,9 @@ commands:
 
 # Model Review
 
+For repositories with `DIRECTION.md`, follow the shared
+[executing loop](../references/executing-loop.md) when reviewing execution work.
+
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow.
 
