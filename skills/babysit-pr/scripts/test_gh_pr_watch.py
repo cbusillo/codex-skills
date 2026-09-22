@@ -349,6 +349,25 @@ def test_green_rest_snapshot_surfaces_unavailable_review_readiness():
     ) == ["review_readiness_unavailable"]
 
 
+def test_behind_branch_precedes_stale_head_readiness_and_preserves_review_feedback():
+    pr = sample_pr()
+    pr["merge_state_status"] = "BEHIND"
+    actions = gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [{"kind": "review_comment", "id": "1"}], 0, 3
+    )
+    assert actions == ["process_review_comment", "update_behind_branch"]
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is False
+
+
+def test_unknown_merge_state_does_not_request_branch_update():
+    pr = sample_pr()
+    pr["merge_state_status"] = "UNKNOWN"
+    pr["metadata_availability"]["merge_state_status"] = False
+    assert "update_behind_branch" not in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3
+    )
+
+
 def test_review_readiness_query_distinguishes_nullable_decision():
     pr = sample_pr()
     pr.update({"review_decision": "", "review_requirement": "unknown", "review_decision_source": "not_queried"})

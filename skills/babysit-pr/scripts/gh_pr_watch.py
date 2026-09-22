@@ -53,6 +53,7 @@ def configured_bot_logins() -> frozenset[str]:
 
 
 MERGE_CONFLICT_OR_BLOCKING_STATES = {
+    "BEHIND",
     "BLOCKED",
     "DIRTY",
     "DRAFT",
@@ -967,6 +968,16 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         if new_review_items:
             actions.append("process_review_comment")
         actions.append("stop_pr_closed")
+        return unique_actions(actions)
+
+    if (
+        not pr.get("draft")
+        and pr.get("merge_state_status") == "BEHIND"
+        and pr.get("metadata_availability", {}).get("merge_state_status") is True
+    ):
+        if new_review_items:
+            actions.append("process_review_comment")
+        actions.append("update_behind_branch")
         return unique_actions(actions)
 
     if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
