@@ -265,8 +265,15 @@ def consume_fault(marker: Path) -> None:
     marker.rename(marker.with_name(f"{marker.name}.used-{stamp}"))
 
 
+def repository_root(path: Path) -> Path:
+    root = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+    )
+    return Path(root.stdout.strip()).resolve() if root.returncode == 0 else path
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
+    repo = repository_root(Path(args.repo).resolve())
     result = review(args.provider, Path(args.prompt_file).read_text(), repo, args.model, args.timeout)
     planted = plant_fault(result, fault_marker(), repo)
     if result["ok"] and args.out:
@@ -300,7 +307,7 @@ def find_probe(repo: Path) -> tuple[Path | None, str]:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
+    repo = repository_root(Path(args.repo).resolve())
     probe, expected = find_probe(repo)
     if probe is None:
         print(json.dumps({"ok": False, "error": f"no readable text file to probe in {repo}"}))

@@ -153,6 +153,13 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("untracked", result["error"])
+        subdir = self.repo / "subdir"
+        subdir.mkdir()
+        code, result = self.run_helper(
+            "run", "--provider", "google", "--repo", str(subdir), "--prompt-file", str(self.prompt), **env,
+        )
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("untracked", result["error"], "a subdirectory target must check the whole worktree")
 
     def test_a_reviewer_that_could_write_or_was_denied_a_read_is_a_failure(self) -> None:
         self.install("claude", FAKE_CLAUDE)
