@@ -101,14 +101,19 @@ asks; that is execution.
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
-A **daily turn** is steps 1 and 2 alone, ending in "on course" or a named
-deviation, and one turn anywhere on the machine covers every repository. A
-**weekly audit** is the full session, and it is also one session: run the
-audit script once per adopted repository, from the same checkout, with
-`--repo OWNER/REPO` for each, and read all the findings before anything else.
-Nobody opens a session per repository; the per-repository reminder line only
-fires when a session happens to open inside an adopted repository whose audit
-is stale.
+A **daily turn** is steps 1 and 2 alone, for the repository the session is
+in, ending in "on course" or a named deviation. One turn, wherever it happens,
+clears the turn reminder on the whole machine; it does not look at other
+repositories. A **weekly audit** is the full session repeated once per
+adopted repository, all from one session and one checkout: for each
+repository, run the audit script with `--repo OWNER/REPO`, read the findings
+first, then do steps 1 to 4 for that repository with `--repo` on every
+helper, using the merged `DIRECTION.md` the audit fetched rather than the
+local file. The adopted repositories are the ones in the marker's `audits`
+map plus any the owner names; a repository enters the map when its first
+audit runs during adoption. Nobody opens a session per repository; the
+per-repository reminder line only fires when a session happens to open inside
+an adopted repository whose audit is stale.
 
 End every daily turn by recording it, so the reminder goes quiet:
 
@@ -216,7 +221,9 @@ request path above.
    first. Scope the requirement to these two paths, not to every pull request:
    a review required everywhere trains the owner to click through.
 3. Create the listed milestones with `gh-plan.py milestone-create`.
-4. Run the audit once and clear its findings.
+4. Run the audit script for this repository once and clear its findings. That
+   first run also enters the repository in the marker's `audits` map, which is
+   how later weekly audits know to include it.
 
 Format GitHub writes under
 [Every Code formatting](../references/every-code-formatting.md).
