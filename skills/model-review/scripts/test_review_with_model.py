@@ -197,6 +197,11 @@ class ReviewWithModelTests(unittest.TestCase):
             code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
             self.assertEqual((code, result["rules"]), (1, [f"{write_tool}({self.repo})"]))
             self.assertFalse(cwd_file.exists())
+        for command in ("find", "rg"):
+            settings.write_text(json.dumps({"permissions": {"allow": [f"command({command})"]}}))
+            code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
+            self.assertEqual((code, result["rules"]), (1, [f"command({command})"]))
+            self.assertFalse(cwd_file.exists(), "agy must not start with an executable command allow rule")
 
     def test_check_probes_any_text_file_and_does_not_pass_when_nothing_is_usable(self) -> None:
         (self.repo / "a.md").write_text("\n  \n")

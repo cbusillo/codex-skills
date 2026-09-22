@@ -32,7 +32,7 @@ from typing import Any
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
-AGY_READ_ONLY_COMMANDS = ("grep", "rg", "ls", "find", "wc")
+AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
@@ -113,9 +113,10 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
 
 
 def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path) -> dict[str, Any]:
-    # `--sandbox` confines the shell to the working directory, so that directory is an empty scratch one.
-    # It does not confine agy's own write tool; leaving that tool without an allow rule is what denies it.
-    # A write rule the user added for their own work would be inherited by the reviewer.
+    # Use an empty scratch directory for the sandboxed CLI session. Do not rely on
+    # sandbox confinement to make command permissions safe: find can delete or
+    # execute, and rg --pre can execute a program. A user-added write rule would
+    # also be inherited by the reviewer.
     allow = (agy_settings().get("permissions") or {}).get("allow") or []
     safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
     unsafe = sorted(
