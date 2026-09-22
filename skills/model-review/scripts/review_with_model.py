@@ -212,7 +212,12 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
             diff = branch_diff(repo)
             preamble = PREAMBLE.format(repo=repo)
             if provider == "google":
-                preamble += "Read files directly with read_file; do not run shell commands.\n\n"
+                permitted = ", ".join(f"`{name}`" for name in AGY_READ_ONLY_COMMANDS)
+                preamble += (
+                    f"The only commands you may run are {permitted}. "
+                    "Use read_file to inspect file contents and for anything those commands cannot read. "
+                    "Do not run other commands.\n\n"
+                )
             if diff:
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))

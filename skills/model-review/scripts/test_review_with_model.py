@@ -15,6 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from review_with_model import AGY_READ_ONLY_COMMANDS
+
 SCRIPT = Path(__file__).with_name("review_with_model.py")
 
 FAKE_CODEX = """#!/bin/sh
@@ -104,6 +106,22 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
 
+    def test_google_preamble_names_only_allowed_commands_and_read_file(self) -> None:
+        self.install("agy", FAKE_AGY)
+        prompt_file = self.root / "agy-prompt"
+        agy_json = json.dumps({"response": "none", "denied_actions": []})
+        code, result = self.review(
+            "google", FAKE_AGY_JSON=agy_json,
+            FAKE_AGY_CWD_FILE=str(self.root / "agy-cwd"),
+            FAKE_AGY_PROMPT_FILE=str(prompt_file),
+        )
+        self.assertEqual((code, result["ok"]), (0, True))
+        preamble = prompt_file.read_text()
+        for command in AGY_READ_ONLY_COMMANDS:
+            self.assertIn(f"`{command}`", preamble)
+        self.assertIn("Use read_file", preamble)
+        self.assertIn("Do not run other commands", preamble)
+
     def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
         self.install("agy", FAKE_AGY)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
@@ -129,7 +147,7 @@ class ReviewWithModelTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertIn("do not run shell commands", prompt_file.read_text())
+        self.assertIn("Do not run other commands", prompt_file.read_text())
         self.assertIn("The changes to review are in", prompt_file.read_text())
         self.assertIn("+after", diff_file.read_text())
         self.assertFalse(list(self.repo.glob(".model-review-*")), "the temporary diff must be removed")
