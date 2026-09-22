@@ -1305,7 +1305,13 @@ def classify_legacy_failure(
     unknown = "unknown" if is_write else None
     rate_limit: Optional[dict[str, Any]] = None
 
-    if "would run as" in lowered and "expected" in lowered:
+    if "github app authentication failed before gh invocation" in lowered:
+        cause = "authentication_setup_failed"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = not_started
+    elif "would run as" in lowered and "expected" in lowered:
         cause = "actor_mismatch"
         disposition = "stop"
         retryable = False

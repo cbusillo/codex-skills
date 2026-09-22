@@ -262,7 +262,28 @@ a small wrapper around `gh` that reads the user's ignored `local.env` file under
 command it runs.
 
 Copy `.env.example` to `$CODE_HOME/local.env`, `$CODEX_HOME/local.env`, or
-`~/.code/local.env`, matching the runtime home you use, and set one of:
+`~/.code/local.env`, matching the runtime home you use. Prefer a private GitHub
+App installed only on the repositories the automation manages. Give it
+`Contents: Read and write`, `Issues: Read and write`, `Pull requests: Read and
+write`, and `Metadata: Read`, leave webhooks inactive, store its downloaded key
+outside the repository with mode `600`, and set all three variables:
+
+- `GITHUB_APP_ID`
+- `GITHUB_APP_INSTALLATION_ID`
+- `GITHUB_APP_PRIVATE_KEY_PATH`
+
+Add permissions only for helpers you use: `Actions: Read` for CI diagnosis or
+`Actions: Read and write` for workflow dispatch/rerun, `Checks: Read` and
+`Commit statuses: Read` for complete PR check evidence, and `Secret scanning
+alerts: Read` for the sanitized secret-scanning status reader. For GitHub
+Enterprise, also set `GITHUB_APP_API_URL` to the REST API base; the wrapper
+refuses to send an App JWT to `api.github.com` when `GH_HOST` names another host.
+
+The wrapper mints an installation token when needed and caches it under the Code
+home with owner-only permissions until shortly before expiry. Complete App
+configuration takes precedence over user-token variables, so install the App on
+every repository this automation must access. If App variables are absent, the
+existing user-token configuration remains supported:
 
 - `GH_TOKEN`
 - `GITHUB_TOKEN`
@@ -274,6 +295,10 @@ Configure the automation role separately from the token:
 - `CODEX_AUTOMATION_EMAIL`
 - `CODEX_AUTOMATION_BOT_LOGINS` for an optional quoted, space-separated list
   of additional automation accounts used only for bot classification
+
+When App authentication is enabled, set `CODEX_AUTOMATION_LOGIN` to the App's
+bot login (normally the App slug followed by `[bot]`) so write preflight and the
+identity probe verify the intended actor.
 
 The `CODEX_` prefix on these, and the `CODE_HOME` and `CODEX_HOME` names, are
 historical. They are stable names that mean the same thing on every host and are
@@ -293,6 +318,13 @@ Then call:
 
 ```sh
 github/scripts/gh-with-env-token pr view
+```
+
+Confirm the selected credential, current App installation, and acting GitHub
+identity without performing a write:
+
+```sh
+github/scripts/gh-with-env-token --check
 ```
 
 GitHub writes require a configured automation identity and token and never

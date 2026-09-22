@@ -860,8 +860,13 @@ invocation rules.
   `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command.
 - **Authentication**: The helpers own token selection, fallback behavior,
   consistent warnings, and parseable output. `scripts/gh-with-env-token` loads
-  automation auth and fails closed without changing actor when bot auth is
-  unavailable, rejected, or rate-limited. Active local `gh` auth is used only
+  automation auth and prefers a configured GitHub App installation over legacy
+  user-token variables. It verifies the App slug through JWT authentication,
+  caches the installation token with owner-only permissions, and presents the
+  verified App bot login to helper actor preflights without treating the
+  installation token as a user token. It fails closed without changing actor
+  when bot auth is unavailable, rejected, or rate-limited. Active local `gh`
+  auth is used only
   when the user explicitly approves the one-off and
   `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` is set. Use
   `scripts/gh-with-env-token --print-auth-account ...` when the acting account

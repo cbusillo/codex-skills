@@ -605,6 +605,17 @@ def test_classify_401_invalid_credentials() -> None:
     assert result.failure.disposition == "requires_authorization"
 
 
+def test_github_app_mint_failure_is_known_not_started() -> None:
+    failure = _api.classify_legacy_failure(
+        "error: GitHub App authentication failed before gh invocation: token request failed",
+        is_write=True,
+    )
+    assert failure.cause == "authentication_setup_failed"
+    assert failure.write_outcome == "not_started"
+    assert failure.fallback_eligible is False
+    assert failure.retryable is False
+
+
 def test_classify_403_actor_mismatch() -> None:
     with patch("subprocess.run") as run:
         result = _api.call_gh(
@@ -2865,6 +2876,7 @@ def main() -> None:
         test_retry_fails_closed_on_provider_bucket_mismatch,
         # error classification
         test_classify_401_invalid_credentials,
+        test_github_app_mint_failure_is_known_not_started,
         test_classify_403_actor_mismatch,
         test_classify_403_permission_denied,
         test_classify_403_rest_rate_limit_via_remaining_zero,
