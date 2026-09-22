@@ -121,10 +121,23 @@ def test_configured_bot_logins_are_trusted_creators() -> None:
     ]
     result = run(module, milestones=milestones, automation="app[bot]", bot_logins=("legacy-bot",))
     creators = [item["creator"] for item in result["findings"] if item["kind"] == "milestone_creator"]
-    assert creators == ["stranger"], "both automation identities are trusted; any other account is still reported"
+    assert creators == [], "closed milestones do not need creator trust; both open creators are trusted"
     result = run(module, milestones=milestones, automation="other", bot_logins=("legacy-bot",))
     creators = [item["creator"] for item in result["findings"] if item["kind"] == "milestone_creator"]
-    assert creators == ["app[bot]", "stranger"], "the automation override replaces the acting identity only"
+    assert creators == ["app[bot]"], "the automation override replaces the acting identity only for open milestones"
+
+
+def test_milestone_creator_finding_applies_only_to_open_milestones() -> None:
+    module = load()
+    result = run(
+        module,
+        milestones=[
+            milestone(1, "Open unknown creator", creator="stranger"),
+            milestone(2, "Closed unknown creator", state="closed", creator="stranger"),
+        ],
+    )
+    creator_titles = [item["title"] for item in result["findings"] if item["kind"] == "milestone_creator"]
+    assert creator_titles == ["Open unknown creator"]
 
 
 def test_listed_but_never_created_is_pending() -> None:

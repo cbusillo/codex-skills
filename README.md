@@ -299,8 +299,8 @@ Configure the automation role separately from the token:
 - `CODEX_AUTOMATION_EMAIL`
 - `CODEX_AUTOMATION_BOT_LOGINS` for an optional quoted, space-separated list
   of additional owner-controlled automation accounts used for bot
-  classification, trusted managed-plan authorship, and trusted milestone
-  creators in the direction audit; do not list third-party bots
+  classification, trusted managed-plan authorship, and trusted creators of open
+  milestones in the direction audit; do not list third-party bots
 
 When App authentication is enabled, set `CODEX_AUTOMATION_LOGIN` to the App's
 bot login (normally the App slug followed by `[bot]`) so write preflight and the
