@@ -94,7 +94,7 @@ def direction_quotes(body: str) -> list[str]:
 
 def plain_direction_text(value: str) -> str:
     """Compare a copied rendered phrase with its Markdown source."""
-    value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", value)
     return " ".join(re.sub(r"[`*_]", "", value).split()).lower()
 
 
