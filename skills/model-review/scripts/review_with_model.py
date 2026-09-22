@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -176,11 +177,15 @@ def branch_diff(repo: Path) -> bytes:
         if branch.stdout.strip() not in {"main", "master"}:
             raise RuntimeError("could not identify the default branch for the review diff")
         default = "HEAD"
-    status = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
-        capture_output=True, text=True,
+    tracked = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--"])
+    untracked = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
     )
-    if status.returncode != 0 or status.stdout.strip():
+    project_files = [name for name in untracked.stdout.split(b"\0") if name and not re.fullmatch(
+        rb"\.model-review-[a-z0-9_]+/.*", name,
+    )]
+    if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "HEAD", default],
@@ -201,8 +206,9 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
     # Google's diff must be under its allowed read root; other providers use system scratch.
+    scratch_options = {"dir": repo} if provider == "google" else {}
     try:
-        with tempfile.TemporaryDirectory(prefix=".model-review-", dir=repo if provider == "google" else None) as scratch:
+        with tempfile.TemporaryDirectory(prefix=".model-review-", **scratch_options) as scratch:
             diff = branch_diff(repo)
             preamble = PREAMBLE.format(repo=repo)
             if provider == "google":
@@ -221,7 +227,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     return result
 
 
-def fault_marker(source: dict[str, str] = os.environ) -> Path:
+def fault_marker(source: Mapping[str, str] = os.environ) -> Path:
     """The owner's planted finding: MODEL_REVIEW_FAULT when set, else ~/.code/model-review-fault.md.
 
     One path for every host on purpose, like the direction marker: host home variables differ.

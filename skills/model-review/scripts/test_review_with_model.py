@@ -143,6 +143,12 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertIn("after\\xff", diff_file.read_text(), "non-UTF-8 bytes remain legible to reviewers")
+        leftover = self.repo / ".model-review-ab12_cd" / "change.diff"
+        leftover.parent.mkdir()
+        leftover.write_text("left by a killed or parallel reviewer\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertTrue(leftover.exists(), "the helper must not remove another review's scratch")
         (self.repo / "new.py").write_text("print('new')\n")
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
