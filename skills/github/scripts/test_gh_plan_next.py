@@ -15,6 +15,13 @@ from typing import Any
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
+DIRECTION = """# Direction
+
+## Milestones
+
+- `First`
+- `Second`
+"""
 
 
 def load_module() -> Any:
@@ -34,6 +41,7 @@ def issue(
     state: str = "open",
     labels: list[str] | None = None,
     milestone: dict[str, Any] | None = None,
+    created_at: str = "2026-08-01T00:00:00Z",
     updated_at: str = "2026-08-21T00:00:00Z",
 ) -> dict[str, Any]:
     return {
@@ -41,6 +49,7 @@ def issue(
         "number": number,
         "title": title or f"Plan {number}",
         "state": state,
+        "created_at": created_at,
         "updated_at": updated_at,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
         "labels": [{"name": name} for name in (labels or ["plan", "plan:active"])],
@@ -69,6 +78,40 @@ def relationships(
         "blocking": blocking or [],
         "sub_issues": sub_issues or [],
     }
+
+
+def milestone_data(
+    number: int,
+    title: str,
+    *,
+    created_at: str,
+    state: str = "open",
+) -> dict[str, Any]:
+    return {
+        "number": number,
+        "title": title,
+        "state": state,
+        "created_at": created_at,
+        "html_url": f"https://github.com/owner/repo/milestone/{number}",
+    }
+
+
+def save_next_helpers(module: Any) -> dict[str, Any]:
+    return {
+        name: getattr(module, name)
+        for name in (
+            "collect_paged_rest_items",
+            "next_focus_context",
+            "read_next_issue_relationships",
+            "load_direction",
+            "emit",
+        )
+    }
+
+
+def restore_next_helpers(module: Any, originals: dict[str, Any]) -> None:
+    for name, value in originals.items():
+        setattr(module, name, value)
 
 
 def test_next_beta_rc_stable_chain_respects_native_blockers() -> None:
@@ -155,34 +198,62 @@ def test_next_closed_milestone_is_context_not_exclusion() -> None:
     assert result["notes"] == ["milestone_closed_but_plan_open"]
 
 
-def test_next_ranking_is_deterministic_and_dependency_aware() -> None:
+def test_next_ranking_uses_direction_then_dependencies_then_oldest_created() -> None:
     module = load_module()
     original = [
-        {**issue(1, updated_at="2026-08-20T00:00:00Z"), "focus": "Next", "blocking": [related(10)], "milestone": None},
-        {**issue(2, updated_at="2026-08-21T00:00:00Z"), "focus": "Now", "blocking": [], "milestone": None},
-        {**issue(3, updated_at="2026-08-21T00:00:00Z"), "focus": "Next", "blocking": [related(11), related(12)], "milestone": None},
         {
-            **issue(4, updated_at="2026-08-21T00:00:00Z"),
-            "focus": "Next",
-            "blocking": [],
-            "milestone": {"due_on": "2026-09-02T00:00:00Z"},
+            **issue(1, created_at="2026-07-01T00:00:00Z", updated_at="2026-09-30T00:00:00Z"),
+            "focus": "Now",
+            "blocking": [related(10), related(11), related(12)],
+            "milestone": None,
         },
         {
-            **issue(5, updated_at="2026-08-21T00:00:00Z"),
+            **issue(2, created_at="2026-08-10T00:00:00Z", updated_at="2026-09-29T00:00:00Z"),
             "focus": "Next",
+            "blocking": [related(20)],
+            "milestone": milestone_data(1, "First", created_at="2026-07-10T00:00:00Z"),
+        },
+        {
+            **issue(3, created_at="2026-07-20T00:00:00Z"),
+            "focus": None,
             "blocking": [],
-            "milestone": {"due_on": "2026-09-01T00:00:00Z"},
+            "milestone": milestone_data(2, "Second", created_at="2026-07-01T00:00:00Z"),
+        },
+        {
+            **issue(4),
+            "focus": None,
+            "blocking": [],
+            "milestone": milestone_data(1, "First", created_at="2026-07-10T00:00:00Z"),
         },
     ]
     expected = None
     for seed in range(5):
         candidates = [dict(item) for item in original]
         random.Random(seed).shuffle(candidates)
-        module.rank_next_candidates(candidates)
+        module.rank_next_candidates(candidates, direction_milestones=["First", "Second"])
         numbers = [item["number"] for item in candidates]
         expected = expected or numbers
         assert numbers == expected
-    assert expected == [2, 3, 1, 5, 4]
+    assert expected == [2, 4, 3, 1]
+
+
+def test_next_ranking_without_direction_uses_milestone_creation_order() -> None:
+    module = load_module()
+    candidates = [
+        {**issue(1, created_at="2026-07-01T00:00:00Z"), "blocking": [], "milestone": None},
+        {
+            **issue(2),
+            "blocking": [],
+            "milestone": milestone_data(2, "Newer milestone", created_at="2026-07-01T00:00:00Z"),
+        },
+        {
+            **issue(3, created_at="2026-08-02T00:00:00Z"),
+            "blocking": [],
+            "milestone": milestone_data(1, "Older milestone", created_at="2026-07-01T00:00:00Z"),
+        },
+    ]
+    module.rank_next_candidates(candidates)
+    assert [item["number"] for item in candidates] == [3, 2, 1]
 
 
 def test_next_focus_context_normalizes_keys_and_reports_truncation() -> None:
@@ -230,7 +301,15 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
     module = load_module()
     captured: dict[str, Any] = {}
     observed_query: dict[str, Any] = {}
-    plans = [issue(1), issue(2), issue(3)]
+    plans = [
+        issue(1, created_at="2026-07-01T00:00:00Z"),
+        issue(2, created_at="2026-07-02T00:00:00Z"),
+        issue(
+            3,
+            created_at="2026-09-01T00:00:00Z",
+            milestone=milestone_data(1, "First", created_at="2026-07-10T00:00:00Z"),
+        ),
+    ]
 
     def fake_collect(
         _path: str,
@@ -245,7 +324,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
         observed_query.update(query)
         assert bucket == "rest_core"
         assert step_prefix == "next_plan_issues"
-        assert limit == 3
+        assert limit == module.NEXT_PLAN_INVENTORY_LIMIT + 1
         assert issue_only is True
         return "automation-gh", plans
 
@@ -253,14 +332,11 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
         _repo: str,
         number: int,
     ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
-        if number == 2:
-            return "automation-gh", relationships(blocked_by=[related(1)]), []
+        if number == 1:
+            return "automation-gh", relationships(blocked_by=[related(10)]), []
         return "automation-gh", relationships(), []
 
-    original_collect = module.collect_paged_rest_items
-    original_focus = module.next_focus_context
-    original_relationships = module.read_next_issue_relationships
-    original_emit = module.emit
+    originals = save_next_helpers(module)
     module.collect_paged_rest_items = fake_collect
     module.next_focus_context = lambda _repo, _config: (
         "automation-gh",
@@ -268,6 +344,7 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
         {"available": True},
     )
     module.read_next_issue_relationships = fake_relationships
+    module.load_direction = lambda _repo: DIRECTION
     module.emit = captured.update
     try:
         module.cmd_next(
@@ -278,18 +355,65 @@ def test_cmd_next_is_bounded_read_only_and_explainable() -> None:
             )()
         )
     finally:
-        module.collect_paged_rest_items = original_collect
-        module.next_focus_context = original_focus
-        module.read_next_issue_relationships = original_relationships
-        module.emit = original_emit
+        restore_next_helpers(module, originals)
 
     assert observed_query["state"] == "open"
+    assert observed_query["sort"] == "created"
+    assert observed_query["direction"] == "asc"
     assert captured["truncated"] is True
     assert captured["candidate_count"] == 1
-    assert [item["number"] for item in captured["candidates"]] == [1]
+    assert [item["number"] for item in captured["candidates"]] == [3]
     assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
-    assert "scan_limit_truncated_open_plans" in captured["notes"]
+    assert captured["excluded"][0]["number"] == 1
+    assert "scan_limit_truncated_prioritized_plans" in captured["notes"]
     assert captured["dependency_context"]["complete"] is True
+
+
+def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
+    module = load_module()
+    captured: dict[str, Any] = {}
+    plan = issue(
+        1,
+        milestone=milestone_data(9, "Unlisted", created_at="2026-07-01T00:00:00Z"),
+    )
+    originals = save_next_helpers(module)
+    module.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [plan])
+    module.next_focus_context = lambda *_args, **_kwargs: (
+        None,
+        {},
+        {"available": False, "reason": "project_not_configured"},
+    )
+    module.read_next_issue_relationships = lambda *_args, **_kwargs: (
+        "automation-gh",
+        relationships(),
+        [],
+    )
+    module.emit = captured.update
+    try:
+        module.load_direction = lambda _repo: (_ for _ in ()).throw(module.PlanError("temporary 502"))
+        module.cmd_next(
+            type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
+        )
+        assert "direction_unavailable" in captured["notes"]
+        assert captured["milestone_order"]["source"] == "milestone_created_at"
+        assert captured["milestone_order"]["error"] == "temporary 502"
+
+        captured.clear()
+        module.load_direction = lambda _repo: "# Direction\n\n## Milestones\n\n- Unparseable title\n"
+        module.cmd_next(
+            type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
+        )
+        assert "direction_milestones_unparsed" in captured["notes"]
+        assert captured["milestone_order"]["source"] == "milestone_created_at"
+
+        captured.clear()
+        module.load_direction = lambda _repo: DIRECTION
+        module.cmd_next(
+            type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
+        )
+        assert captured["candidates"][0]["notes"] == ["milestone_unlisted_from_direction"]
+    finally:
+        restore_next_helpers(module, originals)
 
 
 def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
@@ -298,10 +422,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
     plans = [issue(1), issue(2, labels=["plan", "plan:stale"])]
     relationship_calls: list[int] = []
 
-    original_collect = module.collect_paged_rest_items
-    original_focus = module.next_focus_context
-    original_relationships = module.read_next_issue_relationships
-    original_emit = module.emit
+    originals = save_next_helpers(module)
     module.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", plans)
     module.next_focus_context = lambda _repo, _config: (
         "automation-gh",
@@ -314,6 +435,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
         raise module.PlanError("dependency endpoint unavailable")
 
     module.read_next_issue_relationships = fake_relationships
+    module.load_direction = lambda _repo: DIRECTION
     module.emit = captured.update
     try:
         module.cmd_next(
@@ -324,10 +446,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
             )()
         )
     finally:
-        module.collect_paged_rest_items = original_collect
-        module.next_focus_context = original_focus
-        module.read_next_issue_relationships = original_relationships
-        module.emit = original_emit
+        restore_next_helpers(module, originals)
 
     assert relationship_calls == [1]
     assert [item["exclusion"] for item in captured["excluded"]] == [
@@ -347,10 +466,7 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
         for number in range(2, module.NEXT_RELATIONSHIP_LIMIT + 2)
     ]
 
-    original_collect = module.collect_paged_rest_items
-    original_focus = module.next_focus_context
-    original_relationships = module.read_next_issue_relationships
-    original_emit = module.emit
+    originals = save_next_helpers(module)
     module.collect_paged_rest_items = lambda *_args, **_kwargs: (
         "automation-gh", [issue(1)],
     )
@@ -364,6 +480,7 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
         relationships(blocked_by=visible_blockers),
         ["blocked_by"],
     )
+    module.load_direction = lambda _repo: DIRECTION
     module.emit = captured.update
     try:
         module.cmd_next(
@@ -374,10 +491,7 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
             )()
         )
     finally:
-        module.collect_paged_rest_items = original_collect
-        module.next_focus_context = original_focus
-        module.read_next_issue_relationships = original_relationships
-        module.emit = original_emit
+        restore_next_helpers(module, originals)
 
     assert captured["candidate_count"] == 0
     assert captured["candidates"] == []
@@ -392,9 +506,7 @@ def test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_block
 
 def test_cmd_next_reraises_dependency_api_failures() -> None:
     module = load_module()
-    original_collect = module.collect_paged_rest_items
-    original_focus = module.next_focus_context
-    original_relationships = module.read_next_issue_relationships
+    originals = save_next_helpers(module)
     module.collect_paged_rest_items = lambda *_args, **_kwargs: (
         "automation-gh",
         [issue(1)],
@@ -414,6 +526,7 @@ def test_cmd_next_reraises_dependency_api_failures() -> None:
     module.read_next_issue_relationships = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         module.PlanError("retry later", failure=failure)
     )
+    module.load_direction = lambda _repo: DIRECTION
     try:
         try:
             module.cmd_next(
@@ -429,9 +542,7 @@ def test_cmd_next_reraises_dependency_api_failures() -> None:
         else:
             raise AssertionError("expected classified dependency failure")
     finally:
-        module.collect_paged_rest_items = original_collect
-        module.next_focus_context = original_focus
-        module.read_next_issue_relationships = original_relationships
+        restore_next_helpers(module, originals)
 
 
 def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
@@ -475,10 +586,7 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
         observed_query.update(query)
         return "automation-gh", [scoped_plan]
 
-    original_collect = module.collect_paged_rest_items
-    original_focus = module.next_focus_context
-    original_relationships = module.read_next_issue_relationships
-    original_emit = module.emit
+    originals = save_next_helpers(module)
     original_route = module.milestone_route
     original_show = module.github_milestone_core.show_milestone
     module.collect_paged_rest_items = fake_collect
@@ -512,10 +620,7 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
             )()
         )
     finally:
-        module.collect_paged_rest_items = original_collect
-        module.next_focus_context = original_focus
-        module.read_next_issue_relationships = original_relationships
-        module.emit = original_emit
+        restore_next_helpers(module, originals)
         module.milestone_route = original_route
         module.github_milestone_core.show_milestone = original_show
 
@@ -529,9 +634,11 @@ TESTS = [
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
     test_next_closed_milestone_is_context_not_exclusion,
-    test_next_ranking_is_deterministic_and_dependency_aware,
+    test_next_ranking_uses_direction_then_dependencies_then_oldest_created,
+    test_next_ranking_without_direction_uses_milestone_creation_order,
     test_next_focus_context_normalizes_keys_and_reports_truncation,
     test_cmd_next_is_bounded_read_only_and_explainable,
+    test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed,
     test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions,
     test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers,
     test_cmd_next_reraises_dependency_api_failures,

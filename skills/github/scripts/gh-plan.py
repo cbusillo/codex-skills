@@ -582,6 +582,7 @@ PROJECT_CACHE: dict[tuple[Any, ...], Any] = {}
 GRAPHQL_PREFLIGHT_MINIMUM = 25
 NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
+NEXT_PLAN_INVENTORY_LIMIT = 1000
 
 
 def classify_project_error(message: str) -> str:
@@ -942,6 +943,7 @@ def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
         "number": issue.get("number"),
         "title": issue.get("title"),
         "state": state.upper() if isinstance(state, str) else state,
+        "created_at": issue.get("created_at") or issue.get("createdAt"),
         "updated_at": issue.get("updated_at") or issue.get("updatedAt"),
         "url": issue.get("html_url") or issue.get("url"),
         "labels": normalize_labels(issue.get("labels")),
@@ -2176,6 +2178,7 @@ def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
         "number": normalized.get("number"),
         "title": normalized.get("title"),
         "state": normalized.get("state"),
+        "created_at": normalized.get("created_at"),
         "due_on": normalized.get("due_on"),
         "url": normalized.get("url"),
     }
@@ -2342,18 +2345,41 @@ def evaluate_next_plan(
     }
 
 
-def rank_next_candidates(candidates: list[dict[str, Any]]) -> None:
-    focus_rank = {"now": 0, "next": 1, None: 2}
-    candidates.sort(key=lambda candidate: int(candidate.get("number") or 0))
-    candidates.sort(key=lambda candidate: str(candidate.get("updated_at") or ""), reverse=True)
+def rank_next_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    direction_milestones: list[str] | None = None,
+) -> None:
+    listed_order = {
+        title: index
+        for index, title in enumerate(direction_milestones or [])
+    }
+
+    def milestone_rank(candidate: dict[str, Any]) -> tuple[int, str, int]:
+        milestone = candidate.get("milestone")
+        if not isinstance(milestone, dict) or milestone.get("state") != "open":
+            return len(listed_order) + 1, "9999-12-31T00:00:00Z", 0
+        if direction_milestones is not None:
+            title = milestone.get("title")
+            return (
+                listed_order.get(title, len(listed_order) + 1) if isinstance(title, str) else len(listed_order) + 1,
+                "",
+                0,
+            )
+        created_at = milestone.get("created_at")
+        number = milestone.get("number")
+        return (
+            0,
+            created_at if isinstance(created_at, str) else "9999-12-31T00:00:00Z",
+            number if isinstance(number, int) else 0,
+        )
+
     candidates.sort(
         key=lambda candidate: (
-            focus_rank.get(
-                candidate.get("focus").casefold() if isinstance(candidate.get("focus"), str) else None,
-                3,
-            ),
+            milestone_rank(candidate),
             -len(candidate.get("blocking") or []),
-            str((candidate.get("milestone") or {}).get("due_on") or "9999-12-31T00:00:00Z"),
+            str(candidate.get("created_at") or "9999-12-31T00:00:00Z"),
+            int(candidate.get("number") or 0),
         )
     )
     for rank, item in enumerate(candidates, start=1):
@@ -2368,9 +2394,27 @@ def cmd_next(args: argparse.Namespace) -> None:
     issue_query: dict[str, Any] = {
         "labels": config["labels"]["plan"],
         "state": "open",
-        "sort": "updated",
-        "direction": "desc",
+        "sort": "created",
+        "direction": "asc",
     }
+    direction_milestones: list[str] | None = None
+    direction_order_source = "explicit_scope" if args.milestone else "milestone_created_at"
+    direction_note: str | None = None
+    direction_error: str | None = None
+    if not args.milestone:
+        try:
+            direction_text = load_direction(repo)
+        except PlanError as exc:
+            direction_note = "direction_unavailable"
+            direction_error = github_api_core.redact_string(str(exc))
+        else:
+            if direction_text is not None:
+                parsed_titles = direction_milestone_titles(direction_text)
+                if parsed_titles:
+                    direction_milestones = parsed_titles
+                    direction_order_source = f"{repo}:{DIRECTION_FILE}"
+                else:
+                    direction_note = "direction_milestones_unparsed"
     if args.milestone:
         gh_cmd, expected_actor = milestone_route()
         milestone_result = github_milestone_core.show_milestone(
@@ -2390,14 +2434,18 @@ def cmd_next(args: argparse.Namespace) -> None:
         query=issue_query,
         bucket="rest_core",
         step_prefix="next_plan_issues",
-        limit=args.scan_limit + 1,
+        limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
         issue_only=True,
     )
     actor = page_actor or actor
-    truncated = len(issues) > args.scan_limit
-    issues = issues[: args.scan_limit]
+    inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
+    issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
+    inventory_count = len(issues)
     for issue in issues:
         issue["repo"] = repo
+    rank_next_candidates(issues, direction_milestones=direction_milestones)
+    scan_truncated = len(issues) > args.scan_limit
+    issues = issues[: args.scan_limit]
 
     project_actor, focus_by_url, focus_context = next_focus_context(repo, config)
     actor = actor or project_actor
@@ -2443,14 +2491,28 @@ def cmd_next(args: argparse.Namespace) -> None:
                 evaluated["truncated_relationships"] = truncated_relationships
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
-    rank_next_candidates(candidates)
+    rank_next_candidates(candidates, direction_milestones=direction_milestones)
+    if direction_milestones is not None:
+        listed = set(direction_milestones)
+        for candidate in candidates:
+            milestone = candidate.get("milestone")
+            if (
+                isinstance(milestone, dict)
+                and milestone.get("state") == "open"
+                and milestone.get("title") not in listed
+            ):
+                candidate.setdefault("notes", []).append("milestone_unlisted_from_direction")
     notes = [
         "native_blocked_by_relationships_are_authoritative",
-        "milestones_are_context_not_execution_order",
+        "milestones_are_the_execution_order",
         "closed_plans_are_excluded_by_the_open_issue_source_query",
     ]
-    if truncated:
-        notes.append("scan_limit_truncated_open_plans")
+    if direction_note:
+        notes.append(direction_note)
+    if inventory_truncated:
+        notes.append("plan_inventory_truncated")
+    if scan_truncated:
+        notes.append("scan_limit_truncated_prioritized_plans")
     if not focus_context.get("available"):
         notes.append("project_focus_unavailable")
     if focus_context.get("truncated"):
@@ -2465,6 +2527,12 @@ def cmd_next(args: argparse.Namespace) -> None:
             "kind": "milestone" if milestone_scope else "repository",
             "milestone": milestone_scope,
         },
+        "milestone_order": {
+            "source": direction_order_source,
+            "titles": direction_milestones,
+            "fallback_reason": direction_note,
+            "error": direction_error,
+        },
         "focus_context": focus_context,
         "dependency_context": {
             "complete": dependency_degraded_count == 0,
@@ -2472,7 +2540,9 @@ def cmd_next(args: argparse.Namespace) -> None:
             "relationship_limit": NEXT_RELATIONSHIP_LIMIT,
         },
         "evaluated": len(issues),
-        "truncated": truncated,
+        "truncated": inventory_truncated or scan_truncated,
+        "inventory_count": inventory_count,
+        "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         "candidates": candidates[: args.limit],
         "candidate_count": len(candidates),
         "excluded": excluded,
@@ -3132,35 +3202,36 @@ def load_direction(repo: str) -> str | None:
     is never consulted: it may belong to another repository, or hold an edit
     nobody approved. Any failure other than a clean 404 refuses the write.
     """
-    _, stdout, stderr = run_raw(
-        ["api", f"repos/{repo}/contents/{DIRECTION_FILE}", "--method", "GET"],
-        check=False,
-        operation="github.plan.direction_read",
-        is_write=False,
-        bucket="rest_core",
-    )
-    body: Any = None
-    if stdout.strip():
-        try:
-            body = json.loads(stdout)
-        except json.JSONDecodeError:
-            body = None
+    try:
+        _, body = api_json(
+            "GET",
+            f"/repos/{repo}/contents/{DIRECTION_FILE}",
+            operation="github.plan.direction_read",
+            is_write=False,
+            bucket="rest_core",
+            failed_step="read_direction",
+        )
+    except PlanError as exc:
+        status = (exc.api_result or {}).get("status")
+        if status == 404:
+            return None
+        raise PlanError(
+            f"could not read {DIRECTION_FILE} from {repo}: {github_api_core.redact_string(str(exc))}",
+            failure=exc.failure,
+            api_result=exc.api_result,
+        ) from exc
     if isinstance(body, dict) and isinstance(body.get("content"), str):
         import base64
 
         return base64.b64decode(body["content"]).decode()
-    message = str(body.get("message") if isinstance(body, dict) else "") + " " + stderr
-    if "Not Found" in message or "HTTP 404" in message or "(404)" in message:
-        return None
     raise PlanError(
-        f"could not read {DIRECTION_FILE} from {repo}; refusing to change milestones without it: {message.strip()[:300]}",
+        f"could not read {DIRECTION_FILE} from {repo}: response did not contain file content",
         failure=github_api_core.FailureDetail(
             cause="read_failure",
-            message="direction file unreadable",
-            retryable=True,
+            message="direction file response did not contain content",
+            retryable=False,
             fallback_eligible=False,
             disposition="stop",
-            write_outcome="not_started",
             failed_step="read_direction",
         ),
     )

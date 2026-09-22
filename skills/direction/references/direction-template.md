@@ -16,6 +16,8 @@ start, followed by what it proves and what would end it:
 ```
 
 `gh-plan.py milestone-create` accepts only titles found in those backticks.
+List the bullets in journey order; their position is the execution priority
+used by `gh-plan.py next`, so reordering them is a substantive direction change.
 Retire a milestone by removing its line in a direction pull request and
 closing it with `gh-plan.py milestone-close`.
 
