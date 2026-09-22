@@ -151,6 +151,17 @@ uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO
 Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
 title the file does not list, and `milestone-update` refuses a rename to one.
 
+The plugin also ships a `SessionStart` hook, `hooks/direction_check_hook.py`.
+It reads a local marker that `direction_mark.py` writes at the end of a daily
+turn and that the audit script writes per repository when an audit completes,
+and it opens a session with one reminder line while the turn is more than a
+day old or the current repository's audit more than a week old. It never
+reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
+(not after a compaction), and is bounded to 15 seconds with Python downloads
+disabled. The marker is `~/.code/direction-last-check.json` on every host
+unless `DIRECTION_MARKER` names another file. For Codex, register the same
+script as a session-start command hook in its hooks configuration.
+
 ## Instruction scope
 
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).

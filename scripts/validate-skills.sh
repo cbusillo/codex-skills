@@ -46,6 +46,8 @@ uv run skills/skill-creator/scripts/validate-skill-repo.py
 helper_tests=(
 	skills/babysit-pr/scripts/test_gh_pr_watch.py
 	hooks/test_command_policy_hook.py
+	hooks/test_direction_check_hook.py
+	skills/direction/scripts/test_direction_mark.py
 	skills/google-seo/scripts/test_bing_webmaster.py
 	skills/google-seo/scripts/test_google_search_console.py
 	skills/github-work-rollup/scripts/test_github_unanswered_comments.py
