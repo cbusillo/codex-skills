@@ -58,3 +58,5 @@ Whatever blocks that journey is the next piece of work.
   report a clean or triaged first audit; ends if adoption needs a hand edit
   that a catalog pull should have carried, or the owners remove it as
   ceremony.
+
+<!-- ruleset acceptance probe; this must not land -->
