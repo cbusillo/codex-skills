@@ -1473,10 +1473,16 @@ def has_managed_provenance(body: str) -> bool:
 
 def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
     author_login = issue_author_login(issue)
+    managed_authors = {
+        login.casefold()
+        for login in (
+            *github_identity.configured_bot_logins(),
+            *([EXPECTED_ACTOR] if EXPECTED_ACTOR else []),
+        )
+    }
     return bool(
         author_login
-        and EXPECTED_ACTOR
-        and author_login.casefold() == EXPECTED_ACTOR.casefold()
+        and author_login.casefold() in managed_authors
     )
 
 
@@ -3142,7 +3148,7 @@ def load_direction(repo: str) -> str | None:
     if isinstance(body, dict) and isinstance(body.get("content"), str):
         import base64
 
-        return base64.b64decode(body["content"]).decode("utf-8")
+        return base64.b64decode(body["content"]).decode()
     message = str(body.get("message") if isinstance(body, dict) else "") + " " + stderr
     if "Not Found" in message or "HTTP 404" in message or "(404)" in message:
         return None
