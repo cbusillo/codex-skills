@@ -26,7 +26,7 @@ independent milestone issues. Put close-out follow-ups outside the current
 milestone unless the owner adds them; do not start them in that close-out.
 If `next` finds no actionable milestone issue, report what is waiting and do
 not claim the milestone is complete until its exit criteria are met.
-List every owner decision still open at the end of the run in the final response,
+List every owner decision still open at the end of any executing-loop command in the final response,
 each as a direct question with a recommendation and the effect of each choice.
 An earlier asynchronous question or an issue update does not replace that
 handoff.

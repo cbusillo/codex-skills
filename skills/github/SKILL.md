@@ -853,7 +853,10 @@ invocation rules.
   available. If `.github/github.json` defines `qualityGate.inspection`, PR
   creation/update, ready-to-merge claims, and merges must carry JetBrains
   evidence from the delegated helper or an explicit not-run reason. If that
-  inspection config is blank, missing, contradictory, or surprising, do not
+  evidence is a recorded contention or preemption `UNKNOWN` under the narrow
+  `repo-readiness` milestone exception, it permits an already authorized merge
+  while readiness remains not fully ready; preserve the reason and follow-up.
+  If that inspection config is blank, missing, contradictory, or surprising, do not
   silently invent repo policy: use a safe one-off `changed_files` check only when
   the helper can infer the correct route, and ask the user before changing
   durable config or treating a suspicious value as authoritative. If unavailable,

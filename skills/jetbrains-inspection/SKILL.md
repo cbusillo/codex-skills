@@ -409,8 +409,10 @@ scope, never source code or a mixed scope containing source code.
   `exact_proof_write_preempted`) or an adopted foreign run timed out with
   `cancellation.reason=foreign_run_not_owned`. A generic timeout does not
   qualify. This is a later assessment after external state changes, not another
-  immediate retry of an unchanged failure. If the helper's bounded readiness
-  gate does not show the IDE idle, skip the extra assessment. Preserve the
+  immediate retry of an unchanged failure. The later `agent-inspect` or
+  `inspect-closeout` invocation has its own bounded route-readiness wait; if
+  that wait does not settle, retain the original `UNKNOWN` without polling.
+  Preserve the
   `UNKNOWN` verdict and any actionable findings under the normal policy.
   Deferred cleanup must resolve in the later assessment or stale-lease helper
   before landing continues; otherwise stop and report it. Other terminal
