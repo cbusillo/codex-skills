@@ -133,6 +133,15 @@ Accept any of the following:
    one-shot diagnostic snapshot.
 2. Run the watcher script to snapshot PR/review/CI state (or consume each streamed snapshot from `--watch`).
 3. Inspect the `actions` list in the JSON response.
+   `update_behind_branch` means GitHub confirmed `BEHIND` for the current PR.
+   Address review changes and diagnose failing checks first. With existing
+   merge authorization, use `../github/scripts/gh-pr.py view <pr>` to verify
+   `headRepository` matches the PR repository, confirm the head branch is
+   automation-owned, and confirm its own diff remains within the approved
+   change. Update it through
+   `../github/scripts/gh-with-env-token pr update-branch <pr>`, then watch the
+   exact new head's checks and review state before handing merge to `github`.
+   Do not update a fork or someone else's branch without its owner's approval.
    `check_evidence_incomplete` means the REST check counts cannot prove a
    terminal round; keep watching and do not rerun from that evidence alone.
    `review_readiness_unavailable` means the other readiness inputs are green

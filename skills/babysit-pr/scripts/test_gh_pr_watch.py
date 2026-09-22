@@ -72,6 +72,7 @@ def sample_rest_view(**overrides):
         "draft": False,
         "baseRefName": "main",
         "headRefName": "feature",
+        "headRepository": "example/repo",
         "headRefOid": "b" * 40,
         "mergeable": True,
         "mergeStateStatus": "clean",
@@ -129,6 +130,7 @@ def test_resolve_pr_uses_rest_helper_and_exposes_final_merge_commit(monkeypatch)
     assert pr["base_branch"] == "main"
     assert pr["merge_commit_sha"] == "a" * 40
     assert pr["head_sha"] == "b" * 40
+    assert pr["head_repository"] == "example/repo"
     assert pr["mergeable"] == "UNKNOWN"
     assert pr["metadata_availability"]["review_decision"] is False
     assert calls == [
@@ -347,6 +349,30 @@ def test_green_rest_snapshot_surfaces_unavailable_review_readiness():
         0,
         3,
     ) == ["review_readiness_unavailable"]
+
+
+def test_behind_branch_blocks_stale_readiness_and_preserves_other_actions():
+    pr = sample_pr()
+    pr["merge_state_status"] = "BEHIND"
+    pr["review_requirement"] = "changes_requested"
+    actions = gh_pr_watch.recommend_actions(
+        pr, sample_checks(failed_count=1), [{"run_id": 99}], [],
+        [{"kind": "review_comment", "id": "1"}], 0, 3
+    )
+    assert actions == [
+        "address_review_changes", "process_review_comment", "diagnose_ci_failure",
+        "retry_failed_checks", "update_behind_branch",
+    ]
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is False
+
+
+def test_unknown_merge_state_does_not_request_branch_update():
+    pr = sample_pr()
+    pr["merge_state_status"] = "UNKNOWN"
+    pr["metadata_availability"]["merge_state_status"] = False
+    assert "update_behind_branch" not in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3
+    )
 
 
 def test_review_readiness_query_distinguishes_nullable_decision():

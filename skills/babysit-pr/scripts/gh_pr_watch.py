@@ -53,6 +53,7 @@ def configured_bot_logins() -> frozenset[str]:
 
 
 MERGE_CONFLICT_OR_BLOCKING_STATES = {
+    "BEHIND",
     "BLOCKED",
     "DIRTY",
     "DRAFT",
@@ -313,6 +314,7 @@ def resolve_pr(pr_spec, repo_override=None):
         "repo": repo,
         "head_sha": head_sha,
         "head_branch": str(data.get("headRefName") or ""),
+        "head_repository": str(data.get("headRepository") or ""),
         "base_branch": str(data.get("baseRefName") or ""),
         "merge_commit_sha": str(data.get("mergeCommitOid") or "") if merged else "",
         "state": state,
@@ -1001,6 +1003,13 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
             actions.append("diagnose_ci_failure")
             if checks_summary["all_terminal"] and failed_runs and retries_used < max_retries:
                 actions.append("retry_failed_checks")
+
+    if (
+        not pr.get("draft")
+        and pr.get("merge_state_status") == "BEHIND"
+        and pr.get("metadata_availability", {}).get("merge_state_status") is True
+    ):
+        actions.append("update_behind_branch")
 
     if not actions:
         actions.append("idle")
