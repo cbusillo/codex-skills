@@ -51,10 +51,12 @@ Whatever blocks that journey is the next piece of work.
 
 ## Milestones
 
-- `Direction holds in real use` proves that a planted reviewer finding is
-  escalated, not acted on, by an executing agent on each harness, and that one
-  weekly audit of this repository comes back clean; ends if the fault is acted
-  on or declined on either harness, or the audit reports findings nobody clears.
+- `Landing needs no hand` proves that on each harness an executing agent takes
+  a reviewed change from `go` to merged with no owner step between: a branch
+  behind main is updated before merge, the Google reviewer completes under the
+  read-only rules, and close-out opens follow-ups instead of starting them;
+  ends if a landing needs a hand edit or an owner merge, or a reviewer is
+  skipped for want of a rule the helper could have stated.
 - `Adopted beyond this repository` proves that the other two owners' agents
   adopt direction and the review policy from the steps on GitHub alone and
   report a clean or triaged first audit; ends if adoption needs a hand edit
