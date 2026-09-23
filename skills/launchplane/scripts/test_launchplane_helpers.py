@@ -689,7 +689,11 @@ def test_merge_train_policy_import_uses_exact_read_and_write_routes() -> None:
 
         def fake_read(**kwargs: Any) -> dict[str, object]:
             calls.append(("GET", str(kwargs["path"])))
-            return _merge_train_policy_targets_payload()
+            payload = _merge_train_policy_targets_payload()
+            policy = payload["policy"]
+            assert isinstance(policy, dict)
+            policy["updated_at"] = "2026-09-14T17:13:11.787617Z"
+            return payload
 
         def fake_post(**kwargs: Any) -> dict[str, object]:
             calls.append(("POST", str(kwargs["path"])))
@@ -747,6 +751,7 @@ def test_merge_train_policy_import_uses_exact_read_and_write_routes() -> None:
     ]
     result = json.loads(output.getvalue())
     assert result["status"] == "accepted"
+    assert result["result"]["current_policy"]["updated_at"] == "2026-09-14T17:13:11.787617Z"
     assert result["result"]["candidate"]["policy_sha256"] == "c" * 64
     assert result["result"]["candidate"]["replayed"] is False
     assert apply_body["mode"] == "apply"

@@ -84,7 +84,7 @@ SUMMARY_VALUE_DENYLIST = (
 CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,79}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/#@+-]{0,255}$")
 TRACE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
 
 
 class LaunchplaneSafetyError(ValueError):

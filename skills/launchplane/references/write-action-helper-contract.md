@@ -520,3 +520,7 @@ opaque values, raw requests, provider env, or headers are not copied into output
 Unauthorized, unavailable, denied, stale, and mismatched-intent responses keep
 the same envelope and include compact `summary.error_code`, `summary.trace_id`,
 and `warnings` entries. They do not include raw request bodies.
+
+Policy preflight accepts UTC record timestamps with optional fractional seconds
+(up to six digits), preserving their exact value in reviewed evidence. This
+includes microsecond timestamps emitted by native policy preparation.
