@@ -74,6 +74,8 @@ def agy_unsafe_rules(allow: list[Any]) -> tuple[list[str], list[str]]:
     command with arguments, or a program the user granted for their own sessions, is reported but
     never removed automatically.
     """
+    if not isinstance(allow, list):
+        return [], [f"permissions.allow is not a list: {allow!r}"]
     safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
     stale_commands = {f"command({name})" for name in AGY_RETIRED_COMMANDS}
     stale, other = [], []
@@ -144,7 +146,7 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
         hint = (
             f"Run: {Path(__file__).name} repair. It backs up {AGY_SETTINGS} and removes only these stale command grants."
             if not other
-            else f"Remove these rules from {AGY_SETTINGS} by hand for the review, or use another provider."
+            else f"Only you should change these rules in {AGY_SETTINGS}; remove them for the review, or use another provider."
         )
         return failed(
             "google",
@@ -354,8 +356,11 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def load_agy_settings_file() -> tuple[Path, dict[str, Any] | None, list[Any] | None]:
-    """The settings path, its parsed object, and its allow list; None values mean the file is unusable."""
-    settings = AGY_SETTINGS.expanduser()
+    """The settings path, its parsed object, and its allow list; None values mean the file is unusable.
+
+    A symlinked settings file, as dotfiles setups make, is resolved so the write lands in the real file.
+    """
+    settings = AGY_SETTINGS.expanduser().resolve()
     if not settings.is_file():
         return settings, None, None
     try:

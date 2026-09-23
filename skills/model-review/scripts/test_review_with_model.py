@@ -210,7 +210,12 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
         self.assertEqual(result["rules"], ["command(find)", f"write_file({self.repo})"])
         self.assertNotIn("repair", result["hint"])
-        self.assertIn("by hand", result["hint"])
+        self.assertIn("Only you", result["hint"])
+        # An allow value that is not a list is one confusing rule, not a rule per character.
+        settings.write_text(json.dumps({"permissions": {"allow": "command(find)"}}))
+        code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
+        self.assertEqual((code, len(result["rules"])), (1, 1))
+        self.assertIn("not a list", result["rules"][0])
         settings.write_text(json.dumps({"permissions": {"allow": ["command(grep)", "command(ls)", "command(wc)"]}}))
         code, result = self.review(
             "google", FAKE_AGY_JSON=json.dumps({"response": "reviewed", "denied_actions": []}),
@@ -358,6 +363,17 @@ class ReviewWithModelTests(unittest.TestCase):
         code, again = self.run_helper("repair")
         self.assertEqual((code, again["removed"], "backup" in again), (0, [], False))
         self.assertEqual(list(settings.parent.glob("settings.json.before-model-review-repair-*")), backups)
+        # A dotfiles-style symlink stays a symlink: the repair lands in the real file behind it.
+        real = self.root / "dotfiles" / "agy-settings.json"
+        real.parent.mkdir()
+        real.write_text(json.dumps(original))
+        settings.unlink()
+        settings.symlink_to(real)
+        code, result = self.run_helper("repair")
+        self.assertEqual((code, result["removed"]), (0, ["command(find)", "command(rg)"]))
+        self.assertTrue(settings.is_symlink(), "the link must not be replaced by a plain file")
+        self.assertNotIn("command(find)", json.loads(real.read_text())["permissions"]["allow"])
+        self.assertEqual(Path(result["backup"]).parent, real.parent)
 
     def test_repair_refuses_ambiguous_rules_and_unusable_settings_without_changing_anything(self) -> None:
         settings = self.home / ".gemini" / "antigravity-cli" / "settings.json"
