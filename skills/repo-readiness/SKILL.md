@@ -205,25 +205,31 @@ blocked indexing, docs-only scope, or user-approved parking. Missing inspection
 evidence for a configured code gate means the readiness answer is not fully
 ready.
 
-In an executing `go <milestone>` landing, a current `UNKNOWN` inspection from
-an adopted foreign run whose timeout reports
-`cancellation.reason=foreign_run_not_owned` is still unknown, never clean.
-After the competing session ends, invoke at most one additional exact-worktree
-assessment per revision in addition to any internal retry; that invocation has
-its own bounded route-readiness wait. If the IDE does not settle or the later
-assessment remains `UNKNOWN`, keep the original or later `UNKNOWN` and proceed
-under this same exception. Do not poll for idle indefinitely. A generic timeout
-or exact-proof write preemption does not qualify; update an older installed
-plugin that still returns `preempted`. Record the scope, reason, and any findings in the
-PR and final report; readiness stays not fully ready. Open a focused follow-up
-outside the milestone unless one already owns the IDE failure. Continue the
-already authorized landing
-without turning this tool failure into an owner question. Handle findings under
-the normal RED policy. Failing or missing executable checks, an unsafe
-worktree, unresolved lifecycle cleanup, or a different inspection failure
-disqualifies this exception. Resolve deferred cleanup through the later
-assessment or the stale-lease helper before landing; if it remains unresolved,
-stop and report it.
+In an executing `go <milestone>` landing, the extra assessment exception has
+two triggers: an adopted foreign run whose timeout reports
+`cancellation.reason=foreign_run_not_owned`, or
+`inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` from an
+installed plugin not verified to contain the in-proof resumption in
+`jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
+descendant. Use the route-pinned plugin build fingerprint for that proof;
+unknown provenance keeps the older-build exception. A generic timeout and a
+preemption from a verified updated build do not qualify.
+
+For a qualifying `UNKNOWN`, invoke at most one additional exact-worktree
+assessment per revision in addition to any internal retry, only after
+independent evidence that the competing session ended or the IDE settled. Do
+not poll for idle to create that evidence. The later invocation has its own
+bounded route-readiness wait. If the IDE does not settle or the later assessment
+remains `UNKNOWN`, keep the original or later `UNKNOWN`; it is never clean.
+Record the scope, reason, and any findings in the PR and final report. Readiness
+stays not fully ready. Open a focused follow-up outside the milestone unless
+one already owns the IDE failure. Continue the already authorized landing
+under this exception without turning the tool failure into an owner question.
+Handle findings under the normal RED policy. Failing or missing executable
+checks, an unsafe worktree, unresolved lifecycle cleanup, or a different
+inspection failure disqualifies this exception. Resolve deferred cleanup through
+the later assessment or the stale-lease helper before landing; if it remains
+unresolved, stop and report it.
 
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
