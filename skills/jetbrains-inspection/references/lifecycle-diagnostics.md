@@ -73,12 +73,13 @@ retryable native-run interruption may request only the single maintained fresh
 run. Never infer permission to retry from prose when `retry_policy.retry=false`,
 except for the separately authorized `go <milestone>` assessment below.
 The `go <milestone>` landing exception in `repo-readiness` is the one documented
-exception to that no-extra-retry rule: a separate later assessment after proven
-preemption or a foreign run's `foreign_run_not_owned` timeout. It allows at most
+exception to that no-extra-retry rule: a separate later assessment after a
+foreign run's `foreign_run_not_owned` timeout. It allows at most
 one additional assessment per revision in addition to any internal retry. That
 later invocation's route-readiness wait is bounded; if it does not settle,
 retain the original `UNKNOWN` without polling. A generic timeout does not
-qualify.
+qualify. Exact-proof write preemption also does not qualify; update an older
+installed plugin that still returns it.
 Deferred cleanup must resolve in the later assessment or stale-lease helper
 before landing continues; an unresolved lease is outside the exception.
 Preparation is failure-atomic for handled failures and interrupts. With plugin

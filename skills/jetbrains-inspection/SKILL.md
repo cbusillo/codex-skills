@@ -404,12 +404,12 @@ scope, never source code or a mixed scope containing source code.
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
   A separate `go <milestone>` landing exception in `repo-readiness` permits at
-  most one additional assessment per revision after the IDE becomes idle when
-  an earlier run proved preemption (`inspection_terminal_outcome=preempted` or
-  `exact_proof_write_preempted`) or an adopted foreign run timed out with
-  `cancellation.reason=foreign_run_not_owned`. A generic timeout does not
-  qualify. This is a later assessment after external state changes, not another
-  immediate retry of an unchanged failure. The later `agent-inspect` or
+  most one additional assessment per revision after an adopted foreign run
+  timed out with `cancellation.reason=foreign_run_not_owned` and that competing
+  run has ended. A generic timeout or exact-proof write preemption does not
+  qualify. Current plugin builds resume transient IDE writes inside the proof
+  deadline; update an older installed plugin that still returns `preempted`.
+  The later `agent-inspect` or
   `inspect-closeout` invocation has its own bounded route-readiness wait; if
   that wait does not settle, retain the original `UNKNOWN` without polling.
   Preserve the

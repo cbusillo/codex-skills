@@ -205,16 +205,16 @@ blocked indexing, docs-only scope, or user-approved parking. Missing inspection
 evidence for a configured code gate means the readiness answer is not fully
 ready.
 
-In an executing `go <milestone>` landing, a current `UNKNOWN` inspection with
-`inspection_terminal_outcome=preempted`, `exact_proof_write_preempted`, or an
-adopted foreign run whose timeout reports
+In an executing `go <milestone>` landing, a current `UNKNOWN` inspection from
+an adopted foreign run whose timeout reports
 `cancellation.reason=foreign_run_not_owned` is still unknown, never clean.
 After the competing session ends, invoke at most one additional exact-worktree
 assessment per revision in addition to any internal retry; that invocation has
 its own bounded route-readiness wait. If the IDE does not settle or the later
 assessment remains `UNKNOWN`, keep the original or later `UNKNOWN` and proceed
 under this same exception. Do not poll for idle indefinitely. A generic timeout
-is not proof of contention. Record the scope, reason, and any findings in the
+or exact-proof write preemption does not qualify; update an older installed
+plugin that still returns `preempted`. Record the scope, reason, and any findings in the
 PR and final report; readiness stays not fully ready. Open a focused follow-up
 outside the milestone unless one already owns the IDE failure. Continue the
 already authorized landing
