@@ -3625,7 +3625,7 @@ def main() -> None:
             write_outcome="not_started" if CURRENT_IS_WRITE else None,
             failed_step="argument_parsing",
         )
-        die(
+        return die(
             str(exc),
             code=2,
             error_code="validation_error",

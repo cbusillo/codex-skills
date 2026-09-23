@@ -931,7 +931,7 @@ def test_cmd_show_reports_automation_managed_provenance() -> None:
 
 def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
     body = "## Current Status\n\nReady.\n\n## Scope\n\nOriginal request.\n"
-    comments = [
+    comments: list[dict[str, Any]] = [
         {
             "id": index,
             "user": {"login": f"person-{index}"},
