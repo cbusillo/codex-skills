@@ -56,12 +56,6 @@ until they pass.
 
 ## Milestones
 
-- `Landing needs no hand` proves that on each harness an executing agent takes
-  a reviewed change from `go` to merged with no owner step between: a branch
-  behind main is updated before merge, the Google reviewer completes under the
-  read-only rules, and close-out opens follow-ups instead of starting them;
-  ends if a landing needs a hand edit or an owner merge, or a reviewer is
-  skipped for want of a rule the helper could have stated.
 - `Odoo tools proven on the CM website` proves that on the CM website
   repository, an executing agent lands an Odoo change with the JetBrains
   inspection and the Odoo plugin giving a real green or red result while other
