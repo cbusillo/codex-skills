@@ -365,7 +365,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertFalse(settings.parent.exists(), "a refused repair creates nothing")
         settings.parent.mkdir(parents=True)
-        for ambiguous in (f"write_file({self.repo})", "command(find -delete)", "command(rg --pre=sh)", 7):
+        # A grant for the user's own program is theirs, not a retired reviewer grant: never removed.
+        for ambiguous in (f"write_file({self.repo})", "command(find -delete)", "command(rg --pre=sh)", "command(git)", 7):
             with self.subTest(ambiguous=ambiguous):
                 body = json.dumps({"permissions": {"allow": ["command(find)", ambiguous, "command(ls)"]}})
                 settings.write_text(body)

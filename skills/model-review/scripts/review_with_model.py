@@ -11,7 +11,7 @@ a provider error is a failure with a nonzero exit, never an empty "no findings":
 an empty review and a reviewer that was locked out look the same otherwise.
 
 Exit codes: 0 reviewed, 1 the run failed, 2 the provider's CLI is not installed.
-Nothing here edits a user's tool configuration unless `configure` is asked for.
+Nothing here edits a user's tool configuration unless `configure` or `repair` is asked for.
 """
 
 from __future__ import annotations
@@ -33,8 +33,9 @@ PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
-# A plain command grant names one program and nothing else; `repair` removes only this shape.
-AGY_COMMAND_RULE = re.compile(r"^command\(([A-Za-z0-9_.-]+)\)$")
+# Commands an earlier reviewer policy granted and the current one refuses. `repair` removes only
+# their plain `command(NAME)` grants; a grant for any other program is the user's own and is left alone.
+AGY_RETIRED_COMMANDS = ("find", "rg")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
@@ -68,16 +69,18 @@ def agy_settings() -> dict[str, Any]:
 def agy_unsafe_rules(allow: list[Any]) -> tuple[list[str], list[str]]:
     """Split allow rules outside the reviewer's read-only set into (stale command grants, everything else).
 
-    A stale grant is a plain `command(NAME)` whose program the current policy no longer permits; it is
-    what `repair` removes. Any other rule outside the set, such as a write rule or a command with
-    arguments, is reported but never removed automatically.
+    A stale grant is the plain `command(NAME)` this helper once told users to add and no longer
+    permits; it is what `repair` removes. Any other rule outside the set, such as a write rule, a
+    command with arguments, or a program the user granted for their own sessions, is reported but
+    never removed automatically.
     """
     safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
+    stale_commands = {f"command({name})" for name in AGY_RETIRED_COMMANDS}
     stale, other = [], []
     for rule in allow:
         if isinstance(rule, str) and (rule.startswith("read_file(") or rule in safe_commands):
             continue
-        (stale if isinstance(rule, str) and AGY_COMMAND_RULE.match(rule) else other).append(str(rule))
+        (stale if rule in stale_commands else other).append(str(rule))
     return sorted(stale), sorted(other)
 
 
@@ -378,7 +381,10 @@ def write_agy_settings(settings: Path, current: dict[str, Any], allow: list[Any]
     if not isinstance(current.get("permissions"), dict):
         current["permissions"] = {}
     current["permissions"]["allow"] = allow
-    settings.write_text(json.dumps(current, indent=2) + "\n")
+    # Write beside the file and rename so an interrupted write never leaves agy with truncated JSON.
+    staged = settings.with_name(settings.name + ".model-review-tmp")
+    staged.write_text(json.dumps(current, indent=2) + "\n")
+    os.replace(staged, settings)
     return backup
 
 
@@ -399,10 +405,10 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 
 def cmd_repair(args: argparse.Namespace) -> int:
-    """Remove only stale plain command grants that the current reviewer policy no longer permits.
+    """Remove only the retired reviewer command grants that the current policy no longer permits.
 
-    Read rules and permitted commands are kept as they are. A rule outside the read-only set that is
-    not a plain command grant is ambiguous: the helper reports it and changes nothing.
+    Read rules, permitted commands, and the user's own grants are kept as they are. Any other rule
+    outside the read-only set is ambiguous: the helper reports it and changes nothing.
     """
     settings, current, allow = load_agy_settings_file()
     if current is None:

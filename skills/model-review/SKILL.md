@@ -84,16 +84,17 @@ paper over it by pasting files into the prompt.
   personal tool configuration, and the rule applies to every `agy` session.
 - A `google` failure that lists `rules` outside the read-only set means the
   user's own settings would let the reviewer do more than read. When every
-  listed rule is in `stale_command_grants`, they are plain `command(NAME)`
-  grants for programs an earlier policy allowed and the current one refuses,
-  such as `find` or `rg`. Run `repair`: it backs up the settings file beside
-  itself, removes only those grants, keeps every other setting, and prints the
-  backup path. During an executing-loop run, `repair` needs no owner step; it
-  only takes away what the reviewer would refuse to start with. Record the
+  listed rule is in `stale_command_grants`, they are the plain `command(find)`
+  and `command(rg)` grants this helper itself once told users to add and now
+  refuses. Run `repair`: it backs up the settings file beside itself, removes
+  only those grants, keeps every other setting, and prints the backup path.
+  During an executing-loop run, `repair` needs no owner step; it only takes
+  back what the helper asked for and would now refuse to start with. Record the
   removed grants and the backup path in the pull request. A `write_file` rule,
-  a command grant with arguments, or anything the helper calls `ambiguous` is
-  the owner's to change: `repair` refuses it and changes nothing, so show the
-  result and ask, or use another provider. Do not edit the settings file by
-  any other route.
+  a command grant with arguments, a grant for a program the user allowed for
+  their own sessions such as `command(git)`, or anything else the helper calls
+  `ambiguous` is the owner's to change: `repair` refuses it and changes
+  nothing, so show the result and ask, or use another provider. Do not edit
+  the settings file by any other route.
 - When no other provider can be made to work, say so and use what is available,
   as the shared reference describes.
