@@ -594,19 +594,19 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bu
 [[operations]]
 id = "github.plan.show"
 entrypoint = "github/scripts/gh-plan.py show"
-intent = "Read one planning issue and emit compact sections or the full body with source-ownership provenance."
+intent = "Read one planning issue and emit sections or the full body with source-ownership provenance and all discussion comments."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/issues/{number}"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}; paged GET /repos/{repo}/issues/{number}/comments in every show mode"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
-reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "No retained GraphQL transport; REST issue reads include the body needed for section extraction."
-source_refs = ["github/scripts/gh-plan.py:cmd_show", "github/scripts/gh-plan.py:read_plan_sections"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_human_authored_plan_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reports_unmanaged_provenance", "github/scripts/validate-gh-plan.py:test_read_plan_sections_reports_contributor_wrap_eligibility", "github/scripts/validate-gh-plan.py:test_cmd_show_fails_closed_on_malformed_contributor_markers", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_only_managed_contributor_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_reports_automation_managed_provenance", "github/scripts/validate-operation-matrix.py:self-test"]
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No retained GraphQL transport; REST issue and comment reads supply the body and complete discussion."
+source_refs = ["github/scripts/gh-plan.py:cmd_show", "github/scripts/gh-plan.py:read_plan_sections", "github/scripts/gh-plan.py:collect_paged_rest_items"]
+test_refs = ["github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_human_authored_plan_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reports_unmanaged_provenance", "github/scripts/validate-gh-plan.py:test_read_plan_sections_reports_contributor_wrap_eligibility", "github/scripts/validate-gh-plan.py:test_cmd_show_fails_closed_on_malformed_contributor_markers", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_only_managed_contributor_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_reports_automation_managed_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_includes_all_comment_pages_in_every_mode", "github/scripts/validate-gh-plan.py:test_cmd_show_does_not_emit_success_for_an_incomplete_discussion", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.create"

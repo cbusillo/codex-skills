@@ -451,8 +451,10 @@ native relationship updates as waiting rather than retrying until the LLM
 workflow stalls.
 
 - Use `index` or `search` before creating.
-- Use `show` for selected sections; use `show --full` only when broad prose is
-  required. Inspect the returned provenance before attempting a body update;
+- Use `show` for selected sections and all comments; use `show --full` for the
+  entire body and all comments before implementation. Both modes page the
+  complete discussion and fail if a comment page cannot be read. Inspect the
+  returned provenance before attempting a body update;
   `section_updates_allowed: false` means the current body shape must remain
   read-only. A plain contributor request without unmarked planning headings or
   reserved ownership markers may still be wrapped in the preservation envelope
@@ -620,9 +622,10 @@ Before saying a plan is captured, verify:
 ## Workflow
 
 1. Decide whether the work is ephemeral or durable.
-2. Resolve the repo and read the active issue's finish line, `Current Status`,
-   next action, blockers, and comments; comments may supersede the original
-   body.
+2. Resolve the repo and run `gh-plan.py show <issue> --full` before implementing
+   it. Read the original request, finish line, `Current Status`, next action,
+   blockers, and returned `comments`; comments may add requirements or supersede
+   the original body. Reconcile them into the implementation scope.
 3. Run `next` before selecting roadmap work, and use `index` or `search` before
    creating anything; then draft or revise the issue shape with the user in chat
    when intent is unclear.

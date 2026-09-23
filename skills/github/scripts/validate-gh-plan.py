@@ -620,6 +620,7 @@ def test_unmarked_contributor_plan_write_paths_fail_closed() -> None:
 
 def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
     plan = load_plan_module()
+    plan.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [])
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
     for association in ("OWNER", "COLLABORATOR"):
@@ -646,6 +647,7 @@ def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
 
 def test_cmd_show_full_reports_unmanaged_provenance() -> None:
     plan = load_plan_module()
+    plan.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [])
     body = "## Current Status\n\nState: Active\n"
     issue = plan_issue(body=body, login="owner-user", association="OWNER")
     plan.default_repo = lambda _repo: "owner/repo"
@@ -707,6 +709,7 @@ def test_cmd_show_fails_closed_on_malformed_contributor_markers() -> None:
 
 def test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance() -> None:
     plan = load_plan_module()
+    plan.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [])
     body = f"{plan.PLAN_MANAGED_START}\n## Current Status\n\nState: Active\n"
     issue = plan_issue(body=body)
     plan.default_repo = lambda _repo: "owner/repo"
@@ -883,6 +886,7 @@ def test_contributor_relationship_unlink_tolerates_line_whitespace() -> None:
 
 def test_cmd_show_reads_only_managed_contributor_sections() -> None:
     plan = load_plan_module()
+    plan.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [])
     issue = plan_issue(body="Contributor status")
     issue["body"] = plan.replace_issue_plan_section(issue, "Current Status", "Managed status")
     plan.default_repo = lambda _repo: "owner/repo"
@@ -903,6 +907,7 @@ def test_cmd_show_reads_only_managed_contributor_sections() -> None:
 
 def test_cmd_show_reports_automation_managed_provenance() -> None:
     plan = load_plan_module()
+    plan.collect_paged_rest_items = lambda *_args, **_kwargs: ("automation-gh", [])
     issue = plan_issue(
         body="## Current Status\n\nState: Active\n",
         login=plan.EXPECTED_ACTOR,
@@ -922,6 +927,104 @@ def test_cmd_show_reports_automation_managed_provenance() -> None:
     assert provenance["ownership"] == "automation_managed", provenance
     assert provenance["sections_source"] == "issue_body", provenance
     assert provenance["section_updates_allowed"] is True, provenance
+
+
+def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
+    body = "## Current Status\n\nReady.\n\n## Scope\n\nOriginal request.\n"
+    comments: list[dict[str, Any]] = [
+        {
+            "id": index,
+            "user": {"login": f"person-{index}"},
+            "created_at": "2026-06-17T12:00:00Z",
+            "updated_at": "2026-06-18T12:00:00Z",
+            "html_url": f"https://github.com/other/project/issues/23#issuecomment-{index}",
+            "body": f"Comment {index}\n\nPreserve **Markdown** and newlines.",
+        }
+        for index in range(1, 102)
+    ]
+    comments[-1]["body"] = "Add the social link and choose the form topic from the entry point."
+    comments[-1]["user"] = None
+    for options in ([], ["--full"], ["--sections", "Scope"]):
+        plan = load_plan_module()
+        issue = plan_issue(body=body)
+        issue["number"] = 23
+        # The endpoint, not a potentially stale count, determines the discussion.
+        issue["comments"] = 0
+        plan.default_repo = lambda _repo: "owner/repo"
+        plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
+        calls: list[str] = []
+
+        def fake_api(method: str, path: str, **kwargs: Any) -> tuple[str, Any]:
+            assert method == "GET", method
+            calls.append(path)
+            if path == "/repos/other/project/issues/23":
+                return "automation-gh", dict(issue)
+            parsed = urllib.parse.urlparse(path)
+            assert parsed.path == "/repos/other/project/issues/23/comments", path
+            query = urllib.parse.parse_qs(parsed.query)
+            assert query["per_page"] == ["100"], query
+            assert kwargs["bucket"] == "rest_core", kwargs
+            page = int(query["page"][0])
+            return "automation-gh", comments[(page - 1) * 100:page * 100]
+
+        plan.api_json = fake_api
+        args = plan.build_parser().parse_args(["show", "other/project#23", *options])
+        output = StringIO()
+        with redirect_stdout(output):
+            plan.cmd_show(args)
+        payload = json.loads(output.getvalue())
+        shown = payload["issue"]
+        assert len(calls) == 3, calls
+        assert shown["repo"] == "other/project", shown
+        assert len(shown["comments"]) == 101, shown
+        assert [comment["id"] for comment in shown["comments"]] == list(range(1, 102)), shown
+        assert shown["comments"][0] == {
+            "id": 1,
+            "author": "person-1",
+            "created_at": comments[0]["created_at"],
+            "updated_at": comments[0]["updated_at"],
+            "url": comments[0]["html_url"],
+            "body": comments[0]["body"],
+        }, shown
+        assert shown["comments"][-1]["author"] is None, shown
+        assert shown["comments"][-1]["body"] == comments[-1]["body"], shown
+        if "--full" in options:
+            assert shown["body"] == body and "sections" not in shown, shown
+        else:
+            expected = {"Scope": "Original request."} if options else {"Current Status": "Ready."}
+            assert shown["sections"] == expected and "body" not in shown, shown
+        assert shown["provenance"]["section_updates_allowed"] is False, shown
+
+
+def test_cmd_show_does_not_emit_success_for_an_incomplete_discussion() -> None:
+    for failure in ("unavailable", "malformed_page", "malformed_comment"):
+        plan = load_plan_module()
+        plan.default_repo = lambda _repo: "owner/repo"
+        plan.load_config = lambda _repo: {}
+        issue = plan_issue(body="Original request")
+        plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+
+        def fake_api(_method: str, path: str, **kwargs: Any) -> tuple[str, Any]:
+            page = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["page"][0]
+            if page == "1":
+                return "automation-gh", [{"id": index, "body": "Earlier comment"} for index in range(100)]
+            assert page == "2", path
+            assert kwargs["completed_steps"] == ["list_issue_comments_page_1"], kwargs
+            assert kwargs["failed_step"] == "list_issue_comments_page_2", kwargs
+            if failure == "unavailable":
+                raise plan.PlanError("Comment read unavailable")
+            return "automation-gh", {} if failure == "malformed_page" else [None]
+
+        plan.api_json = fake_api
+        output = StringIO()
+        try:
+            with redirect_stdout(output):
+                plan.cmd_show(plan.build_parser().parse_args(["show", "1", "--full"]))
+        except plan.PlanError:
+            pass
+        else:
+            raise AssertionError(f"show should fail on {failure}")
+        assert output.getvalue() == "", output.getvalue()
 
 
 def test_issue_body_updates_use_rest_patch() -> None:
@@ -4172,6 +4275,10 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
+            "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'repos/owner/repo/issues/1/comments?'* ]]; then\n"
+            "  printf '[]\\n'\n"
+            "  exit 0\n"
+            "fi\n"
             "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'repos/owner/repo/issues/1'* ]]; then\n"
             "  printf '%s\\n' '{\"number\":1,\"id\":1001,\"title\":\"Plan\",\"body\":\"## Current Status\\n\\nReady.\\n\",\"html_url\":\"https://github.com/owner/repo/issues/1\",\"labels\":[],\"state\":\"open\"}'\n"
             "  exit 0\n"
@@ -4204,6 +4311,7 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
     assert payload["bucket"] == "rest_core", payload
     assert payload["actor"] == "active-gh-user", payload
     assert payload["issue"]["number"] == 1, payload
+    assert payload["issue"]["comments"] == [], payload
     assert result.stderr == "", result.stderr
 
 
@@ -6371,6 +6479,8 @@ def main() -> None:
         test_contributor_relationship_unlink_tolerates_line_whitespace,
         test_cmd_show_reads_only_managed_contributor_sections,
         test_cmd_show_reports_automation_managed_provenance,
+        test_cmd_show_includes_all_comment_pages_in_every_mode,
+        test_cmd_show_does_not_emit_success_for_an_incomplete_discussion,
         test_issue_body_updates_use_rest_patch,
         test_plan_index_paginates_filters_prs_and_honors_limit,
         test_plan_search_uses_search_bucket_and_conditional_state,

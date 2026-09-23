@@ -1874,6 +1874,23 @@ def cmd_show(args: argparse.Namespace) -> None:
         sections, provenance = read_plan_sections(issue)
         result["sections"] = {name: sections.get(name, "") for name in names}
     result["provenance"] = provenance
+    _, comments = collect_paged_rest_items(
+        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
+        query={},
+        bucket="rest_core",
+        step_prefix="list_issue_comments",
+    )
+    result["comments"] = [
+        {
+            "id": comment.get("id"),
+            "author": (comment.get("user") or {}).get("login"),
+            "created_at": comment.get("created_at"),
+            "updated_at": comment.get("updated_at"),
+            "url": comment.get("html_url"),
+            "body": comment.get("body") or "",
+        }
+        for comment in comments
+    ]
     emit({"ok": True, "actor": actor, "issue": result})
 
 
@@ -3465,9 +3482,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=positive_limit, default=20)
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("show", help="Show compact issue sections by default")
+    p = sub.add_parser("show", help="Show issue sections and all comments")
     p.add_argument("issue")
-    p.add_argument("--full", action="store_true")
+    p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 
@@ -3608,7 +3625,7 @@ def main() -> None:
             write_outcome="not_started" if CURRENT_IS_WRITE else None,
             failed_step="argument_parsing",
         )
-        die(
+        return die(
             str(exc),
             code=2,
             error_code="validation_error",
