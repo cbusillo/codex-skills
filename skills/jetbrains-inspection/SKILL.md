@@ -409,15 +409,14 @@ scope, never source code or a mixed scope containing source code.
   `inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` when
   the installed plugin is not verified to contain the in-proof resumption from
   `jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
-  descendant. Use the route-pinned plugin build fingerprint for that proof;
-  unknown provenance keeps the older-build exception. Start the later
-  assessment only with independent evidence that the competing run ended or
-  the IDE settled; do not poll to create that evidence. A generic timeout does
-  not qualify. The later `agent-inspect` or
-  `inspect-closeout` invocation has its own bounded route-readiness wait; if
-  that wait does not settle, retain the original `UNKNOWN` without polling.
-  Preserve the
-  `UNKNOWN` verdict and any actionable findings under the normal policy.
+  descendant. The exact `b3892c03ff1beb85ea422a0580f5fb985d660ea3-clean`
+  fingerprint qualifies as updated; a later clean fingerprint needs verified
+  Git ancestry, while dirty or unknown provenance keeps the older-build
+  exception. A generic timeout does not qualify. The later `agent-inspect` or
+  `inspect-closeout` invocation has its own bounded route-readiness wait; do
+  not add an outer polling loop. If that wait does not settle, retain the
+  original `UNKNOWN`. Preserve the `UNKNOWN` verdict and any actionable
+  findings under the normal policy.
   Deferred cleanup must resolve in the later assessment or stale-lease helper
   before landing continues; otherwise stop and report it. Other terminal
   failures remain governed by the helper's `retry_policy`.

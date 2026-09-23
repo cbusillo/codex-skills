@@ -211,16 +211,19 @@ two triggers: an adopted foreign run whose timeout reports
 `inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` from an
 installed plugin not verified to contain the in-proof resumption in
 `jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
-descendant. Use the route-pinned plugin build fingerprint for that proof;
-unknown provenance keeps the older-build exception. A generic timeout and a
-preemption from a verified updated build do not qualify.
+descendant. The route-pinned fingerprint
+`b3892c03ff1beb85ea422a0580f5fb985d660ea3-clean` qualifies as updated; a
+later clean fingerprint needs verified ancestry in the plugin repository.
+Dirty or unknown provenance keeps the older-build exception. A generic timeout
+does not qualify. A preemption from a verified updated build means its internal
+resumption failed; diagnose that failure before landing.
 
 For a qualifying `UNKNOWN`, invoke at most one additional exact-worktree
-assessment per revision in addition to any internal retry, only after
-independent evidence that the competing session ended or the IDE settled. Do
-not poll for idle to create that evidence. The later invocation has its own
-bounded route-readiness wait. If the IDE does not settle or the later assessment
-remains `UNKNOWN`, keep the original or later `UNKNOWN`; it is never clean.
+assessment per revision in addition to any internal retry. Let the competing
+session end when that is observable; the later invocation has its own bounded
+route-readiness wait. Do not add an outer polling loop. If the IDE does not
+settle or the later assessment remains `UNKNOWN`, keep the original or later
+`UNKNOWN`; it is never clean.
 Record the scope, reason, and any findings in the PR and final report. Readiness
 stays not fully ready. Open a focused follow-up outside the milestone unless
 one already owns the IDE failure. Continue the already authorized landing
