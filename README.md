@@ -132,9 +132,12 @@ a reviewer that found nothing. The helper reports that as a failure and prints
 the exact read-only allow rules to add to your own `agy` settings. They name
 the repository being reviewed; point them at a directory that holds your
 repositories to cover them all, and never at your home directory, because the
-rule applies to every `agy` session. The helper changes that file only when you
-run its `configure` subcommand, and refuses to start `agy` at all when your
-settings already allow it to write files.
+rule applies to every `agy` session. The helper changes that file only through
+its `configure` and `repair` subcommands, and refuses to start `agy` at all
+when your settings allow more than reading. When the only excess is a `find` or
+`rg` command grant that an earlier version of the helper asked for, `repair`
+backs the file up and removes just those grants; anything else, including
+grants you added for your own sessions, it refuses to touch.
 
 ## Direction
 

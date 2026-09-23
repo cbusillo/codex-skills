@@ -18,6 +18,11 @@ commands:
     resource_path: scripts/review_with_model.py
     example_argv: ["uv", "run", "scripts/review_with_model.py", "check", "--repo", "."]
     purpose: Shows which providers can actually read the repository from this machine.
+  - name: model-review-repair
+    source: skill
+    resource_path: scripts/review_with_model.py
+    example_argv: ["uv", "run", "scripts/review_with_model.py", "repair"]
+    purpose: Backs up the user's agy settings and removes only stale command grants the reviewer policy no longer permits.
 ---
 
 # Model Review
@@ -77,7 +82,22 @@ paper over it by pasting files into the prompt.
   allow rules the user's own `agy` settings need. Show the user that hint. Apply
   it with the `configure` subcommand only when the user asks: it edits their
   personal tool configuration, and the rule applies to every `agy` session.
-- A `google` failure that lists `write_file` rules means the user's own settings
-  would let the reviewer change files. Do not work around it; show it.
+- A `google` failure that lists `rules` outside the read-only set means the
+  user's own settings would let the reviewer do more than read. When every
+  listed rule is in `stale_command_grants`, they are the plain `command(find)`
+  and `command(rg)` grants this helper itself once told users to add and now
+  refuses. Run `repair`: it backs up the settings file beside itself, removes
+  only those grants, keeps every other setting, and prints the backup path.
+  During an executing-loop run, `repair` needs no owner step; it only takes
+  back what the helper asked for and would now refuse to start with. The helper
+  cannot tell whether the user later granted those two commands for their own
+  sessions, so the backup and the record are the safeguard: record the removed
+  grants and the backup path in the pull request, so the owner can put them
+  back with one copy if they want them. A `write_file` rule,
+  a command grant with arguments, a grant for a program the user allowed for
+  their own sessions such as `command(git)`, or anything else the helper calls
+  `ambiguous` is the owner's to change: `repair` refuses it and changes
+  nothing, so show the result and ask, or use another provider. Do not edit
+  the settings file by any other route.
 - When no other provider can be made to work, say so and use what is available,
   as the shared reference describes.
