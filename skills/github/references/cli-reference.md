@@ -302,7 +302,13 @@ or Project focus state.
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
   values.
-- `show <issue>`: Show selected sections. Use `--full` for the entire body.
+- `show <issue>`: Show selected sections and all issue comments, paginated in
+  GitHub's chronological order. Each comment includes its ID, author login,
+  creation/update timestamps, URL, and full body. Use `--full` for the entire
+  issue body and comments before implementation; `--sections` changes only the
+  selected body sections. An empty discussion returns `comments: []`; an
+  unreadable comment page fails the command instead of returning a partial
+  thread as success.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
