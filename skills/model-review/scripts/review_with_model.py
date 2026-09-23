@@ -355,29 +355,23 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0 if any(item["state"] == "ready" for item in report) else 1
 
 
-def load_agy_settings_file() -> tuple[Path, dict[str, Any] | None, list[Any] | None]:
-    """The settings path, its parsed object, and its allow list; None values mean the file is unusable.
+def load_agy_settings_file() -> tuple[Path, dict[str, Any], list[Any]]:
+    """The settings path, its parsed object, and its allow list; raises ValueError when the file is unusable.
 
     A symlinked settings file, as dotfiles setups make, is resolved so the write lands in the real file.
     """
     settings = AGY_SETTINGS.expanduser().resolve()
-    if not settings.is_file():
-        return settings, None, None
     try:
         current = json.loads(settings.read_text())
-    except json.JSONDecodeError:
-        return settings, None, None
+    except (OSError, json.JSONDecodeError):
+        current = None
     if not isinstance(current, dict):
-        return settings, None, None
+        raise ValueError(f"{settings} is missing or not a JSON object; run agy once first")
     permissions = current.get("permissions")
-    if permissions is None:
-        return settings, current, []
-    if not isinstance(permissions, dict):
-        return settings, current, None
-    allow = permissions.get("allow")
-    if allow is None:
-        return settings, current, []
-    return settings, current, allow if isinstance(allow, list) else None
+    allow = permissions.get("allow", []) if isinstance(permissions, dict) else [] if permissions is None else None
+    if not isinstance(allow, list):
+        raise ValueError(f"{settings} has a permissions.allow that is not a list; only you should fix it")
+    return settings, current, allow
 
 
 def write_agy_settings(settings: Path, current: dict[str, Any], allow: list[Any], backup_suffix: str) -> Path:
@@ -394,12 +388,10 @@ def write_agy_settings(settings: Path, current: dict[str, Any], allow: list[Any]
 
 
 def cmd_configure(args: argparse.Namespace) -> int:
-    settings, current, allow = load_agy_settings_file()
-    if current is None:
-        print(json.dumps({"ok": False, "error": f"{settings} is missing or not a JSON object; run agy once first"}))
-        return 1
-    if allow is None:
-        print(json.dumps({"ok": False, "error": f"{settings} has a permissions.allow that is not a list; fix it by hand"}))
+    try:
+        settings, current, allow = load_agy_settings_file()
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
     wanted = agy_rules([Path(root).resolve() for root in args.read_root])
     added = [rule for rule in wanted if rule not in allow]
@@ -409,18 +401,16 @@ def cmd_configure(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_repair(args: argparse.Namespace) -> int:
+def cmd_repair(_args: argparse.Namespace) -> int:
     """Remove only the retired reviewer command grants that the current policy no longer permits.
 
     Read rules, permitted commands, and the user's own grants are kept as they are. Any other rule
     outside the read-only set is ambiguous: the helper reports it and changes nothing.
     """
-    settings, current, allow = load_agy_settings_file()
-    if current is None:
-        print(json.dumps({"ok": False, "error": f"{settings} is missing or not a JSON object; nothing was changed"}))
-        return 1
-    if allow is None:
-        print(json.dumps({"ok": False, "error": f"{settings} has a permissions.allow that is not a list; nothing was changed"}))
+    try:
+        settings, current, allow = load_agy_settings_file()
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": f"{exc}; nothing was changed"}))
         return 1
     stale, other = agy_unsafe_rules(allow)
     if other:
