@@ -134,7 +134,9 @@ the repository being reviewed; point them at a directory that holds your
 repositories to cover them all, and never at your home directory, because the
 rule applies to every `agy` session. The helper changes that file only when you
 run its `configure` subcommand, and refuses to start `agy` at all when your
-settings already allow it to write files.
+settings allow more than reading. When the only excess is a stale command grant
+that an earlier helper allowed, its `repair` subcommand backs the file up and
+removes just those grants; anything else it refuses to touch.
 
 ## Direction
 

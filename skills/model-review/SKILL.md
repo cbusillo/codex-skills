@@ -18,6 +18,11 @@ commands:
     resource_path: scripts/review_with_model.py
     example_argv: ["uv", "run", "scripts/review_with_model.py", "check", "--repo", "."]
     purpose: Shows which providers can actually read the repository from this machine.
+  - name: model-review-repair
+    source: skill
+    resource_path: scripts/review_with_model.py
+    example_argv: ["uv", "run", "scripts/review_with_model.py", "repair"]
+    purpose: Backs up the user's agy settings and removes only stale command grants the reviewer policy no longer permits.
 ---
 
 # Model Review
@@ -77,7 +82,18 @@ paper over it by pasting files into the prompt.
   allow rules the user's own `agy` settings need. Show the user that hint. Apply
   it with the `configure` subcommand only when the user asks: it edits their
   personal tool configuration, and the rule applies to every `agy` session.
-- A `google` failure that lists `write_file` rules means the user's own settings
-  would let the reviewer change files. Do not work around it; show it.
+- A `google` failure that lists `rules` outside the read-only set means the
+  user's own settings would let the reviewer do more than read. When every
+  listed rule is in `stale_command_grants`, they are plain `command(NAME)`
+  grants for programs an earlier policy allowed and the current one refuses,
+  such as `find` or `rg`. Run `repair`: it backs up the settings file beside
+  itself, removes only those grants, keeps every other setting, and prints the
+  backup path. During an executing-loop run, `repair` needs no owner step; it
+  only takes away what the reviewer would refuse to start with. Record the
+  removed grants and the backup path in the pull request. A `write_file` rule,
+  a command grant with arguments, or anything the helper calls `ambiguous` is
+  the owner's to change: `repair` refuses it and changes nothing, so show the
+  result and ask, or use another provider. Do not edit the settings file by
+  any other route.
 - When no other provider can be made to work, say so and use what is available,
   as the shared reference describes.

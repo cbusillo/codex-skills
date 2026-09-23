@@ -33,6 +33,8 @@ PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
 AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
+# A plain command grant names one program and nothing else; `repair` removes only this shape.
+AGY_COMMAND_RULE = re.compile(r"^command\(([A-Za-z0-9_.-]+)\)$")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
@@ -61,6 +63,22 @@ def agy_settings() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def agy_unsafe_rules(allow: list[Any]) -> tuple[list[str], list[str]]:
+    """Split allow rules outside the reviewer's read-only set into (stale command grants, everything else).
+
+    A stale grant is a plain `command(NAME)` whose program the current policy no longer permits; it is
+    what `repair` removes. Any other rule outside the set, such as a write rule or a command with
+    arguments, is reported but never removed automatically.
+    """
+    safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
+    stale, other = [], []
+    for rule in allow:
+        if isinstance(rule, str) and (rule.startswith("read_file(") or rule in safe_commands):
+            continue
+        (stale if isinstance(rule, str) and AGY_COMMAND_RULE.match(rule) else other).append(str(rule))
+    return sorted(stale), sorted(other)
 
 
 def run_cli(argv: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -118,17 +136,19 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     # execute, and rg --pre can execute a program. A user-added write rule would
     # also be inherited by the reviewer.
     allow = (agy_settings().get("permissions") or {}).get("allow") or []
-    safe_commands = {f"command({name})" for name in AGY_READ_ONLY_COMMANDS}
-    unsafe = sorted(
-        str(rule) for rule in allow
-        if not (isinstance(rule, str) and (rule.startswith("read_file(") or rule in safe_commands))
-    )
-    if unsafe:
+    stale, other = agy_unsafe_rules(allow)
+    if stale or other:
+        hint = (
+            f"Run: {Path(__file__).name} repair. It backs up {AGY_SETTINGS} and removes only these stale command grants."
+            if not other
+            else f"Remove these rules from {AGY_SETTINGS} by hand for the review, or use another provider."
+        )
         return failed(
             "google",
             "your agy settings allow tools outside the reviewer's read-only set",
-            rules=unsafe,
-            hint=f"Remove these rules from {AGY_SETTINGS} for the review, or use another provider.",
+            rules=[*stale, *other],
+            stale_command_grants=stale,
+            hint=hint,
         )
     argv = ["agy", "-p", prompt, "--sandbox", "--output-format", "json", "--print-timeout", f"{timeout}s"]
     if model:
@@ -330,21 +350,84 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0 if any(item["state"] == "ready" for item in report) else 1
 
 
-def cmd_configure(args: argparse.Namespace) -> int:
+def load_agy_settings_file() -> tuple[Path, dict[str, Any] | None, list[Any] | None]:
+    """The settings path, its parsed object, and its allow list; None values mean the file is unusable."""
     settings = AGY_SETTINGS.expanduser()
     if not settings.is_file():
-        print(json.dumps({"ok": False, "error": f"{settings} does not exist; run agy once first"}))
+        return settings, None, None
+    try:
+        current = json.loads(settings.read_text())
+    except json.JSONDecodeError:
+        return settings, None, None
+    if not isinstance(current, dict):
+        return settings, None, None
+    permissions = current.get("permissions")
+    if permissions is None:
+        return settings, current, []
+    if not isinstance(permissions, dict):
+        return settings, current, None
+    allow = permissions.get("allow")
+    if allow is None:
+        return settings, current, []
+    return settings, current, allow if isinstance(allow, list) else None
+
+
+def write_agy_settings(settings: Path, current: dict[str, Any], allow: list[Any], backup_suffix: str) -> Path:
+    backup = settings.with_name(settings.name + backup_suffix)
+    shutil.copy2(settings, backup)
+    if not isinstance(current.get("permissions"), dict):
+        current["permissions"] = {}
+    current["permissions"]["allow"] = allow
+    settings.write_text(json.dumps(current, indent=2) + "\n")
+    return backup
+
+
+def cmd_configure(args: argparse.Namespace) -> int:
+    settings, current, allow = load_agy_settings_file()
+    if current is None:
+        print(json.dumps({"ok": False, "error": f"{settings} is missing or not a JSON object; run agy once first"}))
         return 1
-    current = json.loads(settings.read_text())
-    allow = (current.get("permissions") or {}).get("allow") or []
+    if allow is None:
+        print(json.dumps({"ok": False, "error": f"{settings} has a permissions.allow that is not a list; fix it by hand"}))
+        return 1
     wanted = agy_rules([Path(root).resolve() for root in args.read_root])
     added = [rule for rule in wanted if rule not in allow]
     if added:
-        backup = settings.with_name(settings.name + ".before-model-review")
-        shutil.copy2(settings, backup)
-        current.setdefault("permissions", {})["allow"] = [*allow, *added]
-        settings.write_text(json.dumps(current, indent=2) + "\n")
+        write_agy_settings(settings, current, [*allow, *added], ".before-model-review")
     print(json.dumps({"ok": True, "settings": str(settings), "added": added}, indent=2))
+    return 0
+
+
+def cmd_repair(args: argparse.Namespace) -> int:
+    """Remove only stale plain command grants that the current reviewer policy no longer permits.
+
+    Read rules and permitted commands are kept as they are. A rule outside the read-only set that is
+    not a plain command grant is ambiguous: the helper reports it and changes nothing.
+    """
+    settings, current, allow = load_agy_settings_file()
+    if current is None:
+        print(json.dumps({"ok": False, "error": f"{settings} is missing or not a JSON object; nothing was changed"}))
+        return 1
+    if allow is None:
+        print(json.dumps({"ok": False, "error": f"{settings} has a permissions.allow that is not a list; nothing was changed"}))
+        return 1
+    stale, other = agy_unsafe_rules(allow)
+    if other:
+        print(json.dumps({
+            "ok": False,
+            "error": "rules outside the reviewer's read-only set are not plain command grants; nothing was changed",
+            "settings": str(settings),
+            "ambiguous": other,
+            "would_remove": stale,
+            "hint": "Remove or keep those rules by hand, then run repair again for the stale command grants.",
+        }, indent=2))
+        return 1
+    result: dict[str, Any] = {"ok": True, "settings": str(settings), "removed": stale}
+    if stale:
+        kept = [rule for rule in allow if rule not in stale]
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        result["backup"] = str(write_agy_settings(settings, current, kept, f".before-model-review-repair-{stamp}"))
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -370,6 +453,12 @@ def main() -> int:
     configure = sub.add_parser("configure", help="Add agy's read-only allow rules to your own settings file.")
     configure.add_argument("--read-root", action="append", required=True, help="Directory agy may read; repeatable.")
     configure.set_defaults(func=cmd_configure)
+
+    repair = sub.add_parser(
+        "repair",
+        help="Back up your agy settings and remove only stale command grants the reviewer policy no longer permits.",
+    )
+    repair.set_defaults(func=cmd_repair)
 
     args = parser.parse_args()
     return args.func(args)

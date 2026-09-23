@@ -202,6 +202,15 @@ class ReviewWithModelTests(unittest.TestCase):
             code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
             self.assertEqual((code, result["rules"]), (1, [f"command({command})"]))
             self.assertFalse(cwd_file.exists(), "agy must not start with an executable command allow rule")
+            # A stale plain command grant is what `repair` removes, so the failure says to run it.
+            self.assertEqual(result["stale_command_grants"], [f"command({command})"])
+            self.assertIn("repair", result["hint"])
+        # A write rule is never repaired automatically; the hint says to fix it by hand.
+        settings.write_text(json.dumps({"permissions": {"allow": ["command(find)", f"write_file({self.repo})"]}}))
+        code, result = self.review("google", FAKE_AGY_JSON="{}", FAKE_AGY_CWD_FILE=str(cwd_file))
+        self.assertEqual(result["rules"], ["command(find)", f"write_file({self.repo})"])
+        self.assertNotIn("repair", result["hint"])
+        self.assertIn("by hand", result["hint"])
         settings.write_text(json.dumps({"permissions": {"allow": ["command(grep)", "command(ls)", "command(wc)"]}}))
         code, result = self.review(
             "google", FAKE_AGY_JSON=json.dumps({"response": "reviewed", "denied_actions": []}),
@@ -313,6 +322,72 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertTrue(settings.with_name("settings.json.before-model-review").is_file())
         code, again = self.run_helper("configure", "--read-root", str(self.repo.parent))
         self.assertEqual((code, again["added"]), (0, []))
+
+    def test_repair_removes_only_stale_command_grants_and_backs_up_the_file(self) -> None:
+        settings = self.home / ".gemini" / "antigravity-cli" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        original = {
+            "model": "gemini-test",
+            "permissions": {"allow": [
+                f"read_file({self.repo.parent})", "command(find)", "command(grep)", "command(ls)",
+                "command(rg)", "command(wc)", f"read_file({self.root})",
+            ]},
+            "statusLine": {"type": "command", "command": "/usr/bin/true"},
+        }
+        settings.write_text(json.dumps(original))
+        code, result = self.run_helper("repair")
+        self.assertEqual((code, result["ok"], result["removed"]), (0, True, ["command(find)", "command(rg)"]))
+        written = json.loads(settings.read_text())
+        self.assertEqual(written["permissions"]["allow"], [
+            f"read_file({self.repo.parent})", "command(grep)", "command(ls)", "command(wc)", f"read_file({self.root})",
+        ])
+        self.assertEqual((written["model"], written["statusLine"]), (original["model"], original["statusLine"]))
+        backup = Path(result["backup"])
+        self.assertEqual(backup.parent, settings.parent)
+        self.assertTrue(backup.name.startswith("settings.json.before-model-review-repair-"))
+        self.assertEqual(json.loads(backup.read_text()), original, "the backup is the file as it was")
+        backups = list(settings.parent.glob("settings.json.before-model-review-repair-*"))
+        # Repaired settings let the reviewer start, and a second repair changes nothing and adds no backup.
+        self.install("agy", FAKE_AGY)
+        cwd_file = self.root / "agy-cwd"
+        code, review = self.review(
+            "google", FAKE_AGY_JSON=json.dumps({"response": "reviewed", "denied_actions": []}),
+            FAKE_AGY_CWD_FILE=str(cwd_file),
+        )
+        self.assertEqual((code, review["response"]), (0, "reviewed"))
+        code, again = self.run_helper("repair")
+        self.assertEqual((code, again["removed"], "backup" in again), (0, [], False))
+        self.assertEqual(list(settings.parent.glob("settings.json.before-model-review-repair-*")), backups)
+
+    def test_repair_refuses_ambiguous_rules_and_unusable_settings_without_changing_anything(self) -> None:
+        settings = self.home / ".gemini" / "antigravity-cli" / "settings.json"
+        code, result = self.run_helper("repair")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertFalse(settings.parent.exists(), "a refused repair creates nothing")
+        settings.parent.mkdir(parents=True)
+        for ambiguous in (f"write_file({self.repo})", "command(find -delete)", "command(rg --pre=sh)", 7):
+            with self.subTest(ambiguous=ambiguous):
+                body = json.dumps({"permissions": {"allow": ["command(find)", ambiguous, "command(ls)"]}})
+                settings.write_text(body)
+                code, result = self.run_helper("repair")
+                self.assertEqual((code, result["ok"], result["ambiguous"]), (1, False, [str(ambiguous)]))
+                self.assertEqual(result["would_remove"], ["command(find)"])
+                self.assertEqual(settings.read_text(), body, "an ambiguous rule stops the whole repair")
+                self.assertFalse(list(settings.parent.glob("settings.json.before-*")))
+        for body in ('{"permissions": {"allow": "command(find)"}}', '{"permissions": []}', "[]", "not json"):
+            with self.subTest(body=body):
+                settings.write_text(body)
+                code, result = self.run_helper("repair")
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertEqual(settings.read_text(), body)
+                self.assertFalse(list(settings.parent.glob("settings.json.before-*")))
+        # Nothing stale and nothing ambiguous: the file is not rewritten and no backup is made.
+        body = json.dumps({"model": "gemini-test"})
+        settings.write_text(body)
+        code, result = self.run_helper("repair")
+        self.assertEqual((code, result["removed"]), (0, []))
+        self.assertEqual(settings.read_text(), body)
+        self.assertFalse(list(settings.parent.glob("settings.json.before-*")))
 
 
 if __name__ == "__main__":
