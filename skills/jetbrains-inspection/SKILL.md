@@ -404,16 +404,19 @@ scope, never source code or a mixed scope containing source code.
   await same-worktree writers and let IDE indexing/project-model updates settle.
   Do not invent retry loops.
   A separate `go <milestone>` landing exception in `repo-readiness` permits at
-  most one additional assessment per revision after the IDE becomes idle when
-  an earlier run proved preemption (`inspection_terminal_outcome=preempted` or
-  `exact_proof_write_preempted`) or an adopted foreign run timed out with
-  `cancellation.reason=foreign_run_not_owned`. A generic timeout does not
-  qualify. This is a later assessment after external state changes, not another
-  immediate retry of an unchanged failure. The later `agent-inspect` or
-  `inspect-closeout` invocation has its own bounded route-readiness wait; if
-  that wait does not settle, retain the original `UNKNOWN` without polling.
-  Preserve the
-  `UNKNOWN` verdict and any actionable findings under the normal policy.
+  most one additional assessment per revision for an adopted foreign run with
+  `cancellation.reason=foreign_run_not_owned`, or for
+  `inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` when
+  the installed plugin is not verified to contain the in-proof resumption from
+  `jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
+  descendant. The exact `b3892c03ff1beb85ea422a0580f5fb985d660ea3-clean`
+  fingerprint qualifies as updated; a later clean fingerprint needs verified
+  Git ancestry, while dirty or unknown provenance keeps the older-build
+  exception. A generic timeout does not qualify. The later `agent-inspect` or
+  `inspect-closeout` invocation has its own bounded route-readiness wait; do
+  not add an outer polling loop. If that wait does not settle, retain the
+  original `UNKNOWN`. Preserve the `UNKNOWN` verdict and any actionable
+  findings under the normal policy.
   Deferred cleanup must resolve in the later assessment or stale-lease helper
   before landing continues; otherwise stop and report it. Other terminal
   failures remain governed by the helper's `retry_policy`.
