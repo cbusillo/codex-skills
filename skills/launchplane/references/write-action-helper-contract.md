@@ -521,6 +521,7 @@ Unauthorized, unavailable, denied, stale, and mismatched-intent responses keep
 the same envelope and include compact `summary.error_code`, `summary.trace_id`,
 and `warnings` entries. They do not include raw request bodies.
 
-Policy preflight accepts UTC record timestamps with optional fractional seconds
-(up to six digits), preserving their exact value in reviewed evidence. This
-includes microsecond timestamps emitted by native policy preparation.
+Public timestamp projections accept UTC timestamps with optional fractional
+seconds (up to six digits), preserving their exact value. Policy preflight thus
+accepts microsecond timestamps emitted by native policy preparation and retains
+that precision in reviewed evidence.
