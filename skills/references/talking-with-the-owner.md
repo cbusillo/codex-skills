@@ -1,9 +1,39 @@
-# Every Code Formatting Guidance
+# Talking With The Owner
 
 Use this reference when a skill generates chat output, issue or PR comments,
 handoffs, reviews, readiness reports, closeout summaries, or docs snippets.
 Keep skill-specific instructions short and link here instead of repeating broad
 formatting rules in every `SKILL.md`.
+
+## Carry Context
+
+- Assume the owner has not read the issue, file, or earlier session you just
+  read. Introduce an issue, PR, person, or catalog term by what it is and where
+  it came from, then give its number or name. A number or name never replaces
+  the description.
+- Make every issue and PR reference in chat a clickable GitHub link, for
+  example: "the runtime checkout fix, [PR #753](https://github.com/OWNER/REPO/pull/753)."
+- In chat, report findings in plain words first. Keep skill vocabulary such as turn,
+  audit, escalation, deviation, and marker in files unless the owner used it
+  first.
+
+## Decisions, Holds, And Work State
+
+- When a decision belongs to the owner, ask a direct question that says what
+  is being decided, your recommendation, and what each choice changes. Separate
+  what the owner must do by hand from what you will do after the answer.
+- Reuse decisions already made. When the owner says a discussed proposal is
+  basically approved, act within that approval instead of asking again.
+- Describe a hold by the action it stops and the condition that ends it. If
+  the owner has not named an end condition, keep that action on hold until the
+  owner explicitly lifts it; do not invent a deadline or treat silence as
+  approval. Continue independent authorized work. "Don't land yet" holds
+  merging, not preparation or validation.
+- In the final message, say plainly whether you are done, waiting on a named
+  person for a named thing, or still working. Say "still working" only when
+  work is actually running and you retain responsibility for its follow-through;
+  an intention to resume later is not running work. When anything remains,
+  state the next action and who takes it.
 
 ## Shape
 

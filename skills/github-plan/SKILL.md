@@ -308,7 +308,7 @@ merged `DIRECTION.md` is refused until the repository owner comments the
 decision after the last Current Status update; never close it another way.
 For other multiline writes, prefer body files or stdin. Do not
 pass escaped `\n` through shell-quoted flags. Follow
-`../references/every-code-formatting.md` when writing durable issue bodies,
+`../references/talking-with-the-owner.md` when writing durable issue bodies,
 planning comments, handoffs, or closeout evidence.
 
 ## Broad Workstream Rule
