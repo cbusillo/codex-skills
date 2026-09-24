@@ -182,6 +182,16 @@ commands:
         "<key>",
       ]
     purpose: Applies product-config changes through the bounded helper after approval.
+  - name: launchplane-product-expected-config-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-dry-run", "--payload-file", "<file>"]
+    purpose: Reviews additive product configuration metadata without accepting credential values.
+  - name: launchplane-product-expected-config-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-apply", "--payload-file", "<file>", "--dry-run-evidence-file", "<review-file>", "--reviewed-dry-run", "--idempotency-key", "<key>"]
+    purpose: Applies the exact reviewed configuration metadata through the service's product-scoped authority.
   - name: launchplane-merge-train-controller-run-once
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -483,6 +493,16 @@ policy:
               "<private-file>",
             ]
           purpose: Dry-runs explicit operator policy input through the bounded helper.
+    - id: prefer-launchplane-write-helper-for-product-expected-config-api
+      match:
+        shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/product-profiles/expected-config/apply\\b"
+      action: require_preferred
+      message: Use the expected-config helper for private metadata input, bound dry-run review, idempotency, and redacted output.
+      preferred:
+        - kind: script
+          path: scripts/launchplane-write-action.py
+          example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-dry-run", "--payload-file", "<private-file>"]
+          purpose: Reviews additive product configuration metadata before any apply.
     - id: prefer-launchplane-write-helper-for-product-config-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
@@ -642,8 +662,8 @@ and watching stay delegated to `github_workflow_babysit.py`, and raw protected
 workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
-The merge-train policy import dry-run/apply commands and generic-web
-deploy-recovery dry-run/apply commands are explicit bounded local extensions
+The merge-train policy import, repository inventory, product expected configuration,
+and generic-web deploy-recovery commands are explicit bounded local extensions
 because the upstream public operation projection does not contain their
 routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
