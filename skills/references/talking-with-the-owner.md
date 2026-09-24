@@ -13,7 +13,7 @@ formatting rules in every `SKILL.md`.
   the description.
 - Make every issue and PR reference in chat a clickable GitHub link, for
   example: "the runtime checkout fix, [PR #753](https://github.com/OWNER/REPO/pull/753)."
-- Report findings in plain words first. Keep skill vocabulary such as turn,
+- In chat, report findings in plain words first. Keep skill vocabulary such as turn,
   audit, escalation, deviation, and marker in files unless the owner used it
   first.
 

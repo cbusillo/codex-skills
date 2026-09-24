@@ -117,8 +117,8 @@ asks; that is execution.
    `next`, so the handoff needs no copy and paste.
 
 A **daily turn** is steps 1 and 2 alone, for the repository the session is
-in, with the result explained under that same reference. One turn, wherever it happens,
-clears the turn reminder on the whole machine; it does not look at other
+in, with the result explained under that same reference. One turn, wherever it
+happens, clears the turn reminder on the whole machine; it does not look at other
 repositories. A **weekly audit** is the full session repeated once per
 adopted repository, all from one session and one checkout: for each
 repository, run the audit script with `--repo OWNER/REPO`, read the findings
