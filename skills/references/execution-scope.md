@@ -47,12 +47,15 @@ Apply these rules when using the repository execution skills that link here.
   runtime-checkout rules.
 - When a task depends on a local service or app on this machine that is not
   running, start it without asking and record what you started and why in the
-  PR or issue. Ask first if starting it affects another person, a remote or
-  production system, or paid resources, reusing approval that already covers
-  those effects. If startup fails, report the failure and any workaround. Do
-  not change login startup behavior, machine settings, or service configuration
-  to fix why it was not running; track that work in follow-up issues for
-  direction review.
+  task's PR or issue when posting is authorized, otherwise in the task report.
+  Ask first if startup affects another person, a remote or production system,
+  or paid resources, or if those effects cannot be determined; reuse approval
+  that already covers those effects. Use a start action that leaves login
+  startup behavior, machine settings, and service configuration unchanged. If
+  startup fails, report the failure and any workaround. Leave fixes for why it
+  was not running to follow-up issues under existing planning and posting
+  authority; when no issue write is authorized, include the proposed follow-up
+  in the task report.
 - Run checks required by the repository and affected behavior. Reuse passing
   evidence for the same revision and environment; broaden or repeat checks when
   changes, failures, or unresolved risk justify it. Report missing required
