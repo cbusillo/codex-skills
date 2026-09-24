@@ -252,7 +252,7 @@ place rather than duplicating it between `SKILL.md` and references.
 Read `references/skill-design-details.md` for resource patterns, helper
 invocation rules, and progressive-disclosure examples. Skills that generate
 reviews, handoffs, issue or PR comments, readiness reports, or final summaries
-should point to `../references/every-code-formatting.md` instead of copying its
+should point to `../references/talking-with-the-owner.md` instead of copying its
 rules.
 
 #### What to Not Include in a Skill

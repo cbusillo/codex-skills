@@ -290,7 +290,7 @@ preserve that original point-in-time statement and add a follow-up; the
 never-started exception cannot apply.
 
 When writing final summaries, closeout comments, or migrated handoff content,
-follow `../references/every-code-formatting.md`: cite point-in-time evidence,
+follow `../references/talking-with-the-owner.md`: cite point-in-time evidence,
 keep recovery-critical facts in GitHub for GitHub-backed work, and avoid
 boilerplate that does not help the next session resume.
 

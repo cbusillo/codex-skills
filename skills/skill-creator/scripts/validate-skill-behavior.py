@@ -1666,7 +1666,7 @@ def test_background_review_reporting_is_point_in_time() -> None:
         .split()
     )
     formatting = " ".join(
-        (ROOT / "references" / "every-code-formatting.md")
+        (ROOT / "references" / "talking-with-the-owner.md")
         .read_text()
         .lower()
         .split()
