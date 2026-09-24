@@ -13,13 +13,37 @@ public-safety, operation semantics, protected workflows, invariant coverage, and
 helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
-Merge-train policy import, repository inventory, and generic-web deploy
-recovery are intentionally listed as bounded local extensions because their
+Merge-train policy import, repository inventory, product expected configuration,
+and generic-web deploy recovery are intentionally listed as bounded local extensions because their
 routes are not in the current upstream projection. The conformance gate fails
 if those routes later appear upstream so migration cannot leave duplicate route
 authorities behind.
 
 The helper lives at `scripts/launchplane-write-action.py`.
+
+## Product expected configuration
+
+Use `product-expected-config-dry-run --payload-file PRIVATE.json` to add declared
+runtime keys or managed-secret requirements through
+`POST /v1/product-profiles/expected-config/apply`. The private file contains the
+explicit product, reason, optional source label, and the service's
+`runtime_environment_keys` / `managed_secret_bindings` metadata. A secret
+requirement may include `owner_input: {label, instructions}` with an explicit
+context. This endpoint accepts metadata only, never credential values.
+
+Save the helper output outside the repository, review it against the private
+input, then call `product-expected-config-apply` with the same payload file,
+`--dry-run-evidence-file REVIEW.json --reviewed-dry-run --idempotency-key KEY`.
+The helper binds the review to the exact metadata (excluding mode); changed
+input requires another dry-run. Use a distinct key if the dry-run also had one.
+Output contains record identity and added/unchanged counts, not Owner instructions.
+Read back the product profile after apply, including when a response is uncertain.
+
+The service requires `product_profile.expected_config.apply` for the named product
+in the Launchplane context. A denial remains a missing grant, not permission to
+try another credential or workflow. Adding a requirement does not apply runtime
+values, activate a mail server, or deploy anything. Existing requirements are
+additive: this endpoint does not replace metadata on an already declared key.
 
 For stale Launchplane-managed preview comments that cannot be replayed under a
 current workflow identity, use `preview-feedback-remediation`. Run with

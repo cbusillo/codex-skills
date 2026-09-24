@@ -182,6 +182,16 @@ commands:
         "<key>",
       ]
     purpose: Applies product-config changes through the bounded helper after approval.
+  - name: launchplane-product-expected-config-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-dry-run", "--payload-file", "<file>"]
+    purpose: Reviews additive product configuration metadata without accepting credential values.
+  - name: launchplane-product-expected-config-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "product-expected-config-apply", "--payload-file", "<file>", "--dry-run-evidence-file", "<review-file>", "--reviewed-dry-run", "--idempotency-key", "<key>"]
+    purpose: Applies the exact reviewed configuration metadata through the service's product-scoped authority.
   - name: launchplane-merge-train-controller-run-once
     source: skill
     resource_path: scripts/launchplane-write-action.py

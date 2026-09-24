@@ -103,7 +103,7 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     )
     assert summary["operation_count"] == 20
     assert summary["protected_workflow_count"] == 4
-    assert summary["local_extension_count"] == 7
+    assert summary["local_extension_count"] == 9
     assert summary["internal_helper_route_count"] == 1
     assert summary["hermetic_only"] is True
     assert summary["upstream_freshness_proven"] is False
@@ -229,7 +229,7 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
         dry_run_body = write_action.repository_inventory_payload_body(
             dry_run_args, mode="dry_run"
         )
-        payload_digest = write_action.repository_inventory_review_digest(dry_run_body)
+        payload_digest = write_action.metadata_review_digest(dry_run_body)
         evidence_path.write_text(
             json.dumps(
                 {
@@ -2971,8 +2971,71 @@ def test_generic_web_deploy_recovery_apply_unverified_on_projection_failure() ->
     assert "reservation" in payload["summary"]["recommendation"]
 
 
+def test_expected_config_review_binds_metadata_and_never_prints_owner_instructions() -> None:
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "metadata.json"
+        evidence_path = Path(directory) / "review.json"
+        requirement = {
+            "integration": "runtime_environment", "binding_key": "SMTP_PASSWORD",
+            "context": "example-site", "instance": "",
+            "owner_input": {"label": "Mail credential", "instructions": "private-account-context"},
+        }
+        body = {"schema_version": 1, "product": "example-site", "reason": "Configure mail input.", "managed_secret_bindings": [requirement]}
+        payload_path.write_text(json.dumps(body))
+        calls: list[dict[str, Any]] = []
+
+        def post(**kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "status": "accepted", "trace_id": "launchplane_req_expected_config",
+                "records": {"product_profile": "example-site"},
+                "result": {
+                    "status": "ok", "mode": kwargs["body"]["mode"], "product": "example-site",
+                    "source_label": "operator", "changed": True,
+                    "runtime_environment_keys": {"added": [], "unchanged": []},
+                    "managed_secret_bindings": {"added": [requirement], "unchanged": []},
+                    "summary": {"runtime_environment_key_add_count": 0, "managed_secret_binding_add_count": 1, "runtime_environment_key_unchanged_count": 0, "managed_secret_binding_unchanged_count": 0},
+                },
+            }
+
+        with (
+            temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
+            temporary_attribute(write_action, "request_launchplane", post),
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 0
+            evidence = json.loads(output.getvalue())
+            assert "private-account-context" not in output.getvalue()
+            assert "fixture-only" not in output.getvalue()
+            assert evidence["result"]["managed_secret_bindings_added_count"] == 1
+            evidence_path.write_text(output.getvalue())
+            apply_args = ["product-expected-config-apply", "--payload-file", str(payload_path), "--dry-run-evidence-file", str(evidence_path), "--reviewed-dry-run", "--idempotency-key", "example-config-apply"]
+            body["reason"] = "A different reviewed change."
+            payload_path.write_text(json.dumps(body))
+            with redirect_stdout(io.StringIO()):
+                assert write_action.main(apply_args) == 2
+            assert len(calls) == 1, "Changed metadata must not reach the service"
+            body["reason"] = "Configure mail input."
+            payload_path.write_text(json.dumps(body))
+            with redirect_stdout(io.StringIO()):
+                assert write_action.main(apply_args) == 0
+            assert len(calls) == 2
+            assert calls[-1]["path"] == "/v1/product-profiles/expected-config/apply"
+            assert calls[-1]["body"]["mode"] == "apply"
+            assert calls[-1]["body"]["managed_secret_bindings"] == [requirement]
+            requirement["value"] = "must-never-be-metadata"
+            payload_path.write_text(json.dumps(body))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 2
+            assert len(calls) == 2, "Credential values must not reach the metadata endpoint"
+            assert "must-never-be-metadata" not in output.getvalue()
+
+
 def main() -> int:
     tests = [
+        test_expected_config_review_binds_metadata_and_never_prints_owner_instructions,
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,

@@ -1845,6 +1845,33 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         raise LaunchplaneSafetyError("invalid_response")
     if provider_payload.get("original_trace_id"):
         public_trace_id(provider_payload["original_trace_id"])
+    if operation in {"product-expected-config-dry-run", "product-expected-config-apply"}:
+        records = _project_records(provider_payload.get("records"), {"product_profile"})
+        source = provider_payload.get("result")
+        if not isinstance(source, dict) or set(source) != {
+            "status", "mode", "product", "source_label", "changed",
+            "runtime_environment_keys", "managed_secret_bindings", "summary",
+        }:
+            raise LaunchplaneSafetyError("invalid_response")
+        expected_mode = "apply" if operation.endswith("-apply") else "dry-run"
+        if source["status"] != "ok" or source["mode"] != expected_mode or not isinstance(source["changed"], bool):
+            raise LaunchplaneSafetyError("invalid_response")
+        expected_config_result: dict[str, object] = {
+            "status": "ok", "mode": expected_mode,
+            "product": public_identifier(source["product"]), "changed": source["changed"],
+        }
+        if not isinstance(source["summary"], dict):
+            raise LaunchplaneSafetyError("invalid_response")
+        for kind in ("runtime_environment_keys", "managed_secret_bindings"):
+            changes = source[kind]
+            if not isinstance(changes, dict) or set(changes) != {"added", "unchanged"}:
+                raise LaunchplaneSafetyError("invalid_response")
+            for disposition in ("added", "unchanged"):
+                items = changes[disposition]
+                if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                    raise LaunchplaneSafetyError("invalid_response")
+                expected_config_result[f"{kind}_{disposition}_count"] = len(items)
+        return records, expected_config_result
     if operation == "merge-train-controller-run-once":
         records = _project_records(
             provider_payload.get("records"),
@@ -2173,7 +2200,7 @@ def read_payload_file(path: str) -> dict[str, object]:
     return raw
 
 
-def repository_inventory_review_digest(body: dict[str, object]) -> str:
+def metadata_review_digest(body: dict[str, object]) -> str:
     review_subject = dict(body)
     review_subject.pop("mode", None)
     return hashlib.sha256(
@@ -2252,7 +2279,7 @@ def repository_inventory_payload_body(
     expected_current_record_id = body.get("expected_current_record_id")
     if not isinstance(expected_current_record_id, str):
         raise ValueError("invalid_expected_current_record_id")
-    payload_digest = repository_inventory_review_digest(body)
+    payload_digest = metadata_review_digest(body)
     if mode == "apply":
         _require_idempotency(args)
         if not args.reviewed_dry_run:
@@ -2420,6 +2447,61 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
         reason = body.get("reason")
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reason_required")
+    return body
+
+
+def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if set(body) - {"schema_version", "product", "mode", "reason", "source_label", "runtime_environment_keys", "managed_secret_bindings"}:
+        raise ValueError("invalid_expected_config_payload")
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    for key in ("product", "reason"):
+        if not isinstance(body.get(key), str) or not str(body[key]).strip():
+            raise ValueError(f"{key}_required")
+    count = 0
+    for kind, allowed in (
+        ("runtime_environment_keys", {"key", "context", "instance"}),
+        ("managed_secret_bindings", {"integration", "binding_key", "context", "instance", "owner_input"}),
+    ):
+        requirements = body.get(kind, [])
+        if not isinstance(requirements, list):
+            raise ValueError("invalid_expected_config_payload")
+        for item in requirements:
+            if not isinstance(item, dict) or set(item) - allowed:
+                raise ValueError("invalid_expected_config_payload")
+            owner_input = item.get("owner_input")
+            if owner_input is not None and (
+                not isinstance(owner_input, dict)
+                or set(owner_input) - {"label", "instructions"}
+                or not isinstance(owner_input.get("label"), str)
+                or not owner_input["label"].strip()
+                or not isinstance(owner_input.get("instructions", ""), str)
+                or not isinstance(item.get("context"), str)
+                or not item["context"].strip()
+            ):
+                raise ValueError("invalid_owner_input_metadata")
+        count += len(requirements)
+    if not count:
+        raise ValueError("expected_config_requirements_required")
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        evidence = read_payload_file(args.dry_run_evidence_file)
+        request = evidence.get("request")
+        result = evidence.get("result")
+        if (
+            evidence.get("operation") != "product-expected-config-dry-run"
+            or evidence.get("status") not in {"ok", "accepted"}
+            or not isinstance(request, dict)
+            or request.get("payload_digest") != metadata_review_digest(body)
+            or not isinstance(result, dict)
+            or result.get("status") != "ok"
+            or result.get("mode") != "dry-run"
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
     return body
 
 
@@ -2742,6 +2824,7 @@ def execute_post(
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
                 "repository-inventory-apply",
+                "product-expected-config-apply",
             }:
                 raise
             try:
@@ -2766,7 +2849,7 @@ def execute_post(
                         if inventory_apply
                         else (
                             "Launchplane accepted the apply request, but the response could not be "
-                            "verified locally. Read back the active policy before retrying."
+                            "verified locally. Read back the affected record before retrying."
                         )
                     )
                 ),
@@ -3069,6 +3152,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     apply.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
     apply.add_argument("--idempotency-key", required=True)
     apply.add_argument("--reviewed-dry-run", action="store_true")
+    for command in ("product-expected-config-dry-run", "product-expected-config-apply"):
+        expected_config = subparsers.add_parser(command, help="Add declared product configuration requirements; never credential values.")
+        expected_config.add_argument("--payload-file", required=True, help="Private local JSON metadata file.")
+        expected_config.add_argument("--idempotency-key", default="")
+        if command.endswith("-apply"):
+            expected_config.add_argument("--reviewed-dry-run", action="store_true")
+            expected_config.add_argument("--dry-run-evidence-file", required=True, help="Saved helper output for the exact reviewed metadata.")
 
     change_impact_dry_run = subparsers.add_parser(
         "change-impact-policy-dry-run",
@@ -3253,6 +3343,23 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
+        if args.command in {"product-expected-config-dry-run", "product-expected-config-apply"}:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body = product_expected_config_payload_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "action": "product_profile.expected_config.apply",
+                "payload_source": "private_file",
+                "payload_digest": metadata_review_digest(body),
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
         if args.command == "product-config-dry-run":
             request = {"mode": "dry-run", "payload_source": "private_file"}
             body = product_config_payload_body(args, mode="dry-run")
@@ -3335,7 +3442,7 @@ def main(argv: list[str]) -> int:
             request = {
                 "mode": "dry_run",
                 "payload_source": "private_file",
-                "payload_digest": repository_inventory_review_digest(body),
+                "payload_digest": metadata_review_digest(body),
                 "idempotency_key_fingerprint": (
                     repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
                 ),
@@ -3352,7 +3459,7 @@ def main(argv: list[str]) -> int:
             request = {
                 "mode": "apply",
                 "payload_source": "private_file",
-                "payload_digest": repository_inventory_review_digest(body),
+                "payload_digest": metadata_review_digest(body),
                 "idempotency_key_fingerprint": (
                     repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
                 ),
