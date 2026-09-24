@@ -35,7 +35,8 @@ Save the helper output outside the repository, review it against the private
 input, then call `product-expected-config-apply` with the same payload file,
 `--dry-run-evidence-file REVIEW.json --reviewed-dry-run --idempotency-key KEY`.
 The helper binds the review to the exact metadata (excluding mode); changed
-input requires another dry-run. Use a distinct key if the dry-run also had one.
+input requires another dry-run. Only apply accepts an idempotency key, so a
+dry-run cannot reserve that key before the application.
 Output contains record identity and added/unchanged counts, not Owner instructions.
 Read back the product profile after apply, including when a response is uncertain.
 

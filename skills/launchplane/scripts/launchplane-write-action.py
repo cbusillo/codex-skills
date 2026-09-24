@@ -2457,7 +2457,8 @@ def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str)
     if body.get("schema_version") != 1:
         raise ValueError("schema_version_required")
     for key in ("product", "reason"):
-        if not isinstance(body.get(key), str) or not str(body[key]).strip():
+        value = body.get(key)
+        if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{key}_required")
     count = 0
     for kind, allowed in (
@@ -2489,7 +2490,10 @@ def product_expected_config_payload_body(args: argparse.Namespace, *, mode: str)
         _require_idempotency(args)
         if not args.reviewed_dry_run:
             raise ValueError("reviewed_dry_run_required")
-        evidence = read_payload_file(args.dry_run_evidence_file)
+        try:
+            evidence = read_payload_file(args.dry_run_evidence_file)
+        except ValueError:
+            raise ValueError("reviewed_dry_run_not_apply_eligible") from None
         request = evidence.get("request")
         result = evidence.get("result")
         if (
@@ -3155,8 +3159,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for command in ("product-expected-config-dry-run", "product-expected-config-apply"):
         expected_config = subparsers.add_parser(command, help="Add declared product configuration requirements; never credential values.")
         expected_config.add_argument("--payload-file", required=True, help="Private local JSON metadata file.")
-        expected_config.add_argument("--idempotency-key", default="")
+        expected_config.set_defaults(idempotency_key="")
         if command.endswith("-apply"):
+            expected_config.add_argument("--idempotency-key", required=True)
             expected_config.add_argument("--reviewed-dry-run", action="store_true")
             expected_config.add_argument("--dry-run-evidence-file", required=True, help="Saved helper output for the exact reviewed metadata.")
 
