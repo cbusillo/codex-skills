@@ -249,6 +249,16 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "product-expected-config-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/expected-config/apply",
+        "mode": "dry-run",
+    },
+    "product-expected-config-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/expected-config/apply",
+        "mode": "apply",
+    },
     "merge-train-policy-import-dry-run": {
         "method": "POST",
         "path": "/v1/merge-train/policies/import",

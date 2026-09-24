@@ -75,10 +75,10 @@ creates a drift issue. The workflow is advisory maintenance evidence only: it
 does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
-The merge-train policy import dry-run/apply commands and generic-web
-deploy-recovery dry-run/apply commands are currently bounded local extensions
+The merge-train policy import, repository inventory, product expected configuration,
+and generic-web deploy-recovery commands are currently bounded local extensions
 because they are consumed by `launchplane-write-action.py` but are not present
-in the upstream public operation projection. The validator keeps all four explicit
+in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a
 deliberate migration instead of silently maintaining two sources of truth.
 
