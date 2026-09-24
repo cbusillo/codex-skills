@@ -1,10 +1,14 @@
 # Task scope and authorization
 
 Apply these rules when using the repository execution skills that link here.
+For chat and durable reports, read [talking with the owner](talking-with-the-owner.md).
 
 - Follow the user's explicit instructions over skill guidelines. Infer routine
   implementation choices within the requested task and carry authorized work
   through its applicable checks.
+- Before changing files in another repository, read its `AGENTS.md` (and
+  `CLAUDE.md`, if present), including any instructions specific to the paths
+  being changed.
 - Reuse authorization already given for the same action and scope. A requirement
   for explicit approval does not imply a fresh question when that approval is
   already present. Fresh readiness checks do not by themselves require renewed

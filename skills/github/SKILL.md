@@ -892,7 +892,7 @@ invocation rules.
   PR review feedback when no review helper exists. Avoid unquoted heredocs for
   Markdown bodies because
   shell command substitution runs inside backticks. Follow
-  `../references/every-code-formatting.md` when writing durable PR, issue,
+  `../references/talking-with-the-owner.md` when writing durable PR, issue,
   review, or closeout text.
 - **PR Body Quality**: Preserve important existing PR body content, especially
   screenshots, images, and links that the author may not be able to recover.

@@ -163,7 +163,7 @@ Launchplane routing when present. Readiness uses those fields to decide what
 must be verified; closeout uses the same fields to decide what final evidence,
 metadata updates, and cleanup remain.
 
-Use `../references/every-code-formatting.md` for readiness reports and durable
+Use `../references/talking-with-the-owner.md` for readiness reports and durable
 readiness comments: lead with status, cite concrete evidence, and keep skipped
 or pending checks explicit without copying large logs. Use
 `../references/background-review-reporting.md` for Background Review state.
