@@ -45,6 +45,14 @@ Apply these rules when using the repository execution skills that link here.
   edits overlap or ownership cannot be established, rather than treating every
   dirty checkout as a blocker. Isolation does not relax protected-branch or
   runtime-checkout rules.
+- When a task depends on a local service or app on this machine that is not
+  running, start it without asking and record what you started and why in the
+  PR or issue. Ask first if starting it affects another person, a remote or
+  production system, or paid resources, reusing approval that already covers
+  those effects. If startup fails, report the failure and any workaround. Do
+  not change login startup behavior, machine settings, or service configuration
+  to fix why it was not running; track that work in follow-up issues for
+  direction review.
 - Run checks required by the repository and affected behavior. Reuse passing
   evidence for the same revision and environment; broaden or repeat checks when
   changes, failures, or unresolved risk justify it. Report missing required
