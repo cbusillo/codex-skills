@@ -1,6 +1,7 @@
 # Task scope and authorization
 
 Apply these rules when using the repository execution skills that link here.
+For chat and durable reports, read [talking with the owner](talking-with-the-owner.md).
 
 - Follow the user's explicit instructions over skill guidelines. Infer routine
   implementation choices within the requested task and carry authorized work

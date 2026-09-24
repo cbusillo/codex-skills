@@ -108,8 +108,8 @@ asks; that is execution.
    history is readable, read the executing agent's recent sessions rather than
    its summary of them.
 2. Dead reckoning: where the work was at the last check, where it is now, and
-   whether the path between traces to the journey in the file. Report the
-   deviation by name, or "on course".
+   whether the path between traces to the journey in the file. Explain the
+   result under [talking with the owner](../references/talking-with-the-owner.md).
 3. Propose, in this order: escalation decisions, milestone lines to add or
    retire, and a direction pull request when the file itself must change. The
    owner decides in chat; record the decision on GitHub the same session.
@@ -117,7 +117,7 @@ asks; that is execution.
    `next`, so the handoff needs no copy and paste.
 
 A **daily turn** is steps 1 and 2 alone, for the repository the session is
-in, ending in "on course" or a named deviation. One turn, wherever it happens,
+in, with the result explained under that same reference. One turn, wherever it happens,
 clears the turn reminder on the whole machine; it does not look at other
 repositories. A **weekly audit** is the full session repeated once per
 adopted repository, all from one session and one checkout: for each
@@ -280,5 +280,5 @@ request path above.
    first run also enters the repository in the marker's `audits` map, which is
    how later weekly audits know to include it.
 
-Format GitHub writes under
-[Every Code formatting](../references/every-code-formatting.md).
+Format chat and GitHub writes under
+[talking with the owner](../references/talking-with-the-owner.md).
