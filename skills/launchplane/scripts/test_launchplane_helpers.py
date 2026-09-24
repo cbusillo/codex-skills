@@ -1792,6 +1792,15 @@ def test_current_launchplane_service_response_shapes() -> None:
                     "candidate_state": "ready",
                     "fence_state": "ready",
                 },
+                "structural_provenance": {
+                    "status": "recorded_rolling",
+                    "reason_codes": ["structural_rolling_chain_recorded"],
+                    "effective_base_sha": "a" * 40,
+                    "effective_base_tree_sha": "b" * 40,
+                    "candidate_sha256": "c" * 64,
+                    "landing_plan_sha256": "d" * 64,
+                    "provenance_sha256": "e" * 64,
+                },
                 "landing_plan": {
                     "status": "planned",
                     "candidate_sha": "abc123",
@@ -1801,6 +1810,9 @@ def test_current_launchplane_service_response_shapes() -> None:
         },
     )
     assert blocked_merge["summary"]["controller_action"] == "block"
+    assert blocked_merge["summary"]["trace_id"] == "launchplane_req_blocked_merge"
+    assert blocked_merge["result"]["structural_provenance"]["status"] == "recorded_rolling"
+    assert blocked_merge["result"]["structural_provenance"]["effective_base_sha"] == "a" * 40
     assert blocked_merge["summary"]["recommendation"] == (
         "Stop and report this merge-train state."
     )
@@ -1827,6 +1839,28 @@ def test_current_launchplane_service_response_shapes() -> None:
         "entries_count": 1,
     }
 
+    early_refusal = write_action.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_lineage_changed",
+            "records": {},
+            "result": {
+                "controller_action": "block",
+                "blocking_reason": {
+                    "code": "landing_lineage_changed",
+                    "message": "Live merge queue changed from the landing-plan lineage.",
+                },
+                "merge_readiness": None,
+                "structural_provenance": None,
+            },
+        },
+    )
+    assert early_refusal["summary"]["trace_id"] == "launchplane_req_lineage_changed"
+    assert early_refusal["result"]["blocking_reason"]["code"] == "landing_lineage_changed"
+    assert early_refusal["result"]["structural_provenance"] is None
+
     for field, value in (
         (
             "blocking_reason",
@@ -1845,6 +1879,7 @@ def test_current_launchplane_service_response_shapes() -> None:
                 "unexpected": "value",
             },
         ),
+        ("structural_provenance", {"status": "unknown", "unexpected": "value"}),
     ):
         result = {
             "repository": "example/repo",
