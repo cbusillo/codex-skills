@@ -447,7 +447,10 @@ to run again.
 When the controller returns `controller_action: block`, the helper preserves a
 public-safe `blocking_reason` code and message plus the bounded merge-readiness
 facets (`state`, reason codes, owner states, technical checks, engineering
-review, policy, candidate, and fence). Unexpected nested fields or secret-like
+review, policy, candidate, and fence). It also preserves the service's nullable
+structural-provenance summary: status, reason codes, effective base commit/tree,
+and candidate, landing-plan, and provenance digests. These are diagnostic
+evidence; a blocked result still requires stopping. Unexpected nested fields or secret-like
 messages remain fail-closed; messages are emitted only when they satisfy the
 public-summary validation contract.
 

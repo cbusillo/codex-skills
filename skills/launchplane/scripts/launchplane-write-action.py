@@ -207,6 +207,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "stack_discovery",
     "status",
     "step_payload",
+    "structural_provenance",
     "superseded_candidate_record_id",
     "superseded_merge_train_batch_candidate_record_id",
     "trace_id",
@@ -223,6 +224,15 @@ MERGE_TRAIN_READINESS_FIELDS = {
     "policy_state",
     "candidate_state",
     "fence_state",
+}
+MERGE_TRAIN_STRUCTURAL_FIELDS = {
+    "status",
+    "reason_codes",
+    "effective_base_sha",
+    "effective_base_tree_sha",
+    "candidate_sha256",
+    "landing_plan_sha256",
+    "provenance_sha256",
 }
 PRODUCT_CONFIG_INTENT_FIELDS = {
     "schema_version",
@@ -1227,6 +1237,25 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     return projected
 
 
+def _project_merge_train_structural_provenance(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _require_dict(value)
+    if any(str(key) not in MERGE_TRAIN_STRUCTURAL_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for key, item in source.items():
+        if key == "reason_codes":
+            projected[key] = _public_code_list(item)
+        elif not isinstance(item, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        elif key == "status":
+            projected[key] = public_code(item)
+        else:
+            projected[key] = public_identifier(item) if item else ""
+    return projected
+
+
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     if any(str(key) not in MERGE_TRAIN_RESULT_FIELDS for key in source):
@@ -1262,6 +1291,10 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     if "merge_readiness" in source:
         projected["merge_readiness"] = _project_merge_train_readiness(
             source["merge_readiness"]
+        )
+    if "structural_provenance" in source:
+        projected["structural_provenance"] = _project_merge_train_structural_provenance(
+            source["structural_provenance"]
         )
     for key in ("workflow_run_url", "source_of_truth_url"):
         if key in source:
