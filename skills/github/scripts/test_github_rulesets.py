@@ -91,6 +91,18 @@ def test_standard_specs_have_separate_bypass_boundaries() -> None:
     assert direction_pr["parameters"]["dismiss_stale_reviews_on_push"] is True
 
 
+def test_unattributed_change_approval_is_off_and_omission_counts_as_drift() -> None:
+    # GitHub turns this on when a payload omits it, which blocks app-opened
+    # pull requests even with zero required approvals.
+    for spec in github_rulesets.standard_specs(77):
+        pr = next(rule for rule in spec.payload["rules"] if rule["type"] == "pull_request")
+        assert pr["parameters"]["require_extra_approval_for_unattributed_changes"] is False
+        live = {key: value for key, value in pr["parameters"].items() if key != "require_extra_approval_for_unattributed_changes"}
+        assert not github_rulesets._parameters_match(live, pr["parameters"])
+        assert not github_rulesets._parameters_match({**live, "require_extra_approval_for_unattributed_changes": True}, pr["parameters"])
+        assert github_rulesets._parameters_match(pr["parameters"], pr["parameters"])
+
+
 def test_client_uses_active_human_auth_and_clears_token_overrides() -> None:
     calls: list[dict[str, Any]] = []
 
