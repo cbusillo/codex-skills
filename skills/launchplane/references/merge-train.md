@@ -10,15 +10,18 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   adding ready labels. A missing ready label alone is the expected state before
   enqueueing; an unauthorized author remains ineligible after labeling. When an
   active candidate or landing is being reported instead of a fresh queue, use
-  the current policy and GitHub author evidence; missing queue evidence does
-  not mean that the queue is empty or that the intended PRs are eligible.
+  the current policy and GitHub author evidence. A queue covers the PRs examined
+  in that phase; stacked-PR phases can show only the root. Missing queue evidence
+  does not mean that the queue is empty or that the intended PRs are eligible.
 - **Capability Scope**: GitHub App installation permissions, Launchplane's
   repository/base author allowlist, and the train's merge identity are separate.
   An installation-wide Actions grant can enable dispatch/rerun across covered
-  repositories without admitting their PR authors to a train. Identify the agent
-  App separately from any dedicated train App and preserve the latter's
-  service-enforced credential contract. Before requesting a missing grant,
-  inspect the remaining capabilities needed by the intended workflow and
+  repositories without admitting their PR authors to a train. Resolve the actual
+  App IDs used by the agent and each train; do not assume they are different.
+  An installation permission change affects every consumer of that installation.
+  Compare their service-enforced credential contracts before expanding it;
+  a consumer can reject permissions beyond its ceiling. Before requesting a
+  missing grant, inspect the remaining capabilities needed by the intended workflow and
   collect verified gaps into one concrete decision. For cross-repository coverage
   or a recurring setup failure, compare the live owner-authorized repository
   inventory with active train targets and intended automation authors. The
@@ -29,6 +32,12 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   scope; additional identities or repositories remain explicit grant decisions.
   Keep real target lists and numeric identities in runtime records or reviewed
   operator input. This preflight uses existing evidence and adds no approval gate.
+- **Automation Roles**: Inventory PR authors separately from check publishers,
+  reviewers, and merge actors. A bot that only reports checks or reviews needs no
+  enqueue-author grant. A shared provider identity such as `github-actions[bot]`
+  does not identify one owner-controlled workflow. When reviewing an author
+  grant, state whether the policy can constrain the intended repository and
+  workflow provenance; an author-ID allowlist alone cannot express the latter.
 - **Controller Semantics**: Each call advances one safe phase at a time:
   same-repo linear stack-collapse planning/execution when needed,
   collapsed-root admission, candidate plan/build/observe, landing-plan
