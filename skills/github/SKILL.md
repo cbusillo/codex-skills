@@ -849,7 +849,9 @@ invocation rules.
   Do not push the accidental local protected-branch merge.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `uv run scripts/gh-pr.py create` from that
-  repository, or use `uv run scripts/gh-pr.py --repo OWNER/REPO create --head BRANCH`.
+  repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
+  Put the global option first:
+  `uv run scripts/gh-pr.py --repo OWNER/REPO create --head BRANCH`.
 - **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
   targeted JetBrains inspections on changed files or touched directories before
   pushing a branch or updating a PR whenever the repo has an IDE project
