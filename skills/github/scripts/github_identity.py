@@ -417,7 +417,7 @@ def _request_app_login(config: GitHubAppConfig, *, now: int) -> str:
     return f"{slug}[bot]"
 
 
-def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
+def _installation_payload(config: GitHubAppConfig, *, now: int) -> dict[str, object]:
     request = urllib.request.Request(
         f"{config.api_url}/app/installations/{config.installation_id}",
         method="GET",
@@ -433,7 +433,41 @@ def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
         raise GitHubAppError("GitHub App installation check returned the wrong installation")
     if not isinstance(slug, str) or not slug:
         raise GitHubAppError("GitHub App installation check is missing the App slug")
-    return f"{slug}[bot]"
+    return payload
+
+
+def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
+    return f"{_installation_payload(config, now=now)['app_slug']}[bot]"
+
+
+def github_app_installation_metadata(
+    config: GitHubAppConfig, *, now: int | None = None
+) -> dict[str, object]:
+    """Read verified installation grants without exposing credentials or tokens."""
+    payload = _installation_payload(config, now=int(time.time() if now is None else now))
+    permissions = payload.get("permissions")
+    account = payload.get("account")
+    if (
+        not isinstance(permissions, dict)
+        or any(not isinstance(key, str) or not key or not isinstance(value, str)
+               or value not in {"read", "write", "admin"}
+               for key, value in permissions.items())
+        or not isinstance(account, dict)
+        or not isinstance(account.get("login"), str)
+        or not account.get("login")
+        or account.get("type") not in ("User", "Organization")
+        or payload.get("repository_selection") not in ("all", "selected")
+    ):
+        raise GitHubAppError("GitHub App installation metadata is malformed")
+    return {
+        "app_id": payload["app_id"],
+        "installation_id": payload["id"],
+        "actor": f"{payload['app_slug']}[bot]",
+        "account": {"login": account["login"], "type": account["type"]},
+        "permissions": dict(permissions),
+        "repository_selection": payload["repository_selection"],
+        "suspended": payload.get("suspended_at") is not None,
+    }
 
 
 def _request_installation_token(config: GitHubAppConfig, *, now: int) -> tuple[str, int]:
@@ -452,10 +486,12 @@ def _request_installation_token(config: GitHubAppConfig, *, now: int) -> tuple[s
     return token, _parse_expiry(expires_at)
 
 
-def github_app_auth(config: GitHubAppConfig, *, now: int | None = None) -> tuple[str, str]:
+def github_app_auth(
+    config: GitHubAppConfig, *, now: int | None = None, refresh: bool = False
+) -> tuple[str, str]:
     current_time = int(time.time() if now is None else now)
     with _locked_cache(config) as cache_path:
-        cached = _read_cached_token(cache_path, now=current_time)
+        cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
             return cached
         login = _request_app_login(config, now=current_time)

@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import github_capabilities
 
 SCHEMA_VERSION = 2
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,9 @@ REQUIRED_FIELDS = {
     "retained_graphql_rationale",
     "source_refs",
     "test_refs",
+    "capabilities",
+    "permission_mode",
+    "permission_note",
 }
 OPTIONAL_FIELDS = {
     "current_endpoint_or_command",
@@ -180,6 +184,7 @@ def validate(matrix_path: Path, repo_root: Path) -> list[str]:
     operations = validate_schema(raw, repo_root, errors)
     if operations:
         validate_static_coverage(operations, repo_root, errors)
+    errors.extend(github_capabilities.validate_permissions(raw, repo_root))
     return errors
 
 
@@ -226,7 +231,7 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
         else:
             seen[op_id] = index
 
-        for field in sorted(REQUIRED_FIELDS - {"source_refs", "test_refs"}):
+        for field in sorted(REQUIRED_FIELDS - {"source_refs", "test_refs", "capabilities"}):
             value = operation.get(field)
             if not isinstance(value, str) or not value.strip():
                 errors.append(f"{label}.{field} must be a non-empty string")
@@ -355,6 +360,12 @@ def validate_static_coverage(
         if isinstance(operation.get("entrypoint"), str)
     }
 
+    require_entrypoint_commands(
+        "github/scripts/github-capabilities.py",
+        extract_argparse_subcommands(repo_root / "github/scripts/github-capabilities.py", errors),
+        entrypoints,
+        errors,
+    )
     require_entrypoint_commands(
         "github/scripts/github_api.py",
         extract_argparse_subcommands(repo_root / "github/scripts/github_api.py", errors),
@@ -656,6 +667,9 @@ def test_static_command_coverage_reports_missing_entrypoint() -> None:
 def minimal_operation(**overrides: Any) -> dict[str, Any]:
     operation: dict[str, Any] = {
         "id": "test.operation",
+        "capabilities": ["metadata_read"],
+        "permission_mode": "fixed",
+        "permission_note": "Fixture metadata read; failure remains unavailable and needs no additional grant.",
         "entrypoint": "github/scripts/gh-pr.py view",
         "intent": "Fixture operation.",
         "current_transport": "rest_api",
