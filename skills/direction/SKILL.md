@@ -164,7 +164,7 @@ and writes nothing. For each finding:
 
 - `coverage_incomplete`: a listing hit the page cap, so drift beyond it is
   unreported. Say so in the audit; do not call the repository clean. The audit
-  marker does not advance while coverage is incomplete.
+  marker stays unchanged only when the closed `audit` listing is incomplete.
 
 - `milestone_unlisted`: an open GitHub milestone not in the file. Either add
   the line by direction pull request or close the milestone. Never leave both.

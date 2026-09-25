@@ -257,7 +257,7 @@ def test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates() -> N
     assert any("milestone=1&state=closed&since=2026-09-14T12:00:00Z" in path for path in calls)
 
 
-def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start() -> None:
+def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
     module = load()
     previous = "2026-09-19T12:00:00Z"
     closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": "2026-09-20T12:00:00Z"}
@@ -269,7 +269,7 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
             value = NOW + dt.timedelta(minutes=cls.ticks)
             cls.ticks += 1
             return cls.fromtimestamp(value.timestamp(), tz)
-    for capped in (False, True):
+    for cap in (None, "closed_audit", "milestone_events"):
         Clock.ticks = 0
         calls: list[str] = []
         def fetch(args: list[str], *, gh: str) -> list[dict[str, Any]]:
@@ -278,7 +278,14 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
             path = args[1]
             calls.append(path)
             if "labels=audit" in path:
-                return [closed] * 100 if capped else [closed]
+                return [closed] * 100 if cap == "closed_audit" else [closed]
+            if "state=open" in path and cap == "milestone_events":
+                return [
+                    {**issue(number, "Owner-admitted work"), "milestone": {"title": "Thin fork decision"}, "user": {"login": "o"}}
+                    for number in range(100, 151)
+                ]
+            if path.startswith("repos/o/r/issues/") and "/events?" in path:
+                return [{"event": "milestoned", "actor": {"login": "o"}}]
             if "/milestones?" in path:
                 return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
             return []
@@ -300,7 +307,7 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
             assert result["audit_since"] == previous
             assert result["counts"]["audit_judge"] == 1
             saved = json.loads(marker.read_text())
-            if capped:
+            if cap == "closed_audit":
                 assert "recent_closed_audit_issues" in result["findings"][0]["listings"]
                 assert result["marked"] is None
                 assert saved == original
@@ -308,6 +315,9 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
                 assert result["marked"] == str(marker)
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
                 assert saved["audits"]["o/other"] == original["audits"]["o/other"]
+                if cap == "milestone_events":
+                    assert "milestone_issue_events" in result["findings"][0]["listings"]
+                    assert result["ok"] is False, "unrelated incomplete coverage must remain visible"
             assert any(f"labels=audit&since={previous}" in path for path in calls)
 
 

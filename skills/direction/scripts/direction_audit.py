@@ -529,8 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
     result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
-    # Advancing after a capped listing could permanently hide missed closures.
-    result["marked"] = None if result["counts"].get("coverage_incomplete") else record_audit(repo, now)
+    # Preserve unseen labeled closures without letting unrelated listing/event
+    # caps keep already-judged work and stale reminders recurring indefinitely.
+    result["marked"] = None if "recent_closed_audit_issues" in truncated else record_audit(repo, now)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 

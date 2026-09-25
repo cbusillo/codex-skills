@@ -818,7 +818,7 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 id = "github.direction.audit_issues"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Read failures abort the audit, and capped listings report incomplete coverage without advancing the marker."
+permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Read failures abort the audit. Capped listings report incomplete coverage; an incomplete closed-audit listing preserves the prior marker."
 entrypoint = "direction/scripts/direction_audit.py --repo OWNER/REPO (issue collection)"
 intent = "Read open audit questions and recently closed labeled work alongside milestone admission evidence."
 current_transport = "rest_api"
@@ -832,7 +832,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL transport; issue lists and admission events are repository-scoped REST reads."
 source_refs = ["direction/scripts/direction_audit.py:fetch_audit_issues", "direction/scripts/direction_audit.py:enrich_admission_actors"]
-test_refs = ["direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
+test_refs = ["direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_closed_audit_cutoff_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
 
 [[operations]]
 id = "github.plan.direction_read"
