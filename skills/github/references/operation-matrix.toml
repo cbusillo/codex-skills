@@ -815,6 +815,26 @@ source_refs = ["github/scripts/gh-plan.py:cmd_deps"]
 test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
+id = "github.direction.audit_issues"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Audit issue collection uses the existing repository Issues read grant and safe issues probe; no default-profile expansion. Read failures abort the audit, and capped listings report incomplete coverage without advancing the marker."
+entrypoint = "direction/scripts/direction_audit.py --repo OWNER/REPO (issue collection)"
+intent = "Read open audit questions and recently closed labeled work alongside milestone admission evidence."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Paged GET /repos/{repo}/issues with state, milestone, labels=audit and since filters; GET /repos/{repo}/issues/{number}/events"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL transport; issue lists and admission events are repository-scoped REST reads."
+source_refs = ["direction/scripts/direction_audit.py:fetch_audit_issues", "direction/scripts/direction_audit.py:enrich_admission_actors"]
+test_refs = ["direction/scripts/test_direction_audit.py:test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates", "direction/scripts/test_direction_audit.py:test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start", "direction/scripts/test_direction_audit.py:test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported"]
+
+[[operations]]
 id = "github.plan.direction_read"
 capabilities = ["contents_read"]
 permission_mode = "fixed"
@@ -1919,4 +1939,4 @@ documentation = "https://docs.github.com/en/packages/learn-github-packages/intro
 "github-work-rollup/scripts/github_work_rollup.py" = "060d94372bd3f94bda5eba59ad2e984da14e69aa8a8e687df36807d0147296d6"
 "github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
 "babysit-pr/scripts/gh_pr_watch.py" = "4866268db9cb15da6ab4dac9ef189c784cfee9f5a9efcc1d7d16996c256580a1"
-"direction/scripts/direction_audit.py" = "ce58abedcfbfe214fe4e7386982f5cc559dee09b3d52bbad6c320894c569806a"
+"direction/scripts/direction_audit.py" = "263e366953107bc2cc9d95d0a864c88a09b4eae3897c18971d31c912f09ce0a8"
