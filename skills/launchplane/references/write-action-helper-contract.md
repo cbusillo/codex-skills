@@ -512,7 +512,7 @@ provider dictionary pass-through:
   `dry_run_result` also preserves queue order, selected PR, intended next action,
   and bounded next-action detail. Queue entries expose only PR number/head,
   author-role classification, eligibility and refusal reasons, mergeability,
-  check status, and branch-update requirement. PR titles, labels, author
+  check status, and branch-update requirement. PR titles, PR label sets, author
   identities, and arbitrary provider fields are omitted. Missing queue fields
   stay absent; they are not projected as an empty or eligible queue. Malformed
   supplied queue fields and unsafe text fail closed.
