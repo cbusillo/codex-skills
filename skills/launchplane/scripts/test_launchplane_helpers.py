@@ -24,7 +24,7 @@ from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1660,9 +1660,10 @@ def test_change_impact_policy_read_execution_projects_current_service_response()
                 audit=None, attribution_status="attribution_unavailable",
             )
         output = io.StringIO()
-        with patch.object(write_action, "prepare_operator_settings", return_value={
+        read = Mock(return_value=response)
+        with temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {
             "service_url": "https://launchplane.example.invalid", "token": "test-token",
-        }), patch.object(write_action, "request_launchplane_read", return_value=response) as read:
+        }), temporary_attribute(write_action, "request_launchplane_read", read):
             with redirect_stdout(output):
                 exit_code = write_action.execute_change_impact_policy_read(
                     args=argparse.Namespace(repository_id="123", timeout=3), request={},

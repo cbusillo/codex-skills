@@ -795,7 +795,9 @@ def _public_code_list(value: object) -> list[str]:
 
 
 def _nonnegative_int(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if not isinstance(value, int):
+        raise LaunchplaneSafetyError("invalid_response")
+    if isinstance(value, bool) or value < 0:
         raise LaunchplaneSafetyError("invalid_response")
     return value
 
