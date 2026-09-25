@@ -1731,6 +1731,122 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
             raise AssertionError("expected invalid private payload rejection")
 
 
+def _queue_refusal_response() -> dict[str, Any]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_queue",
+        "records": {},
+        "result": {
+            "repository": "example/repo",
+            "base_branch": "main",
+            "mode": "dry-run",
+            "controller_action": "idle",
+            "dry_run_result": {
+                "mode": "dry-run",
+                "queue_order": [],
+                "selected_pr": None,
+                "intended_next_action": "idle",
+                "next_action_detail": "No eligible pull requests are queued.",
+                "queue": [
+                    {
+                        "number": number,
+                        "head_sha": str(number % 10) * 40,
+                        "title": "A private pull request title",
+                        "url": f"https://github.com/example/repo/pull/{number}",
+                        "labels": ["ready-to-merge", "private-label"],
+                        "created_at": "2026-09-25T08:00:00Z",
+                        "actor_role": "unknown",
+                        "mergeable": "mergeable",
+                        "required_checks_status": "pass",
+                        "branch_update_required": False,
+                        "eligible": False,
+                        "ineligible_reasons": ["actor role is not allowed to enqueue"],
+                    }
+                    for number in (42, 43)
+                ],
+            },
+        },
+    }
+
+
+def _summarize_queue_response(response: dict[str, Any]) -> dict[str, Any]:
+    return write_action.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": False},
+        provider_payload=response,
+    )
+
+
+def test_merge_train_idle_preserves_author_refusal_without_pr_content() -> None:
+    result = _summarize_queue_response(_queue_refusal_response())
+    dry_run = result["result"]["dry_run_result"]
+    assert dry_run["queue_order"] == []
+    assert dry_run["selected_pr"] is None
+    assert dry_run["intended_next_action"] == "idle"
+    assert dry_run["next_action_detail"] == "No eligible pull requests are queued."
+    assert [entry["number"] for entry in dry_run["queue"]] == [42, 43]
+    for entry in dry_run["queue"]:
+        assert entry["actor_role"] == "unknown"
+        assert entry["eligible"] is False
+        assert entry["ineligible_reasons"] == ["actor role is not allowed to enqueue"]
+        assert entry["required_checks_status"] == "pass"
+        assert entry["branch_update_required"] is False
+        assert entry["head_sha"] == str(entry["number"] % 10) * 40
+        assert not {"title", "url", "labels", "created_at"}.intersection(entry)
+    assert "private pull request" not in json.dumps(result)
+    assert "private-label" not in json.dumps(result)
+
+
+def test_merge_train_queue_distinguishes_eligible_empty_and_unavailable() -> None:
+    response = _queue_refusal_response()
+    dry_run = response["result"]["dry_run_result"]
+    selected = dry_run["queue"][0]
+    selected.update(actor_role="trusted_automation", eligible=True, ineligible_reasons=[])
+    dry_run.update(queue_order=[42], selected_pr=selected, intended_next_action="merge")
+    response["result"]["controller_action"] = "plan_candidate"
+    projected = _summarize_queue_response(response)["result"]["dry_run_result"]
+    assert projected["queue_order"] == [42]
+    assert projected["selected_pr"]["eligible"] is True
+    assert projected["selected_pr"]["actor_role"] == "trusted_automation"
+    assert projected["selected_pr"] == projected["queue"][0]
+    response["result"]["dry_run_result"] = {
+        "mode": "dry-run", "queue": [], "queue_order": [], "selected_pr": None
+    }
+    assert _summarize_queue_response(response)["result"]["dry_run_result"]["queue"] == []
+    response["result"]["dry_run_result"] = {"mode": "dry-run"}
+    assert _summarize_queue_response(response)["result"]["dry_run_result"] == {"mode": "dry-run"}
+
+
+def test_merge_train_queue_rejects_malformed_or_sensitive_evidence() -> None:
+    for key, value in (
+        ("queue", {}), ("queue_order", [True]), ("selected_pr", "unknown"),
+        ("intended_next_action", []),
+    ):
+        response = _queue_refusal_response()
+        response["result"]["dry_run_result"][key] = value
+        try:
+            _summarize_queue_response(response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"expected malformed {key} to fail closed")
+    for key, value in (
+        ("number", True), ("number", 0), ("head_sha", None), ("actor_role", []),
+        ("eligible", "false"), ("branch_update_required", None),
+        ("ineligible_reasons", "not allowed"),
+        ("ineligible_reasons", ["Bearer " + "private-response-value"]),
+        ("token", "private-response-value"),
+    ):
+        response = _queue_refusal_response()
+        response["result"]["dry_run_result"]["queue"][0][key] = value
+        try:
+            _summarize_queue_response(response)
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError(f"expected unsafe queue field {key} to fail closed")
+
+
 def test_current_launchplane_service_response_shapes() -> None:
     merge = write_action.summarize_success(
         operation="merge-train-controller-run-once",
@@ -3105,6 +3221,9 @@ def main() -> int:
         test_product_config_projection_accepts_context_scoped_runtime_environment,
         test_optional_public_identifier_rejects_null_values,
         test_runtime_environment_projection_enforces_scope_identity,
+        test_merge_train_idle_preserves_author_refusal_without_pr_content,
+        test_merge_train_queue_distinguishes_eligible_empty_and_unavailable,
+        test_merge_train_queue_rejects_malformed_or_sensitive_evidence,
         test_current_launchplane_service_response_shapes,
         test_success_projection_fails_closed_on_secret_bearing_payloads,
         test_summaries_and_trace_ids_fail_closed_on_secret_values,

@@ -508,7 +508,14 @@ provider dictionary pass-through:
 
 - `merge-train-controller-run-once` may emit only documented controller fields
   such as repository, base branch, mode, mutate, controller action, safe reason
-  codes, commit ids, source/workflow URLs, and merge-train record ids.
+  codes, commit ids, source/workflow URLs, and merge-train record ids. A supplied
+  `dry_run_result` also preserves queue order, selected PR, intended next action,
+  and bounded next-action detail. Queue entries expose only PR number/head,
+  author-role classification, eligibility and refusal reasons, mergeability,
+  check status, and branch-update requirement. PR titles, labels, author
+  identities, and arbitrary provider fields are omitted. Missing queue fields
+  stay absent; they are not projected as an empty or eligible queue. Malformed
+  supplied queue fields and unsafe text fail closed.
 - `product-config-preflight`, `product-config-dry-run`, and
   `product-config-apply` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
@@ -536,7 +543,7 @@ provider dictionary pass-through:
 The projections recognize the current service envelopes, including idempotent
 replay metadata, nested merge-train candidate/landing/stack summaries, the
 write-intent `record`, and product-config runtime, key-safety, count, and secret
-binding metadata. Secret record ids, provider target details, actor fields,
+binding metadata. Secret record ids, provider target details, actor identities,
 instructions, raw findings, and arbitrary nested dictionaries are not copied.
 
 Unexpected successful provider shapes fail closed as `invalid_response` rather

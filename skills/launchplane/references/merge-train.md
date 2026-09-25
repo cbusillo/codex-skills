@@ -3,6 +3,26 @@
 Read before advancing or diagnosing a train. The entrypoint retains the runtime
 authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 
+- **Before Enqueueing**: Run the controller without `--mutate` and inspect the
+  intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
+  classifies the PR author, not the person or App adding the label. Check
+  `actor_role`, `eligible`, `ineligible_reasons`, checks, and head SHA before
+  adding ready labels. A missing ready label alone is the expected state before
+  enqueueing; an unauthorized author remains ineligible after labeling. When an
+  active candidate or landing is being reported instead of a fresh queue, use
+  the current policy and GitHub author evidence; missing queue evidence does
+  not mean that the queue is empty or that the intended PRs are eligible.
+- **Capability Scope**: GitHub App installation permissions, Launchplane's
+  repository/base author allowlist, and the train's merge identity are separate.
+  An installation-wide Actions grant can enable dispatch/rerun across covered
+  repositories without admitting their PR authors to a train. Before requesting
+  a missing grant, inspect the remaining capabilities needed by the intended
+  workflow and collect verified gaps into one concrete decision. For a recurring
+  setup failure, inspect the active policy's configured targets and intended
+  automation authors together. Preserve existing authorization for unchanged
+  scope; additional identities or repositories remain explicit grant decisions.
+  Keep real target lists and numeric identities in runtime records or reviewed
+  operator input. This preflight uses existing evidence and adds no approval gate.
 - **Controller Semantics**: Each call advances one safe phase at a time:
   same-repo linear stack-collapse planning/execution when needed,
   collapsed-root admission, candidate plan/build/observe, landing-plan
