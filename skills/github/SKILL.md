@@ -4,6 +4,12 @@ description: "Comprehensive GitHub Expert persona for repository execution and h
 metadata:
   short-description: Execute GitHub repo workflows
 resources:
+  - path: scripts/github-capabilities.py
+    kind: script
+    description: Derives the supported permission profile and safely audits the configured App across installed repositories.
+  - path: references/github-permissions.md
+    kind: reference
+    description: Read for App setup, missing access, or new GitHub API surfaces; covers scoped roles, safe evidence and drift maintenance.
   - path: scripts/github_api.py
     kind: script
     description: Shared body-safe GitHub API transport, terminal envelope, legacy failure classifier, GraphQL operation context, and rate-limit metadata layer.
@@ -956,6 +962,12 @@ invocation rules.
 
 ## Diagnostics & Hygiene
 
+- **Permission Coverage**: For App setup, access refusals, or new GitHub API
+  surfaces, use [capability profiles](references/github-permissions.md). Derive
+  the full-operation profile from the operation matrix and audit the configured
+  installation. Distinguish missing grants from disabled features, installation
+  scope and unavailable evidence; preserve existing task authorization and actor
+  boundaries. A repository grant does not update Launchplane author policy.
 - **CI Failure**: Use the `github-ci-diagnose.py` helper to classify and fix
   failures when available. Raw `gh run view` / `gh api` log commands are
   fallback diagnostics or watcher-specific probes, not the preferred path.

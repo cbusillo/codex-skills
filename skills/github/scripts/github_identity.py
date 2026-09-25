@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Iterator
+from typing import Any, Iterator
 
 import fcntl
 
@@ -73,7 +73,7 @@ def load_local_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
         if not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
             continue
         try:
-            parsed = shlex.split(raw_value, comments=True, posix=True)
+            parsed = shlex.split(raw_value, comments=True)
         except ValueError:
             continue
         if len(parsed) > 1 or "$" in raw_value or "`" in raw_value:
@@ -229,7 +229,7 @@ def _der_length(data: bytes, offset: int) -> tuple[int, int]:
     count = first & 0x7F
     if count == 0 or count > 4 or offset + count > len(data):
         raise GitHubAppError("unsupported GitHub App private key encoding")
-    return int.from_bytes(data[offset : offset + count], "big"), offset + count
+    return int.from_bytes(data[offset : offset + count]), offset + count
 
 
 def _der_value(data: bytes, offset: int, expected_tag: int | None = None) -> tuple[int, bytes, int]:
@@ -243,29 +243,29 @@ def _der_value(data: bytes, offset: int, expected_tag: int | None = None) -> tup
     return tag, data[start:end], end
 
 
+def _rsa_sequence(der: bytes) -> tuple[bytes, int]:
+    _, sequence, end = _der_value(der, 0, 0x30)
+    if end != len(der):
+        raise GitHubAppError("invalid GitHub App private key")
+    _, version, offset = _der_value(sequence, 0, 0x02)
+    if int.from_bytes(version) != 0:
+        raise GitHubAppError("unsupported GitHub App private key version")
+    return sequence, offset
+
+
 def _rsa_private_numbers(pem: bytes) -> tuple[int, int]:
     lines = [line.strip() for line in pem.splitlines() if not line.startswith(b"-----")]
     try:
         der = base64.b64decode(b"".join(lines), validate=True)
-        _, sequence, end = _der_value(der, 0, 0x30)
-        if end != len(der):
-            raise GitHubAppError("invalid GitHub App private key")
-        _, first, offset = _der_value(sequence, 0, 0x02)
-        if int.from_bytes(first, "big") != 0:
-            raise GitHubAppError("unsupported GitHub App private key version")
-        tag, second, _ = _der_value(sequence, offset)
+        sequence, offset = _rsa_sequence(der)
+        tag, _, next_offset = _der_value(sequence, offset)
         if tag == 0x30:  # PKCS#8 wraps the PKCS#1 key in an octet string.
-            _, wrapped, _ = _der_value(sequence, _der_value(sequence, offset)[2], 0x04)
-            _, sequence, wrapped_end = _der_value(wrapped, 0, 0x30)
-            if wrapped_end != len(wrapped):
-                raise GitHubAppError("invalid GitHub App private key")
-            _, first, offset = _der_value(sequence, 0, 0x02)
-            if int.from_bytes(first, "big") != 0:
-                raise GitHubAppError("unsupported GitHub App private key version")
+            _, wrapped, _ = _der_value(sequence, next_offset, 0x04)
+            sequence, offset = _rsa_sequence(wrapped)
         _, modulus_bytes, offset = _der_value(sequence, offset, 0x02)
         _, _, offset = _der_value(sequence, offset, 0x02)
         _, private_exponent_bytes, _ = _der_value(sequence, offset, 0x02)
-        return int.from_bytes(modulus_bytes, "big"), int.from_bytes(private_exponent_bytes, "big")
+        return int.from_bytes(modulus_bytes), int.from_bytes(private_exponent_bytes)
     except (IndexError, ValueError) as error:
         raise GitHubAppError("invalid GitHub App private key") from error
 
@@ -287,7 +287,7 @@ def github_app_jwt(config: GitHubAppConfig, *, now: int | None = None) -> str:
     if padding_size < 8:
         raise GitHubAppError("GitHub App RSA private key is too small")
     encoded = b"\x00\x01" + (b"\xff" * padding_size) + b"\x00" + digest_info
-    signature = pow(int.from_bytes(encoded, "big"), private_exponent, modulus).to_bytes(key_bytes, "big")
+    signature = pow(int.from_bytes(encoded), private_exponent, modulus).to_bytes(key_bytes)
     return f"{header}.{claims}.{_b64url(signature)}"
 
 
@@ -417,7 +417,7 @@ def _request_app_login(config: GitHubAppConfig, *, now: int) -> str:
     return f"{slug}[bot]"
 
 
-def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
+def _installation_payload(config: GitHubAppConfig, *, now: int) -> dict[str, Any]:
     request = urllib.request.Request(
         f"{config.api_url}/app/installations/{config.installation_id}",
         method="GET",
@@ -433,7 +433,41 @@ def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
         raise GitHubAppError("GitHub App installation check returned the wrong installation")
     if not isinstance(slug, str) or not slug:
         raise GitHubAppError("GitHub App installation check is missing the App slug")
-    return f"{slug}[bot]"
+    return payload
+
+
+def _check_app_installation(config: GitHubAppConfig, *, now: int) -> str:
+    return f"{_installation_payload(config, now=now)['app_slug']}[bot]"
+
+
+def github_app_installation_metadata(
+    config: GitHubAppConfig, *, now: int | None = None
+) -> dict[str, Any]:
+    """Read verified installation grants without exposing credentials or tokens."""
+    payload = _installation_payload(config, now=int(time.time() if now is None else now))
+    permissions = payload.get("permissions")
+    account = payload.get("account")
+    if (
+        not isinstance(permissions, dict)
+        or any(not isinstance(key, str) or not key or not isinstance(value, str)
+               or value not in {"read", "write", "admin"}
+               for key, value in permissions.items())
+        or not isinstance(account, dict)
+        or not isinstance(account.get("login"), str)
+        or not account.get("login")
+        or account.get("type") not in ("User", "Organization")
+        or payload.get("repository_selection") not in ("all", "selected")
+    ):
+        raise GitHubAppError("GitHub App installation metadata is malformed")
+    return {
+        "app_id": payload["app_id"],
+        "installation_id": payload["id"],
+        "actor": f"{payload['app_slug']}[bot]",
+        "account": {"login": account["login"], "type": account["type"]},
+        "permissions": dict(permissions),
+        "repository_selection": payload["repository_selection"],
+        "suspended": payload.get("suspended_at") is not None,
+    }
 
 
 def _request_installation_token(config: GitHubAppConfig, *, now: int) -> tuple[str, int]:
@@ -452,10 +486,12 @@ def _request_installation_token(config: GitHubAppConfig, *, now: int) -> tuple[s
     return token, _parse_expiry(expires_at)
 
 
-def github_app_auth(config: GitHubAppConfig, *, now: int | None = None) -> tuple[str, str]:
+def github_app_auth(
+    config: GitHubAppConfig, *, now: int | None = None, refresh: bool = False
+) -> tuple[str, str]:
     current_time = int(time.time() if now is None else now)
     with _locked_cache(config) as cache_path:
-        cached = _read_cached_token(cache_path, now=current_time)
+        cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
             return cached
         login = _request_app_login(config, now=current_time)

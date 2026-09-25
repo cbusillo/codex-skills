@@ -1,4 +1,5 @@
 schema_version = 2
+permission_schema_version = 1
 
 [metadata]
 description = "Machine-readable foundation for public GitHub skill helper operations."
@@ -15,6 +16,9 @@ actor_policy_semantics = "Automation-required operations use the configured bot 
 
 [[operations]]
 id = "github.api.call"
+capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
+permission_mode = "input_dependent"
+permission_note = "Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
 entrypoint = "github/scripts/github_api.py call"
 intent = "Execute one body-safe GitHub REST request and emit structured response, actor, quota, and failure evidence."
 current_transport = "rest_api"
@@ -32,6 +36,9 @@ test_refs = ["github/scripts/test_github_api.py:test_retry_waits_until_primary_r
 
 [[operations]]
 id = "github.api.rate_limit"
+capabilities = ["metadata_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_api.py rate-limit"
 intent = "Read REST, GraphQL, search, and other GitHub quota buckets once per process."
 current_transport = "rest_api"
@@ -49,6 +56,9 @@ test_refs = ["github/scripts/test_github_api.py"]
 
 [[operations]]
 id = "github.api.classify_legacy"
+capabilities = ["metadata_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_api.py classify-legacy"
 intent = "Convert captured legacy gh stdout, stderr, and exit status into the shared terminal diagnostics envelope, using a bounded quota probe only when the bucket is unknown."
 current_transport = "composite"
@@ -66,6 +76,9 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-is
 
 [[operations]]
 id = "github.api.terminal_error"
+capabilities = []
+permission_mode = "local"
+permission_note = "Local classification or commit identity only; no GitHub API permission or profile impact."
 entrypoint = "github/scripts/github_api.py terminal-error"
 intent = "Emit one versioned machine envelope for local shell-entrypoint validation failures without contacting GitHub."
 current_transport = "delegated_python"
@@ -83,6 +96,9 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/validate-gh-is
 
 [[operations]]
 id = "github.workflow.actor.read"
+capabilities = ["metadata_read", "operator_session"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
 intent = "Resolve and verify the configured automation actor and active local human reviewer without changing identities implicitly."
 current_transport = "rest_api"
@@ -100,6 +116,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClien
 
 [[operations]]
 id = "github.workflow.dispatch"
+capabilities = ["actions_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch"
 intent = "Dispatch one workflow with automation auth and require GitHub's exact returned run id and URL."
 current_transport = "rest_api"
@@ -117,6 +136,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:GitHubWorkflowClien
 
 [[operations]]
 id = "github.workflow.run.read"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
 intent = "Read one exact workflow run by id for bounded status polling."
 current_transport = "rest_api"
@@ -134,6 +156,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.jobs.read"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
 intent = "Read jobs for one exact workflow run to distinguish queued runner work from other waits."
 current_transport = "rest_api"
@@ -151,6 +176,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.pending_deployments.read"
+capabilities = ["operator_actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
 intent = "Read pending protected-environment deployments as the active human reviewer when a run reports waiting."
 current_transport = "rest_api"
@@ -168,6 +196,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.approvals.read"
+capabilities = ["operator_actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch"
 intent = "Read prior workflow environment reviews for the active human so resumed babysitting does not repeat a non-idempotent approval."
 current_transport = "rest_api"
@@ -185,6 +216,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.workflow.pending_deployments.approve"
+capabilities = ["environment_approve"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_workflow_babysit.py dispatch|watch --approve-environment"
 intent = "Approve only exact operator-authorized pending environments with the verified active human reviewer."
 current_transport = "rest_api"
@@ -202,6 +236,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 
 [[operations]]
 id = "github.pr.view"
+capabilities = ["pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-pr.py view"
 intent = "Read normalized pull request metadata for one PR."
 current_transport = "rest_api"
@@ -219,6 +256,9 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.pr.list"
+capabilities = ["pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-pr.py list"
 intent = "List pull requests with normalized compact metadata."
 current_transport = "rest_api"
@@ -236,6 +276,9 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.pr.review_readiness"
+capabilities = ["pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "babysit-pr/scripts/gh_pr_watch.py readiness boundary"
 intent = "Read one exact PR review decision and merge protection state after REST proves every other readiness gate."
 current_transport = "gh_cli_graphql"
@@ -253,6 +296,9 @@ test_refs = ["babysit-pr/scripts/test_gh_pr_watch.py:test_review_readiness_query
 
 [[operations]]
 id = "github.pr.create"
+capabilities = ["pull_requests_write", "issues_write", "projects_write"]
+permission_mode = "input_dependent"
+permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
 entrypoint = "github/scripts/gh-pr.py create"
 intent = "Create a pull request with safe title, body-file, labels, reviewers, assignees, milestone, and project flags."
 current_transport = "gh_cli_wrapper"
@@ -270,6 +316,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempoten
 
 [[operations]]
 id = "github.pr.edit"
+capabilities = ["pull_requests_write", "issues_write", "projects_write"]
+permission_mode = "input_dependent"
+permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
 entrypoint = "github/scripts/gh-pr.py edit"
 intent = "Edit pull request metadata or body with safe body-file handling."
 current_transport = "gh_cli_wrapper"
@@ -287,6 +336,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_write_retries_idempoten
 
 [[operations]]
 id = "github.pr.comment"
+capabilities = ["pull_requests_write"]
+permission_mode = "input_dependent"
+permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
 entrypoint = "github/scripts/gh-pr.py comment"
 intent = "Post a pull request timeline comment from a Markdown body file."
 current_transport = "rest_api"
@@ -304,6 +356,9 @@ test_refs = ["github/scripts/test_github_comment.py:test_create_unknown_outcome_
 
 [[operations]]
 id = "github.pr.checks"
+capabilities = ["pull_requests_read", "checks_read", "statuses_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-pr.py checks"
 intent = "Read PR head check runs, commit statuses, and combined status summary."
 current_transport = "rest_api"
@@ -321,6 +376,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_checks_aggregates_retry
 
 [[operations]]
 id = "github.pr.merge"
+capabilities = ["contents_write", "pull_requests_read", "workflows_write"]
+permission_mode = "input_dependent"
+permission_note = "Merge and optional ref deletion use Contents write, with PR read for preflight. Workflows write is additionally needed when workflow files differ. Repository direction and protection still decide who may merge."
 entrypoint = "github/scripts/gh-pr.py merge"
 intent = "Merge a pull request using a selected merge method and optional branch deletion."
 current_transport = "rest_api"
@@ -338,6 +396,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_merge_reconciles_accepted_
 
 [[operations]]
 id = "github.pr.delete_ref"
+capabilities = ["contents_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-pr.py delete_ref"
 intent = "Delete a merged or superseded pull request branch after reconciling an unknown outcome."
 current_transport = "rest_api"
@@ -355,6 +416,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_delete_branch_us
 
 [[operations]]
 id = "github.pr.supersede"
+capabilities = ["pull_requests_write", "contents_write"]
+permission_mode = "input_dependent"
+permission_note = "Closing and commenting use Pull requests write; the optional branch deletion needs Contents write. Preserve partial-success evidence."
 entrypoint = "github/scripts/gh-pr.py supersede"
 intent = "Mark a stale PR as superseded by a canonical PR, neutralize closing references, comment, close, and optionally delete its branch."
 current_transport = "rest_api"
@@ -372,6 +436,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_pr_helper_supersede_commen
 
 [[operations]]
 id = "github.pr.rate_limit"
+capabilities = ["metadata_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-pr.py rate-limit"
 intent = "Read REST/core, GraphQL, and search rate-limit buckets."
 current_transport = "rest_api"
@@ -389,6 +456,9 @@ test_refs = ["github/scripts/validate-operation-matrix.py:self-test", ".github/g
 
 [[operations]]
 id = "github.read"
+capabilities = ["contents_read", "issues_read", "pull_requests_read", "actions_read", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "discussions_read"]
+permission_mode = "input_dependent"
+permission_note = "Read-only endpoint selection determines the required capability. Security reads preserve unavailable evidence and secret scanning uses only the redacted reader. No arbitrary endpoint is automatically supported."
 entrypoint = "github/scripts/github_read.py GitHubReader"
 intent = "Provide the shared matrix-approved REST read boundary for internal consumers that do not override the operation id."
 current_transport = "rest_api"
@@ -406,6 +476,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.pulls"
+capabilities = ["pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py pulls"
 intent = "List pull requests through the shared paged REST reader."
 current_transport = "rest_api"
@@ -423,6 +496,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.pull_checks"
+capabilities = ["pull_requests_read", "checks_read", "statuses_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py pull-checks"
 intent = "Read pull request check runs and commit statuses through REST."
 current_transport = "rest_api"
@@ -440,6 +516,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.issues"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py issues"
 intent = "List issues while filtering pull request records through the shared paged REST reader."
 current_transport = "rest_api"
@@ -457,6 +536,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_runs"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py workflow-runs"
 intent = "List workflow runs through the shared paged REST reader."
 current_transport = "rest_api"
@@ -474,6 +556,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_run"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py workflow-run"
 intent = "Read one workflow run through REST."
 current_transport = "rest_api"
@@ -491,6 +576,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.workflow_jobs"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py workflow-jobs"
 intent = "List jobs for one workflow run through REST."
 current_transport = "rest_api"
@@ -508,6 +596,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.job_log"
+capabilities = ["actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py job-log"
 intent = "Read a workflow job log as text through REST."
 current_transport = "rest_api"
@@ -525,6 +616,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.repository"
+capabilities = ["metadata_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py repository"
 intent = "Read normalized repository metadata through REST."
 current_transport = "rest_api"
@@ -542,6 +636,9 @@ test_refs = ["github/scripts/test_github_read.py:test_reader_cli_operations_are_
 
 [[operations]]
 id = "github.read.redacted_secret_scanning_status"
+capabilities = ["metadata_read", "secret_scanning_alerts_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github_read.py secret-scanning-status"
 intent = "Read a sanitized repository secret-scanning signal without emitting detected secret values or changing actor identity."
 current_transport = "rest_api"
@@ -559,6 +656,9 @@ test_refs = ["github/scripts/test_github_read.py:test_secret_scanning_status_pub
 
 [[operations]]
 id = "github.plan.index"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py index"
 intent = "List compact durable planning issues by label and state."
 current_transport = "rest_api"
@@ -576,6 +676,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_plan_index_paginates_filte
 
 [[operations]]
 id = "github.plan.search"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py search"
 intent = "Search issues and return compact normalized planning results."
 current_transport = "rest_api"
@@ -593,6 +696,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bu
 
 [[operations]]
 id = "github.plan.show"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py show"
 intent = "Read one planning issue and emit sections or the full body with source-ownership provenance and all discussion comments."
 current_transport = "rest_api"
@@ -610,6 +716,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_hu
 
 [[operations]]
 id = "github.plan.create"
+capabilities = ["issues_write", "projects_write", "contents_read"]
+permission_mode = "input_dependent"
+permission_note = "Issues and labels use Issues write. Optional Project enrollment uses the separate Project actor and retains recoverable issue-first behavior."
 entrypoint = "github/scripts/gh-plan.py create"
 intent = "Create a durable planning issue with configured labels and optional Project fields."
 current_transport = "composite"
@@ -627,6 +736,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_create_uses_rest_dedupe_an
 
 [[operations]]
 id = "github.plan.update_section"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py update-section"
 intent = "Patch one markdown section in a planning issue body."
 current_transport = "rest_api"
@@ -644,6 +756,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_issue_body_updates_use_res
 
 [[operations]]
 id = "github.plan.link"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py link"
 intent = "Create a native issue dependency, sub-issue relationship, or markdown related-note relationship."
 current_transport = "rest_api"
@@ -661,6 +776,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.unlink"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py unlink"
 intent = "Remove a native issue dependency, sub-issue relationship, or markdown related-note relationship."
 current_transport = "rest_api"
@@ -678,6 +796,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_native_link_and_unlink_all
 
 [[operations]]
 id = "github.plan.deps"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py deps"
 intent = "Read native dependencies and sub-issues for a planning issue."
 current_transport = "rest_api"
@@ -695,6 +816,9 @@ test_refs = ["github/scripts/validate-gh-plan.py", "github/scripts/validate-oper
 
 [[operations]]
 id = "github.plan.direction_read"
+capabilities = ["contents_read"]
+permission_mode = "fixed"
+permission_note = "Read the merged remote DIRECTION.md through Contents read. Denied reads fail closed; a local checkout does not replace the remote authority."
 entrypoint = "github/scripts/gh-plan.py next|milestone-create|milestone-update"
 intent = "Read the merged DIRECTION.md used for milestone admission and next-work ordering."
 current_transport = "rest_api"
@@ -712,6 +836,9 @@ test_refs = ["github/scripts/test_gh_plan_direction.py:test_gate_reads_the_targe
 
 [[operations]]
 id = "github.plan.next"
+capabilities = ["issues_read", "contents_read", "projects_read"]
+permission_mode = "input_dependent"
+permission_note = "Read issues and merged direction; optional Project focus reads use the owner-compatible Project actor and degrade to project_focus_unavailable."
 entrypoint = "github/scripts/gh-plan.py next"
 intent = "Rank actionable durable plans by merged direction milestone order, native dependency impact, and issue creation time while retaining configured Project Focus as advisory context."
 current_transport = "composite"
@@ -729,6 +856,9 @@ test_refs = ["github/scripts/test_gh_plan_next.py:test_next_beta_rc_stable_chain
 
 [[operations]]
 id = "github.plan.close"
+capabilities = ["issues_write", "projects_write"]
+permission_mode = "input_dependent"
+permission_note = "Issue close and relationship reconciliation use Issues write. Configured Project synchronization needs the separate Project role; record partial outcomes without losing a completed step."
 entrypoint = "github/scripts/gh-plan.py close"
 intent = "Fail closed on unsafe or incomplete native relationships, synchronize configured Project fields, close a completed or not-planned durable plan, and reconcile post-close labels/comments without duplicate evidence."
 current_transport = "composite"
@@ -746,6 +876,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_close_rejects_open_cross_r
 
 [[operations]]
 id = "github.plan.project_add"
+capabilities = ["issues_read", "projects_write"]
+permission_mode = "delegated"
+permission_note = "Read the issue before the owner-compatible Project mutation. Retain explicit Project actor selection and recoverable issue-first behavior."
 entrypoint = "github/scripts/gh-plan.py project-add"
 intent = "Add an issue to a configured GitHub Project and return the Project item."
 current_transport = "gh_cli_graphql"
@@ -763,6 +896,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.project_set"
+capabilities = ["issues_read", "projects_write"]
+permission_mode = "delegated"
+permission_note = "Read the issue before the owner-compatible Project mutation. Retain explicit Project actor selection and recoverable issue-first behavior."
 entrypoint = "github/scripts/gh-plan.py project-set"
 intent = "Set configured Project fields such as Focus, Manager, and Finish Line for an issue item."
 current_transport = "gh_cli_graphql"
@@ -780,6 +916,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.project_list"
+capabilities = ["projects_read"]
+permission_mode = "delegated"
+permission_note = "Project reads require owner-compatible Project credentials; retain explicit actor selection and report unsupported or unavailable owner/token combinations."
 entrypoint = "github/scripts/gh-plan.py project-list"
 intent = "List GitHub Projects for an owner."
 current_transport = "gh_cli_graphql"
@@ -797,6 +936,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_project_commands_are_recov
 
 [[operations]]
 id = "github.plan.ensure_labels"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py ensure-labels"
 intent = "Ensure configured planning labels exist, creating documented missing labels."
 current_transport = "rest_api"
@@ -814,6 +956,9 @@ test_refs = ["github/scripts/validate-gh-plan.py:test_plan_ensure_labels_uses_pa
 
 [[operations]]
 id = "github.issue.create"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-issue create"
 intent = "Create an issue from stdin-backed Markdown body content."
 current_transport = "rest_api"
@@ -831,6 +976,9 @@ test_refs = ["github/scripts/test_github_issue.py:test_create_preserves_fields_a
 
 [[operations]]
 id = "github.issue.edit"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-issue edit"
 intent = "Edit issue source content or metadata, requiring an explicit override before replacing another author's title or body."
 current_transport = "rest_api"
@@ -848,6 +996,9 @@ test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_reco
 
 [[operations]]
 id = "github.issue.close"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-issue close"
 intent = "Close an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
 current_transport = "composite"
@@ -865,6 +1016,9 @@ test_refs = ["github/scripts/test_github_issue.py:test_close_partial_failure_pre
 
 [[operations]]
 id = "github.issue.reopen"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-issue reopen"
 intent = "Reopen an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
 current_transport = "composite"
@@ -882,6 +1036,9 @@ test_refs = ["github/scripts/test_github_issue.py:test_reopen_comment_uses_non_i
 
 [[operations]]
 id = "github.comment.issue"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-comment issue"
 intent = "Post an issue timeline comment from stdin-backed Markdown."
 current_transport = "rest_api"
@@ -899,6 +1056,9 @@ test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match
 
 [[operations]]
 id = "github.comment.pr"
+capabilities = ["pull_requests_write"]
+permission_mode = "input_dependent"
+permission_note = "PR writes require Pull requests write. Requested labels or milestones may additionally require Issues write; Project options use the separate Project actor. No default access beyond the declared families."
 entrypoint = "github/scripts/gh-comment pr"
 intent = "Post a PR timeline comment from stdin-backed Markdown."
 current_transport = "rest_api"
@@ -916,6 +1076,9 @@ test_refs = ["github/scripts/test_github_comment.py:test_unknown_create_no_match
 
 [[operations]]
 id = "github.gh_with_env_token"
+capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
+permission_mode = "input_dependent"
+permission_note = "Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
 entrypoint = "github/scripts/gh-with-env-token <gh-args>"
 intent = "Run gh with configured automation credentials and preserve the selected actor unless active-auth fallback is explicitly authorized."
 current_transport = "gh_cli_wrapper"
@@ -933,6 +1096,9 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 
 [[operations]]
 id = "github.git_commit_as_bot"
+capabilities = []
+permission_mode = "local"
+permission_note = "Local classification or commit identity only; no GitHub API permission or profile impact."
 entrypoint = "github/scripts/git-commit-as-bot <git-commit-args>"
 intent = "Create a local git commit with the configured automation author and committer identity."
 current_transport = "local_git"
@@ -950,6 +1116,9 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 
 [[operations]]
 id = "github.git_push_as_bot"
+capabilities = ["contents_write", "workflows_write"]
+permission_mode = "input_dependent"
+permission_note = "Ordinary pushes require Contents write; pushes changing workflow files also require Workflows write. Authorization and protected-branch discipline remain independent."
 entrypoint = "github/scripts/git-push-as-bot <git-push-args>"
 intent = "Push to a GitHub remote through an HTTPS token flow while restoring the original origin URL."
 current_transport = "git_remote"
@@ -967,6 +1136,9 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-ope
 
 [[operations]]
 id = "github.ci_diagnose"
+capabilities = ["pull_requests_read", "checks_read", "statuses_read", "actions_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/github-ci-diagnose.py diagnose"
 intent = "Diagnose PR checks, fetch relevant workflow run metadata and logs, and summarize failing snippets."
 current_transport = "composite"
@@ -984,6 +1156,9 @@ test_refs = ["github/scripts/test_github_api.py", "github/scripts/test_github_ci
 
 [[operations]]
 id = "github.repo_snapshot"
+capabilities = ["metadata_read", "contents_read", "issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
+permission_mode = "delegated"
+permission_note = "Composite read-only evidence uses these capability families; report each degraded component without converting unavailable data into a clean result."
 entrypoint = "github/scripts/github-repo-snapshot.sh snapshot"
 intent = "Capture compact local git, PR, issue, workflow, repository setting, cleanup, and optional health state."
 current_transport = "composite"
@@ -1001,6 +1176,9 @@ test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/test_github_
 
 [[operations]]
 id = "github.work_evidence"
+capabilities = ["metadata_read", "contents_read", "issues_read", "pull_requests_read", "checks_read", "statuses_read", "actions_read"]
+permission_mode = "delegated"
+permission_note = "Composite read-only evidence uses these capability families; report each degraded component without converting unavailable data into a clean result."
 entrypoint = "github/scripts/github-work-evidence.py collect"
 intent = "Collect bounded read-only GitHub work evidence for reports, readiness, closeout, and LLM synthesis."
 current_transport = "delegated_python"
@@ -1018,6 +1196,9 @@ test_refs = ["github/scripts/test_github_work_evidence.py:test_evidence_payload_
 
 [[operations]]
 id = "github.plan.milestone_list"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py milestone-list"
 intent = "List repository milestones with bounded pagination and normalized lifecycle fields."
 current_transport = "rest_api"
@@ -1035,6 +1216,9 @@ test_refs = ["github/scripts/test_github_milestone.py:test_list_milestones_pagin
 
 [[operations]]
 id = "github.plan.milestone_show"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py milestone-show"
 intent = "Show one milestone by number or exact title with normalized output."
 current_transport = "rest_api"
@@ -1052,6 +1236,9 @@ test_refs = ["github/scripts/test_github_milestone.py:test_show_milestone_resolv
 
 [[operations]]
 id = "github.plan.milestone_create"
+capabilities = ["issues_write", "contents_read"]
+permission_mode = "fixed"
+permission_note = "Milestone writes require Issues write and Contents read to validate the merged DIRECTION milestone list; unreadable direction fails closed."
 entrypoint = "github/scripts/gh-plan.py milestone-create"
 intent = "Create a milestone only when its exact title is absent, with conflict-safe reconciliation after unknown writes."
 current_transport = "rest_api"
@@ -1069,6 +1256,9 @@ test_refs = ["github/scripts/test_github_milestone.py:test_create_is_exact_title
 
 [[operations]]
 id = "github.plan.milestone_update"
+capabilities = ["issues_write", "contents_read"]
+permission_mode = "fixed"
+permission_note = "Milestone writes require Issues write and Contents read to validate the merged DIRECTION milestone list; unreadable direction fails closed."
 entrypoint = "github/scripts/gh-plan.py milestone-update"
 intent = "Update milestone metadata or reopen it, while detecting no-op requests and refusing close through this command."
 current_transport = "rest_api"
@@ -1086,6 +1276,9 @@ test_refs = ["github/scripts/test_github_milestone.py:test_update_no_op_skips_pa
 
 [[operations]]
 id = "github.plan.milestone_close"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py milestone-close"
 intent = "Close a milestone only after a bounded read confirms no open issue or pull request remains assigned."
 current_transport = "rest_api"
@@ -1103,6 +1296,9 @@ test_refs = ["github/scripts/test_github_milestone.py:test_close_refuses_open_is
 
 [[operations]]
 id = "github.rulesets.actor.read"
+capabilities = ["operator_session"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-rulesets.py plan|apply"
 intent = "Verify that the active human GitHub account is the owner whose repository rulesets may be inspected or changed."
 current_transport = "rest_api"
@@ -1120,6 +1316,9 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_client_uses_active_hum
 
 [[operations]]
 id = "github.rulesets.repository.list"
+capabilities = ["operator_session"]
+permission_mode = "fixed"
+permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-rulesets.py plan|apply --all-owned"
 intent = "List the active owner's non-archived repositories for a bounded complete ruleset inventory."
 current_transport = "rest_api"
@@ -1137,6 +1336,9 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_cli_all_owned_uses_own
 
 [[operations]]
 id = "github.rulesets.list"
+capabilities = ["operator_session", "metadata_read"]
+permission_mode = "delegated"
+permission_note = "The ruleset helper deliberately keeps inspection under its verified active owner even where summary metadata is readable by an App."
 entrypoint = "github/scripts/gh-rulesets.py plan|apply"
 intent = "List repository-owned branch rulesets before planning or applying the standard pair."
 current_transport = "rest_api"
@@ -1154,6 +1356,9 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and
 
 [[operations]]
 id = "github.rulesets.detail"
+capabilities = ["protection_write"]
+permission_mode = "delegated"
+permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
 entrypoint = "github/scripts/gh-rulesets.py plan|apply"
 intent = "Read complete ruleset conditions, rules, and bypass actors under the verified active owner identity."
 current_transport = "rest_api"
@@ -1171,6 +1376,9 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_plan_is_idempotent_and
 
 [[operations]]
 id = "github.rulesets.create"
+capabilities = ["protection_write"]
+permission_mode = "delegated"
+permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
 entrypoint = "github/scripts/gh-rulesets.py apply --confirm-owner-admin-write"
 intent = "Create one missing standard repository ruleset only after exact-name planning and explicit owner-admin authorization."
 current_transport = "rest_api"
@@ -1188,6 +1396,9 @@ test_refs = ["github/scripts/test_github_rulesets.py:test_apply_converges_and_se
 
 [[operations]]
 id = "github.rulesets.update"
+capabilities = ["protection_write"]
+permission_mode = "delegated"
+permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
 entrypoint = "github/scripts/gh-rulesets.py apply --confirm-owner-admin-write"
 intent = "Replace a recognized managed ruleset with the standard payload and verify convergence by a fresh read."
 current_transport = "rest_api"
@@ -1202,3 +1413,510 @@ reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; repository rulesets have a maintained REST update endpoint."
 source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:apply_repository"]
 test_refs = ["github/scripts/test_github_rulesets.py:test_plan_creates_missing_and_updates_known_manual_alias", "github/scripts/test_github_rulesets.py:test_apply_converges_and_second_apply_writes_nothing"]
+
+[[operations]]
+id = "github.capabilities.profile"
+capabilities = []
+permission_mode = "local"
+permission_note = "Derive local catalog output; no credentials, API access, or profile mutation."
+entrypoint = "github/scripts/github-capabilities.py profile"
+intent = "Profile the supported capability contract."
+current_transport = "delegated_python"
+selected_transport = "delegated_python"
+endpoint_or_command = "Local operation-matrix.toml derivation"
+quota_bucket = "local"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; local catalog data."
+source_refs = ["github/scripts/github-capabilities.py:main", "github/scripts/github_capabilities.py:permission_profile"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.capabilities.audit"
+capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
+permission_mode = "input_dependent"
+permission_note = "Audit only the configured App with safe probes and explicit separate-actor results; no permission mutation or actor fallback."
+entrypoint = "github/scripts/github-capabilities.py audit"
+intent = "Audit the supported capability contract."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /app/installations/{id}; GET /installation/repositories; bounded GET repository feature probes and Discussions GraphQL read"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL is retained only for the bounded Discussions read."
+source_refs = ["github/scripts/github-capabilities.py:main", "github/scripts/github_capabilities.py:permission_profile"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.capabilities.fingerprints"
+capabilities = []
+permission_mode = "local"
+permission_note = "Derive local catalog output; no credentials, API access, or profile mutation."
+entrypoint = "github/scripts/github-capabilities.py fingerprints"
+intent = "Fingerprints the supported capability contract."
+current_transport = "delegated_python"
+selected_transport = "delegated_python"
+endpoint_or_command = "Local operation-matrix.toml derivation"
+quota_bucket = "local"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; local catalog data."
+source_refs = ["github/scripts/github-capabilities.py:main", "github/scripts/github_capabilities.py:permission_profile"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.code_scanning"
+capabilities = ["security_events_read"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (code_scanning)"
+intent = "Explicit supported API operation family: code scanning."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/code-scanning/alerts"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; supported REST read."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.dependabot"
+capabilities = ["vulnerability_alerts_read"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (dependabot)"
+intent = "Explicit supported API operation family: dependabot."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/dependabot/alerts"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; supported REST read."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.runners"
+capabilities = ["administration_read"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (runners)"
+intent = "Explicit supported API operation family: runners."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/actions/runners"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; supported REST read."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.deployments"
+capabilities = ["deployments_read"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (deployments)"
+intent = "Explicit supported API operation family: deployments."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/deployments"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No retained GraphQL; supported REST read."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.discussions_read"
+capabilities = ["discussions_read"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (discussions_read)"
+intent = "Explicit supported API operation family: discussions read."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GraphQL repository.discussions query"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "GraphQL supplies the Discussions surface."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[[operations]]
+id = "github.supported.discussions_write"
+capabilities = ["discussions_write"]
+permission_mode = "fixed"
+permission_note = "Intentionally supported API family through the maintained wrapper. The capability declares its safe probe, degraded behavior and default-profile contribution. Removing this family removes its grant when no other supported operation needs it."
+entrypoint = "github/scripts/github_api.py call (discussions_write)"
+intent = "Explicit supported API operation family: discussions write."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GraphQL createDiscussion/updateDiscussion mutations"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "update"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "GraphQL supplies the Discussions surface."
+source_refs = ["github/scripts/github_api.py:call_gh", "github/scripts/github_capabilities.py:audit_repository"]
+test_refs = ["github/scripts/test_github_capabilities.py"]
+
+[capabilities.contents_read]
+scope = "repository"
+permission = "contents"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "contents"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.contents_write]
+scope = "repository"
+permission = "contents"
+access = "write"
+actor = "agent"
+read_supported = true
+probe = "contents"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.issues_read]
+scope = "repository"
+permission = "issues"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "issues"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.issues_write]
+scope = "repository"
+permission = "issues"
+access = "write"
+actor = "agent"
+read_supported = true
+probe = "issues"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.pull_requests_read]
+scope = "repository"
+permission = "pull_requests"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "pull_requests"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.pull_requests_write]
+scope = "repository"
+permission = "pull_requests"
+access = "write"
+actor = "agent"
+read_supported = true
+probe = "pull_requests"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.actions_read]
+scope = "repository"
+permission = "actions"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "actions"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.actions_write]
+scope = "repository"
+permission = "actions"
+access = "write"
+actor = "agent"
+read_supported = true
+probe = "actions"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.metadata_read]
+scope = "repository"
+permission = "metadata"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "metadata"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.checks_read]
+scope = "repository"
+permission = "checks"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "checks"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.statuses_read]
+scope = "repository"
+permission = "statuses"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "statuses"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.security_events_read]
+scope = "repository"
+permission = "security_events"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "security_events"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.vulnerability_alerts_read]
+scope = "repository"
+permission = "vulnerability_alerts"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "vulnerability_alerts"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.secret_scanning_alerts_read]
+scope = "repository"
+permission = "secret_scanning_alerts"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "secret_scanning_alerts"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.administration_read]
+scope = "repository"
+permission = "administration"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "administration"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.deployments_read]
+scope = "repository"
+permission = "deployments"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "deployments"
+degraded_behavior = "Report missing grants before probing; preserve denied or ambiguous reads as unavailable. A successful read does not prove writes."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.workflows_write]
+scope = "repository"
+permission = "workflows"
+access = "write"
+actor = "agent"
+read_supported = false
+probe = "grant_only"
+degraded_behavior = "No read permission or harmless write probe exists for workflow-file edits. Verify the accepted grant; normal authorized workflow-file delivery supplies execution proof."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.discussions_read]
+scope = "repository"
+permission = "discussions"
+access = "read"
+actor = "agent"
+read_supported = true
+probe = "discussions"
+degraded_behavior = "Report not_enabled when repository metadata disables Discussions; otherwise use one bounded GraphQL read. Writes require task authorization."
+documentation = "https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions"
+
+[capabilities.discussions_write]
+scope = "repository"
+permission = "discussions"
+access = "write"
+actor = "agent"
+read_supported = true
+probe = "discussions"
+degraded_behavior = "Report not_enabled when repository metadata disables Discussions; otherwise use one bounded GraphQL read. Writes require task authorization."
+documentation = "https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions"
+
+[capabilities.operator_session]
+scope = "account"
+permission = "active_session"
+access = "read"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Verify the active human session separately. App grants never replace the owner identity required by the helper."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.operator_actions_read]
+scope = "repository"
+permission = "actions"
+access = "read"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Protected workflow approval diagnosis uses the verified active human session; ordinary Actions reads remain available to the agent."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.environment_approve]
+scope = "repository"
+permission = "deployments"
+access = "write"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "The protected workflow helper requires an authorized active human reviewer and the exact environment. App capability does not grant environment approval."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.protection_write]
+scope = "repository"
+permission = "administration"
+access = "write"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Ruleset details including bypass actors and writes use the verified owner through gh-rulesets. Ordinary App Administration stays read-only."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.checks_publish]
+scope = "repository"
+permission = "checks"
+access = "write"
+actor = "workflow"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Publishing authoritative checks, statuses or deployment records belongs to the configured workflow/service actor and its declared job permissions; no default agent grant."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.statuses_publish]
+scope = "repository"
+permission = "statuses"
+access = "write"
+actor = "workflow"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Publishing authoritative checks, statuses or deployment records belongs to the configured workflow/service actor and its declared job permissions; no default agent grant."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.deployments_publish]
+scope = "repository"
+permission = "deployments"
+access = "write"
+actor = "workflow"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Publishing authoritative checks, statuses or deployment records belongs to the configured workflow/service actor and its declared job permissions; no default agent grant."
+documentation = "https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps"
+
+[capabilities.projects_read]
+scope = "account"
+permission = "projects"
+access = "read"
+actor = "project"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Resolve the Project owner and API token support separately. Org Apps may use organization Projects access; personal-token paths use read:project/project. Preserve the helper explicit Project actor override and recoverable issue-first fallback."
+documentation = "https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects"
+
+[capabilities.packages_read]
+scope = "registry"
+permission = "packages"
+access = "read"
+actor = "registry"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Registry authentication uses an authorized workflow GITHUB_TOKEN or supported classic PAT and package access. Some Packages REST endpoints support App tokens; inspect the exact endpoint, owner and token type instead of claiming registry support from an App grant."
+documentation = "https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages"
+
+[capabilities.projects_write]
+scope = "account"
+permission = "projects"
+access = "write"
+actor = "project"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Resolve the Project owner and API token support separately. Org Apps may use organization Projects access; personal-token paths use read:project/project. Preserve the helper explicit Project actor override and recoverable issue-first fallback."
+documentation = "https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects"
+
+[capabilities.packages_write]
+scope = "registry"
+permission = "packages"
+access = "write"
+actor = "registry"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Registry authentication uses an authorized workflow GITHUB_TOKEN or supported classic PAT and package access. Some Packages REST endpoints support App tokens; inspect the exact endpoint, owner and token type instead of claiming registry support from an App grant."
+documentation = "https://docs.github.com/en/packages/learn-github-packages/introduction-to-github-packages"
+
+[api_surface_fingerprints]
+"github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
+"github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
+"github/scripts/gh-plan.py" = "2a85642c6bad4a1d3cda1158496bcc5578478e029811cf2300e02593aa57ceba"
+"github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
+"github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
+"github/scripts/gh-with-env-token" = "c7c75b081fe64fe1ec224c595f593528a1385d93f1fae299ae521f0297eefa82"
+"github/scripts/github-capabilities.py" = "b6f23aa4986eba837334ca79dee54ae3cf9fbd93e34d8135f80e769891aecda0"
+"github/scripts/github-ci-diagnose.py" = "aa0acdfc3dfe28caa16b4fff851341eb34e65c4264ff3c1402b8e96d2116f27a"
+"github/scripts/github-repo-snapshot.sh" = "acd8a3d3aa5e6e1daeeba80dd001c035b0186e5deb7f0639a591a86ae2520c5b"
+"github/scripts/github-work-evidence.py" = "eef884893d5bedce8a539587e7f7fd93e109ef1a17aedf887575a144340977a6"
+"github/scripts/github_api.py" = "d021f2572a2ff5fc7199a32fe01bad82c5c6db5c930b538c63944ee85a32d4fc"
+"github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
+"github/scripts/github_comment.py" = "c3dce97902b5052184d37e70d7a9f119aa9cffa82c94da01e774f10da51dbd1d"
+"github/scripts/github_identity.py" = "0120a675854458d4c832d68661800138f32b93c35136c89d4a9be0587ee79ff4"
+"github/scripts/github_issue.py" = "d3abe027034d589ec78f91f20466f7a482980b00c34817128302204404f0e026"
+"github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
+"github/scripts/github_read.py" = "2c75bc5096c3175c6207cb7810c1c64d3a7028ea27916312f51967754d7e995d"
+"github/scripts/github_rulesets.py" = "f87765e84350d958a8b6ef8416f26ffb4144d5ee35abb84f254744eaec256281"
+"github/scripts/github_workflow_babysit.py" = "fdb82f0ad2e804cc78267c1b4e18983a97b898ae82a3be95149cfeac132bbea2"
+"github/scripts/reconcile-runtime-checkout.py" = "8cc6a9806bf57175dfdb898aa0776cfa2bd68f852553beb6648b84e7ab6fe4f3"
+"github-work-rollup/scripts/github_unanswered_comments.py" = "ca855657a3e3e47dad5080b48d0525a817dfbd29151e5ed84decdbd1f78fdc74"
+"github-work-rollup/scripts/github_work_rollup.py" = "060d94372bd3f94bda5eba59ad2e984da14e69aa8a8e687df36807d0147296d6"
+"github-work-rollup/scripts/verify_work_brief.py" = "379cfec37182c96c01ac5ae2b930ca7cdd9fc34a1bacba5f5f3510d918f9074c"
+"babysit-pr/scripts/gh_pr_watch.py" = "4866268db9cb15da6ab4dac9ef189c784cfee9f5a9efcc1d7d16996c256580a1"
+"direction/scripts/direction_audit.py" = "ce58abedcfbfe214fe4e7386982f5cc559dee09b3d52bbad6c320894c569806a"

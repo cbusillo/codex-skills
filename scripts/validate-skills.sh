@@ -61,6 +61,7 @@ helper_tests=(
 	skills/github/scripts/test_github_ci_diagnose.py
 	skills/github/scripts/test_github_comment.py
 	skills/github/scripts/test_github_identity.py
+	skills/github/scripts/test_github_capabilities.py
 	skills/github/scripts/test_gh_with_env_token.py
 	skills/github/scripts/test_github_issue.py
 	skills/github/scripts/test_github_milestone.py
