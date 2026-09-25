@@ -29,6 +29,7 @@ MAX_STRUCTURED_ITEMS_PER_SKILL = 128
 ALLOWED_PROPERTIES = {
     "name",
     "description",
+    "disable-model-invocation",
     "metadata",
     "policy",
     "resources",
@@ -44,7 +45,7 @@ ALLOWED_RESOURCE_KINDS = {"script", "reference", "template", "asset"}
 ALLOWED_COMMAND_SOURCES = {"skill", "repo", "external"}
 
 
-def validate_skill(skill_path):
+def validate_skill(skill_path: str | Path) -> tuple[bool, str]:
     """Basic validation of a skill"""
     skill_path = Path(skill_path)
 
@@ -55,7 +56,15 @@ def validate_skill(skill_path):
     return validate_skill_content(skill_md.read_text(), skill_path)
 
 
-def validate_skill_content(content, skill_dir=None):
+def unexpected_properties(mapping, allowed_properties, context, properties_label):
+    unexpected = set(mapping) - allowed_properties
+    if not unexpected:
+        return None
+    return (f"Unexpected key(s) in {context}: {', '.join(sorted(unexpected))}. "
+            f"Allowed {properties_label} are: {', '.join(sorted(allowed_properties))}")
+
+
+def validate_skill_content(content: str, skill_dir: Path | None = None) -> tuple[bool, str]:
     """Validate the contents of a SKILL.md file."""
 
     if not content.startswith("---"):
@@ -74,27 +83,20 @@ def validate_skill_content(content, skill_dir=None):
     except yaml.YAMLError as e:
         return False, f"Invalid YAML in frontmatter: {e}"
 
-    unexpected_keys = set(frontmatter.keys()) - ALLOWED_PROPERTIES
-    if unexpected_keys:
-        allowed = ", ".join(sorted(ALLOWED_PROPERTIES))
-        unexpected = ", ".join(sorted(unexpected_keys))
-        return (
-            False,
-            f"Unexpected key(s) in SKILL.md frontmatter: {unexpected}. Allowed properties are: {allowed}",
-        )
+    property_error = unexpected_properties(frontmatter, ALLOWED_PROPERTIES, "SKILL.md frontmatter", "properties")
+    if property_error:
+        return False, property_error
+
+    if "disable-model-invocation" in frontmatter and not isinstance(frontmatter["disable-model-invocation"], bool):
+        return False, "disable-model-invocation must be a boolean"
 
     metadata = frontmatter.get("metadata")
     if metadata is not None:
         if not isinstance(metadata, dict):
             return False, f"Metadata must be a YAML dictionary, got {type(metadata).__name__}"
-        unexpected_metadata_keys = set(metadata.keys()) - ALLOWED_METADATA_PROPERTIES
-        if unexpected_metadata_keys:
-            allowed = ", ".join(sorted(ALLOWED_METADATA_PROPERTIES))
-            unexpected = ", ".join(sorted(unexpected_metadata_keys))
-            return (
-                False,
-                f"Unexpected key(s) in metadata: {unexpected}. Allowed metadata properties are: {allowed}",
-            )
+        property_error = unexpected_properties(metadata, ALLOWED_METADATA_PROPERTIES, "metadata", "metadata properties")
+        if property_error:
+            return False, property_error
 
         short_description = metadata.get("short-description")
         if short_description is not None:
@@ -118,14 +120,9 @@ def validate_skill_content(content, skill_dir=None):
     if policy is not None:
         if not isinstance(policy, dict):
             return False, f"Policy must be a YAML dictionary, got {type(policy).__name__}"
-        unexpected_policy_keys = set(policy.keys()) - ALLOWED_POLICY_PROPERTIES
-        if unexpected_policy_keys:
-            allowed = ", ".join(sorted(ALLOWED_POLICY_PROPERTIES))
-            unexpected = ", ".join(sorted(unexpected_policy_keys))
-            return (
-                False,
-                f"Unexpected key(s) in policy: {unexpected}. Allowed policy properties are: {allowed}",
-            )
+        property_error = unexpected_properties(policy, ALLOWED_POLICY_PROPERTIES, "policy", "policy properties")
+        if property_error:
+            return False, property_error
 
         allow_implicit_invocation = policy.get("allow_implicit_invocation")
         if allow_implicit_invocation is not None and not isinstance(allow_implicit_invocation, bool):
@@ -615,14 +612,18 @@ def run_self_tests():
     return 0
 
 
-if __name__ == "__main__":
+def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
-        sys.exit(run_self_tests())
+        return run_self_tests()
 
     if len(sys.argv) != 2:
         print("Usage: python quick_validate.py <skill_directory>|--self-test")
-        sys.exit(1)
+        return 1
 
     valid, message = validate_skill(sys.argv[1])
     print(message)
-    sys.exit(0 if valid else 1)
+    return 0 if valid else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

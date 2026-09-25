@@ -1,5 +1,6 @@
 ---
 name: memory-distillation
+disable-model-invocation: true
 description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex or Codex Lab memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
 metadata:
   short-description: Audit memories into durable sources

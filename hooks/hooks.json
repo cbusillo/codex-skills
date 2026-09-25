@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/command_policy_hook.py\""
+            "command": "uv run --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/command_policy_hook.py\" --json || true"
           }
         ]
       }
@@ -18,6 +18,16 @@
           {
             "type": "command",
             "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\" --skills-only",
             "timeout": 15
           }
         ]
