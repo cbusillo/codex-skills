@@ -1,5 +1,6 @@
 ---
 name: plan
+disable-model-invocation: true
 description: Legacy local plan files only. Use only when explicitly requested; use github-plan for GitHub-backed planning.
 metadata:
   short-description: Manage explicit local/offline plans

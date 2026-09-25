@@ -206,6 +206,11 @@ Every SKILL.md consists of:
 - **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
 - **`agents/openai.yaml`**: Codex UI metadata, tool dependencies, and invocation policy. Put `policy.allow_implicit_invocation: false` here for explicit-only invocation.
 
+For this catalog's Claude Code binding, mirror explicit-only invocation with
+`disable-model-invocation: true` in `SKILL.md`. The repository validator checks
+it against `agents/openai.yaml`; neither host should expose a manual-only skill
+for automatic use.
+
 ##### Structured resources and commands
 
 Preserve metadata consumed by this repository's tooling. Add these extensions

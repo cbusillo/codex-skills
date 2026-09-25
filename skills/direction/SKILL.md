@@ -30,6 +30,13 @@ commands:
 
 Apply [task scope and authorization](../references/execution-scope.md).
 
+Load the skill that owns each step before acting, even during a direction
+session; see [using skills](../references/using-skills.md). Use `github-plan`
+for issue and milestone work, `github` for PR creation and its merge path,
+`babysit-pr` for CI/review follow-through, and `work-closeout` when closing out.
+Use `python-uv-workflow` before running this skill's Python helpers and
+`model-review` when the shared review reference calls for another model.
+
 ## Outcome
 
 Each repository has one owner-approved `DIRECTION.md` at its root. It says what
