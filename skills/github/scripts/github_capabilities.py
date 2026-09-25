@@ -87,6 +87,21 @@ def _static_text(node: ast.AST) -> str | None:
     return None
 
 
+def _ast_signature(node: ast.AST) -> str:
+    """Avoid ast.dump's version-dependent rendering of empty optional fields."""
+    def normalize(value: Any) -> Any:
+        if isinstance(value, ast.AST):
+            return {"node": type(value).__name__, "fields": {
+                name: normalize(field) for name, field in ast.iter_fields(value)
+                if field is not None and field != []
+            }}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return repr(value)
+
+    return json.dumps(normalize(node), sort_keys=True, separators=(",", ":"))
+
+
 def api_surface(path: Path) -> list[str]:
     """Capture endpoint/method/query declarations, excluding unrelated statements."""
     source = path.read_text(encoding="utf-8")
@@ -125,7 +140,7 @@ def api_surface(path: Path) -> list[str]:
 
         def visit_List(self, node: ast.List) -> None:
             if node.elts and _static_text(node.elts[0]) in {"api", "pr", "issue", "project", "run", "workflow", "release", "repo", "ruleset", "cache", "secret", "variable"}:
-                surfaces.add(f"{self.function}:argv:{ast.dump(node)}")
+                surfaces.add(f"{self.function}:argv:{_ast_signature(node)}")
             self.generic_visit(node)
 
         def visit_Call(self, node: ast.Call) -> None:
@@ -134,8 +149,8 @@ def api_surface(path: Path) -> list[str]:
             has_method = bool(first and first.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
             if name in HTTP_CALLS or has_method or any(kw.arg == "method" for kw in node.keywords):
                 # Keep routing/method expressions, not request bodies, logging or tests.
-                args = [ast.dump(arg) for arg in node.args[:2]]
-                keywords = [f"{kw.arg}={ast.dump(kw.value)}"
+                args = [_ast_signature(arg) for arg in node.args[:2]]
+                keywords = [f"{kw.arg}={_ast_signature(kw.value)}"
                             for kw in node.keywords if kw.arg in {"path", "method", "url", "endpoint"}]
                 surfaces.add(f"{self.function}:call:{name}:{'|'.join(args + keywords)}")
             self.generic_visit(node)
