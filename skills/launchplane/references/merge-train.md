@@ -15,9 +15,11 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 - **Capability Scope**: GitHub App installation permissions, Launchplane's
   repository/base author allowlist, and the train's merge identity are separate.
   An installation-wide Actions grant can enable dispatch/rerun across covered
-  repositories without admitting their PR authors to a train. Before requesting
-  a missing grant, inspect the remaining capabilities needed by the intended
-  workflow and collect verified gaps into one concrete decision. For a recurring
+  repositories without admitting their PR authors to a train. Identify the agent
+  App separately from any dedicated train App and preserve the latter's
+  service-enforced credential contract. Before requesting a missing grant,
+  inspect the remaining capabilities needed by the intended workflow and
+  collect verified gaps into one concrete decision. For a recurring
   setup failure, inspect the active policy's configured targets and intended
   automation authors together. Preserve existing authorization for unchanged
   scope; additional identities or repositories remain explicit grant decisions.
