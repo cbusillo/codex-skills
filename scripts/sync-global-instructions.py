@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import shlex
+import sys
 import tempfile
 from pathlib import Path
 
@@ -125,7 +126,8 @@ def main() -> int:
         if hook_content is not None:
             outputs.extend(synchronize(hook_content, [hook_destination], write=args.write))
     except (OSError, ValueError) as error:
-        parser.exit(1, f"Global instructions not synchronized: {error}\n")
+        print(f"Global instructions not synchronized: {error}", file=sys.stderr)
+        return 1
     print(json.dumps({"outputs": outputs}, indent=2))
     return 0
 

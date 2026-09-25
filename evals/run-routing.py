@@ -59,7 +59,7 @@ raise SystemExit(0 if args.command == 'merge' else 1)
     return result.returncode == 0
 
 
-def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> dict[str, object]:
+def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> dict[str, Any]:
     """Grade observed loads and first attempted operation; redirects cannot pass."""
     messages = [json.loads(line) for line in (destination / "trace.jsonl").read_text().splitlines() if line.strip()]
     sequence: list[tuple[str, str]] = []
@@ -70,10 +70,10 @@ def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> 
     foreign_skill_reads: list[str] = []
 
     def credit_skill(path_text: str) -> None:
-        path = Path(path_text)
-        if not path.is_absolute():
-            path = destination / "workspace" / path
-        resolved = path.resolve()
+        skill_path = Path(path_text)
+        if not skill_path.is_absolute():
+            skill_path = destination / "workspace" / skill_path
+        resolved = skill_path.resolve()
         skill_paths.append(str(resolved))
         if resolved.is_relative_to((catalog / "skills").resolve()):
             sequence.append(("skill", resolved.parent.name))
@@ -142,9 +142,9 @@ def hook_override(groups: list[dict[str, Any]]) -> str:
     ) + "]"
 
 
-def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str | None) -> dict[str, object]:
+def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str | None) -> dict[str, Any]:
     data = yaml.safe_load(case.read_text())
-    destination.mkdir(parents=True, exist_ok=False)
+    destination.mkdir(parents=True)
     fixture = destination / "workspace"
     fixture.mkdir()
     subprocess.run(["git", "init", "-q", "--initial-branch=fixture", str(fixture)], check=True)

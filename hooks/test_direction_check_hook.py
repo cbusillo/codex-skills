@@ -24,7 +24,7 @@ sys.path.insert(0, str(HOOK.parent))
 
 import direction_check_hook as hook  # noqa: E402
 
-NOW = dt.datetime(2026, 9, 22, 12, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 9, 22, 12, tzinfo=dt.timezone.utc)
 MARKER = Path("/x/direction-last-check.json")
 
 

@@ -135,8 +135,10 @@ def runnable(token: str, skill: str) -> str:
 
 
 def describe(policy: dict[str, Any], skill: str) -> str:
-    lines = [f"Blocked by the `{skill}` skill's command policy `{policy['id']}`."]
-    lines.append(f"Load the `{skill}` skill before continuing ({CATALOG / skill / 'SKILL.md'}).")
+    lines = [
+        f"Blocked by the `{skill}` skill's command policy `{policy['id']}`.",
+        f"Load the `{skill}` skill before continuing ({CATALOG / skill / 'SKILL.md'}).",
+    ]
     if policy.get("message"):
         lines.append(str(policy["message"]))
     for preferred in policy.get("preferred") or []:
