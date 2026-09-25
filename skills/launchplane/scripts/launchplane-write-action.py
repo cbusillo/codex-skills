@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import helper_command_path  # noqa: E402
@@ -795,9 +795,11 @@ def _public_code_list(value: object) -> list[str]:
 
 
 def _nonnegative_int(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if not isinstance(value, int):
         raise LaunchplaneSafetyError("invalid_response")
-    return value
+    if isinstance(value, bool) or value < 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    return cast(int, value)
 
 
 def _project_key_safety_findings(value: object) -> list[dict[str, object]]:
@@ -1199,6 +1201,62 @@ def _project_merge_component(value: object) -> dict[str, object]:
     return projected
 
 
+def _merge_train_pr_number(value: object) -> int:
+    number = _nonnegative_int(value)
+    if number == 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    return number
+
+
+def _project_merge_train_queue_entry(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    projected: dict[str, object] = {
+        "number": _merge_train_pr_number(source.get("number")),
+        "head_sha": public_identifier(source.get("head_sha")),
+    }
+    for key in ("actor_role", "mergeable", "required_checks_status"):
+        item = source.get(key)
+        if not isinstance(item, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[key] = public_code(item)
+    for key in ("eligible", "branch_update_required"):
+        if not isinstance(source.get(key), bool):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[key] = source[key]
+    reasons = source.get("ineligible_reasons")
+    if not isinstance(reasons, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["ineligible_reasons"] = [public_summary_string(reason) for reason in reasons]
+    return projected
+
+
+def _project_merge_train_dry_run(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    projected = _project_merge_component(source)
+    if "intended_next_action" in source:
+        if not isinstance(source["intended_next_action"], str):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["intended_next_action"] = public_code(source["intended_next_action"])
+    if "next_action_detail" in source:
+        projected["next_action_detail"] = public_summary_string(source["next_action_detail"])
+    if "queue_order" in source:
+        order = source["queue_order"]
+        if not isinstance(order, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["queue_order"] = [_merge_train_pr_number(number) for number in order]
+    if "queue" in source:
+        queue = source["queue"]
+        if not isinstance(queue, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["queue"] = [_project_merge_train_queue_entry(entry) for entry in queue]
+    if "selected_pr" in source:
+        selected = source["selected_pr"]
+        projected["selected_pr"] = (
+            None if selected is None else _project_merge_train_queue_entry(selected)
+        )
+    return projected
+
+
 def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in MERGE_TRAIN_BLOCKING_REASON_FIELDS for key in source):
@@ -1296,6 +1354,8 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         projected["structural_provenance"] = _project_merge_train_structural_provenance(
             source["structural_provenance"]
         )
+    if "dry_run_result" in source:
+        projected["dry_run_result"] = _project_merge_train_dry_run(source["dry_run_result"])
     for key in ("workflow_run_url", "source_of_truth_url"):
         if key in source:
             projected[key] = public_url(source[key])
@@ -1304,7 +1364,6 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "landing_plan",
         "stack_collapse_plan",
         "stack_discovery",
-        "dry_run_result",
         "error",
         "details",
     ):
