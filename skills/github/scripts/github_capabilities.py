@@ -130,7 +130,9 @@ def api_surface(path: Path) -> list[str]:
 
         def visit_Call(self, node: ast.Call) -> None:
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            if name in HTTP_CALLS:
+            first = _static_text(node.args[0]) if node.args else None
+            has_method = bool(first and first.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+            if name in HTTP_CALLS or has_method or any(kw.arg == "method" for kw in node.keywords):
                 # Keep routing/method expressions, not request bodies, logging or tests.
                 args = [ast.dump(arg) for arg in node.args[:2]]
                 keywords = [f"{kw.arg}={ast.dump(kw.value)}"

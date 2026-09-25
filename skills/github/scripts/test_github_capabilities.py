@@ -208,6 +208,9 @@ class CapabilityTests(unittest.TestCase):
             ('run_raw(["project", "item-add", target])', 'run_raw(["project", "item-delete", target])'),
             ('args = ["pr", "create", target]', 'args = ["pr", "edit", target]'),
             ('rest_json("GET", endpoint)', 'rest_json("DELETE", endpoint)'),
+            ('_call_api("GET", endpoint)', '_call_api("PATCH", endpoint)'),
+            ('_call("GET", endpoint)', '_call("DELETE", endpoint)'),
+            ('new_adapter(endpoint, method="GET")', 'new_adapter(endpoint, method="POST")'),
             ('path = f"{base}/actions/runners"', 'path = f"{base}/actions/secrets"'),
         ]
         with tempfile.TemporaryDirectory() as directory:
