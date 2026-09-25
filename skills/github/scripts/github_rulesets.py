@@ -107,6 +107,9 @@ def _pull_request_parameters(*, code_owner_review: bool, dismiss_stale: bool) ->
         "allowed_merge_methods": ["merge", "squash", "rebase"],
         "dismiss_stale_reviews_on_push": dismiss_stale,
         "require_code_owner_review": code_owner_review,
+        # GitHub defaults this preview setting to true when omitted, which
+        # makes every app-opened pull request wait for a human approval.
+        "require_extra_approval_for_unattributed_changes": False,
         "require_last_push_approval": False,
         "required_approving_review_count": 0,
         "required_review_thread_resolution": False,
@@ -193,6 +196,7 @@ def _parameters_match(actual: Mapping[str, Any], desired: Mapping[str, Any]) -> 
         "allowed_merge_methods": ["merge", "squash", "rebase"],
         "dismiss_stale_reviews_on_push": False,
         "require_code_owner_review": False,
+        "require_extra_approval_for_unattributed_changes": True,
         "require_last_push_approval": False,
         "required_approving_review_count": 0,
         "required_review_thread_resolution": False,
