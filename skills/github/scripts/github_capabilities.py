@@ -24,10 +24,11 @@ SOURCE_ROOTS = ("github/scripts", "github-work-rollup/scripts", "babysit-pr/scri
 HTTP_CALLS = {
     "request", "_transport_request", "get_json", "get_text", "paged_json",
     "graphql_json", "call_gh", "call_gh_with_retry", "_request_json",
-    "api_json", "request_json", "gh_api",
+    "api_json", "request_json", "gh_api", "rest_json", "rest_result",
+    "limited_paged_rest_json", "gh_json", "run_raw", "run_gh", "fetch",
     "urlopen", "Request",
 }
-ENDPOINT = re.compile(r"^/?(?:repos|orgs|users|user|app|installation|search|graphql|rate_limit)(?:/|\?|$)")
+ENDPOINT = re.compile(r"^(?:\{\}/|/?(?:repos|repositories|orgs|users|user|app|installation|search|graphql|rate_limit)(?:/|\?|$))")
 PROBES = {"metadata", "contents", "issues", "pull_requests", "checks", "statuses",
           "actions", "security_events", "vulnerability_alerts", "secret_scanning_alerts",
           "administration", "deployments", "discussions", "grant_only", "separate_actor"}
@@ -38,12 +39,23 @@ def load_matrix(path: Path = MATRIX) -> dict[str, Any]:
         return tomllib.load(stream)
 
 
+def operation_capabilities(matrix: dict[str, Any]) -> set[str]:
+    # Generic passthroughs and the audit consume this profile, not define it.
+    consumers = {"github.api.call", "github.gh_with_env_token", "github.read", "github.capabilities.audit"}
+    return {identifier for row in matrix["operations"] if row["id"] not in consumers
+            for identifier in row.get("capabilities", []) if isinstance(identifier, str)}
+
+
 def permission_profile(matrix: dict[str, Any], *, read_only: bool = False) -> dict[str, Any]:
     grants: dict[str, dict[str, str]] = {"repository": {}, "organization": {}}
     separate: list[dict[str, str]] = []
-    for identifier, capability in sorted(matrix["capabilities"].items()):
+    catalog: dict[str, dict[str, Any]] = matrix["capabilities"]
+    used = operation_capabilities(matrix)
+    for identifier, capability in sorted(catalog.items()):
         if capability["actor"] != "agent":
             separate.append({"capability": identifier, "actor": capability["actor"], "reason": capability["degraded_behavior"]})
+            continue
+        if identifier not in used:
             continue
         if read_only and not capability["read_supported"]:
             continue
@@ -111,6 +123,11 @@ def api_surface(path: Path) -> list[str]:
                 elif re.match(r"\s*(query|mutation)\b", value) and "{" in value:
                     surfaces.add(f"{self.function}:graphql:{' '.join(value.split())}")
 
+        def visit_List(self, node: ast.List) -> None:
+            if node.elts and _static_text(node.elts[0]) in {"api", "pr", "issue", "project", "run", "workflow", "release", "repo", "ruleset", "cache", "secret", "variable"}:
+                surfaces.add(f"{self.function}:argv:{ast.dump(node, include_attributes=False)}")
+            self.generic_visit(node)
+
         def visit_Call(self, node: ast.Call) -> None:
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             if name in HTTP_CALLS:
@@ -128,7 +145,9 @@ def api_surface(path: Path) -> list[str]:
 def source_fingerprints(root: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for directory in SOURCE_ROOTS:
-        for path in sorted((root / directory).glob("*")):
+        if not (root / directory).exists():
+            continue
+        for path in sorted((root / directory).iterdir()):
             if not path.is_file() or path.name.startswith(("test", "validate-")):
                 continue
             if path.suffix not in {".py", ".sh", ""}:
@@ -189,8 +208,11 @@ def validate_permissions(matrix: dict[str, Any], root: Path, *, check_sources: b
             errors.append(f"operation {row.get('id')} requires permission/degraded/profile-impact notes")
         if mode == "local" and refs:
             errors.append(f"operation {row.get('id')} is local but declares remote grants")
-    for identifier in sorted(set(capabilities) - used):
-        errors.append(f"capability {identifier} has no supported operation")
+    if not errors:
+        used = operation_capabilities(matrix)
+        for identifier, capability in capabilities.items():
+            if capability["actor"] == "agent" and identifier not in used:
+                errors.append(f"capability {identifier} has no supported operation outside passthrough/audit")
     if check_sources:
         expected = matrix.get("api_surface_fingerprints", {})
         if not isinstance(expected, dict):
@@ -211,6 +233,10 @@ def classify_probe(status: int, *, granted: bool, feature_enabled: bool | None =
         state = "permission_missing"
     elif 200 <= status < 300:
         state = "available"
+    elif message.casefold().rstrip(".") in {"code scanning is not enabled for this repository", "dependabot alerts are not enabled for this repository", "dependabot alerts are disabled for this repository"}:
+        state = "not_enabled"
+    elif status == 409 and message.casefold().rstrip(".") == "git repository is empty":
+        state = "no_data"
     elif status == 404 and message.casefold() == "no analysis found":
         state = "no_data"
     else:
@@ -278,47 +304,50 @@ def audit_repository(reader: github_read.GitHubReader, repository: str, *,
         if permission_gaps({name: level}, installation["permissions"]):
             findings[identifier] = {"state": "permission_missing", "permission": name, "required": level}
             continue
-        probe = capability["probe"]
-        if probe == "secret_scanning_alerts":
-            signal = github_read.redacted_secret_scanning_status(reader, repository, limit=1)
-            state = signal["status"]
-            findings[identifier] = {"state": "available" if state in {"clean", "findings"} else "unavailable",
-                                    "reason": signal.get("reason"), "literal_values_hidden": True}
-            continue
-        if probe == "discussions":
-            if metadata.get("has_discussions") is False:
-                findings[identifier] = {"state": "not_enabled", "permission_granted": True}
-            else:
-                owner, repo_name = repository.split("/")
-                result = reader.graphql_json(
-                    "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){discussions(first:1){totalCount}}}",
-                    {"owner": owner, "name": repo_name}, step="capability_discussions")
-                if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
-                    findings[identifier] = {"state": "unavailable", "reason": "discussion_read_failed"}
+        try:
+            probe = capability["probe"]
+            if probe == "secret_scanning_alerts":
+                signal = github_read.redacted_secret_scanning_status(reader, repository, limit=1)
+                state = signal["status"]
+                findings[identifier] = {"state": "available" if state in {"clean", "findings"} else "not_enabled" if state == "not_enabled" else "unavailable",
+                                        "reason": signal.get("reason"), "literal_values_hidden": True}
+                continue
+            if probe == "discussions":
+                if metadata.get("has_discussions") is False:
+                    findings[identifier] = {"state": "not_enabled", "permission_granted": True}
                 else:
-                    data = result.body.get("data")
-                    repo_data = data.get("repository") if isinstance(data, dict) else None
-                    discussions = repo_data.get("discussions") if isinstance(repo_data, dict) else None
-                    count = discussions.get("totalCount") if isinstance(discussions, dict) else None
-                    findings[identifier] = ({"state": "permission_granted" if level == "write" else "available", "read_probe": "available", "write_probe": "not_exercised"}
-                                            if isinstance(count, int) and not isinstance(count, bool)
-                                            else {"state": "unavailable", "reason": "discussion_shape_invalid"})
-            continue
-        if probe == "grant_only":
-            findings[identifier] = {"state": "permission_granted", "write_probe": "not_exercised"}
-            continue
-        if probe in {"checks", "statuses"} and not default_ref:
-            findings[identifier] = {"state": "no_data", "reason": "no_default_branch"}
-            continue
-        if probe == "issues" and metadata.get("has_issues") is False:
-            findings[identifier] = {"state": "not_enabled", "permission_granted": True}
-            continue
-        if probe not in read_probes:
-            read_probes[probe] = (_get_probe(reader, paths[probe], f"capability_{probe}")
-                                  if probe != "metadata" else {"state": "available", "http_status": 200})
-        outcome = dict(read_probes[probe])
-        if level == "write" and outcome["state"] == "available":
-            outcome.update(state="permission_granted", read_probe="available", write_probe="not_exercised")
-        findings[identifier] = outcome
+                    owner, repo_name = repository.split("/")
+                    result = reader.graphql_json(
+                        "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){discussions(first:1){totalCount}}}",
+                        {"owner": owner, "name": repo_name}, step="capability_discussions")
+                    if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
+                        findings[identifier] = {"state": "unavailable", "reason": "discussion_read_failed"}
+                    else:
+                        data = result.body.get("data")
+                        repo_data = data.get("repository") if isinstance(data, dict) else None
+                        discussions = repo_data.get("discussions") if isinstance(repo_data, dict) else None
+                        count = discussions.get("totalCount") if isinstance(discussions, dict) else None
+                        findings[identifier] = ({"state": "permission_granted" if level == "write" else "available", "read_probe": "available", "write_probe": "not_exercised"}
+                                                if isinstance(count, int) and not isinstance(count, bool)
+                                                else {"state": "unavailable", "reason": "discussion_shape_invalid"})
+                continue
+            if probe == "grant_only":
+                findings[identifier] = {"state": "permission_granted", "write_probe": "not_exercised"}
+                continue
+            if probe in {"checks", "statuses"} and (not default_ref or read_probes.get("contents", {}).get("http_status") == 409 and read_probes["contents"]["state"] == "no_data"):
+                findings[identifier] = {"state": "no_data", "reason": "no_default_commit"}
+                continue
+            if probe == "issues" and metadata.get("has_issues") is False:
+                findings[identifier] = {"state": "not_enabled", "permission_granted": True}
+                continue
+            if probe not in read_probes:
+                read_probes[probe] = (_get_probe(reader, paths[probe], f"capability_{probe}")
+                                      if probe != "metadata" else {"state": "available", "http_status": 200})
+            outcome = dict(read_probes[probe])
+            if level == "write" and outcome["state"] == "available":
+                outcome.update(state="permission_granted", read_probe="available", write_probe="not_exercised")
+            findings[identifier] = outcome
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError):
+            findings[identifier] = {"state": "unavailable", "reason": "capability_read_failed"}
     return {"repository": repository, "state": "audited", "visibility": metadata.get("visibility"),
             "capabilities": findings}

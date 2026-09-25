@@ -12,7 +12,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import github_capabilities as capabilities
@@ -26,8 +26,9 @@ cli = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cli)
 
 
-class Reader:
+class Reader(github_read.GitHubReader):
     def __init__(self):
+        super().__init__(expected_actor="fixture-app[bot]")
         self.calls = []
         self.metadata = {"full_name": "example/repo", "default_branch": "main", "visibility": "private", "has_issues": True, "has_discussions": False}
         self.status = 200
@@ -39,11 +40,11 @@ class Reader:
 
     def request(self, method, path, *, step):
         self.calls.append((method, path))
-        return SimpleNamespace(ok=self.ok, status=self.status, body={}, headers={})
+        return github_read.github_api_core.ApiResult(ok=self.ok, status=self.status, body={}, headers={})
 
     def graphql_json(self, query, variables, *, step):
         self.calls.append(("GraphQL", query))
-        return SimpleNamespace(ok=self.ok, status=self.status, body={"data": {"repository": {"discussions": {"totalCount": 0}}}})
+        return github_read.github_api_core.ApiResult(ok=self.ok, status=self.status, body={"data": {"repository": {"discussions": {"totalCount": 0}}}})
 
 
 class CapabilityTests(unittest.TestCase):
@@ -78,6 +79,15 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(result["actions_read"]["state"], "available")
         self.assertEqual(result["actions_write"]["state"], "permission_missing")
         self.assertEqual(len(self.reader.calls), 2)
+
+    def test_audit_and_passthrough_cannot_keep_an_unused_grant(self):
+        consumers = {"github.api.call", "github.gh_with_env_token", "github.read", "github.capabilities.audit"}
+        for row in self.matrix['operations']:
+            if row['id'] not in consumers:
+                row['capabilities'] = [name for name in row['capabilities'] if name != 'actions_write']
+        self.matrix['operations'] = [row for row in self.matrix['operations'] if row['capabilities'] or row['permission_mode'] != 'fixed']
+        self.assertEqual(capabilities.permission_profile(self.matrix)['permissions']['repository']['actions'], 'read')
+        self.assertTrue(any('actions_write has no supported operation' in error for error in capabilities.validate_permissions(self.matrix, Path('.'), check_sources=False)))
 
     def test_membership_and_suspension_precede_public_reads(self):
         self.assertEqual(self.audit("metadata_read", membership=set())["state"], "not_installed")
@@ -123,6 +133,23 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotIn("DO-NOT-PRINT", json.dumps(result))
         self.assertEqual(result["capabilities"]["secret_scanning_alerts_read"]["state"], "available")
         self.assertFalse(any("secret-scanning" in path for _, path in self.reader.calls))
+
+    def test_secret_reader_failure_preserves_other_capabilities(self):
+        response = github_read.github_api_core.ApiResult(ok=False, status=503, body={'message': 'DO-NOT-PRINT'})
+        errors = [github_read.GitHubReadError('DO-NOT-PRINT', result=response, diagnostics={}), github_read.GitHubReadShapeError('DO-NOT-PRINT')]
+        for error in errors:
+            with self.subTest(error=type(error).__name__), patch.object(github_read, 'redacted_secret_scanning_status', side_effect=error):
+                result = self.audit('contents_read', 'secret_scanning_alerts_read', 'actions_read')
+            self.assertEqual(result['state'], 'audited')
+            self.assertEqual(result['capabilities']['actions_read']['state'], 'available')
+            self.assertEqual(result['capabilities']['secret_scanning_alerts_read']['state'], 'unavailable')
+            self.assertNotIn('DO-NOT-PRINT', json.dumps(result))
+
+    def test_explicit_disabled_features_and_empty_repository_are_distinct(self):
+        with patch.object(github_read, 'redacted_secret_scanning_status', return_value={'status': 'not_enabled', 'reason': 'scanning_disabled'}):
+            self.assertEqual(self.audit('secret_scanning_alerts_read')['capabilities']['secret_scanning_alerts_read']['state'], 'not_enabled')
+        self.assertEqual(capabilities.classify_probe(403, granted=True, message='Dependabot alerts are disabled for this repository.')['state'], 'not_enabled')
+        self.assertEqual(capabilities.classify_probe(409, granted=True, message='Git Repository is empty.')['state'], 'no_data')
 
     def test_discussions_probe_is_read_only(self):
         self.reader.metadata["has_discussions"] = True
@@ -176,10 +203,26 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(result['state'], 'unavailable')
         self.assertNotIn('DO-NOT-PRINT', json.dumps(result))
 
+    def test_drift_covers_cli_wrappers_methods_and_dynamic_probe_paths(self):
+        pairs = [
+            ('run_raw(["project", "item-add", target])', 'run_raw(["project", "item-delete", target])'),
+            ('args = ["pr", "create", target]', 'args = ["pr", "edit", target]'),
+            ('rest_json("GET", endpoint)', 'rest_json("DELETE", endpoint)'),
+            ('path = f"{base}/actions/runners"', 'path = f"{base}/actions/secrets"'),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fixture.py'
+            for before, after in pairs:
+                with self.subTest(before=before):
+                    path.write_text(before)
+                    original = capabilities.api_surface(path)
+                    path.write_text(after)
+                    self.assertNotEqual(original, capabilities.api_surface(path))
+
     def test_installation_metadata_rejects_wrong_identity_and_hides_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             config = github_identity.github_app_config(app_environment(Path(directory), 'https://api.github.invalid'))
-            payload = {"id": 67890, "app_id": 12345, "app_slug": "fixture-app", "permissions": {"contents": "write"},
+            payload: dict[str, Any] = {"id": 67890, "app_id": 12345, "app_slug": "fixture-app", "permissions": {"contents": "write"},
                        "account": {"login": "example", "type": "User"}, "repository_selection": "all", "secret": "DO-NOT-PRINT"}
             with patch.object(github_identity, '_app_headers', return_value={}), patch.object(github_identity, '_request_json', return_value=payload):
                 self.assertNotIn('DO-NOT-PRINT', json.dumps(github_identity.github_app_installation_metadata(config)))

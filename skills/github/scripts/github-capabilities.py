@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 
 import github_capabilities as capabilities
 import github_identity
 import github_read
+
+
+def repository_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+        raise argparse.ArgumentTypeError("repository must use owner/name")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--read-only", action="store_true")
     audit = commands.add_parser("audit", help="Audit installation membership, grants and safe repository probes")
     targets = audit.add_mutually_exclusive_group(required=True)
-    targets.add_argument("--repo", action="append", help="owner/name; repeat for multiple repositories")
+    targets.add_argument("--repo", action="append", type=repository_name, help="owner/name; repeat for multiple repositories")
     targets.add_argument("--all-installed", action="store_true")
     audit.add_argument("--refresh-token", action="store_true", help="Renew the same App's cached token after accepted permission changes")
     commands.add_parser("fingerprints", help="Print current API surface hashes for review; never modifies the matrix")
@@ -43,7 +50,7 @@ def run_audit(args: argparse.Namespace, matrix: dict) -> dict:
             return {"state": "unavailable", "reason": "app_actor_mismatch"}
     reader = github_read.GitHubReader(
         expected_actor=str(installation["actor"]), strict_actor=True,
-        operation="github.capabilities.audit", gh_prefix_args=["--require-automation-auth"], cache_enabled=False)
+        operation="github.capabilities.audit", gh_prefix_args=["--require-automation-auth"])
     repositories = reader.paged_json("/installation/repositories", step_prefix="installation_membership", collection_key="repositories")
     names = [entry.get("full_name") for entry in repositories]
     if any(not isinstance(name, str) or not name for name in names):

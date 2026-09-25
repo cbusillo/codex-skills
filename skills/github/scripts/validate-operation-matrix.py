@@ -419,14 +419,19 @@ def require_entrypoint_commands(
             errors.append(f"missing operation matrix coverage for public command: {expected}")
 
 
-def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
+def parse_python_file(path: Path, errors: list[str]) -> ast.Module | None:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except OSError as exc:
         errors.append(f"unable to read {path}: {exc}")
-        return set()
     except SyntaxError as exc:
         errors.append(f"unable to parse {path}: {exc}")
+    return None
+
+
+def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
+    tree = parse_python_file(path, errors)
+    if tree is None:
         return set()
 
     commands: set[str] = set()
@@ -445,13 +450,8 @@ def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
 
 
 def extract_argparse_argument_choices(path: Path, argument: str, errors: list[str]) -> set[str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except OSError as exc:
-        errors.append(f"unable to read {path}: {exc}")
-        return set()
-    except SyntaxError as exc:
-        errors.append(f"unable to parse {path}: {exc}")
+    tree = parse_python_file(path, errors)
+    if tree is None:
         return set()
 
     for node in ast.walk(tree):
