@@ -43,10 +43,8 @@ def marker_path(env: Mapping[str, str] | None = None) -> Path:
     its own file and a check done in one would never clear the other's reminder.
     """
     source: Mapping[str, str] = os.environ if env is None else env
-    explicit = source.get("DIRECTION_MARKER")
-    if explicit:
-        return Path(explicit).expanduser()
-    return Path(source.get("HOME", "~")).expanduser() / ".code" / MARKER_NAME
+    fallback = Path(source.get("HOME", "~")) / ".code" / MARKER_NAME
+    return Path(source.get("DIRECTION_MARKER") or fallback).expanduser()
 
 
 def parse_stamp(value: object) -> dt.datetime | None:

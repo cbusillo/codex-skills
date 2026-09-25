@@ -40,7 +40,7 @@ INSTALL_PATH_RE = re.compile(
 # A code span may wrap across a line.
 COMMAND_SPAN_RE = re.compile(r"`([^`]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
-MARKDOWN_LINK_RE = re.compile(r"(?<!!)?\[[^\]\n]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+MARKDOWN_LINK_RE = re.compile(r'(?<!!)?\[[^]\n]+]\(([^)\s]+)(?:\s+"[^"]*")?\)')
 ALLOWED_OPENAI_INTERFACE_KEYS = {
     "display_name",
     "short_description",
@@ -272,14 +272,15 @@ def validate_openai_dependencies(path: Path, dependencies: dict[str, Any]) -> li
     return errors
 
 
+def frontmatter_command_policies(frontmatter: dict[str, Any]) -> list[Any]:
+    policy = frontmatter.get("policy")
+    policies = policy.get("command_policies") if isinstance(policy, dict) else None
+    return policies if isinstance(policies, list) else []
+
+
 def validate_skill_command_policy_paths(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
-    policy = frontmatter.get("policy")
-    if not isinstance(policy, dict):
-        return []
-    command_policies = policy.get("command_policies")
-    if not isinstance(command_policies, list):
-        return []
+    command_policies = frontmatter_command_policies(frontmatter)
 
     errors: list[str] = []
     skill_md = skill_dir / "SKILL.md"
@@ -331,12 +332,7 @@ def validate_skill_command_policy_command_coverage(skill_dir: Path) -> list[str]
         and isinstance(command.get("resource_path"), str)
     }
 
-    policy = frontmatter.get("policy")
-    if not isinstance(policy, dict):
-        return []
-    command_policies = policy.get("command_policies")
-    if not isinstance(command_policies, list):
-        return []
+    command_policies = frontmatter_command_policies(frontmatter)
 
     errors: list[str] = []
     skill_md = skill_dir / "SKILL.md"
@@ -452,12 +448,7 @@ def validate_script_example_argv(
 
 def validate_command_policy_portability(skill_dir: Path) -> list[str]:
     frontmatter = read_frontmatter(skill_dir / "SKILL.md")
-    policy = frontmatter.get("policy")
-    if not isinstance(policy, dict):
-        return []
-    command_policies = policy.get("command_policies")
-    if not isinstance(command_policies, list):
-        return []
+    command_policies = frontmatter_command_policies(frontmatter)
 
     errors: list[str] = []
     skill_md = skill_dir / "SKILL.md"
