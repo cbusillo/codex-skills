@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import helper_command_path  # noqa: E402
@@ -799,7 +799,7 @@ def _nonnegative_int(value: object) -> int:
         raise LaunchplaneSafetyError("invalid_response")
     if isinstance(value, bool) or value < 0:
         raise LaunchplaneSafetyError("invalid_response")
-    return value
+    return cast(int, value)
 
 
 def _project_key_safety_findings(value: object) -> list[dict[str, object]]:
