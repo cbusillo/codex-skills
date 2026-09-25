@@ -583,7 +583,27 @@ def test_skill_relative_paths_and_state_locations_are_not_install_paths() -> Non
         raise AssertionError(f"skill-relative paths and state homes are not install paths: {errors}")
 
 
+def test_invocation_policy_matches_on_both_hosts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        skill_dir = root / "demo"
+        (skill_dir / "agents").mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        metadata = skill_dir / "agents" / "openai.yaml"
+        for implicit in (True, False):
+            metadata.write_text(f"policy:\n  allow_implicit_invocation: {str(implicit).lower()}\n")
+            for disabled in (True, False):
+                skill_md.write_text(f"---\nname: demo\ndescription: Demo\ndisable-model-invocation: {str(disabled).lower()}\n---\n")
+                errors = module.validate_invocation_parity(skill_dir)
+                assert bool(errors) == (implicit == disabled), (implicit, disabled, errors)
+        metadata.unlink()
+        skill_md.write_text("---\nname: demo\ndescription: Demo\n---\n")
+        assert not module.validate_invocation_parity(skill_dir)
+
+
 def main() -> int:
+    test_invocation_policy_matches_on_both_hosts()
     test_openai_yaml_accepts_documented_shape()
     test_openai_yaml_rejects_schema_drift()
     test_referenced_paths_validate_sibling_skill_paths()

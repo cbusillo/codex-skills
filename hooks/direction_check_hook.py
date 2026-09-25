@@ -7,7 +7,7 @@
 
 The `direction` skill records the end of every daily turn in a small local
 marker, and the audit script records each weekly audit there per repository.
-At session start this hook prints the executing loop for repositories with a
+At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. It reads the marker and prints one line when the last
 turn is older than a day, or when the repository the session opened in has a
 `DIRECTION.md` and its last audit is older than a week. Outside a direction
@@ -32,6 +32,7 @@ MARKER_NAME = "direction-last-check.json"
 TURN_STALE = dt.timedelta(hours=24)
 AUDIT_STALE = dt.timedelta(days=7)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
+SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -42,10 +43,8 @@ def marker_path(env: Mapping[str, str] | None = None) -> Path:
     its own file and a check done in one would never clear the other's reminder.
     """
     source: Mapping[str, str] = os.environ if env is None else env
-    explicit = source.get("DIRECTION_MARKER")
-    if explicit:
-        return Path(explicit).expanduser()
-    return Path(source.get("HOME", "~")).expanduser() / ".code" / MARKER_NAME
+    fallback = Path(source.get("HOME", "~")) / ".code" / MARKER_NAME
+    return Path(source.get("DIRECTION_MARKER") or fallback).expanduser()
 
 
 def parse_stamp(value: object) -> dt.datetime | None:
@@ -127,8 +126,15 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def main() -> int:
+def main(*, skills_only: bool = False) -> int:
     try:
+        if os.environ.get("CLAUDECODE") == "1":
+            try:
+                print(SKILLS_PROTOCOL_PATH.read_text().strip())
+            except OSError:
+                pass  # A missing protocol must not hide the loop or reminder.
+        if skills_only:
+            return 0
         path = marker_path()
         root = direction_root(Path.cwd())
         if root is not None:
@@ -145,4 +151,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(skills_only="--skills-only" in sys.argv[1:]))

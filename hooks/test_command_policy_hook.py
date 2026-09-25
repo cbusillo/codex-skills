@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,9 +26,9 @@ import command_policy_hook  # noqa: E402
 SIMULATOR = command_policy_hook.load_simulator()
 
 
-def run_hook(payload: str) -> subprocess.CompletedProcess[str]:
+def run_hook(payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(HOOK)], input=payload, capture_output=True, text=True
+        [sys.executable, str(HOOK), *arguments], input=payload, capture_output=True, text=True
     )
 
 
@@ -35,6 +37,52 @@ def bash(command: str) -> subprocess.CompletedProcess[str]:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_json_mode_denies_without_using_the_launcher_error_exit_code(self) -> None:
+        result = run_hook(json.dumps({"tool_name": "Bash", "tool_input": {"command": "gh-with-env-token pr merge 17"}}), "--json")
+        self.assertEqual(result.returncode, 0)
+        decision = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("Load the `github` skill", decision["permissionDecisionReason"])
+
+    def test_registered_launcher_does_not_turn_uv_failure_into_a_denial(self) -> None:
+        definition = json.loads(HOOK.with_name("hooks.json").read_text())
+        command = definition["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "uv"
+            launcher.write_text("#!/bin/sh\nexit 2\n")
+            launcher.chmod(0o700)
+            result = subprocess.run(["/bin/sh", "-c", command], env={**os.environ, "PATH": str(root), "CLAUDE_PLUGIN_ROOT": str(root)}, capture_output=True, text=True)
+            self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+    def test_auth_wrapper_keeps_gh_policy_ownership(self) -> None:
+        for line in (
+            "gh-with-env-token pr merge 17 --merge",
+            "skills/github/scripts/gh-with-env-token --print-auth-account pr merge 17 --merge",
+            "command /catalog/github/scripts/gh-with-env-token --require-automation-auth pr merge 17",
+            "env -u GH_TOKEN /catalog/github/scripts/gh-with-env-token pr merge 17",
+            "/usr/bin/env -C /repo FOO=1 gh-with-env-token pr merge 17",
+            "uv run --python 3.12 gh-with-env-token pr merge 17",
+            "bash -lc 'cd /repo && gh-with-env-token pr merge 17'",
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Load the `github` skill", result.stderr)
+                self.assertIn("gh-pr.py", result.stderr)
+
+    def test_wrapper_reads_auth_checks_and_preferred_helpers_remain_allowed(self) -> None:
+        for line in (
+            "gh-with-env-token api repos/owner/repo",
+            "gh-with-env-token --check pr merge 17",
+            "gh-with-env-token --print-auth-account --check pr merge 17",
+            "uv run skills/github/scripts/gh-pr.py merge 17 --method merge",
+            "skills/github/scripts/git-push-as-bot origin work/task",
+            "printf '%s' 'gh-with-env-token pr merge 17'",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0, bash(line).stderr)
+
     def test_every_argv_policy_blocks_its_command_with_its_own_message(self) -> None:
         catalog = {(entry["skill"], entry["id"]): entry for entry in SIMULATOR.policy_catalog()}
         argv_policies = [

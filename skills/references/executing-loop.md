@@ -12,9 +12,14 @@ Executing loop for this repository (from DIRECTION.md):
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
-  land          open the PR, babysit it until merged, reconcile the runtime checkout
-  close out     update the plan issue, open follow-up issues without starting them, remove the worktree, leave main clean
+  land          load github to open and merge the PR, babysit-pr to watch until merged, then reconcile the runtime checkout
+  close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree, leave main clean
 ```
+
+Load each step's owning skill before acting, including when it is a step inside
+another skill's task; see [using skills](using-skills.md). For `next` and plan
+updates use `github-plan`; for reviews use `model-review` when the review
+reference calls for one.
 
 `go` authorizes implementation; merge still requires authorization for the
 change and destination under [task scope and authorization](execution-scope.md).

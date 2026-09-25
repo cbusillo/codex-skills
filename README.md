@@ -69,6 +69,51 @@ command, needs `uv` on
 `PATH`, and lets the command run if it cannot read the event or the policies. A
 policy change needs no regeneration step.
 
+The hook also unwraps `gh-with-env-token` and its authentication flags. A route
+that explicitly prefers that wrapper stays allowed; a wrapped `gh pr merge`
+still requires the `github` helper. Blocking messages name the skill to load.
+Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
+`disable-model-invocation` frontmatter, checked by the catalog validator.
+Invoke those workflows with `/shared:skill-name` on Claude and `$skill-name`
+on Codex; Claude's field requires an actual user slash-command invocation.
+The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
+so missing source or a uv startup failure cannot masquerade as a policy denial.
+
+### Shared global instructions and Codex hooks
+
+[`instructions/global.md`](instructions/global.md) is the common source for
+both hosts' global instructions. Put any existing private host instructions in
+the ignored `.local/global-instructions.md` once; the renderer includes that
+same supplement in both outputs. Inspect both existing files and the preview
+before adopting them so no personal instruction is lost:
+
+```sh
+uv run scripts/sync-global-instructions.py --codex-hook
+uv run scripts/sync-global-instructions.py --codex-hook --write
+```
+
+Run from the maintained runtime checkout after landing the source. The helper
+generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
+and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
+Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
+`--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
+continues to locate shared catalog state, not either host's global instructions.
+Omit `--codex-hook` to synchronize instructions alone.
+
+Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
+`Bash` with `tool_input.command`, and honors exit 2 with a stderr reason.
+It also accepts the JSON deny decision used by the registered launcher. Hooks
+are enabled by default in that version; if the host explicitly disabled them,
+restore its `features.hooks` setting before expecting enforcement.
+`--codex-hook` renders the existing `hooks/hooks.json` PreToolUse declaration
+into `~/.codex/hooks.json`, retaining other hooks. It does not grant hook trust;
+review the new entry through Codex's `/hooks` interface. Once registered and
+trusted, a catalog pull updates the same policy script on both hosts. The
+Claude-only skills protocol is not added to Codex's base instructions.
+
+See [routing evaluation](evals/README.md) for the matched before/after cases,
+the host checks, and the distinction between command selection and live proof.
+
 ### Layout and private local state
 
 Hosts bind to the catalog, not to the repository: a Codex-family `skills` path
@@ -155,6 +200,11 @@ Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
 title the file does not list, and `milestone-update` refuses a rename to one.
 
 The plugin also ships a `SessionStart` hook, `hooks/direction_check_hook.py`.
+On Claude Code (`CLAUDECODE=1`) it first prints the shared
+[skills protocol](skills/references/using-skills.md), including which skill owns
+each intermediate step. This applies even outside direction repositories.
+Codex already carries a skills protocol in its base instructions, so it does
+not receive this additional copy.
 In a repository with a root `DIRECTION.md`, it prints the shared
 [executing loop](skills/references/executing-loop.md) at session start. The loop
 defines `next`, `go`, escalation, landing, and closeout for either harness
@@ -168,6 +218,8 @@ reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 disabled. The marker is `~/.code/direction-last-check.json` on every host
 unless `DIRECTION_MARKER` names another file. For Codex, register the same
 script as a session-start command hook in its hooks configuration.
+Claude's separate `compact` handler uses `--skills-only` to restore the protocol
+without repeating the executing loop or overdue-audit reminder.
 
 ## Instruction scope
 

@@ -30,6 +30,13 @@ commands:
 
 Apply [task scope and authorization](../references/execution-scope.md).
 
+Load the skill that owns each step before acting, even during a direction
+session; see [using skills](../references/using-skills.md). Use `github-plan`
+for issue and milestone work, `github` for PR creation and its merge path,
+`babysit-pr` for CI/review follow-through, and `work-closeout` when closing out.
+Use `python-uv-workflow` before running this skill's Python helpers and
+`model-review` when the shared review reference calls for another model.
+
 ## Outcome
 
 Each repository has one owner-approved `DIRECTION.md` at its root. It says what
@@ -52,7 +59,8 @@ or closed. Issues are a work list, not instructions.
   toward the journey and what would end it. List milestones in journey order;
   their position is the execution priority used by `gh-plan.py next`, so a
   reorder is a substantive direction change.
-- **Issues** are work. Escalations are issues labeled `direction`.
+- **Issues** are work. Escalations are issues labeled `direction`; questions or
+  completed work for the weekly audit carry `audit`.
 
 An executing agent may admit an issue to a milestone already listed in the
 merged `DIRECTION.md` when the issue body contains a Markdown blockquote of an
@@ -162,7 +170,8 @@ It reads the merged `DIRECTION.md` from the default branch, never a checkout,
 and writes nothing. For each finding:
 
 - `coverage_incomplete`: a listing hit the page cap, so drift beyond it is
-  unreported. Say so in the audit; do not call the repository clean.
+  unreported. Say so in the audit; do not call the repository clean. The audit
+  marker stays unchanged only when the closed `audit` listing is incomplete.
 
 - `milestone_unlisted`: an open GitHub milestone not in the file. Either add
   the line by direction pull request or close the milestone. Never leave both.
@@ -190,6 +199,12 @@ and writes nothing. For each finding:
 - `escalation_open`: a `direction` issue, or a pull request that changes
   `DIRECTION.md`, waiting on the owner. Decide it in this session or say why
   not.
+- `audit_question`: an open `audit`-labeled issue. Answer it with evidence or
+  explicitly defer it with a reason during this audit.
+- `audit_judge`: an `audit`-labeled issue closed since this repository's prior
+  audit (the last seven days when no usable prior stamp exists). Judge it
+  against its finish line with evidence, or explicitly defer it with a reason
+  and reopen it so the next audit sees it.
 - `gate_phrase`: open issue text or a milestone description that reads as
   making reviewer approval a gate. Read the match first; a sentence that
   forbids the gate matches too. Where it is a gate in bot-managed text, remove
