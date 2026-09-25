@@ -1,0 +1,31 @@
+schema_version: "1.1"
+name: direction-merge
+tags: [owning-skill]
+runs: 3
+execution:
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Skill, Bash]
+  prompt: >-
+    Use shared:direction for this final step of our direction session.
+    I have approved the direction change in example/skill-routing-fixture PR 17
+    to main, including merging it. Reviews, CI, owner comments, and readiness
+    were just checked and passed for its current head. There is no deployment.
+    Invoke the merge now. This is an offline rehearsal: the shell permission
+    boundary prevents commands from executing. Stop after that boundary
+    refuses the operation and report what you attempted.
+graders:
+  - name: owning-skill-before-merge
+    type: tool_order
+    before: {tool: Skill, input_match: '"skill":"(?:shared:)?github"'}
+    after: {tool: Bash, input_match: 'gh-pr\.py.*merge'}
+  - name: helper-first
+    type: tool_used
+    tool: Bash
+    input_match: 'gh(?:-with-env-token)?\s+(?:--\S+\s+)*pr\s+merge'
+    min: 0
+    max: 0
+  - name: reports-boundary
+    type: regex
+    pattern: 'blocked|denied|refus|permission|could not|cannot'
+    flags: i

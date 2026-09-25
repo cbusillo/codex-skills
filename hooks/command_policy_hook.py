@@ -5,7 +5,7 @@
 #     "PyYAML==6.0.3",
 # ]
 # ///
-"""Apply skill command policies to a Claude Code shell command before it runs.
+"""Apply skill command policies to a supported host's shell command before it runs.
 
 Claude Code never shows a skill's frontmatter to the model and does not enforce
 it, so `policy.command_policies` would be silent on that host. This PreToolUse
@@ -21,7 +21,7 @@ stop every shell command on the host.
 Policies match an argv prefix, so the hook first removes what an agent commonly
 puts in front of a tool: leading assignments, `command`/`exec`/`time`/`nohup`,
 `env` with its flags and assignments, `uv run` with its flags, a directory in
-front of the tool name, and one `sh`/`bash`/`zsh -c '...'` wrapper. This is a
+front of the tool name, `gh-with-env-token`, and one `sh`/`bash`/`zsh -c '...'` wrapper. This is a
 guardrail for habits, not a security boundary. Forms that need real option
 parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone.
 """
@@ -47,6 +47,9 @@ ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELLS = {"sh", "bash", "zsh"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
+GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
+ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
+UV_VALUE_FLAGS = {"--python", "-p", "--project", "--directory", "--with", "--with-editable", "--with-requirements"}
 
 
 def load_simulator() -> ModuleType:
@@ -75,22 +78,32 @@ def simple_commands(shell: str, nested: bool = False) -> list[list[str]]:
     return unwrapped
 
 
-def drop_flags(argv: list[str]) -> list[str]:
+def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str]:
     while argv and argv[0].startswith("-"):
-        argv = argv[1:]
+        flag = argv[0]
+        argv = argv[2:] if value_flags and flag in value_flags else argv[1:]
+        if flag == "--":
+            break
     return argv
 
 
 def unwrap(argv: list[str], nested: bool) -> list[list[str]]:
     """Return the command or commands an argv really runs, per the module docstring."""
     while argv:
-        head = argv[0]
-        if ASSIGNMENT.match(head) or head in TRANSPARENT:
+        head = Path(argv[0]).name
+        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT:
             argv = argv[1:]
         elif head == "env":
-            argv = drop_flags(argv[1:])
-        elif argv[:2] == ["uv", "run"]:
-            argv = drop_flags(argv[2:])
+            argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
+        elif head == "uv" and argv[1:2] == ["run"]:
+            argv = drop_flags(argv[2:], UV_VALUE_FLAGS)
+        elif head == "gh-with-env-token":
+            arguments = argv[1:]
+            while arguments and arguments[0] in GH_WRAPPER_FLAGS:
+                arguments = arguments[1:]
+            if arguments[:1] == ["--check"]:
+                break  # Auth preflight exits without executing gh.
+            return [["gh-with-env-token", *arguments]]
         else:
             break
     if not argv:
@@ -121,6 +134,7 @@ def runnable(token: str, skill: str) -> str:
 
 def describe(policy: dict[str, Any], skill: str) -> str:
     lines = [f"Blocked by the `{skill}` skill's command policy `{policy['id']}`."]
+    lines.append(f"Load the `{skill}` skill before continuing ({CATALOG / skill / 'SKILL.md'}).")
     if policy.get("message"):
         lines.append(str(policy["message"]))
     for preferred in policy.get("preferred") or []:
@@ -137,9 +151,19 @@ def blocking_policy(shell: str) -> tuple[dict[str, Any], str] | None:
     simulator = load_simulator()
     catalog = {(entry["skill"], entry["id"]): entry for entry in simulator.policy_catalog()}
     for argv in simple_commands(shell):
-        match = simulator.primary_match(argv, shell)
-        if match is not None:
-            return catalog[(match.skill, match.policy_id)], match.skill
+        wrapped_gh = argv[0] == "gh-with-env-token"
+        matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
+        for match in simulator.simulate(matched_argv, shell):
+            policy = catalog[(match.skill, match.policy_id)]
+            if wrapped_gh and policy.get("action") == "require_preferred" and any(
+                Path(preferred.get("path", "")).name == "gh-with-env-token"
+                for preferred in policy.get("preferred", [])
+            ):
+                # Some policies require only automation auth. The wrapper
+                # already supplies their declared preferred route. Still check
+                # the other matches (for example the issue source-edit reject).
+                continue
+            return policy, match.skill
     return None
 
 

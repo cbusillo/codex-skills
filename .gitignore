@@ -43,3 +43,4 @@ __pycache__/
 *.pyc
 node_modules/
 /handoff*.md
+/evals/results/

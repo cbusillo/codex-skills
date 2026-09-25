@@ -708,6 +708,23 @@ def validate_pep723_metadata(script: Path, text: str) -> list[str]:
     return []
 
 
+def validate_invocation_parity(skill_dir: Path) -> list[str]:
+    """Codex owns implicit-invocation policy; Claude's frontmatter must agree."""
+    path = skill_dir / "agents" / "openai.yaml"
+    try:
+        metadata = yaml.safe_load(path.read_text()) if path.exists() else {}
+    except yaml.YAMLError:
+        return []  # validate_openai_yaml reports malformed metadata.
+    policy = metadata.get("policy", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(policy, dict):
+        return []  # validate_openai_yaml reports malformed metadata.
+    explicit_only = policy.get("allow_implicit_invocation") is False
+    disabled = read_frontmatter(skill_dir / "SKILL.md").get("disable-model-invocation", False)
+    if disabled != explicit_only:
+        return [f"{skill_dir.name}/SKILL.md: disable-model-invocation must equal the inverse of agents/openai.yaml policy.allow_implicit_invocation (default true)"]
+    return []
+
+
 def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors: list[str] = []
     valid, message = quick_validate.validate_skill(skill_dir)
@@ -729,6 +746,7 @@ def validate_skill_dir(skill_dir: Path) -> list[str]:
     errors.extend(validate_command_policy_portability(skill_dir))
     errors.extend(validate_command_example_invocations(skill_dir))
     errors.extend(validate_openai_yaml(skill_dir))
+    errors.extend(validate_invocation_parity(skill_dir))
     errors.extend(validate_python_script_metadata(skill_dir))
     return errors
 

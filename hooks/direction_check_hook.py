@@ -7,7 +7,7 @@
 
 The `direction` skill records the end of every daily turn in a small local
 marker, and the audit script records each weekly audit there per repository.
-At session start this hook prints the executing loop for repositories with a
+At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. It reads the marker and prints one line when the last
 turn is older than a day, or when the repository the session opened in has a
 `DIRECTION.md` and its last audit is older than a week. Outside a direction
@@ -32,6 +32,7 @@ MARKER_NAME = "direction-last-check.json"
 TURN_STALE = dt.timedelta(hours=24)
 AUDIT_STALE = dt.timedelta(days=7)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
+SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -129,6 +130,11 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
 
 def main() -> int:
     try:
+        if os.environ.get("CLAUDECODE") == "1":
+            try:
+                print(SKILLS_PROTOCOL_PATH.read_text().strip())
+            except OSError:
+                pass  # A missing protocol must not hide the loop or reminder.
         path = marker_path()
         root = direction_root(Path.cwd())
         if root is not None:

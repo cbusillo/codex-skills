@@ -29,6 +29,7 @@ MAX_STRUCTURED_ITEMS_PER_SKILL = 128
 ALLOWED_PROPERTIES = {
     "name",
     "description",
+    "disable-model-invocation",
     "metadata",
     "policy",
     "resources",
@@ -82,6 +83,9 @@ def validate_skill_content(content, skill_dir=None):
             False,
             f"Unexpected key(s) in SKILL.md frontmatter: {unexpected}. Allowed properties are: {allowed}",
         )
+
+    if "disable-model-invocation" in frontmatter and not isinstance(frontmatter["disable-model-invocation"], bool):
+        return False, "disable-model-invocation must be a boolean"
 
     metadata = frontmatter.get("metadata")
     if metadata is not None:

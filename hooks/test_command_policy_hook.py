@@ -35,6 +35,34 @@ def bash(command: str) -> subprocess.CompletedProcess[str]:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_auth_wrapper_keeps_gh_policy_ownership(self) -> None:
+        for line in (
+            "gh-with-env-token pr merge 17 --merge",
+            "skills/github/scripts/gh-with-env-token --print-auth-account pr merge 17 --merge",
+            "command /catalog/github/scripts/gh-with-env-token --require-automation-auth pr merge 17",
+            "env -u GH_TOKEN /catalog/github/scripts/gh-with-env-token pr merge 17",
+            "/usr/bin/env -C /repo FOO=1 gh-with-env-token pr merge 17",
+            "uv run --python 3.12 gh-with-env-token pr merge 17",
+            "bash -lc 'cd /repo && gh-with-env-token pr merge 17'",
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Load the `github` skill", result.stderr)
+                self.assertIn("gh-pr.py", result.stderr)
+
+    def test_wrapper_reads_auth_checks_and_preferred_helpers_remain_allowed(self) -> None:
+        for line in (
+            "gh-with-env-token api repos/owner/repo",
+            "gh-with-env-token --check pr merge 17",
+            "gh-with-env-token --print-auth-account --check pr merge 17",
+            "uv run skills/github/scripts/gh-pr.py merge 17 --method merge",
+            "skills/github/scripts/git-push-as-bot origin work/task",
+            "printf '%s' 'gh-with-env-token pr merge 17'",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0, bash(line).stderr)
+
     def test_every_argv_policy_blocks_its_command_with_its_own_message(self) -> None:
         catalog = {(entry["skill"], entry["id"]): entry for entry in SIMULATOR.policy_catalog()}
         argv_policies = [

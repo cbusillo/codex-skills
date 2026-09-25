@@ -11,6 +11,7 @@ import datetime as dt
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,28 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
 
 
 class ReminderTests(unittest.TestCase):
+    def test_skills_protocol_is_claude_only_and_independent_of_direction_adoption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker_path = root / hook.MARKER_NAME
+            marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat()}))
+            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            for host_env, expected in (
+                ({"CLAUDECODE": "1"}, hook.SKILLS_PROTOCOL_PATH.read_text().strip()),
+                ({"CODEX_HOME": str(root)}, ""),
+                ({"CLAUDECODE": "0"}, ""),
+            ):
+                with self.subTest(host_env=host_env):
+                    result = subprocess.run([sys.executable, str(HOOK)], cwd=root, env={**env, **host_env}, text=True, capture_output=True, check=True)
+                    self.assertEqual(result.stdout.strip(), expected)
+
+    def test_missing_protocol_does_not_hide_the_loop_or_reminder(self) -> None:
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}), mock.patch.object(hook, "SKILLS_PROTOCOL_PATH", Path("/missing/protocol.md")), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value={}), contextlib.redirect_stdout(output):
+            self.assertEqual(hook.main(), 0)
+        self.assertIn(hook.LOOP_PATH.read_text().strip(), output.getvalue())
+        self.assertIn("Direction check overdue", output.getvalue())
+
     def test_current_checks_print_nothing(self) -> None:
         m = marker(ago(hours=3), owner__repo=ago(days=2))
         self.assertEqual(hook.reminder(m, NOW, "owner/repo", MARKER), "")
