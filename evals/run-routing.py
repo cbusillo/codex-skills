@@ -19,7 +19,9 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 from shell_boundary import read_only
@@ -37,23 +39,61 @@ def source_digest(catalog: Path) -> str:
     return digest.hexdigest()
 
 
-def score_run(host: str, case: str, destination: Path) -> dict[str, object]:
+def valid_merge_arguments(catalog: Path, command: str) -> bool:
+    tokens = shlex.split(command)
+    index = next((i for i, token in enumerate(tokens) if Path(token).name == "gh-pr.py"), None)
+    if index is None:
+        return False
+    # Exercise the maintained parser without dispatching its selected command.
+    program = """import runpy, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+sys.path.insert(0, str(path.parent))
+sys.argv = [str(path), *sys.argv[2:]]
+namespace = runpy.run_path(str(path))
+args = namespace['parse_args']()
+raise SystemExit(0 if args.command == 'merge' else 1)
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(catalog / "skills/github/scripts/gh-pr.py"), *tokens[index + 1:]],
+                            capture_output=True, text=True, timeout=15)
+    return result.returncode == 0
+
+
+def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> dict[str, object]:
     """Grade observed loads and first attempted operation; redirects cannot pass."""
     messages = [json.loads(line) for line in (destination / "trace.jsonl").read_text().splitlines() if line.strip()]
     sequence: list[tuple[str, str]] = []
     final = ""
     protocol_copies = 0
     successful_reads = ""
+    skill_paths: list[str] = []
+    foreign_skill_reads: list[str] = []
+
+    def credit_skill(path_text: str) -> None:
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = destination / "workspace" / path
+        resolved = path.resolve()
+        skill_paths.append(str(resolved))
+        if resolved.is_relative_to((catalog / "skills").resolve()):
+            sequence.append(("skill", resolved.parent.name))
+        else:
+            foreign_skill_reads.append(str(resolved))
+
     for message in messages:
         if message.get("subtype") == "hook_response":
             protocol_copies += message.get("output", "").count("# Using Skills")
         if message.get("type") == "assistant":
             for block in message.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
-                    if block.get("name") == "Skill":
-                        sequence.append(("skill", block["input"]["skill"].removeprefix("shared:")))
-                    elif block.get("name") == "Bash":
+                    if block.get("name") == "Bash":
                         sequence.append(("shell", block["input"]["command"]))
+        elif message.get("type") == "user":
+            for block in message.get("message", {}).get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    match = re.match(r"Base directory for this skill: ([^\n]+)", block.get("text", ""))
+                    if match:
+                        credit_skill(str(Path(match[1]) / "SKILL.md"))
         elif message.get("type") == "result":
             final = message.get("result", "")
         elif message.get("type") == "item.completed":
@@ -68,9 +108,9 @@ def score_run(host: str, case: str, destination: Path) -> dict[str, object]:
             event = json.loads(line)
             command = event["command"]
             if event["allowed"]:
-                for skill in re.findall(r"/skills/([^/\s]+)/SKILL\.md", command):
-                    if f"/skills/{skill}/SKILL.md" in successful_reads:
-                        sequence.append(("skill", skill))
+                for path in re.findall(r"[^\s'\"]*/skills/[^/\s'\"]+/SKILL\.md", command):
+                    if path in successful_reads:
+                        credit_skill(path)
             sequence.append(("shell", command))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
     loaded = [value for kind, value in sequence if kind == "skill"]
@@ -79,17 +119,21 @@ def score_run(host: str, case: str, destination: Path) -> dict[str, object]:
         owner, helper = ("github", "gh-pr.py") if case == "direction-merge" else ("babysit-pr", "gh_pr_watch.py")
         checks["owner_before_first_operation"] = bool(operations) and ("skill", owner) in sequence[:operations[0][0]]
         checks["helper_first"] = bool(operations) and helper in operations[0][1]
+        if case == "direction-merge":
+            checks["valid_merge_arguments"] = bool(operations) and valid_merge_arguments(catalog, operations[0][1])
     else:
         checks["no_unneeded_skills"] = not loaded
         checks["no_operations"] = not operations
         if case == "adjacent-prose":
             checks["exact_response"] = final.strip() == "The pull request is waiting for review."
     checks["single_protocol_delivery"] = protocol_copies <= 1
+    checks["tested_catalog_only"] = not foreign_skill_reads
     return {"passed": all(checks.values()), "checks": checks, "loaded_skills": loaded,
-            "first_operation": operations[0][1] if operations else None, "protocol_copies": protocol_copies}
+            "first_operation": operations[0][1] if operations else None, "protocol_copies": protocol_copies,
+            "skill_paths": skill_paths, "foreign_skill_reads": foreign_skill_reads}
 
 
-def hook_override(groups: list[dict[str, object]]) -> str:
+def hook_override(groups: list[dict[str, Any]]) -> str:
     return "[" + ",".join(
         "{matcher=" + json.dumps(group["matcher"]) + ",hooks=[" + ",".join(
             "{type=\"command\",command=" + json.dumps(handler["command"]) + "}"
@@ -157,7 +201,7 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
             receipt["exit_code"] = result.returncode
         except subprocess.TimeoutExpired:
             receipt["error"] = "timeout"
-    receipt["score"] = score_run(host, data["name"], destination)
+    receipt["score"] = score_run(host, data["name"], destination, catalog)
     (destination / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt
 

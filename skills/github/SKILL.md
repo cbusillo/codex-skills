@@ -763,6 +763,9 @@ Helper-first ritual for PR work:
 - Use raw `gh` only for unsupported surfaces or fallback diagnostics, and say why
   the helper path did not fit.
 
+`--repo` is a global option of `gh-pr.py`; put it before the subcommand, for
+example `uv run scripts/gh-pr.py --repo OWNER/REPO merge 123 --method merge`.
+
 Do not infer Python from a `scripts/` path. `scripts/gh-issue`,
 `scripts/gh-comment`, and `scripts/gh-with-env-token` are executable shell
 helpers without `.sh` suffixes; run them directly. Python `.py` helpers with PEP
@@ -846,7 +849,7 @@ invocation rules.
   Do not push the accidental local protected-branch merge.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
   working directory, run `uv run scripts/gh-pr.py create` from that
-  repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
+  repository, or use `uv run scripts/gh-pr.py --repo OWNER/REPO create --head BRANCH`.
 - **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
   targeted JetBrains inspections on changed files or touched directories before
   pushing a branch or updating a PR whenever the repo has an IDE project

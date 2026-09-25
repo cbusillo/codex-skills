@@ -28,6 +28,7 @@ class RoutingScoreTests(unittest.TestCase):
             messages = [
                 call("Bash", {"command": "gh pr checks 17"}),
                 call("Skill", {"skill": "shared:babysit-pr"}),
+                {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/babysit-pr'}\n"}]}},
                 call("Bash", {"command": "uv run gh_pr_watch.py --pr 17 --watch"}),
             ]
             trace = root / "trace.jsonl"
@@ -41,7 +42,7 @@ class RoutingScoreTests(unittest.TestCase):
     def test_codex_requires_a_successful_read_before_the_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            read = "cat /catalog/skills/github/SKILL.md"
+            read = f"cat {runner.ROOT}/skills/github/SKILL.md"
             (root / "shell-events.jsonl").write_text("\n".join(map(json.dumps, [
                 {"command": read, "allowed": True},
                 {"command": "uv run /catalog/skills/github/scripts/gh-pr.py merge 17", "allowed": False},
@@ -50,6 +51,23 @@ class RoutingScoreTests(unittest.TestCase):
             for exit_code, passed in [(1, False), (0, True)]:
                 trace.write_text(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": read, "exit_code": exit_code}}))
                 self.assertEqual(runner.score_run("codex", "direction-merge", root)["passed"], passed)
+
+    def test_a_foreign_catalog_cannot_supply_the_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = "cat /installed/skills/github/SKILL.md"
+            (root / "shell-events.jsonl").write_text("\n".join(map(json.dumps, [
+                {"command": command, "allowed": True},
+                {"command": "uv run /catalog/skills/github/scripts/gh-pr.py merge 17", "allowed": False},
+            ])))
+            (root / "trace.jsonl").write_text(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": command, "exit_code": 0}}))
+            score = runner.score_run("codex", "direction-merge", root)
+            self.assertFalse(score["checks"]["tested_catalog_only"])
+            self.assertFalse(score["checks"]["owner_before_first_operation"])
+
+    def test_merge_arguments_are_checked_by_the_real_parser(self) -> None:
+        self.assertTrue(runner.valid_merge_arguments(runner.ROOT, "uv run gh-pr.py --repo owner/repo merge 17 --method merge"))
+        self.assertFalse(runner.valid_merge_arguments(runner.ROOT, "uv run gh-pr.py merge 17 --repo owner/repo --method merge"))
 
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
