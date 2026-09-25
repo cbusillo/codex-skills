@@ -19,9 +19,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   App separately from any dedicated train App and preserve the latter's
   service-enforced credential contract. Before requesting a missing grant,
   inspect the remaining capabilities needed by the intended workflow and
-  collect verified gaps into one concrete decision. For a recurring
-  setup failure, inspect the active policy's configured targets and intended
-  automation authors together. Preserve existing authorization for unchanged
+  collect verified gaps into one concrete decision. For cross-repository coverage
+  or a recurring setup failure, compare the live owner-authorized repository
+  inventory with active train targets and intended automation authors. The
+  configured targets are not the whole fleet: report unenrolled repositories
+  separately, and keep archived or intentionally excluded repositories visible.
+  Repository metadata can indicate intended integration but cannot establish
+  runtime enrollment. Preserve existing authorization for unchanged
   scope; additional identities or repositories remain explicit grant decisions.
   Keep real target lists and numeric identities in runtime records or reviewed
   operator input. This preflight uses existing evidence and adds no approval gate.
