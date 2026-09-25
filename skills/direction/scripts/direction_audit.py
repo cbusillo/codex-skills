@@ -434,6 +434,13 @@ def fetch_audit_issues(
     """Open issues plus recently closed milestone and audit-labeled issues."""
     issues, open_cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
     truncated = ["issues"] if open_cut else []
+    if open_cut:
+        # The general issue scan may be capped while the audit queue is small.
+        # Still surface its questions, including older ones beyond that cap.
+        open_audit, audit_cut = fetch_paginated(f"repos/{repo}/issues?state=open&labels={AUDIT_LABEL}", fetch=fetch)
+        issues.extend(open_audit)
+        if audit_cut:
+            truncated.append("open_audit_issues")
     since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     closed_cut = False
     for milestone in milestones:

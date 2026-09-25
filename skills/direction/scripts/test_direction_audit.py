@@ -12,10 +12,11 @@ import importlib.util
 import json
 import sys
 import tempfile
+import types
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
@@ -261,10 +262,15 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
     previous = "2026-09-19T12:00:00Z"
     closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": "2026-09-20T12:00:00Z"}
     class Clock(dt.datetime):
+        ticks = 0
+
         @classmethod
-        def now(cls, tz: dt.tzinfo | None = None) -> dt.datetime:
-            return NOW.astimezone(tz)
+        def now(cls, tz: dt.tzinfo | None = None) -> Self:
+            value = NOW + dt.timedelta(minutes=cls.ticks)
+            cls.ticks += 1
+            return cls.fromtimestamp(value.timestamp(), tz)
     for capped in (False, True):
+        Clock.ticks = 0
         calls: list[str] = []
         def fetch(args: list[str], *, gh: str) -> list[dict[str, Any]]:
             assert gh == "fixture-gh"
@@ -282,10 +288,13 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
             marker.write_text(json.dumps(original))
             output = StringIO()
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
-                  patch.object(module, "merged_direction", return_value=DIRECTION),
-                  patch.object(module, "gh_json", side_effect=fetch),
-                  patch.object(module.github_identity, "configured_bot_logins", return_value=("bot",)),
-                  patch.object(module.dt, "datetime", Clock), redirect_stdout(output)):
+                  patch.dict(vars(module), {
+                      "merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                      "gh_json": fetch,
+                      "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
+                  }),
+                  patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
+                  redirect_stdout(output)):
                 assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
             result = json.loads(output.getvalue())
             assert result["audit_since"] == previous
@@ -300,6 +309,25 @@ def test_main_preserves_the_cutoff_on_incomplete_coverage_and_stamps_scan_start(
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
                 assert saved["audits"]["o/other"] == original["audits"]["o/other"]
             assert any(f"labels=audit&since={previous}" in path for path in calls)
+
+
+def test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported() -> None:
+    module = load()
+    question = issue(1, "Old audit question", labels=("audit",))
+    def fetch(args: list[str]) -> list[dict[str, Any]]:
+        path = args[1]
+        if "state=open&labels=audit" in path:
+            return [question]
+        if "state=open" in path:
+            return [issue(10, "Unrelated")] * 100
+        if "state=closed&labels=audit" in path:
+            return []
+        raise AssertionError(path)
+    issues, truncated = module.fetch_audit_issues("o/r", [], {}, NOW, fetch=fetch)
+    result = run(module, issues=issues, truncated=truncated)
+    assert result["counts"] == {"coverage_incomplete": 1, "audit_question": 1}
+    assert result["findings"][1] == {"kind": "audit_question", "number": 1, "title": question["title"]}
+    assert truncated == ["issues"], "the rest of the repository remains incompletely audited"
 
 
 def test_missing_file_and_missing_heading() -> None:
