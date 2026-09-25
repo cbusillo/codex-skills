@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import json
 import sys
+import tempfile
+import types
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
 NOW = dt.datetime(2026, 9, 21, 12, tzinfo=dt.timezone.utc)
@@ -74,6 +80,48 @@ def test_clean_state_has_no_findings() -> None:
     result = run(module)
     assert result["ok"] is True, result
     assert result["listed_milestones"] == ["Thin fork decision", "Dogfood week"]
+
+
+def test_audit_questions_are_ordinary_open_issues_not_pull_requests() -> None:
+    module = load()
+    result = run(module, issues=[
+        issue(10, "Compare costs", labels=("audit",)),
+        issue(11, "Choose a name", labels=("plan", "Audit", "direction")),
+        issue(12, "Unrelated"),
+        {**issue(13, "A pull request", labels=("audit",)), "pull_request": {}},
+    ])
+    questions = [item for item in result["findings"] if item["kind"] == "audit_question"]
+    assert questions == [
+        {"kind": "audit_question", "number": 10, "title": "Compare costs"},
+        {"kind": "audit_question", "number": 11, "title": "Choose a name"},
+    ], result
+    assert result["counts"] == {"audit_question": 2, "escalation_open": 1}
+    assert result["ok"] is False
+
+
+def test_closed_audit_work_uses_closure_time_and_the_previous_audit() -> None:
+    module = load()
+    previous = NOW - dt.timedelta(days=2)
+    base = {**issue(20, "Completed routing fix", labels=("audit",)), "state": "closed"}
+    recent = {**base, "closed_at": "2026-09-20T12:00:00Z"}
+    old_edited = {**base, "number": 21, "closed_at": "2026-09-16T00:00:00Z", "updated_at": "2026-09-21T00:00:00Z"}
+    boundary = {**base, "number": 22, "closed_at": previous.isoformat()}
+    during_scan = {**base, "number": 23, "closed_at": (NOW + dt.timedelta(seconds=1)).isoformat()}
+    result = run(module, audit_since=previous, issues=[
+        recent, old_edited, boundary, during_scan,
+        {**recent, "number": 24, "labels": []},
+        {**recent, "number": 25, "pull_request": {}},
+        {**base, "number": 26, "closed_at": None},
+    ])
+    assert result["findings"] == [
+        {"kind": "audit_judge", "number": 20, "title": base["title"], "closed_at": recent["closed_at"]},
+        {"kind": "audit_judge", "number": 22, "title": base["title"], "closed_at": boundary["closed_at"]},
+    ], result
+    assert result["counts"] == {"audit_judge": 2}
+    assert kinds(run(module, issues=[old_edited])) == ["audit_judge"], "first audit uses a seven-day window"
+    weeks_old = {**base, "closed_at": "2026-09-01T00:00:00Z"}
+    assert kinds(run(module, issues=[weeks_old])) == []
+    assert kinds(run(module, audit_since=NOW - dt.timedelta(days=30), issues=[weeks_old])) == ["audit_judge"]
 
 
 def test_parse_reads_only_backticked_titles_under_milestones() -> None:
@@ -164,6 +212,8 @@ def test_issue_fetch_keeps_open_findings_and_recent_closed_admissions() -> None:
         calls.append(path)
         if "state=open" in path:
             return [open_issue]
+        if "labels=audit" in path:
+            return []
         if "state=closed" in path:
             return [closed_issue]
         if "/issues/11/events" in path:
@@ -180,6 +230,114 @@ def test_issue_fetch_keeps_open_findings_and_recent_closed_admissions() -> None:
     assert not any("/issues/10/events" in path for path in calls), "a matching quote needs no event read"
     assert any("state=open" in path for path in calls)
     assert any("state=closed&since=" in path for path in calls)
+
+
+def test_closed_audit_fetch_is_independent_of_milestones_and_deduplicates() -> None:
+    module = load()
+    closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": NOW.isoformat()}
+    calls: list[str] = []
+    def fetch(args: list[str]) -> list[dict[str, Any]]:
+        path = args[1]
+        calls.append(path)
+        if "state=open" in path:
+            return [issue(10, "Question", labels=("audit",))]
+        if "labels=audit" in path:
+            return [closed] * 100 if path.endswith("&page=1") else [closed]
+        if "milestone=1" in path:
+            return [closed]
+        raise AssertionError(path)
+    for milestones in ([], [milestone(1, "Thin fork decision")]):
+        found, truncated = module.fetch_audit_issues(
+            "o/r", milestones, module.parse_direction(DIRECTION)["milestone_lines"],
+            NOW - dt.timedelta(days=7), fetch=fetch, audit_since=NOW - dt.timedelta(days=2),
+        )
+        assert truncated == []
+        assert [item["number"] for item in found] == [10, 20]
+    assert any("labels=audit&since=2026-09-19T12:00:00Z&per_page=100&page=2" in path for path in calls)
+    assert any("milestone=1&state=closed&since=2026-09-14T12:00:00Z" in path for path in calls)
+
+
+def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
+    module = load()
+    previous = "2026-09-19T12:00:00Z"
+    closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": "2026-09-20T12:00:00Z"}
+    class Clock(dt.datetime):
+        ticks = 0
+
+        @classmethod
+        def now(cls, tz: dt.tzinfo | None = None) -> Self:
+            value = NOW + dt.timedelta(minutes=cls.ticks)
+            cls.ticks += 1
+            return cls.fromtimestamp(value.timestamp(), tz)
+    for cap in (None, "closed_audit", "milestone_events"):
+        Clock.ticks = 0
+        calls: list[str] = []
+        def fetch(args: list[str], *, gh: str) -> list[dict[str, Any]]:
+            assert gh == "fixture-gh"
+            assert args[-2:] == ["--method", "GET"]
+            path = args[1]
+            calls.append(path)
+            if "labels=audit" in path:
+                return [closed] * 100 if cap == "closed_audit" else [closed]
+            if "state=open" in path and cap == "milestone_events":
+                return [
+                    {**issue(number, "Owner-admitted work"), "milestone": {"title": "Thin fork decision"}, "user": {"login": "o"}}
+                    for number in range(100, 151)
+                ]
+            if path.startswith("repos/o/r/issues/") and "/events?" in path:
+                return [{"event": "milestoned", "actor": {"login": "o"}}]
+            if "/milestones?" in path:
+                return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+            return []
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            original = {"turn": previous, "audits": {"o/r": previous, "o/other": "2026-09-01T00:00:00Z"}}
+            marker.write_text(json.dumps(original))
+            output = StringIO()
+            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {
+                      "merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                      "gh_json": fetch,
+                      "dt": types.SimpleNamespace(datetime=Clock, timezone=dt.timezone, timedelta=dt.timedelta),
+                  }),
+                  patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",)}),
+                  redirect_stdout(output)):
+                assert module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"]) == 3
+            result = json.loads(output.getvalue())
+            assert result["audit_since"] == previous
+            assert result["counts"]["audit_judge"] == 1
+            saved = json.loads(marker.read_text())
+            if cap == "closed_audit":
+                assert "recent_closed_audit_issues" in result["findings"][0]["listings"]
+                assert result["marked"] is None
+                assert saved == original
+            else:
+                assert result["marked"] == str(marker)
+                assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
+                assert saved["audits"]["o/other"] == original["audits"]["o/other"]
+                if cap == "milestone_events":
+                    assert "milestone_issue_events" in result["findings"][0]["listings"]
+                    assert result["ok"] is False, "unrelated incomplete coverage must remain visible"
+            assert any(f"labels=audit&since={previous}" in path for path in calls)
+
+
+def test_open_audit_questions_beyond_the_general_issue_cap_are_still_reported() -> None:
+    module = load()
+    question = issue(1, "Old audit question", labels=("audit",))
+    def fetch(args: list[str]) -> list[dict[str, Any]]:
+        path = args[1]
+        if "state=open&labels=audit" in path:
+            return [question]
+        if "state=open" in path:
+            return [issue(10, "Unrelated")] * 100
+        if "state=closed&labels=audit" in path:
+            return []
+        raise AssertionError(path)
+    issues, truncated = module.fetch_audit_issues("o/r", [], {}, NOW, fetch=fetch)
+    result = run(module, issues=issues, truncated=truncated)
+    assert result["counts"] == {"coverage_incomplete": 1, "audit_question": 1}
+    assert result["findings"][1] == {"kind": "audit_question", "number": 1, "title": question["title"]}
+    assert truncated == ["issues"], "the rest of the repository remains incompletely audited"
 
 
 def test_missing_file_and_missing_heading() -> None:

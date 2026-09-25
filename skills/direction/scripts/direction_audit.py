@@ -31,6 +31,7 @@ from skills.github.scripts import github_identity, github_rulesets
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
+AUDIT_LABEL = "audit"
 MILESTONE_LINE = re.compile(r"^\s*[-*]\s+`([^`]+)`")
 HEADING = re.compile(r"^##\s+(.+?)\s*$")
 
@@ -140,8 +141,10 @@ def audit(
     direction_pulls: list[dict[str, Any]] | None = None,
     truncated: list[str] | None = None,
     rulesets: list[dict[str, Any]] | None = None,
+    audit_since: dt.datetime | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
         findings.append({"kind": "coverage_incomplete", "detail": "a listing hit the page cap; drift beyond it is unreported", "listings": sorted(truncated)})
     if direction_text is None:
@@ -213,6 +216,16 @@ def audit(
             continue
         labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
         number = issue.get("number")
+        state = issue.get("state", "open")
+        if AUDIT_LABEL in labels:
+            if state == "open":
+                findings.append({"kind": "audit_question", "number": number, "title": issue.get("title")})
+            elif state == "closed":
+                closed = _parse_time(issue.get("closed_at"))
+                # GitHub's `since` filters updates, not closures. An old issue
+                # edited recently must not be judged again at every audit.
+                if closed and audit_since <= closed <= now:
+                    findings.append({"kind": "audit_judge", "number": number, "title": issue.get("title"), "closed_at": issue.get("closed_at")})
         milestone_title = str(((issue.get("milestone") or {}).get("title")) or "")
         author = str(((issue.get("user") or {}).get("login")) or "").lower()
         admission_actor = issue.get("_milestone_admitted_by")
@@ -240,6 +253,8 @@ def audit(
         "direction_shape": 1,
         "ruleset_missing": 2,
         "escalation_open": 3,
+        "audit_question": 3,
+        "audit_judge": 3,
         "milestone_unlisted": 4,
         "milestone_closed_listed": 5,
         "milestone_pending": 6,
@@ -372,7 +387,7 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
-def record_audit(repo: str) -> str | None:
+def record_audit(repo: str, started_at: dt.datetime) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
@@ -387,7 +402,9 @@ def record_audit(repo: str) -> str | None:
         mark = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mark)
         path = mark.marker_path()
-        mark.mark_audit(path, repo, dt.datetime.now(dt.timezone.utc))
+        # Retain closures that happen while listings are being fetched for the
+        # next audit instead of skipping ahead to the completion time.
+        mark.mark_audit(path, repo, started_at)
         return str(path)
     except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
@@ -412,10 +429,18 @@ def previous_audit_stamp(repo: str) -> dt.datetime | None:
 def fetch_audit_issues(
     repo: str, milestones: list[dict[str, Any]], milestone_lines: dict[str, str],
     since: dt.datetime, *, fetch: Callable[[list[str]], Any],
+    audit_since: dt.datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Open issues plus bounded closed milestone issues since the last audit."""
+    """Open issues plus recently closed milestone and audit-labeled issues."""
     issues, open_cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
     truncated = ["issues"] if open_cut else []
+    if open_cut:
+        # The general issue scan may be capped while the audit queue is small.
+        # Still surface its questions, including older ones beyond that cap.
+        open_audit, audit_cut = fetch_paginated(f"repos/{repo}/issues?state=open&labels={AUDIT_LABEL}", fetch=fetch)
+        issues.extend(open_audit)
+        if audit_cut:
+            truncated.append("open_audit_issues")
     since_text = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     closed_cut = False
     for milestone in milestones:
@@ -429,6 +454,13 @@ def fetch_audit_issues(
         closed_cut = closed_cut or cut
     if closed_cut:
         truncated.append("recent_closed_milestone_issues")
+    audit_since_text = (audit_since or since).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    closed_audit, cut = fetch_paginated(
+        f"repos/{repo}/issues?state=closed&labels={AUDIT_LABEL}&since={audit_since_text}", fetch=fetch,
+    )
+    issues.extend(closed_audit)
+    if cut:
+        truncated.append("recent_closed_audit_issues")
     issues = list({issue.get("number"): issue for issue in issues}.values())
     if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch):
         truncated.append("milestone_issue_events")
@@ -464,8 +496,11 @@ def main(argv: list[str] | None = None) -> int:
         previous = previous_audit_stamp(repo)
         now = dt.datetime.now(dt.timezone.utc)
         week_ago = now - dt.timedelta(days=7)
-        since = min(previous, week_ago) if previous and previous <= now else week_ago
-        issues, issue_truncation = fetch_audit_issues(repo, milestones, milestone_lines, since, fetch=fetch)
+        audit_since = previous if previous and previous.tzinfo and previous <= now else week_ago
+        since = min(audit_since, week_ago)
+        issues, issue_truncation = fetch_audit_issues(
+            repo, milestones, milestone_lines, since, fetch=fetch, audit_since=audit_since,
+        )
         truncated.extend(issue_truncation)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
@@ -485,14 +520,18 @@ def main(argv: list[str] | None = None) -> int:
         issues=issues,
         owner=args.owner or repo.split("/")[0],
         automation=automation,
-        now=dt.datetime.now(dt.timezone.utc),
+        now=now,
+        audit_since=audit_since,
         direction_pulls=direction_pulls,
         truncated=truncated,
         rulesets=rulesets,
         bot_logins=github_identity.configured_bot_logins(),
     )
     result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
-    result["marked"] = record_audit(repo)
+    result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
+    # Preserve unseen labeled closures without letting unrelated listing/event
+    # caps keep already-judged work and stale reminders recurring indefinitely.
+    result["marked"] = None if "recent_closed_audit_issues" in truncated else record_audit(repo, now)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 

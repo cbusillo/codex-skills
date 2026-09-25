@@ -96,6 +96,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "waiting": "plan:waiting",
         "stale": "plan:stale",
         "done": "plan:done",
+        "audit": "audit",
     },
     "label_defs": {
         "plan": {"color": "5319e7", "description": "Durable planning issue"},
@@ -104,6 +105,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "plan:waiting": {"color": "fbca04", "description": "Durable plan parked pending a decision, event, or non-issue condition; not for PR QA"},
         "plan:stale": {"color": "bfbfbf", "description": "Plan needs review before guiding work"},
         "plan:done": {"color": "006b75", "description": "Plan completed or superseded"},
+        "audit": {"color": "d4c5f9", "description": "Question or completed work for the weekly direction audit"},
     },
     "default_sections": [
         "Finish Line",
