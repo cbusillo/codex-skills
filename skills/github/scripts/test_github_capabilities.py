@@ -42,7 +42,7 @@ class Reader(github_read.GitHubReader):
         self.calls.append((method, path))
         return github_read.github_api_core.ApiResult(ok=self.ok, status=self.status, body={}, headers={})
 
-    def graphql_json(self, query, variables, *, step):
+    def graphql_json(self, query, variables, *, step, **_kwargs):
         self.calls.append(("GraphQL", query))
         return github_read.github_api_core.ApiResult(ok=self.ok, status=self.status, body={"data": {"repository": {"discussions": {"totalCount": 0}}}})
 

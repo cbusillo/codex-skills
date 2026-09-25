@@ -28,7 +28,7 @@ HTTP_CALLS = {
     "limited_paged_rest_json", "gh_json", "run_raw", "run_gh", "fetch",
     "urlopen", "Request",
 }
-ENDPOINT = re.compile(r"^(?:\{\}/|/?(?:repos|repositories|orgs|users|user|app|installation|search|graphql|rate_limit)(?:/|\?|$))")
+ENDPOINT = re.compile(r"^(?:\{}/|/?(?:repos|repositories|orgs|users|user|app|installation|search|graphql|rate_limit)(?:/|\?|$))")
 PROBES = {"metadata", "contents", "issues", "pull_requests", "checks", "statuses",
           "actions", "security_events", "vulnerability_alerts", "secret_scanning_alerts",
           "administration", "deployments", "discussions", "grant_only", "separate_actor"}
@@ -125,15 +125,15 @@ def api_surface(path: Path) -> list[str]:
 
         def visit_List(self, node: ast.List) -> None:
             if node.elts and _static_text(node.elts[0]) in {"api", "pr", "issue", "project", "run", "workflow", "release", "repo", "ruleset", "cache", "secret", "variable"}:
-                surfaces.add(f"{self.function}:argv:{ast.dump(node, include_attributes=False)}")
+                surfaces.add(f"{self.function}:argv:{ast.dump(node)}")
             self.generic_visit(node)
 
         def visit_Call(self, node: ast.Call) -> None:
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             if name in HTTP_CALLS:
                 # Keep routing/method expressions, not request bodies, logging or tests.
-                args = [ast.dump(arg, include_attributes=False) for arg in node.args[:2]]
-                keywords = [f"{kw.arg}={ast.dump(kw.value, include_attributes=False)}"
+                args = [ast.dump(arg) for arg in node.args[:2]]
+                keywords = [f"{kw.arg}={ast.dump(kw.value)}"
                             for kw in node.keywords if kw.arg in {"path", "method", "url", "endpoint"}]
                 surfaces.add(f"{self.function}:call:{name}:{'|'.join(args + keywords)}")
             self.generic_visit(node)

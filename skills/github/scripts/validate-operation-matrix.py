@@ -441,9 +441,12 @@ def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
         func = node.func
         if not isinstance(func, ast.Attribute) or func.attr != "add_parser":
             continue
-        if not node.args or not isinstance(node.args[0], ast.Constant):
+        if not node.args:
             continue
-        value = node.args[0].value
+        first_argument = node.args[0]
+        if not isinstance(first_argument, ast.Constant):
+            continue
+        value = first_argument.value
         if isinstance(value, str):
             commands.add(value)
     return commands
@@ -460,7 +463,10 @@ def extract_argparse_argument_choices(path: Path, argument: str, errors: list[st
         func = node.func
         if not isinstance(func, ast.Attribute) or func.attr != "add_argument":
             continue
-        if not node.args or not isinstance(node.args[0], ast.Constant) or node.args[0].value != argument:
+        if not node.args:
+            continue
+        first_argument = node.args[0]
+        if not isinstance(first_argument, ast.Constant) or first_argument.value != argument:
             continue
         choices = next((keyword.value for keyword in node.keywords if keyword.arg == "choices"), None)
         if not isinstance(choices, (ast.Tuple, ast.List, ast.Set)):
