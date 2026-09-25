@@ -20,7 +20,7 @@ graders:
   - name: helper-first
     type: tool_used
     tool: Bash
-    input_match: 'gh(?:-with-env-token)?\s+pr\s+checks.*--watch'
+    input_match: 'gh(?:-with-env-token)?\s+(?:--\S+\s+)*pr\s+checks'
     min: 0
     max: 0
   - name: reports-boundary

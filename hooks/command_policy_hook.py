@@ -13,8 +13,10 @@ hook reads the same frontmatter at run time, through the repository's policy
 simulator, and blocks a matching command with the policy's message and
 preferred replacement. There is no generated copy of the policies.
 
-Contract: JSON on stdin (`tool_name`, `tool_input.command`). Exit 0 lets the
-command run. Exit 2 blocks it and stderr is returned to the model. Anything the
+Contract: JSON on stdin (`tool_name`, `tool_input.command`). By default exit 2
+blocks with a stderr reason. With --json a denied command returns a structured
+PreToolUse deny decision on stdout and exit 0, so the registered shell launcher
+can fail open on startup errors without confusing uv's exit 2 with a denial. Anything the
 hook cannot read or parse lets the command run: a broken entrypoint must not
 stop every shell command on the host.
 
@@ -179,7 +181,13 @@ def main() -> int:
         return 0
     if blocked is None:
         return 0
-    print(describe(*blocked), file=sys.stderr)
+    message = describe(*blocked)
+    if "--json" in sys.argv[1:]:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": message,
+        }}))
+        return 0
+    print(message, file=sys.stderr)
     return 2
 
 

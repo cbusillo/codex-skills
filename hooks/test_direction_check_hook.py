@@ -37,6 +37,15 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
 
 
 class ReminderTests(unittest.TestCase):
+    def test_compaction_prints_only_the_claude_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), hook.SKILLS_PROTOCOL_PATH.read_text().strip())
+            env.pop("CLAUDECODE")
+            result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, "")
+
     def test_skills_protocol_is_claude_only_and_independent_of_direction_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

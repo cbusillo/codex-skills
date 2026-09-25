@@ -7,6 +7,8 @@
 
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,13 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_explicit_host_directories_receive_identical_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex, claude = root / "codex-config", root / "claude-config"
+            subprocess.run([sys.executable, str(Path(sync.__file__)), "--codex-dir", str(codex), "--claude-dir", str(claude), "--local-source", str(root / "absent.md"), "--write"], check=True, capture_output=True)
+            self.assertEqual((codex / "AGENTS.md").read_bytes(), (claude / "CLAUDE.md").read_bytes())
+
     def test_codex_registration_preserves_other_hooks_and_reuses_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hooks.json"

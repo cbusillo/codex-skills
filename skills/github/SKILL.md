@@ -845,7 +845,7 @@ invocation rules.
   remote tip, push or update the task branch, and continue through the PR flow.
   Do not push the accidental local protected-branch merge.
 - **Cross-Repo PRs**: When creating a PR for a repository other than the current
-  working directory, run `scripts/gh-with-env-token pr create` from that
+  working directory, run `uv run scripts/gh-pr.py create` from that
   repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
 - **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
   targeted JetBrains inspections on changed files or touched directories before

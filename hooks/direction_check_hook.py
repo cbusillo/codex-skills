@@ -128,13 +128,15 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def main() -> int:
+def main(*, skills_only: bool = False) -> int:
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
                 print(SKILLS_PROTOCOL_PATH.read_text().strip())
             except OSError:
                 pass  # A missing protocol must not hide the loop or reminder.
+        if skills_only:
+            return 0
         path = marker_path()
         root = direction_root(Path.cwd())
         if root is not None:
@@ -151,4 +153,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(skills_only="--skills-only" in sys.argv[1:]))

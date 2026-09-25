@@ -34,12 +34,21 @@ Use an artifact location permitted by the host's workspace policy. The runner
 does not change the installed catalog, user configuration, or credentials.
 Codex uses a read-only sandbox and invocation-scoped trust for the test hooks
 authored here. Claude uses a separate settings file and only the listed tools.
-Receipts record source hashes and configured models; traces establish the
-actual models, skill source paths, and command order. Existing personal
+The same policy hook runs on both hosts, and Claude receives its startup hook
+only through the plugin. Each fixture is its own repository, so its adoption
+state and reminders do not depend on the surrounding worktree. Receipts record
+catalog and harness hashes, configured models, and deterministic routing scores.
+The runner exits nonzero for a failed grade as well as for a failed CLI run.
+Traces establish skill source paths and command order; distinguish configured
+models from model names independently reported by the host. Existing personal
 instructions can still affect direct CLI runs, so keep the environment fixed.
 These tests establish routing and attempted tool calls, not successful GitHub
 mutations. A real interactive merge and CI watch remain separate acceptance
 evidence.
+
+The matched comparison measures the combined instruction and hook changes;
+it does not isolate the Claude-only protocol from the new routing instructions
+in `direction` and the execution loop.
 
 The native plugin-eval schema and limitations are documented in
 [Anthropic's eval reference](https://code.claude.com/docs/en/plugin-evals).

@@ -103,15 +103,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=ROOT / "instructions" / "global.md")
     parser.add_argument("--local-source", type=Path, default=ROOT / ".local" / "global-instructions.md")
-    parser.add_argument("--home-dir", type=Path, default=Path.home(), help="Destination home; use a fixture directory for tests")
+    parser.add_argument("--home-dir", type=Path, help="Fixture home; overrides both native host destinations")
+    parser.add_argument("--codex-dir", type=Path, help="Codex configuration directory (default CODEX_HOME, then ~/.codex)")
+    parser.add_argument("--claude-dir", type=Path, help="Claude configuration directory (default CLAUDE_CONFIG_DIR, then ~/.claude)")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--codex-hook", action="store_true", help="Also register the catalog's PreToolUse hook in .codex/hooks.json; host hook trust is unchanged")
     args = parser.parse_args()
+    if args.home_dir and (args.codex_dir or args.claude_dir):
+        parser.error("--home-dir cannot be combined with a host directory override")
+    if args.home_dir:
+        codex_dir, claude_dir = args.home_dir / ".codex", args.home_dir / ".claude"
+    else:
+        codex_dir = args.codex_dir or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        claude_dir = args.claude_dir or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     try:
-        hook_destination = args.home_dir / ".codex" / "hooks.json"
+        hook_destination = codex_dir / "hooks.json"
         hook_content = render_codex_hook(hook_destination) if args.codex_hook else None
         outputs = synchronize(render(args.source, args.local_source), [
-            args.home_dir / ".claude" / "CLAUDE.md", args.home_dir / ".codex" / "AGENTS.md",
+            claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md",
         ], write=args.write)
         if hook_content is not None:
             outputs.extend(synchronize(hook_content, [hook_destination], write=args.write))

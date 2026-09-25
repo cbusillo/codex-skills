@@ -44,6 +44,7 @@ uv run skills/skill-creator/scripts/quick_validate.py --self-test
 uv run skills/skill-creator/scripts/validate-skill-repo.py
 
 helper_tests=(
+	evals/test_run_routing.py
 	scripts/test_sync_global_instructions.py
 	skills/babysit-pr/scripts/test_gh_pr_watch.py
 	hooks/test_command_policy_hook.py

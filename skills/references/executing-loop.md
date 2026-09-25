@@ -12,8 +12,8 @@ Executing loop for this repository (from DIRECTION.md):
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
-  land          load github for the PR and merge path, babysit-pr for CI/review follow-through, then reconcile the runtime checkout
-  close out     load work-closeout to update the plan, record follow-ups without starting them, remove the worktree, leave main clean
+  land          load github to open and merge the PR, babysit-pr to watch until merged, then reconcile the runtime checkout
+  close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree, leave main clean
 ```
 
 Load each step's owning skill before acting, including when it is a step inside
