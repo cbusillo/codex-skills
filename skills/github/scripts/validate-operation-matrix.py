@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import github_capabilities
 
 SCHEMA_VERSION = 2
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,9 @@ REQUIRED_FIELDS = {
     "retained_graphql_rationale",
     "source_refs",
     "test_refs",
+    "capabilities",
+    "permission_mode",
+    "permission_note",
 }
 OPTIONAL_FIELDS = {
     "current_endpoint_or_command",
@@ -180,6 +184,7 @@ def validate(matrix_path: Path, repo_root: Path) -> list[str]:
     operations = validate_schema(raw, repo_root, errors)
     if operations:
         validate_static_coverage(operations, repo_root, errors)
+    errors.extend(github_capabilities.validate_permissions(raw, repo_root))
     return errors
 
 
@@ -226,7 +231,7 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
         else:
             seen[op_id] = index
 
-        for field in sorted(REQUIRED_FIELDS - {"source_refs", "test_refs"}):
+        for field in sorted(REQUIRED_FIELDS - {"source_refs", "test_refs", "capabilities"}):
             value = operation.get(field)
             if not isinstance(value, str) or not value.strip():
                 errors.append(f"{label}.{field} must be a non-empty string")
@@ -356,6 +361,12 @@ def validate_static_coverage(
     }
 
     require_entrypoint_commands(
+        "github/scripts/github-capabilities.py",
+        extract_argparse_subcommands(repo_root / "github/scripts/github-capabilities.py", errors),
+        entrypoints,
+        errors,
+    )
+    require_entrypoint_commands(
         "github/scripts/github_api.py",
         extract_argparse_subcommands(repo_root / "github/scripts/github_api.py", errors),
         entrypoints,
@@ -408,14 +419,19 @@ def require_entrypoint_commands(
             errors.append(f"missing operation matrix coverage for public command: {expected}")
 
 
-def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
+def parse_python_file(path: Path, errors: list[str]) -> ast.Module | None:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except OSError as exc:
         errors.append(f"unable to read {path}: {exc}")
-        return set()
     except SyntaxError as exc:
         errors.append(f"unable to parse {path}: {exc}")
+    return None
+
+
+def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
+    tree = parse_python_file(path, errors)
+    if tree is None:
         return set()
 
     commands: set[str] = set()
@@ -425,22 +441,20 @@ def extract_argparse_subcommands(path: Path, errors: list[str]) -> set[str]:
         func = node.func
         if not isinstance(func, ast.Attribute) or func.attr != "add_parser":
             continue
-        if not node.args or not isinstance(node.args[0], ast.Constant):
+        if not node.args:
             continue
-        value = node.args[0].value
+        first_argument = node.args[0]
+        if not isinstance(first_argument, ast.Constant):
+            continue
+        value = first_argument.value
         if isinstance(value, str):
             commands.add(value)
     return commands
 
 
 def extract_argparse_argument_choices(path: Path, argument: str, errors: list[str]) -> set[str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except OSError as exc:
-        errors.append(f"unable to read {path}: {exc}")
-        return set()
-    except SyntaxError as exc:
-        errors.append(f"unable to parse {path}: {exc}")
+    tree = parse_python_file(path, errors)
+    if tree is None:
         return set()
 
     for node in ast.walk(tree):
@@ -449,7 +463,10 @@ def extract_argparse_argument_choices(path: Path, argument: str, errors: list[st
         func = node.func
         if not isinstance(func, ast.Attribute) or func.attr != "add_argument":
             continue
-        if not node.args or not isinstance(node.args[0], ast.Constant) or node.args[0].value != argument:
+        if not node.args:
+            continue
+        first_argument = node.args[0]
+        if not isinstance(first_argument, ast.Constant) or first_argument.value != argument:
             continue
         choices = next((keyword.value for keyword in node.keywords if keyword.arg == "choices"), None)
         if not isinstance(choices, (ast.Tuple, ast.List, ast.Set)):
@@ -656,6 +673,9 @@ def test_static_command_coverage_reports_missing_entrypoint() -> None:
 def minimal_operation(**overrides: Any) -> dict[str, Any]:
     operation: dict[str, Any] = {
         "id": "test.operation",
+        "capabilities": ["metadata_read"],
+        "permission_mode": "fixed",
+        "permission_note": "Fixture metadata read; failure remains unavailable and needs no additional grant.",
         "entrypoint": "github/scripts/gh-pr.py view",
         "intent": "Fixture operation.",
         "current_transport": "rest_api",

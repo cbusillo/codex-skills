@@ -165,6 +165,16 @@ checked-in behavior. Validate the matrix with
 
 ## Common Commands
 
+### Capability Profile And Audit
+
+Use `scripts/github-capabilities.py profile` for the derived full-operation App
+profile, `profile --read-only` for its read-only projection, and `audit --repo
+OWNER/REPO` or `audit --all-installed` for safe current capability evidence.
+After an accepted App update, `audit --refresh-token --repo OWNER/REPO` renews the
+same App token. See [permission coverage](github-permissions.md) for caller roles,
+result meanings and the API surface drift check. No audit performs repository
+writes or changes account grants.
+
 ### Execution: PRs And Rate Limits
 
 `scripts/gh-pr.py` emits one versioned JSON object on stdout for success or
