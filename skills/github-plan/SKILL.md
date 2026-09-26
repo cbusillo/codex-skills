@@ -354,21 +354,33 @@ separately only after the direction is confirmed.
 Before presenting a candidate as work to pick up, check active ownership. The
 ranker orders unfinished issues; it does not establish that another person or
 session is not already doing the work. Read `show --full`, including Current
-Status and comments, and check available read-only task/session state and the
-candidate's PR, branch, or worktree activity. A `plan:active` label means
-actionable, and an assignee or an old PR/worktree alone does not prove that a
-worker is currently active.
+Status and comments. Check the candidate's available PR, branch, or worktree
+activity and use the host's supported read-only task/session tools when exposed.
+A `plan:active` label means actionable, and an assignee or an old PR/worktree
+alone does not prove that a worker is currently active.
 
 Report work actively owned elsewhere as already underway and select the next
 independent candidate in the same ranking order. Do not recommend starting a
-second implementation or take over its worktree. If the request is to resume
-the current session's work or an explicit handoff, use that context instead.
+second implementation or take over its worktree. For a continuation of the
+current session's work or a verified handoff from a finished session, inspect
+and reuse the preserved work under the repository's worktree rules.
 Recheck ownership before `go` starts work; a recommendation does not reserve an
 issue. When in-progress evidence cannot be reconciled with current ownership,
 state the uncertainty and look for independent work rather than claiming the
 item is free. An unavailable session inventory is not proof that nobody owns
-it. If all eligible work is underway or waiting, say so instead of presenting
-an occupied item as the next new task or claiming the milestone is complete.
+it. If that uncertainty prevents selecting any available work, ask whether to
+resume the named item or leave it with its recorded owner; give a recommendation
+based on the evidence. If all eligible work is underway or waiting, say so
+instead of presenting an occupied item as the next new task or claiming the
+milestone is complete.
+
+On `go`, make the start visible before implementation through the existing
+authorized Current Status or automation-owned planning comment. Record the
+worker or session, task branch, and next action, then read back current ownership
+evidence and reconcile any competing activity. Keep `next` read-only and respect
+body ownership and posting authority; this coordination record is not a lock or
+permission to overwrite someone else's work. Update it when handing off or
+finishing so a departed session does not remain the recorded active worker.
 
 In an `<owner>/direction` repository, the same `next` command follows each
 `Track:` issue's native sub-issues and blockers across repositories, including
