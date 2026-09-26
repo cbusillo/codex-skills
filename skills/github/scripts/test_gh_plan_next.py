@@ -650,6 +650,8 @@ def global_fixture(
     edges: dict[tuple[str, int], dict[str, list[dict[str, Any]]]],
     *,
     repo: str = "someone/direction",
+    discovered: list[dict[str, Any]] | None = None,
+    comments: dict[tuple[str, int], list[dict[str, Any]]] | None = None,
 ) -> Any:
     module = load_module()
     captured: dict[str, Any] = {}
@@ -664,6 +666,9 @@ def global_fixture(
         return "automation-gh", by_key[key]
 
     def collect(path: str, **kwargs: Any) -> Any:
+        if path.endswith("/comments"):
+            parts = path.split("/")
+            return "automation-gh", (comments or {}).get(("/".join(parts[2:4]), int(parts[5])), [])
         assert path == f"/repos/{repo}/issues"
         assert kwargs["issue_only"] is True
         assert kwargs["query"]["state"] == "open"
@@ -682,6 +687,7 @@ def global_fixture(
         load_config=lambda *_: module.DEFAULT_CONFIG,
         load_direction=lambda *_: DIRECTION,
         collect_paged_rest_items=collect,
+        discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": []}),
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
         read_next_issue_relationships=read_relationships,
         get_issue=get_node,
@@ -945,12 +951,15 @@ def test_global_service_consumer_uses_the_same_classification_and_sort_as_cli() 
                 name: [module.compact_relationship_issue(item, name) for item in items]
                 for name, items in edges.get((repo, number), relationships()).items()
             }
-            return shared.evaluate_direction_node(node, config=module.DEFAULT_CONFIG, focus=None, relationships=relations)
+            classified = shared.evaluate_direction_node(node, config=module.DEFAULT_CONFIG, focus=None, relationships=relations)
+            classified["item"]["discussion"] = shared.discussion_snapshot(node, [], complete=True)
+            return classified
 
         ranked = shared.rank_direction_work(
             [{**shared.compact_list_issue(item["repo"], item), "milestone": shared.next_milestone_context(item)} for item in roots],
             milestone_titles=["First", "Second"], read_node=service_reader, scan_limit=50,
         )
+        ranked.update(shared.rank_portfolio_work(ranked, [], milestone_titles=["First", "Second"]))
         for field in ("candidates", "waiting", "excluded"):
             assert ranked[field] == result[field]
         assert [item["number"] for item in ranked["candidates"]] == [3]
@@ -1001,7 +1010,198 @@ def test_global_shared_classifier_preserves_incomplete_relationship_evidence() -
         assert result["dependency_context"]["complete"] is False
 
 
+def reviewed(item: dict[str, Any], state: str = "available", category: str = "own_project", **extra: Any) -> dict[str, Any]:
+    return {
+        "state": state, "category": category, "reason": "Current evidence reviewed",
+        "evidence": ["current issue discussion and supported worker inventory"],
+        "discussion_digest": item["discussion"]["digest"], "ownership_complete": True, **extra,
+    }
+
+
+def test_portfolio_empty_business_graph_discovers_available_own_project() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    own = global_issue("someone/context-panel", 42, body="## Objective\nImprove the viewer.")
+    with global_fixture(roots, [], {}, discovered=[own]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert result["graph_context"]["complete"] is True
+        assert result["candidate_count"] == 1
+        assert result["available_candidate_count"] == 0
+        candidate = result["candidates"][0]
+        assert candidate["source"] == "repository_discovery"
+        assert candidate["discussion"]["body"] == own["body"]
+        context = {"issues": {"someone/context-panel#42": reviewed(candidate)}}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["available_candidates"]] == [42]
+
+
+def test_portfolio_mediaforce_hold_overrides_active_unowned_issue_and_background_work() -> None:
+    leaf = global_issue("someone/mediaforce", 545)
+    roots = [track("someone/direction", 1, "First")]
+    context = {"repository_holds": {"someone/mediaforce": {
+        "reason": "Parked until temporary encoding finishes and direction is revisited; existing encodes may continue.",
+        "evidence": ["owner correction in #817"],
+    }}}
+    with global_fixture(roots, [leaf], {("someone/direction", 1): relationships(sub_issues=[leaf])}, discovered=[leaf]) as (module, result, _reads):
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert any(item.get("number") == 545 and item["exclusion"] == "repository_held" for item in result["excluded"])
+        assert result["repository_holds"] == context["repository_holds"]
+
+
+def test_portfolio_occupied_and_comment_only_wait_leave_no_available_work() -> None:
+    occupied = global_issue("someone/codex-lab", 979)
+    waiting = global_issue("someone/BD_to_AVP", 769)
+    comments = {(waiting["repo"], 769): [{"id": 10, "body": "Implementation is settled. Signed-app screenshot demonstration at the next beta.", "updated_at": "2026-09-26T12:00:00Z"}]}
+    with global_fixture([], [], {}, discovered=[occupied, waiting], comments=comments) as (module, result, _reads):
+        module.cmd_next(next_args())
+        by_number = {item["number"]: item for item in result["candidates"]}
+        assert "next beta" in by_number[769]["discussion"]["comments"][-1]["body"]
+        context = {"issues": {
+            "someone/codex-lab#979": reviewed(by_number[979], "underway"),
+            "someone/BD_to_AVP#769": reviewed(by_number[769], "waiting", reason="Screenshot proof waits for next beta"),
+        }}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert result["candidates"] == result["available_candidates"] == []
+        assert result["underway"][0]["number"] == 979
+        assert result["waiting"][0]["number"] == 769
+        assert result["discovery_context"]["complete"] is True
+
+
+def test_portfolio_partial_ownership_and_stale_or_truncated_discussions_are_not_available() -> None:
+    own = global_issue("someone/product", 42)
+    comments = {(own["repo"], 42): [{"id": 1, "body": "Earlier comment"}, {"id": 2, "body": "Later owner correction"}]}
+    with global_fixture([], [], {}, discovered=[own], comments=comments) as (module, result, _reads):
+        module.cmd_next(next_args())
+        candidate = result["candidates"][0]
+        for extra in ({"ownership_complete": False}, {"discussion_digest": "older snapshot"}):
+            context = {"issues": {"someone/product#42": reviewed(candidate, **extra)}}
+            with patch.object(module, "next_selection_context", return_value=context):
+                module.cmd_next(next_args())
+            assert result["available_candidates"] == []
+        args = next_args()
+        args.comment_limit = 1
+        module.cmd_next(args)
+        assert result["candidates"][0]["review_required"] == "complete_issue_discussion"
+        assert result["discovery_context"]["complete"] is False
+
+
+def test_portfolio_priority_requires_incident_and_repeated_stop_evidence() -> None:
+    nodes = [global_issue("someone/project", number) for number in range(1, 5)]
+    with global_fixture([], [], {}, discovered=nodes) as (module, result, _reads):
+        module.cmd_next(next_args())
+        by_number = {item["number"]: item for item in result["candidates"]}
+        context = {"issues": {
+            "someone/project#1": reviewed(by_number[1], category="own_project"),
+            "someone/project#2": reviewed(by_number[2], category="repeated_stop_tooling"),
+            "someone/project#3": reviewed(by_number[3], category="live_incident"),
+            "someone/project#4": reviewed(by_number[4], category="repeated_stop_tooling", stop_occurrences=["https://github.com/someone/project/issues/20", "https://github.com/someone/project/issues/21"]),
+        }}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["available_candidates"]] == [3, 4, 1]
+        assert next(item for item in result["candidates"] if item["number"] == 2)["review_required"] == "two_linked_stop_occurrences"
+
+
+def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
+    module = load_module()
+    repositories = [{"full_name": name, **extra} for name, extra in [
+        ("someone/direction", {}), ("other/foreign", {}), ("someone/archived", {"archived": True}),
+        ("someone/empty", {"size": 0, "open_issues_count": 0}), ("someone/disabled", {"has_issues": False}),
+        ("someone/a", {}), ("someone/b", {}), ("someone/held", {}), ("someone/private", {}),
+    ]]
+    calls: list[str] = []
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        calls.append(path)
+        if path in {"/installation/repositories", "/user/repos"}:
+            assert kwargs["limit"] == 101
+            return "automation-gh", repositories
+        assert kwargs["query"]["state"] == "open" and "labels" not in kwargs["query"]
+        assert kwargs["issue_only"] is True and kwargs["limit"] == 3
+        if path == "/repos/someone/direction/issues":
+            return "automation-gh", []
+        if path == "/repos/someone/private/issues":
+            raise module.PlanError("not accessible")
+        name = "/".join(path.split("/")[2:4])
+        return "automation-gh", [global_issue(name, number) for number in range(1, 4)]
+
+    context = {"repository_holds": {"someone/held": {"reason": "owner parked", "evidence": ["current owner instruction"]}}}
+    args = next_args()
+    args.repository_issue_limit = 2
+    with patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
+        for configured in ({"app": "configured"}, None):
+            calls.clear()
+            with patch.object(module.github_identity, "github_app_config", return_value=configured):
+                found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context)
+            assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
+            assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/a", 2), ("someone/b", 2)]
+            assert coverage["complete"] is False
+            assert len(calls) == 5
+            reasons = {source.get("exclusion") for source in coverage["repositories"]}
+            assert reasons >= {"repository_held", "source_unavailable", "other_owner", "archived_or_disabled", "empty_without_open_issues", "issues_disabled"}
+
+
+def test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage() -> None:
+    module = load_module()
+    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", side_effect=module.PlanError("inventory denied")):
+        found, coverage = module.discover_direction_work("someone/direction", next_args(), selection_context={})
+        assert found == [] and coverage["complete"] is False
+        assert coverage["inventory_count"] is None
+    with global_fixture([], [], {}, discovered=[global_issue("someone/p", 1), global_issue("someone/p", 2)]) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=1))
+        assert result["truncated"] is True
+        assert result["discovery_context"]["unevaluated_count"] == 1
+        assert result["discovery_context"]["complete"] is False
+
+
+def test_portfolio_nontrack_direction_issues_and_repository_milestone_order() -> None:
+    unlinked = global_issue("someone/direction", 10)
+    with global_fixture([unlinked], [], {}, discovered=[unlinked]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [10]
+        assert not any(item["number"] == 10 for item in result["excluded"])
+        shared = module.github_direction_next
+        discovered = [{
+            **global_issue("someone/product", number),
+            "milestone": milestone_data(number, title, created_at=date),
+        } for number, title, date in [(1, "Later", "2025-01-01"), (2, "Now", "2026-01-01")]]
+        ranked = shared.rank_portfolio_work(
+            {"candidates": []}, discovered, milestone_titles=["Business"],
+            repository_milestones={"someone/product": ["Now", "Later"]},
+        )
+        assert [item["number"] for item in ranked["candidates"]] == [2, 1]
+
+
+def test_portfolio_repository_inventory_truncation_and_auth_failure() -> None:
+    module = load_module()
+    args = next_args()
+    args.repo_limit = 1
+    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", return_value=("automation-gh", [{"full_name": "someone/archived", "archived": True}, {"full_name": "someone/unread"}])):
+        found, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
+        assert found == [] and coverage["inventory_truncated"] and not coverage["complete"]
+    failure = module.github_api_core.FailureDetail(cause="rest_primary_rate_limited", message="quota exhausted", retryable=False, fallback_eligible=False, disposition="stop")
+    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", side_effect=module.PlanError("quota exhausted", failure=failure)):
+        try:
+            module.discover_direction_work("someone/direction", args, selection_context={})
+        except module.PlanError as exc:
+            assert exc.failure.cause == "rest_primary_rate_limited"
+        else:
+            raise AssertionError("quota failures must preserve stop policy")
+
+
 TESTS = [
+    test_portfolio_nontrack_direction_issues_and_repository_milestone_order,
+    test_portfolio_repository_inventory_truncation_and_auth_failure,
+    test_portfolio_empty_business_graph_discovers_available_own_project,
+    test_portfolio_mediaforce_hold_overrides_active_unowned_issue_and_background_work,
+    test_portfolio_occupied_and_comment_only_wait_leave_no_available_work,
+    test_portfolio_partial_ownership_and_stale_or_truncated_discussions_are_not_available,
+    test_portfolio_priority_requires_incident_and_repeated_stop_evidence,
+    test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
+    test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
     test_next_closed_milestone_is_context_not_exclusion,

@@ -181,14 +181,20 @@ answer. Report those limits and what is underway or waiting. An empty available
 list does not establish milestone completion. Ownership checks and status
 records do not provide an exclusive lock.
 
-In an `<owner>/direction` repository, `next` follows each `Track:` issue's native
-sub-issues and blockers across repositories; `gh-plan.py --repo <owner>/direction next`
-selects the same scope elsewhere. Read its direction context and waiting reports:
-live breakage comes first; unrelated tooling needs the direction's linked
-repeat-stop evidence. Weekly own-project capacity is audit context, not a
-per-call quota. A waiting milestone hands off to the next milestone, not
-unlinked tooling. The traversal grants no cross-owner write, merge, or deployment
-authority. For graph paths, scope, or incomplete coverage, read
+In an `<owner>/direction` repository, `next` follows `Track:` issues and also
+discovers open issues in the configured actor's accessible owner repositories;
+`gh-plan.py --repo <owner>/direction next` selects the same scope elsewhere.
+Read the [global selection procedure](references/global-next.md) for this mode.
+Graph coverage, repository discovery, and active ownership are separate evidence.
+Apply repository-wide owner holds before considering any issue there, even
+when labels say active or background work continues. Read full discussions and
+current ownership evidence before recommending discovered work. Raw candidates
+are possible work; `available_candidates` requires current caller review.
+Live breakage comes first, then eligible milestone work; unrelated tooling needs
+two linked repeated stops. Keep the own-project share available when business
+tracks wait. Weekly capacity is audit context, not a per-call quota. Discovery
+grants no cross-owner write, merge, deployment, or direction-adoption authority.
+For graph paths, scope, or incomplete coverage, read
 [Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
 
 ## Create Or Update A Plan
