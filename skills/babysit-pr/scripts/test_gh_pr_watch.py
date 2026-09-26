@@ -836,9 +836,11 @@ def owner_feedback_comment(**overrides):
     decision = {
         "schema_version": 1,
         "record_id": "product-review-example-pr-123-abc",
+        "product": "example-site",
         "repository": "openai/codex",
         "pull_request_number": 123,
         "head_sha": "b" * 40,
+        "preview_url": "https://preview.example.invalid/",
         "decision": "changes_requested",
         "reason": "Fix the price.\n\nKeep USB-C, café, and the second paragraph.",
         "owner_github_login": "site-owner",
@@ -847,6 +849,8 @@ def owner_feedback_comment(**overrides):
         "review_url": "https://launchplane.example/ui/owner-review?repository=openai%2Fcodex&pull_request=123&decision_id=product-review-example-pr-123-abc",
     }
     decision.update(overrides)
+    if "review_url" not in overrides:
+        decision["review_url"] = f"https://launchplane.example/ui/owner-review?repository=openai%2Fcodex&pull_request=123&decision_id={decision['record_id']}"
     return {
         "id": 10,
         "user": {"login": "fixture-service", "id": 99},
@@ -867,6 +871,12 @@ def mock_owner_feedback(monkeypatch, comments):
         gh_pr_watch, "gh_api_list_paginated",
         lambda endpoint, **_: comments if "/issues/" in endpoint else [],
     )
+    saved = {
+        decision["record_id"]: {**decision, "feedback_url": comment["html_url"]}
+        for comment in comments
+        for decision in [json.loads(comment["body"].splitlines()[1][len("<!-- launchplane:owner-review "):-4])]
+    }
+    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", lambda pr, record_id: saved[record_id])
 
 
 def test_owner_feedback_is_recovered_after_restart_without_repeating_new_event(monkeypatch, tmp_path):
@@ -929,14 +939,14 @@ def test_app_projection_requires_configured_publisher_and_provider_identity(monk
     comment["performed_via_github_app"] = {"id": 77, "slug": "fixture-app"}
     assert len(gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)) == 1
     comment["user"] = {"login": "unrelated[bot]", "id": 80}
-    with pytest.raises(gh_pr_watch.GhCommandError, match="Unverified"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True) == []
 
 
 def test_newer_owner_acceptance_supersedes_requested_changes_without_granting_merge_authority(monkeypatch):
     changes = owner_feedback_comment()
-    accepted = owner_feedback_comment(decision="accepted", decided_at="2026-09-26T13:00:00Z")
+    accepted = owner_feedback_comment(record_id="product-review-example-pr-123-accepted", decision="accepted", decided_at="2026-09-26T12:00:00.5Z")
     accepted["id"] = 11
+    accepted["html_url"] = "https://github.com/openai/codex/pull/123#issuecomment-11"
     mock_owner_feedback(monkeypatch, [changes, accepted])
     pr = {**sample_pr(), "head_sha": "b" * 40, "draft": True}
     state = {}
@@ -944,6 +954,33 @@ def test_newer_owner_acceptance_supersedes_requested_changes_without_granting_me
     actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3, state["owner_review_items"])
     assert "address_owner_review_changes" not in actions
     assert "ready_to_merge" not in actions
+
+
+def test_own_automation_cannot_forge_owner_feedback_or_copy_a_receipt(monkeypatch):
+    legitimate = owner_feedback_comment()
+    mock_owner_feedback(monkeypatch, [legitimate])
+    forged = owner_feedback_comment(reason="This did not come from the Owner.")
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **_: [forged] if "/issues/" in endpoint else [])
+    with pytest.raises(gh_pr_watch.GhCommandError, match="saved decision or delivery receipt"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, authenticated_login="fixture-service")
+    forged["body"] = legitimate["body"]
+    forged["id"] = 11
+    forged["html_url"] = "https://github.com/openai/codex/pull/123#issuecomment-11"
+    with pytest.raises(gh_pr_watch.GhCommandError, match="saved decision or delivery receipt"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+
+
+def test_launchplane_read_failure_does_not_erase_retained_owner_feedback(monkeypatch):
+    mock_owner_feedback(monkeypatch, [owner_feedback_comment()])
+    state = {}
+    gh_pr_watch.fetch_new_review_items(sample_pr(), state, True)
+    original = json.loads(json.dumps(state))
+    def unavailable(*_):
+        raise gh_pr_watch.GhCommandError("Launchplane read unavailable")
+    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", unavailable)
+    with pytest.raises(gh_pr_watch.GhCommandError, match="Launchplane read unavailable"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), state, False)
+    assert state == original
 
 
 def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():

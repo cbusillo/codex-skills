@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -21,6 +22,8 @@ DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-toke
 GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
 DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
 PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
+DEFAULT_OWNER_REVIEW_HELPER = SCRIPT_DIR.parent.parent / "launchplane" / "scripts" / "launchplane-owner-review.py"
+OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(DEFAULT_OWNER_REVIEW_HELPER)
 IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
@@ -833,12 +836,11 @@ def launchplane_owner_review(item, pr):
     if marker is None:
         return None
     author = str(item.get("author") or "").casefold()
-    if not is_bot_login(author):
+    if author not in configured_bot_logins():
         return None
     app = item.get("github_app")
     if (
-        author not in configured_bot_logins()
-        or (
+        (
             author.endswith("[bot]")
             and (
                 not isinstance(app, dict)
@@ -895,10 +897,39 @@ def launchplane_owner_review(item, pr):
         valid_reference = False
     if not valid_reference:
         raise GhCommandError("Launchplane Owner feedback decision link does not match this PR")
+    saved = read_launchplane_owner_review(pr, decision["record_id"])
+    fields = (
+        "record_id", "product", "repository", "pull_request_number", "head_sha",
+        "preview_url", "decision", "reason", "owner_github_id", "owner_github_login", "decided_at",
+    )
+    if any(saved.get(key) != decision.get(key) for key in fields) or saved.get("feedback_url") != item.get("url"):
+        raise GhCommandError("Launchplane Owner feedback differs from the saved decision or delivery receipt")
+    try:
+        decided_at = datetime.fromisoformat(decision["decided_at"])
+        if decided_at.tzinfo is None:
+            raise ValueError("missing timezone")
+    except ValueError as error:
+        raise GhCommandError("Launchplane Owner feedback timestamp is invalid") from error
     return {
         **decision,
+        "decided_at_epoch": decided_at.timestamp(),
         "matches_current_head": decision["head_sha"].casefold() == pr["head_sha"].casefold(),
     }
+
+
+def read_launchplane_owner_review(pr, decision_id):
+    """Read authority using private configured routing, never the comment's URL."""
+    try:
+        result = subprocess.run(
+            [sys.executable, OWNER_REVIEW_HELPER, "--repo", pr["repo"], "--pr", str(pr["number"]), "--decision-id", decision_id],
+            capture_output=True, text=True, timeout=20,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        raise GhCommandError("Launchplane Owner review verification is unavailable") from error
+    if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("decision"), dict):
+        raise GhCommandError("Launchplane Owner review verification failed; the saved decision could not be read")
+    return payload["decision"]
 
 
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, reader=None):
@@ -1070,7 +1101,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
     ]
     latest_owner_review = max(
         current_owner_reviews,
-        key=lambda decision: (decision["decided_at"], decision["record_id"]),
+        key=lambda decision: (decision["decided_at_epoch"], decision["record_id"]),
         default=None,
     )
     owner_changes_requested = (

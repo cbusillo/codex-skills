@@ -44,6 +44,7 @@ contract: Any = load_module("launchplane_contract.py", "launchplane_contract")
 safety: Any = load_module("launchplane_safety.py", "launchplane_safety")
 write_action: Any = load_module("launchplane-write-action.py", "launchplane_write_action")
 context_helper: Any = load_module("launchplane-context.py", "launchplane_context")
+owner_review: Any = load_module("launchplane-owner-review.py", "launchplane_owner_review")
 
 
 @contextmanager
@@ -3185,8 +3186,64 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
             assert "must-never-be-metadata" not in output.getvalue()
 
 
+def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() -> None:
+    decision = {
+        "record_id": "decision-one", "product": "example-site", "repository": "example/site",
+        "pull_request_number": 42, "head_sha": "a" * 40, "preview_url": "https://preview.example.invalid",
+        "decision": "changes_requested", "reason": "Keep USB-C.\n\nCafé, @mentions, and --> remain literal.",
+        "owner_github_id": "9001", "owner_github_login": "example-owner",
+        "decided_at": "2026-09-26T12:00:00Z", "feedback_url": "https://github.com/example/site/pull/42#issuecomment-1",
+    }
+    payload = {"status": "ok", "repository": "example/site", "pull_request_number": 42,
+               "latest_decision": {**decision, "extra_private_state": "must-not-escape"}}
+    settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
+    with patch.object(owner_review.operator, "resolve_settings", return_value=settings), patch.object(
+        owner_review.operator, "request_launchplane_read", return_value=payload
+    ) as request:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert owner_review.main(["--repo", "example/site", "--pr", "42", "--decision-id", "decision-one"]) == 0
+        assert json.loads(output.getvalue()) == {"ok": True, "decision": decision}
+        request.assert_called_once_with(
+            service_url=settings["service_url"], path="/v1/product-review", settings=settings,
+            query={"repository": "example/site", "pull_request": "42", "decision_id": "decision-one"}, timeout=10.0,
+        )
+
+
+def test_owner_review_reader_rejects_wrong_subject_or_selected_record() -> None:
+    settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
+    for payload in (
+        {"status": "ok", "repository": "different/site", "pull_request_number": 42, "latest_decision": None},
+        {"status": "ok", "repository": "example/site", "pull_request_number": 42, "latest_decision": None},
+        {"status": "ok", "repository": "example/site", "pull_request_number": 42, "latest_decision": {"record_id": "other"}},
+    ):
+        with patch.object(owner_review.operator, "resolve_settings", return_value=settings), patch.object(
+            owner_review.operator, "request_launchplane_read", return_value=payload
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert owner_review.main(["--repo", "example/site", "--pr", "42", "--decision-id", "decision-one"]) == 1
+            assert json.loads(output.getvalue()) == {"ok": False, "error": "owner_review_read_unavailable"}
+
+
+def test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text() -> None:
+    settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
+    denial = urllib.error.HTTPError(settings["service_url"], 403, "private-provider-message", Message(), io.BytesIO(b"private-body"))
+    with patch.object(owner_review.operator, "resolve_settings", return_value=settings), patch.object(
+        owner_review.operator, "request_launchplane_read", side_effect=denial
+    ) as request:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert owner_review.main(["--repo", "example/site", "--pr", "42"]) == 1
+        assert json.loads(output.getvalue()) == {"ok": False, "error": "owner_review_read_failed", "status_code": 403}
+        assert request.call_count == 1
+
+
 def main() -> int:
     tests = [
+        test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route,
+        test_owner_review_reader_rejects_wrong_subject_or_selected_record,
+        test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text,
         test_expected_config_review_binds_metadata_and_never_prints_owner_instructions,
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
