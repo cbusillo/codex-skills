@@ -26,6 +26,19 @@ import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
 import github_identity
+import github_direction_next
+from github_direction_next import (
+    normalize_labels,
+    issue_labels,
+    compact_list_issue,
+    section_map,
+    relationship_refs,
+    next_milestone_context,
+    next_plan_status,
+    next_static_exclusion,
+    evaluate_next_plan,
+    rank_next_candidates,
+)
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -937,22 +950,6 @@ def collect_paged_rest_items(
     return actor, items
 
 
-def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
-    milestone = issue.get("milestone") or {}
-    state = issue.get("state")
-    return {
-        "repo": repo,
-        "number": issue.get("number"),
-        "title": issue.get("title"),
-        "state": state.upper() if isinstance(state, str) else state,
-        "created_at": issue.get("created_at") or issue.get("createdAt"),
-        "updated_at": issue.get("updated_at") or issue.get("updatedAt"),
-        "url": issue.get("html_url") or issue.get("url"),
-        "labels": normalize_labels(issue.get("labels")),
-        "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
-    }
-
-
 def compact_dedupe_issue(issue: dict[str, Any]) -> dict[str, Any]:
     state = issue.get("state")
     return {
@@ -1146,16 +1143,6 @@ def resolve_person_for_project(value: str) -> str | None:
     return None
 
 
-def normalize_labels(items: list[Any] | None) -> list[str]:
-    names: list[str] = []
-    for item in items or []:
-        if isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, dict) and isinstance(item.get("name"), str):
-            names.append(item["name"])
-    return names
-
-
 def issue_ref(ref: str, repo: str) -> tuple[str, int]:
     ref = ref.strip()
     url = re.search(r"github\.com/([^/]+/[^/]+)/issues/(\d+)", ref)
@@ -1176,19 +1163,6 @@ def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     actor, data = api_json("GET", f"/repos/{issue_repo}/issues/{number}", failed_step="get_issue")
     data["repo"] = issue_repo
     return actor, data
-
-
-def issue_labels(issue: dict[str, Any]) -> list[str]:
-    raw_labels = issue.get("labels")
-    if not isinstance(raw_labels, list):
-        return []
-    names: list[str] = []
-    for item in raw_labels:
-        if isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, dict) and isinstance(item.get("name"), str):
-            names.append(item["name"])
-    return names
 
 
 def rest_edit_issue(
@@ -1328,13 +1302,6 @@ def read_issue_relationships(
     return actor, relationships
 
 
-def relationship_refs(items: list[dict[str, Any]], issue_repo: str) -> list[str]:
-    return [
-        f"#{item['number']}" if item["repo"] == issue_repo else f"{item['repo']}#{item['number']}"
-        for item in items
-    ]
-
-
 def relationship_preflight_error(
     exc: PlanError,
     *,
@@ -1430,17 +1397,6 @@ def close_relationship_preflight(
             payload={"relationship_preflight": preflight},
         )
     return actor, preflight
-
-
-def section_map(body: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body or ""))
-    for idx, match in enumerate(matches):
-        name = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections[name] = body[start:end].strip()
-    return sections
 
 
 def replace_section(body: str, section: str, new_text: str) -> str:
@@ -2188,50 +2144,6 @@ def next_focus_context(
     }
 
 
-def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
-    milestone = issue.get("milestone")
-    if not isinstance(milestone, dict):
-        return None
-    normalized = github_milestone_core.normalize_milestone(milestone)
-    return {
-        "number": normalized.get("number"),
-        "title": normalized.get("title"),
-        "state": normalized.get("state"),
-        "created_at": normalized.get("created_at"),
-        "due_on": normalized.get("due_on"),
-        "url": normalized.get("url"),
-    }
-
-
-def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | None:
-    issue_label_names = {name.casefold() for name in issue_labels(issue)}
-    plan_labels = config.get("labels") or {}
-    for status in ("done", "stale", "blocked", "waiting", "active"):
-        label = plan_labels.get(status)
-        if isinstance(label, str) and label.casefold() in issue_label_names:
-            return status
-    return None
-
-
-def next_relationship_summary(
-    relationships: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    blocked_by = relationships.get("blocked_by") or []
-    blocking = relationships.get("blocking") or []
-    sub_issues = relationships.get("sub_issues") or []
-    open_blockers = [item for item in blocked_by if item.get("state") == "open"]
-    open_blocking = [item for item in blocking if item.get("state") == "open"]
-    open_sub_issues = [item for item in sub_issues if item.get("state") == "open"]
-    return {
-        "blocked_by": blocked_by,
-        "blocking": blocking,
-        "sub_issues": sub_issues,
-        "open_blockers": open_blockers,
-        "open_blocking": open_blocking,
-        "open_sub_issues": open_sub_issues,
-    }
-
-
 def read_next_issue_relationships(
     issue_repo: str,
     number: int,
@@ -2265,148 +2177,11 @@ def read_next_issue_relationships(
     return actor, relationships, truncated
 
 
-def next_static_exclusion(
-    issue: dict[str, Any],
-    *,
-    config: dict[str, Any],
-    focus: str | None,
-) -> dict[str, Any] | None:
-    state = str(issue.get("state") or "").casefold()
-    status = next_plan_status(issue, config)
-    base = {
-        **compact_list_issue(str(issue.get("repo") or ""), issue),
-        "plan_status": status,
-        "focus": focus,
-        "milestone": next_milestone_context(issue),
-    }
-    if state != "open" or status == "done":
-        return {**base, "exclusion": "completed", "evidence": []}
-    if status == "stale":
-        return {**base, "exclusion": "stale_needs_review", "evidence": []}
-    return None
-
-
-def evaluate_next_plan(
-    issue: dict[str, Any],
-    *,
-    config: dict[str, Any],
-    focus: str | None,
-    relationships: dict[str, list[dict[str, Any]]] | None,
-    relationship_error: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    status = next_plan_status(issue, config)
-    milestone = next_milestone_context(issue)
-    base = {
-        **compact_list_issue(str(issue.get("repo") or ""), issue),
-        "plan_status": status,
-        "focus": focus,
-        "milestone": milestone,
-    }
-    static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
-    if static_exclusion is not None:
-        return "excluded", static_exclusion
-    if relationship_error is not None or relationships is None:
-        return "excluded", {
-            **base,
-            "exclusion": "unknown_dependencies",
-            "evidence": [],
-            "detail": relationship_error or "dependency reads unavailable",
-        }
-
-    summary = next_relationship_summary(relationships)
-    open_blockers = summary["open_blockers"]
-    if open_blockers:
-        return "excluded", {
-            **base,
-            "exclusion": "blocked_by_open_dependency",
-            "evidence": relationship_refs(open_blockers, str(issue.get("repo") or "")),
-            "blocked_by": open_blockers,
-        }
-    if status == "blocked":
-        return "excluded", {
-            **base,
-            "exclusion": "label_blocked_without_native_edge",
-            "evidence": [],
-            "inconsistency": True,
-        }
-    normalized_focus = focus.casefold() if isinstance(focus, str) else None
-    if status == "waiting" or normalized_focus == "waiting":
-        return "excluded", {**base, "exclusion": "waiting", "evidence": []}
-    if normalized_focus == "later":
-        return "excluded", {**base, "exclusion": "later_focus", "evidence": []}
-    open_sub_issues = summary["open_sub_issues"]
-    if open_sub_issues:
-        return "excluded", {
-            **base,
-            "exclusion": "delegated_to_open_sub_issues",
-            "evidence": relationship_refs(open_sub_issues, str(issue.get("repo") or "")),
-            "open_sub_issues": open_sub_issues,
-        }
-
-    notes: list[str] = []
-    if milestone and milestone.get("state") == "closed":
-        notes.append("milestone_closed_but_plan_open")
-    reasons = ["no_open_blockers"]
-    if focus:
-        reasons.append(f"focus_{focus.casefold()}")
-    if summary["open_blocking"]:
-        reasons.append(f"unblocks_{len(summary['open_blocking'])}_open_plan(s)")
-    return "candidate", {
-        **base,
-        "blocked_by": [],
-        "blocking": summary["open_blocking"],
-        "sub_issues": {
-            "open": len(open_sub_issues),
-            "closed": len(summary["sub_issues"]) - len(open_sub_issues),
-        },
-        "reasons": reasons,
-        "notes": notes,
-    }
-
-
-def rank_next_candidates(
-    candidates: list[dict[str, Any]],
-    *,
-    direction_milestones: list[str] | None = None,
-) -> None:
-    listed_order = {
-        title: index
-        for index, title in enumerate(direction_milestones or [])
-    }
-
-    def milestone_rank(candidate: dict[str, Any]) -> tuple[int, str, int]:
-        milestone = candidate.get("milestone")
-        if not isinstance(milestone, dict) or milestone.get("state") != "open":
-            return len(listed_order) + 1, "9999-12-31T00:00:00Z", 0
-        if direction_milestones is not None:
-            title = milestone.get("title")
-            return (
-                listed_order.get(title, len(listed_order) + 1) if isinstance(title, str) else len(listed_order) + 1,
-                "",
-                0,
-            )
-        created_at = milestone.get("created_at")
-        number = milestone.get("number")
-        return (
-            0,
-            created_at if isinstance(created_at, str) else "9999-12-31T00:00:00Z",
-            number if isinstance(number, int) else 0,
-        )
-
-    candidates.sort(
-        key=lambda candidate: (
-            milestone_rank(candidate),
-            -len(candidate.get("blocking") or []),
-            str(candidate.get("created_at") or "9999-12-31T00:00:00Z"),
-            int(candidate.get("number") or 0),
-        )
-    )
-    for rank, item in enumerate(candidates, start=1):
-        item["rank"] = rank
-
-
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
+    if github_direction_next.is_direction_repository(repo):
+        cmd_direction_next(args, repo)
+        return
     config = load_config(repo)
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
@@ -2566,6 +2341,123 @@ def cmd_next(args: argparse.Namespace) -> None:
         "candidate_count": len(candidates),
         "excluded": excluded,
         "notes": notes,
+    })
+
+
+def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
+    direction_text = load_direction(repo)
+    titles = direction_milestone_titles(direction_text or "")
+    if not titles:
+        raise PlanError(f"Global next needs the ordered milestones in {repo}/{DIRECTION_FILE}")
+    gh_cmd, expected_actor = milestone_route()
+    milestone_inventory = github_milestone_core.list_milestones(
+        repo, state="all", limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
+        operation=CURRENT_OPERATION, actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd,
+    )["milestones"]
+    milestones_truncated = len(milestone_inventory) > NEXT_PLAN_INVENTORY_LIMIT
+    completed_titles = [
+        milestone["title"] for milestone in milestone_inventory[:NEXT_PLAN_INVENTORY_LIMIT]
+        if milestone.get("state") == "closed"
+    ]
+    scope = None
+    if args.milestone:
+        result = github_milestone_core.show_milestone(
+            repo, args.milestone, operation=CURRENT_OPERATION,
+            actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd,
+        )
+        scope = result["milestone"]
+        if scope["title"] not in titles:
+            raise PlanError("The selected milestone is not listed in the owner's direction")
+        titles = [scope["title"]]
+    config = load_config(repo)
+    query = {"labels": config["labels"]["plan"], "state": "open", "sort": "created", "direction": "asc"}
+    if scope:
+        query["milestone"] = scope["number"]
+    actor, issues = collect_paged_rest_items(
+        f"/repos/{repo}/issues", query=query, bucket="rest_core",
+        step_prefix="next_plan_issues", limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+    )
+    inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
+    issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
+    seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
+    contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
+    focus_contexts: dict[str, dict[str, Any]] = {}
+
+    def read_node(issue_repo: str, number: int) -> dict[str, Any]:
+        nonlocal actor
+        key = (issue_repo.casefold(), number)
+        raw = seeds.get(key)
+        try:
+            if raw is None:
+                issue_actor, raw = get_issue(str(number), issue_repo)
+                actor = issue_actor or actor
+            if issue_repo not in contexts:
+                target_config = load_config(issue_repo)
+                focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)
+                actor = focus_actor or actor
+                contexts[issue_repo] = (target_config, focus_values)
+                focus_contexts[issue_repo] = focus_context
+            target_config, focus_values = contexts[issue_repo]
+            focus = focus_values.get(raw.get("html_url") or raw.get("url"))
+            base = {
+                **compact_list_issue(issue_repo, raw),
+                "plan_status": next_plan_status(raw, target_config),
+                "focus": focus,
+                "milestone": next_milestone_context(raw),
+            }
+            if raw.get("pull_request") is not None:
+                return {"item": {**base, "exclusion": "pull_request"}}
+            static = next_static_exclusion(raw, config=target_config, focus=focus)
+            if static:
+                return {"item": static}
+            relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
+            actor = relation_actor or actor
+            return github_direction_next.evaluate_direction_node(
+                raw, config=target_config, focus=focus, relationships=relationships,
+                truncated_relationships=truncated,
+            )
+        except PlanError as exc:
+            # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
+            # auth and provider failures retain the shared helper's stop policy.
+            if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found"}:
+                raise
+            if isinstance(exc, ClassifiedPlanError):
+                raise
+            return {"item": {
+                "repo": issue_repo, "number": number,
+                "url": f"https://github.com/{issue_repo}/issues/{number}",
+                "exclusion": "unknown_dependencies", "detail": github_api_core.redact_string(str(exc)),
+            }}
+
+    roots = [{
+        **compact_list_issue(repo, item), "milestone": next_milestone_context(item),
+    } for item in issues]
+    ranked = github_direction_next.rank_direction_work(
+        roots, milestone_titles=titles, read_node=read_node,
+        scan_limit=args.scan_limit, completed_milestone_titles=completed_titles,
+    )
+    ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
+    if inventory_truncated or milestones_truncated:
+        ranked["truncated"] = True
+        ranked["dependency_context"]["complete"] = False
+    ranked["dependency_context"]["milestone_inventory_truncated"] = milestones_truncated
+    ranked["candidates"] = ranked["candidates"][:args.limit]
+    sections = section_map(direction_text or "")
+    emit({
+        "ok": True, "actor": actor, "repo": repo,
+        "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},
+        "milestone_order": {"source": f"{repo}:{DIRECTION_FILE}", "titles": titles, "fallback_reason": None, "error": None},
+        "direction_context": {name: sections[name] for name in ("Order", "Capacity") if name in sections},
+        "focus_context": {"repositories": focus_contexts},
+        "inventory_count": len(issues), "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
+        **ranked,
+        "notes": [
+            "native_blocked_by_relationships_are_authoritative",
+            "tracking_wait_labels_do_not_hide_linked_work",
+            "waiting_reports_are_current_status_evidence_not_dependency_edges",
+            "live_breakage_and_repeated_tooling_stops_require_direction_context",
+            "weekly_own_project_share_is_audit_context_not_a_per_call_quota",
+        ],
     })
 
 

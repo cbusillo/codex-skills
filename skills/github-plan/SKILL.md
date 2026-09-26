@@ -351,6 +351,26 @@ prefer work that unblocks more plans and then the oldest created issue.
 The command is advisory and read-only, so update labels, Focus, or relationships
 separately only after the direction is confirmed.
 
+In an `<owner>/direction` repository, the same `next` command follows each
+`Track:` issue's native sub-issues and blockers across repositories, including
+other owners' repositories, in the merged direction's milestone order. Passing
+`--repo <owner>/direction` gives the same answer from any checkout. Product
+repositories keep their own ranking. Each global candidate includes its overall
+milestone, original product milestone, and the path explaining its priority.
+Read the returned waiting reports and direction context alongside candidates:
+live breakage still comes first, unrelated tooling needs the direction's linked
+repeat-stop evidence, and own-project capacity is judged by the weekly audit.
+The graph does not discover unlinked incidents or measure weekly capacity.
+A waiting milestone hands off to the next milestone, not to unlinked tooling.
+Waiting reports name the person or condition recorded in Current Status and
+retain their source; a parent can report a PR review wait while its independent
+blocker is actionable. Read the selected issue with `show --full` before work.
+An incomplete dependency context is a partial answer, not proof of the global
+first task or milestone completion. Traversal is read-only and grants no new
+cross-owner write, merge, or deployment authority. See the
+[next-work contract](../github/references/cli-reference.md#planning-next-work)
+for bounds and the reusable ranking entry point.
+
 Run this checkpoint:
 
 - after each implementation slice
