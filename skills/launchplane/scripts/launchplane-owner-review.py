@@ -22,6 +22,8 @@ spec = importlib.util.spec_from_file_location(
 assert spec is not None and spec.loader is not None
 operator: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(operator)
+resolve_settings = operator.resolve_settings
+request_launchplane_read = operator.request_launchplane_read
 
 DECISION_FIELDS = (
     "record_id",
@@ -40,7 +42,7 @@ DECISION_FIELDS = (
 
 
 def read_review(args):
-    settings = operator.resolve_settings(args)
+    settings = resolve_settings(args)
     operator.validate_service_url(settings["service_url"])
     if not settings["token"]:
         raise ValueError("missing_operator_token")
@@ -49,7 +51,7 @@ def read_review(args):
         query["decision_id"] = args.decision_id
     # Bounded local extension of the existing private product-review read. The
     # public-safe context/write helper intentionally never emits Owner prose.
-    payload = operator.request_launchplane_read(
+    payload = request_launchplane_read(
         service_url=settings["service_url"],
         path=operator.helper_command_path("owner-review-read"),
         settings=settings,

@@ -3197,8 +3197,8 @@ def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() 
     payload = {"status": "ok", "repository": "example/site", "pull_request_number": 42,
                "latest_decision": {**decision, "extra_private_state": "must-not-escape"}}
     settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
-    with patch("launchplane_owner_review.operator.resolve_settings", return_value=settings), patch(
-        "launchplane_owner_review.operator.request_launchplane_read", return_value=payload
+    with patch.object(owner_review, "resolve_settings", return_value=settings), patch.object(
+        owner_review, "request_launchplane_read", return_value=payload
     ) as request:
         output = io.StringIO()
         with redirect_stdout(output):
@@ -3217,8 +3217,8 @@ def test_owner_review_reader_rejects_wrong_subject_or_selected_record() -> None:
         {"status": "ok", "repository": "example/site", "pull_request_number": 42, "latest_decision": None},
         {"status": "ok", "repository": "example/site", "pull_request_number": 42, "latest_decision": {"record_id": "other"}},
     ):
-        with patch("launchplane_owner_review.operator.resolve_settings", return_value=settings), patch(
-            "launchplane_owner_review.operator.request_launchplane_read", return_value=payload
+        with patch.object(owner_review, "resolve_settings", return_value=settings), patch.object(
+            owner_review, "request_launchplane_read", return_value=payload
         ):
             output = io.StringIO()
             with redirect_stdout(output):
@@ -3229,8 +3229,8 @@ def test_owner_review_reader_rejects_wrong_subject_or_selected_record() -> None:
 def test_owner_review_reader_surfaces_denial_without_credentials_or_provider_text() -> None:
     settings = {"service_url": "https://private.example.invalid", "token": "private-credential"}
     denial = urllib.error.HTTPError(settings["service_url"], 403, "private-provider-message", Message(), io.BytesIO(b"private-body"))
-    with patch("launchplane_owner_review.operator.resolve_settings", return_value=settings), patch(
-        "launchplane_owner_review.operator.request_launchplane_read", side_effect=denial
+    with patch.object(owner_review, "resolve_settings", return_value=settings), patch.object(
+        owner_review, "request_launchplane_read", side_effect=denial
     ) as request:
         output = io.StringIO()
         with redirect_stdout(output):
