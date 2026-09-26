@@ -7,7 +7,7 @@ still governs every action.
 
 ```text
 Executing loop for this repository (from DIRECTION.md):
-  next          report the ranked item and stop
+  next          report the next available ranked item and stop
   go            start it: linked worktree, bot commits, review by another model when the review reference says so
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
@@ -21,6 +21,11 @@ another skill's task; see [using skills](using-skills.md). For `next` and plan
 updates use `github-plan`; for reviews use `model-review` when the review
 reference calls for one.
 
+Before recommending or starting an item, apply
+[Choose Work](../github-plan/SKILL.md#choose-work), including its ownership check.
+Report higher-ranked work already underway separately from the next
+independent item available to this session.
+
 `go` authorizes implementation; merge still requires authorization for the
 change and destination under [task scope and authorization](execution-scope.md).
 When that authorization exists, carry `land` through without asking again.
@@ -33,8 +38,8 @@ milestone by default. An executing agent may admit one to a milestone listed in
 milestone's line that the issue proves or protects. Admission is checked by the
 direction audit afterward; it needs no owner step. Do not work an issue admitted
 during close-out in the same `go <milestone>` run.
-If `next` finds no actionable milestone issue, report what is waiting and do
-not claim the milestone is complete until its exit criteria are met.
+If `next` finds no available milestone issue, report what is underway or waiting
+and do not claim the milestone is complete until its exit criteria are met.
 List every owner decision still open at the end of any executing-loop command in the final response,
 each as a direct question with a recommendation and the effect of each choice.
 An earlier asynchronous question or an issue update does not replace that
