@@ -5,12 +5,12 @@ closing one. Milestones are release, phase, or date gates, not theme labels or
 alternate backlogs.
 
 - Read the milestone description and open issues before judging readiness or
-  membership. Put exact exit criteria in that description, not transient repo
-  instructions.
+  membership. Put exact exit criteria in that description; keep transient
+  milestone state out of repository instructions.
 - Before admitting an issue, ask whether the milestone can honestly close while
   it remains open. If yes, keep it outside the milestone.
-- Prefer one active milestone per release train. Independent trains may have
-  separate milestones and exit gates.
+- Prefer one active milestone per release train. Use parallel milestones only
+  for independent trains with separate exit gates.
 - Give each active milestone a due date or a named gate, dependency, or decision
   that determines when it can close.
 - Record why incomplete work no longer blocks before removing it to the backlog

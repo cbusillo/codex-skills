@@ -139,7 +139,8 @@ skill's base directory for the path:
 uv run <skill-dir>/../github/scripts/gh-plan.py <command>
 ```
 
-The frontmatter owns command-policy routing. Use the sibling `github/scripts/gh-issue`
+The frontmatter at the top of this file owns command-policy routing; read it
+if the host hides it. Use the sibling `github/scripts/gh-issue`
 and `github/scripts/gh-comment` for multiline issue/comment writes. If planning
 helpers are unavailable, use `gh` with body files and compact JSON reads under
 the `github` skill's authentication rules. Keep GitHub issues as the durable
@@ -158,19 +159,20 @@ identities.
 3. Check current ownership using available issue/PR/branch/worktree evidence
    and supported read-only task/session tools. Recommend the highest-ranked
    available independent item; report work owned by another active worker as
-   underway. A label or old worktree alone does not prove active ownership, and
-   a partial session inventory does not prove availability.
-4. Preserve explicit continuation requests and verified handoffs. If ownership
-   remains uncertain, ask whether to resume the item or leave it with its
-   recorded owner, with a recommendation; keep this decision visible while
-   recommending independent work.
+   underway. A label, assignee, old PR, or old worktree alone does not prove
+   active ownership; a partial session inventory does not prove availability.
+4. Reuse preserved work only for this session's continuation or a verified
+   handoff from a finished session, under the repository's worktree rules.
+   Do not start duplicate implementation or take over another worker's worktree.
+   If ownership remains uncertain, ask whether to resume the item or leave it
+   with its recorded owner, with a recommendation; keep this decision visible
+   while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On `go`, recheck ownership
    and, where posting is authorized, record the worker/session, branch, and next
    action in owned Current Status or a bot-authored planning comment before
    implementation, then read back for competing activity. Keep that record
-   current through handoff or completion; reuse preserved work under the
-   repository's worktree rules.
+   current through handoff or completion.
 
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
@@ -185,7 +187,7 @@ selects the same scope elsewhere. Read its direction context and waiting reports
 live breakage comes first; unrelated tooling needs the direction's linked
 repeat-stop evidence. Weekly own-project capacity is audit context, not a
 per-call quota. A waiting milestone hands off to the next milestone, not
-unlinked tooling. The traversal grants no cross-owner write or deployment
+unlinked tooling. The traversal grants no cross-owner write, merge, or deployment
 authority. For graph paths, scope, or incomplete coverage, read
 [Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
 
@@ -279,8 +281,9 @@ Use status labels narrowly:
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
-Do not label an item blocked just because it is out of focus. Without a native
-blocker, use `Waiting for:` or `Parked until:` with the concrete condition.
+Do not label an item blocked just because it is out of focus. Without an open
+native blocker, prefer `plan:waiting`; use `Waiting for:` or `Parked until:`
+with the concrete condition.
 For a blocking non-issue condition, say `Blocked by: No native issue blocker;
 waiting for ...`.
 
@@ -288,15 +291,16 @@ When Projects are configured or requested, use the small set of human-facing
 fields and Focus lanes in [Projects and roadmaps](../github/references/github-projects.md).
 Prefer one `Now` item unless the owner chooses parallel work. Read that reference
 when using a Project or local context surface, including synchronization or
-access failures; views never replace the issue graph.
+access failures; views never replace the issue graph. If a configured context
+helper is useful, read its Local Context Views guidance before running `index`.
 
 ## Keep The Plan Current
 
 Run a Plan Direction Checkpoint at implementation boundaries, surprising findings,
 adjacent work, handoff, a "what's next" request, and before creating, closing, or
-superseding issues: reconnect the next action to the current plan. Run `next`
-before selecting roadmap work. Update Current Status only when durable recovery
-state materially changes; a passing checkpoint needs no artifact.
+superseding issues: reconnect the next action to the current plan. Update Current
+Status only when durable recovery state materially changes; a passing checkpoint
+needs no artifact.
 
 If scope changes, reconcile the canonical issue, sub-issues, blockers, labels,
 and configured Focus before pivoting. Classify discoveries as current scope,
@@ -326,6 +330,8 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 `github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project fields stale.
+It also skips the relationship and owner-decision preflight; perform those
+checks below yourself before using that fallback.
 
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
