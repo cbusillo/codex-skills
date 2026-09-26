@@ -832,6 +832,120 @@ def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     )
 
 
+def owner_feedback_comment(**overrides):
+    decision = {
+        "schema_version": 1,
+        "record_id": "product-review-example-pr-123-abc",
+        "repository": "openai/codex",
+        "pull_request_number": 123,
+        "head_sha": "b" * 40,
+        "decision": "changes_requested",
+        "reason": "Fix the price.\n\nKeep USB-C, café, and the second paragraph.",
+        "owner_github_login": "site-owner",
+        "owner_github_id": "71",
+        "decided_at": "2026-09-26T12:00:00Z",
+        "review_url": "https://launchplane.example/ui/owner-review?repository=openai%2Fcodex&pull_request=123&decision_id=product-review-example-pr-123-abc",
+    }
+    decision.update(overrides)
+    return {
+        "id": 10,
+        "user": {"login": "fixture-service", "id": 99},
+        "author_association": "COLLABORATOR",
+        "created_at": "2026-09-26T12:00:00Z",
+        "body": (
+            f"<!-- launchplane:product-review:{decision['record_id']} -->\n"
+            f"<!-- launchplane:owner-review {json.dumps(decision)} -->\n"
+            f"Owner feedback:\n{decision['reason']}"
+        ),
+        "html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
+    }
+
+
+def mock_owner_feedback(monkeypatch, comments):
+    monkeypatch.setattr(gh_pr_watch, "configured_bot_logins", lambda: frozenset({"fixture-service", "fixture-app[bot]"}))
+    monkeypatch.setattr(
+        gh_pr_watch, "gh_api_list_paginated",
+        lambda endpoint, **_: comments if "/issues/" in endpoint else [],
+    )
+
+
+def test_owner_feedback_is_recovered_after_restart_without_repeating_new_event(monkeypatch, tmp_path):
+    comment = owner_feedback_comment()
+    mock_owner_feedback(monkeypatch, [comment])
+    pr = {**sample_pr(), "head_sha": "b" * 40}
+    state = {}
+
+    first = gh_pr_watch.fetch_new_review_items(pr, state, True, authenticated_login="fixture-service")
+    assert len(first) == 1
+    assert first[0]["source"] == "launchplane_owner_review"
+    assert first[0]["owner_review"]["reason"] == "Fix the price.\n\nKeep USB-C, café, and the second paragraph."
+    assert first[0]["owner_review"]["matches_current_head"] is True
+    path = tmp_path / "watch-state.json"
+    gh_pr_watch.save_state(path, state)
+    resumed, fresh = gh_pr_watch.load_state(path)
+
+    assert gh_pr_watch.fetch_new_review_items(pr, resumed, fresh, authenticated_login="fixture-service") == []
+    assert resumed["owner_review_items"] == first
+    assert "address_owner_review_changes" in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3, resumed["owner_review_items"]
+    )
+    assert "ready_to_merge" not in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3, resumed["owner_review_items"]
+    )
+
+
+def test_earlier_owner_feedback_is_history_for_a_new_revision(monkeypatch):
+    mock_owner_feedback(monkeypatch, [owner_feedback_comment(decision="accepted")])
+    state = {}
+    items = gh_pr_watch.fetch_new_review_items({**sample_pr(), "head_sha": "c" * 40}, state, True)
+    assert items[0]["owner_review"]["matches_current_head"] is False
+    assert items[0]["owner_review"]["head_sha"] == "b" * 40
+    # Historical acceptance cannot supply missing GitHub review evidence.
+    pr = {**sample_pr(), "head_sha": "c" * 40, "review_requirement": "pending", "review_decision": "REVIEW_REQUIRED"}
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3, items)
+    assert "awaiting_review" in actions
+    assert "ready_to_merge" not in actions
+
+
+@pytest.mark.parametrize("change", [
+    {"repository": "other/repo"},
+    {"pull_request_number": 124},
+    {"head_sha": "unknown"},
+    {"review_url": "https://example.com/unrelated"},
+    {"decision": "changes_requested", "reason": ""},
+])
+def test_incomplete_or_wrong_subject_owner_feedback_is_an_explicit_read_failure(monkeypatch, change):
+    mock_owner_feedback(monkeypatch, [owner_feedback_comment(**change)])
+    with pytest.raises(gh_pr_watch.GhCommandError, match="Owner feedback"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+
+
+def test_app_projection_requires_configured_publisher_and_provider_identity(monkeypatch):
+    comment = owner_feedback_comment()
+    comment["user"] = {"login": "fixture-app[bot]", "id": 99}
+    mock_owner_feedback(monkeypatch, [comment])
+    with pytest.raises(gh_pr_watch.GhCommandError, match="Unverified"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    comment["performed_via_github_app"] = {"id": 77, "slug": "fixture-app"}
+    assert len(gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)) == 1
+    comment["user"] = {"login": "unrelated[bot]", "id": 80}
+    with pytest.raises(gh_pr_watch.GhCommandError, match="Unverified"):
+        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+
+
+def test_newer_owner_acceptance_supersedes_requested_changes_without_granting_merge_authority(monkeypatch):
+    changes = owner_feedback_comment()
+    accepted = owner_feedback_comment(decision="accepted", decided_at="2026-09-26T13:00:00Z")
+    accepted["id"] = 11
+    mock_owner_feedback(monkeypatch, [changes, accepted])
+    pr = {**sample_pr(), "head_sha": "b" * 40, "draft": True}
+    state = {}
+    gh_pr_watch.fetch_new_review_items(pr, state, True)
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3, state["owner_review_items"])
+    assert "address_owner_review_changes" not in actions
+    assert "ready_to_merge" not in actions
+
+
 def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():
     actions = gh_pr_watch.recommend_actions(
         sample_pr(),

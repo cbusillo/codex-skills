@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
@@ -727,11 +727,14 @@ def normalize_issue_comments(items):
     for item in items:
         if not isinstance(item, dict):
             continue
+        user = item.get("user")
         out.append(
             {
                 "kind": "issue_comment",
                 "id": str(item.get("id") or ""),
                 "author": extract_login(item.get("user")),
+                "author_id": user.get("id") if isinstance(user, dict) else None,
+                "github_app": item.get("performed_via_github_app"),
                 "author_association": str(item.get("author_association") or ""),
                 "created_at": str(item.get("created_at") or ""),
                 "body": str(item.get("body") or ""),
@@ -817,6 +820,87 @@ def is_external_human_review_author(item, authenticated_login):
     return not is_bot_login(author)
 
 
+def launchplane_owner_review(item, pr):
+    """Recognize a decision projected by configured, provider-identified automation.
+
+    This verifies the projection's publisher and subject, not permission to merge.
+    The complete reason remains Owner feedback; it is never an agent instruction.
+    """
+    if item.get("kind") != "issue_comment":
+        return None
+    lines = str(item.get("body") or "").splitlines()
+    marker = re.fullmatch(r"<!-- launchplane:product-review:([A-Za-z0-9_.:-]+) -->", lines[0]) if lines else None
+    if marker is None:
+        return None
+    author = str(item.get("author") or "").casefold()
+    if not is_bot_login(author):
+        return None
+    app = item.get("github_app")
+    if (
+        author not in configured_bot_logins()
+        or (
+            author.endswith("[bot]")
+            and (
+                not isinstance(app, dict)
+                or type(app.get("id")) is not int
+                or app["id"] < 1
+                or author != f"{app.get('slug', '')}[bot]".casefold()
+            )
+        )
+        or type(item.get("author_id")) is not int
+        or item["author_id"] < 1
+    ):
+        raise GhCommandError(f"Unverified Launchplane Owner feedback publisher: {author}")
+    prefix = "<!-- launchplane:owner-review "
+    if len(lines) < 2 or not lines[1].startswith(prefix) or not lines[1].endswith(" -->"):
+        raise GhCommandError("Launchplane Owner feedback metadata is missing")
+    try:
+        decision = json.loads(lines[1][len(prefix):-4])
+    except json.JSONDecodeError as error:
+        raise GhCommandError("Launchplane Owner feedback metadata is invalid") from error
+    if (
+        not isinstance(decision, dict)
+        or type(decision.get("schema_version")) is not int
+        or decision["schema_version"] != 1
+        or decision.get("record_id") != marker[1]
+        or str(decision.get("repository") or "").casefold() != pr["repo"].casefold()
+        or type(decision.get("pull_request_number")) is not int
+        or decision["pull_request_number"] != pr["number"]
+        or not isinstance(decision.get("decision"), str)
+        or decision["decision"] not in {"accepted", "changes_requested"}
+        or not isinstance(decision.get("reason"), str)
+        or not re.fullmatch(r"[0-9a-fA-F]{40}", str(decision.get("head_sha") or ""))
+        or not str(decision.get("owner_github_id") or "").isdecimal()
+        or not isinstance(decision.get("owner_github_login"), str)
+        or not decision["owner_github_login"].strip()
+        or not isinstance(decision.get("decided_at"), str)
+        or not decision["decided_at"].strip()
+        or (decision["decision"] == "changes_requested" and not decision["reason"].strip())
+    ):
+        raise GhCommandError("Launchplane Owner feedback does not identify a complete decision for this PR")
+    try:
+        reference = urlparse(str(decision.get("review_url") or ""))
+        query = parse_qs(reference.query)
+        valid_reference = (
+            reference.scheme in {"http", "https"}
+            and bool(reference.netloc)
+            and reference.username is None
+            and reference.password is None
+            and reference.path == "/ui/owner-review"
+            and query.get("repository") == [decision["repository"]]
+            and query.get("pull_request") == [str(pr["number"])]
+            and query.get("decision_id") == [decision["record_id"]]
+        )
+    except ValueError:
+        valid_reference = False
+    if not valid_reference:
+        raise GhCommandError("Launchplane Owner feedback decision link does not match this PR")
+    return {
+        **decision,
+        "matches_current_head": decision["head_sha"].casefold() == pr["head_sha"].casefold(),
+    }
+
+
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, reader=None):
     repo = pr["repo"]
     pr_number = pr["number"]
@@ -841,6 +925,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     # feedback when monitoring starts after comments were posted.
 
     new_items = []
+    owner_review_items = []
     for item in all_items:
         item_id = item.get("id")
         if not item_id:
@@ -848,7 +933,12 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
         author = item.get("author") or ""
         if not author:
             continue
-        if is_bot_login(author):
+        owner_review = launchplane_owner_review(item, pr)
+        if owner_review is not None:
+            item["source"] = "launchplane_owner_review"
+            item["owner_review"] = owner_review
+            owner_review_items.append(item)
+        elif is_bot_login(author):
             if not is_actionable_review_bot_login(author):
                 continue
         elif not is_external_human_review_author(item, authenticated_login):
@@ -874,6 +964,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     state["seen_issue_comment_ids"] = sorted(seen_issue)
     state["seen_review_comment_ids"] = sorted(seen_review_comment)
     state["seen_review_ids"] = sorted(seen_review)
+    # Seen means emitted, not acknowledged by an agent. Retain full decisions on
+    # every snapshot so a resumed session can recover the prose and its revision.
+    state["owner_review_items"] = owner_review_items
     return new_items
 
 
@@ -963,7 +1056,7 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
     )
 
 
-def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries):
+def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=()):
     actions = []
     if pr["closed"] or pr["merged"]:
         if new_review_items:
@@ -971,7 +1064,23 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         actions.append("stop_pr_closed")
         return unique_actions(actions)
 
-    if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    current_owner_reviews = [
+        item["owner_review"] for item in owner_review_items
+        if item["owner_review"]["matches_current_head"]
+    ]
+    latest_owner_review = max(
+        current_owner_reviews,
+        key=lambda decision: (decision["decided_at"], decision["record_id"]),
+        default=None,
+    )
+    owner_changes_requested = (
+        latest_owner_review is not None
+        and latest_owner_review["decision"] == "changes_requested"
+    )
+    if owner_changes_requested:
+        actions.append("address_owner_review_changes")
+
+    if not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         actions.append("ready_to_merge")
         return unique_actions(actions)
 
@@ -1063,6 +1172,7 @@ def collect_snapshot(args):
         new_review_items,
         retries_used,
         args.max_flaky_retries,
+        owner_review_items=state.get("owner_review_items", []),
     )
 
     state["pr"] = {"repo": pr["repo"], "number": pr["number"]}
@@ -1076,6 +1186,7 @@ def collect_snapshot(args):
         "failed_runs": failed_runs,
         "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
+        "owner_review_items": state.get("owner_review_items", []),
         "actions": actions,
         "retry_state": {
             "current_sha_retries_used": retries_used,
