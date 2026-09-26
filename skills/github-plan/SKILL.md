@@ -366,16 +366,19 @@ current session's work or a verified handoff from a finished session, inspect
 and reuse the preserved work under the repository's worktree rules.
 Recheck ownership before `go` starts work; a recommendation does not reserve an
 issue. When in-progress evidence cannot be reconciled with current ownership,
-state the uncertainty and look for independent work rather than claiming the
-item is free. An unavailable session inventory is not proof that nobody owns
-it. If that uncertainty prevents selecting any available work, ask whether to
-resume the named item or leave it with its recorded owner; give a recommendation
-based on the evidence. If all eligible work is underway or waiting, say so
-instead of presenting an occupied item as the next new task or claiming the
-milestone is complete.
+state the uncertainty and ask whether to resume the named item or leave it
+with its recorded owner, with a recommendation based on the evidence. Keep this
+owner decision visible even when recommending independent work. An unavailable
+or partial session inventory is not proof that nobody owns an item.
 
-On `go`, make the start visible before implementation through the existing
-authorized Current Status or automation-owned planning comment. Record the
+If the returned candidates are all occupied, check the result's candidate count,
+truncation and dependency coverage; increase the bounded `--limit` when needed
+before claiming no available work remains. If all eligible work is underway or
+waiting, say so instead of presenting an occupied item as the next new task or
+claiming the milestone is complete.
+
+On `go`, where posting is authorized, make the start visible before implementation
+through the existing Current Status or automation-owned planning comment. Record the
 worker or session, task branch, and next action, then read back current ownership
 evidence and reconcile any competing activity. Keep `next` read-only and respect
 body ownership and posting authority; this coordination record is not a lock or
