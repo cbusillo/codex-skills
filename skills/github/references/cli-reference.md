@@ -400,7 +400,8 @@ missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
 An explicitly empty Milestones section is valid: discovery can still find own
-projects when there is no business milestone to traverse.
+projects when there is no business milestone to traverse. Nonempty text with no
+parseable milestone titles is an error, not an empty graph.
 Closed milestones still listed in direction appear in `completed_milestones`,
 instead of making the graph incomplete while their direction edit is pending.
 The returned `direction_context` preserves Order and Capacity for caller
@@ -425,8 +426,11 @@ retains its narrow graph scope and reports portfolio discovery as excluded.
 For a discovered leaf, up to ten native parent links are read using GitHub's
 [parent issue endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue).
 Parent discussions accompany the child, whole-plan waits remain excluded, and
-inaccessible, cyclic, or deeper ancestry stays unknown. Parent discussion changes
+failed reads, cyclic, or deeper ancestry stays unknown. Parent discussion changes
 also invalidate the review digest. These reads are cached within the invocation.
+As with repository inventory, coverage is limited to the actor's visible data:
+a parent-endpoint 404 establishes no visible parent, not proof that an
+inaccessible parent cannot exist. Global-only options are rejected by local next.
 
 Candidates carry full bounded `discussion` snapshots and a digest. Their
 `availability=needs_review` is not a recommendation to start. Current caller

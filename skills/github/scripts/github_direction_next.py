@@ -314,7 +314,7 @@ def include_parent_context(
 ) -> dict[str, Any]:
     """Do not let discovery bypass a whole-plan wait hidden above the child."""
     tracking = {(root["repo"].casefold(), root["number"]) for root in tracking_roots}
-    discussion = {**item.get("discussion", {}), "parents": parents}
+    discussion: dict[str, Any] = {**item.get("discussion", {}), "parents": parents, "ancestry_complete": complete}
     discussion["complete"] = bool(discussion.get("complete") and complete and all(
         (parent.get("discussion") or {}).get("complete") for parent in parents
     ))
@@ -348,8 +348,9 @@ def rank_portfolio_work(
     excluded = list(graph.get("excluded", []))
     waiting = list(graph.get("waiting", []))
     underway: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in [*graph["candidates"], *discoveries]:
+    seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
+    work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
+    for raw, discovered in work:
         key = f"{raw['repo']}#{raw['number']}".casefold()
         if key in seen:
             continue
@@ -359,9 +360,21 @@ def rank_portfolio_work(
         if hold:
             excluded.append({**item, "exclusion": "repository_held", "review": hold})
             continue
+        if item.get("exclusion"):
+            excluded.append(item)
+            if item["exclusion"] in {"waiting", "parent_waiting"}:
+                status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
+                waiting.extend(waiting_records(item, status_text) or [{
+                    "repo": item["repo"], "number": item["number"], "url": item["url"],
+                    "waiting_for": item.get("waiting_on_parent") or status_text or "Waiting party or condition not recorded",
+                    "reported_by": item["url"], "reported_at": item.get("updated_at"),
+                }])
+            continue
         discussion = item.get("discussion") or {}
         review = reviews.get(key)
-        if not discussion.get("complete"):
+        if discovered and discussion.get("ancestry_complete") is not True:
+            item["review_required"] = "complete_parent_context"
+        elif not discussion.get("complete"):
             item["review_required"] = "complete_issue_discussion"
         elif review is None or review.get("discussion_digest") != discussion.get("digest"):
             item["review_required"] = "direction_discussion_and_current_ownership"
@@ -399,10 +412,10 @@ def rank_portfolio_work(
             item["repository_rank"] = item["rank"]
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
-    candidates.sort(key=lambda item: (
-        priority.get(item.get("category"), 1 if item.get("via") else 4),
-        item["rank"] if item.get("via") else item.get("repository_rank", item["rank"]),
-        str(item.get("created_at") or ""), item["repo"].casefold(), item["number"],
+    candidates.sort(key=lambda candidate: (
+        priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
+        candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"]),
+        str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):
         item["rank"] = rank

@@ -13,7 +13,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
@@ -1034,7 +1034,7 @@ def test_portfolio_empty_business_graph_discovers_available_own_project() -> Non
         assert candidate["source"] == "repository_discovery"
         assert candidate["discussion"]["body"] == own["body"]
         context = {"issues": {"someone/context-panel#42": reviewed(candidate)}}
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert [item["number"] for item in result["available_candidates"]] == [42]
 
@@ -1047,7 +1047,7 @@ def test_portfolio_mediaforce_hold_overrides_active_unowned_issue_and_background
         "evidence": ["owner correction in #817"],
     }}}
     with global_fixture(roots, [leaf], {("someone/direction", 1): relationships(sub_issues=[leaf])}, discovered=[leaf]) as (module, result, _reads):
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert result["candidates"] == []
         assert any(item.get("number") == 545 and item["exclusion"] == "repository_held" for item in result["excluded"])
@@ -1066,7 +1066,7 @@ def test_portfolio_occupied_and_comment_only_wait_leave_no_available_work() -> N
             "someone/codex-lab#979": reviewed(by_number[979], "underway"),
             "someone/BD_to_AVP#769": reviewed(by_number[769], "waiting", reason="Screenshot proof waits for next beta"),
         }}
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert result["candidates"] == result["available_candidates"] == []
         assert result["underway"][0]["number"] == 979
@@ -1082,7 +1082,7 @@ def test_portfolio_partial_ownership_and_stale_or_truncated_discussions_are_not_
         candidate = result["candidates"][0]
         for extra in ({"ownership_complete": False}, {"discussion_digest": "older snapshot"}):
             context = {"issues": {"someone/product#42": reviewed(candidate, **extra)}}
-            with patch.object(module, "next_selection_context", return_value=context):
+            with patch.multiple(module, next_selection_context=lambda _args: context):
                 module.cmd_next(next_args())
             assert result["available_candidates"] == []
         args = next_args()
@@ -1098,12 +1098,12 @@ def test_portfolio_priority_requires_incident_and_repeated_stop_evidence() -> No
         module.cmd_next(next_args())
         by_number = {item["number"]: item for item in result["candidates"]}
         context = {"issues": {
-            "someone/project#1": reviewed(by_number[1], category="own_project"),
+            "someone/project#1": reviewed(by_number[1]),
             "someone/project#2": reviewed(by_number[2], category="repeated_stop_tooling"),
             "someone/project#3": reviewed(by_number[3], category="live_incident"),
             "someone/project#4": reviewed(by_number[4], category="repeated_stop_tooling", stop_occurrences=["https://github.com/someone/project/issues/20", "https://github.com/someone/project/issues/21"]),
         }}
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert [item["number"] for item in result["available_candidates"]] == [3, 4, 1]
         assert next(item for item in result["candidates"] if item["number"] == 2)["review_required"] == "two_linked_stop_occurrences"
@@ -1138,7 +1138,7 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
     with patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
         for configured in ({"app": "configured"}, None):
             calls.clear()
-            with patch.object(module.github_identity, "github_app_config", return_value=configured):
+            with patch.multiple(module.github_identity, github_app_config=lambda: configured):
                 found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context)
             assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
             assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/a", 2), ("someone/b", 2)]
@@ -1150,7 +1150,7 @@ def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() ->
 
 def test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage() -> None:
     module = load_module()
-    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", side_effect=module.PlanError("inventory denied")):
+    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=Mock(side_effect=module.PlanError("inventory denied"))):
         found, coverage = module.discover_direction_work("someone/direction", next_args(), selection_context={})
         assert found == [] and coverage["complete"] is False
         assert coverage["inventory_count"] is None
@@ -1185,11 +1185,11 @@ def test_portfolio_repository_inventory_truncation_and_auth_failure() -> None:
     module = load_module()
     args = next_args()
     args.repo_limit = 1
-    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", return_value=("automation-gh", [{"full_name": "someone/archived", "archived": True}, {"full_name": "someone/unread"}])):
+    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=lambda *_args, **_kwargs: ("automation-gh", [{"full_name": "someone/archived", "archived": True}, {"full_name": "someone/unread"}])):
         found, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
         assert found == [] and coverage["inventory_truncated"] and not coverage["complete"]
     failure = module.github_api_core.FailureDetail(cause="rest_primary_rate_limited", message="quota exhausted", retryable=False, fallback_eligible=False, disposition="stop")
-    with patch.object(module.github_identity, "github_app_config", return_value={}), patch.object(module, "collect_paged_rest_items", side_effect=module.PlanError("quota exhausted", failure=failure)):
+    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=Mock(side_effect=module.PlanError("quota exhausted", failure=failure))):
         try:
             module.discover_direction_work("someone/direction", args, selection_context={})
         except module.PlanError as exc:
@@ -1225,7 +1225,7 @@ def test_portfolio_hold_preserves_other_repository_milestone_work_and_service_pa
         service = module.github_direction_next.rank_portfolio_work(
             result, [], milestone_titles=["First", "Second"], selection_context=context,
         )
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert result["candidates"] == service["candidates"]
         assert [item["number"] for item in result["candidates"]] == [6]
@@ -1238,7 +1238,7 @@ def test_portfolio_empty_milestones_and_unspecified_wait_are_supported() -> None
     waiting = global_issue("someone/product", 1, labels=["plan", "plan:waiting"])
     own = global_issue("someone/product", 2)
     with global_fixture([], [], {}, discovered=[waiting, own]) as (module, result, _reads):
-        with patch.object(module, "load_direction", return_value="# Direction\n## Order\nOwn projects.\n## Milestones\n"):
+        with patch.multiple(module, load_direction=lambda *_: "# Direction\n## Order\nOwn projects.\n## Milestones\n"):
             module.cmd_next(next_args())
         assert [item["number"] for item in result["candidates"]] == [2]
         assert result["waiting"][0]["number"] == 1
@@ -1254,17 +1254,60 @@ def test_portfolio_unreadable_parent_and_changed_parent_comment_require_review()
         first = result["candidates"][0]
         context = {"issues": {"someone/product#2": reviewed(first)}}
         comments[(parent["repo"], 1)].append({"body": "Wait for the next release."})
-        with patch.object(module, "next_selection_context", return_value=context):
+        with patch.multiple(module, next_selection_context=lambda _args: context):
             module.cmd_next(next_args())
         assert result["available_candidates"] == []
         assert result["candidates"][0]["discussion"]["digest"] != first["discussion"]["digest"]
-        with patch.object(module, "read_next_parent", side_effect=module.PlanError("parent inaccessible")):
+        with patch.multiple(module, read_next_parent=Mock(side_effect=module.PlanError("parent inaccessible"))):
             module.cmd_next(next_args())
         assert result["candidates"] == []
         assert result["discovery_context"]["complete"] is False
 
 
+def test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse() -> None:
+    with global_fixture([], [], {}) as (module, _result, _reads):
+        with patch.multiple(module, load_direction=lambda *_: "# Direction\n## Milestones\n- Launch beta proves readiness."):
+            try:
+                module.cmd_next(next_args())
+            except module.PlanError as exc:
+                assert "nonempty Milestones" in str(exc)
+            else:
+                raise AssertionError("Unparsed direction must not become an empty graph")
+        args = next_args(repo="someone/product")
+        args.selection_context = "holds.json"
+        try:
+            module.cmd_next(args)
+        except module.PlanError as exc:
+            assert "OWNER/direction" in str(exc)
+        else:
+            raise AssertionError("Local next must not silently ignore global selection evidence")
+
+
+def test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_context() -> None:
+    module = load_module()
+    shared = module.github_direction_next
+    discoveries = []
+    for number, reason in enumerate(("blocked_by_open_dependency", "waiting", "unknown_dependencies", "delegated_to_open_sub_issues", None), 1):
+        raw = global_issue("someone/product", number)
+        candidate = {**raw, "url": raw["html_url"], "discussion": shared.discussion_snapshot(raw, [], complete=True)}
+        if reason:
+            candidate["exclusion"] = reason
+        candidate = shared.include_parent_context(candidate, [], complete=True, tracking_roots=[])
+        discoveries.append(candidate)
+    context = {"issues": {f"someone/product#{item['number']}": reviewed(item) for item in discoveries}}
+    ranked = shared.rank_portfolio_work({"candidates": []}, discoveries, milestone_titles=[], selection_context=context)
+    assert [item["number"] for item in ranked["available_candidates"]] == [5]
+    assert len(ranked["excluded"]) == 4
+    assert ranked["waiting"][0]["number"] == 2
+    discoveries[-1]["discussion"].pop("ancestry_complete")
+    ranked = shared.rank_portfolio_work({"candidates": []}, discoveries, milestone_titles=[], selection_context=context)
+    assert ranked["available_candidates"] == []
+    assert ranked["candidates"][0]["review_required"] == "complete_parent_context"
+
+
 TESTS = [
+    test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
+    test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_context,
     test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,
     test_portfolio_hold_preserves_other_repository_milestone_work_and_service_parity,
     test_portfolio_empty_milestones_and_unspecified_wait_are_supported,
