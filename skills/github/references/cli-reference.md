@@ -394,6 +394,8 @@ The global `--scan-limit` bounds unique graph nodes, not just roots. Cycles,
 missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
+Closed milestones still listed in direction appear in `completed_milestones`,
+instead of making the graph incomplete while their direction edit is pending.
 The returned `direction_context` preserves Order and Capacity for caller
 judgment: unlinked live incidents and repeat-stop tooling exceptions need their
 own evidence, and the weekly own-project share remains an audit, not a per-call
@@ -401,10 +403,13 @@ quota. This query does not scan every repository or authorize writes.
 
 `scripts/github_direction_next.py:rank_direction_work` is the reusable ranking
 entry point for service consumers such as Launchplane. It accepts tracking
-roots, ordered milestone titles, a node reader, the scan bound, and the common
-candidate ranker. It performs no network calls or mutations itself; the CLI
-adapter supplies the existing authenticated, bounded GitHub readers and local
-plan evaluation.
+roots, ordered milestone titles, completed milestone titles, a node reader,
+and the scan bound. The same module's `evaluate_direction_node` classifies raw
+issue, relationship, label and Focus evidence, including Current Status waits;
+`rank_next_candidates` supplies the common ordering for local and global calls.
+Neither classification nor ranking makes network calls or mutations. Adapters
+only collect evidence with their authenticated, bounded readers, mapping
+inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
 
 ### Planning: Milestones
 

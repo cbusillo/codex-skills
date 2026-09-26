@@ -685,8 +685,9 @@ def global_fixture(
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
         read_next_issue_relationships=read_relationships,
         get_issue=get_node,
+        milestone_route=lambda: ("gh", "automation-gh"),
         emit=captured.update,
-    ):
+    ), patch.object(module.github_milestone_core, "list_milestones", return_value={"milestones": [root["milestone"] for root in roots if root.get("milestone")]}):
         yield module, captured, reads
 
 
@@ -886,6 +887,76 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
         assert any(node.get("number") == 3 and node["exclusion"] == "waiting" for node in result["excluded"])
 
 
+def test_global_leaf_waiting_on_referenced_review_is_not_actionable() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/site", 91, body="## Current Status\nState: Active.\nWaiting for: Justin's owner review of #92 remains pending.")
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["candidates"] == []
+    assert result["waiting"][0]["number"] == 92
+
+
+def test_global_closed_milestone_is_completed_not_missing() -> None:
+    roots = [track("someone/direction", 2, "Second")]
+    closed = milestone_data(1, "First", state="closed", created_at="2026-01-01T00:00:00Z")
+    with global_fixture(roots, [], {}) as (module, result, _reads):
+        with patch.object(module.github_milestone_core, "list_milestones", return_value={"milestones": [closed, roots[0]["milestone"]]}):
+            module.cmd_next(next_args())
+    assert result["dependency_context"]["complete"] is True
+    assert result["completed_milestones"] == ["First"]
+
+
+def test_global_inconsistent_blocked_parent_makes_evidence_incomplete() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    parent = global_issue("someone/product", 3, labels=["plan", "plan:blocked"])
+    leaf = global_issue("someone/product", 4)
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[parent]),
+        ("someone/product", 3): relationships(sub_issues=[leaf]),
+    }
+    with global_fixture(roots, [parent, leaf], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["dependency_context"]["complete"] is False
+    assert result["dependency_context"]["degraded_count"] == 1
+
+
+def test_global_empty_tracks_are_not_reported_as_people_waits() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    with global_fixture(roots, [], {}) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert result["waiting"] == []
+    assert all(item["exclusion"] == "tracking_without_open_work" for item in result["excluded"])
+
+
+def test_global_service_consumer_uses_the_same_classification_and_sort_as_cli() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    ready = global_issue("other/project", 3)
+    waiting = global_issue("someone/site", 91, body="## Current Status\nState: Active.\nWaiting for: Justin's review of #92.\n<!-- operation marker -->")
+    edges = {("someone/direction", 1): relationships(sub_issues=[waiting, ready])}
+    with global_fixture(roots, [ready, waiting], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        shared = module.github_direction_next
+        nodes = {(item["repo"], item["number"]): item for item in roots + [ready, waiting]}
+
+        def service_reader(repo: str, number: int) -> dict[str, Any]:
+            node = nodes[(repo, number)]
+            relations = {
+                name: [module.compact_relationship_issue(item, name) for item in items]
+                for name, items in edges.get((repo, number), relationships()).items()
+            }
+            return shared.evaluate_direction_node(node, config=module.DEFAULT_CONFIG, focus=None, relationships=relations)
+
+        ranked = shared.rank_direction_work(
+            [{**shared.compact_list_issue(item["repo"], item), "milestone": shared.next_milestone_context(item)} for item in roots],
+            milestone_titles=["First", "Second"], read_node=service_reader, scan_limit=50,
+        )
+        for field in ("candidates", "waiting", "excluded"):
+            assert ranked[field] == result[field]
+        assert [item["number"] for item in ranked["candidates"]] == [3]
+        assert ranked["waiting"][0]["number"] == 92
+
+
 TESTS = [
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
@@ -911,6 +982,11 @@ TESTS = [
     test_global_waits_use_current_status_and_never_reclassify_mentioned_work,
     test_global_milestone_scope_and_direction_order_capacity_context,
     test_global_whole_parent_wait_does_not_select_its_children_or_dependencies,
+    test_global_leaf_waiting_on_referenced_review_is_not_actionable,
+    test_global_closed_milestone_is_completed_not_missing,
+    test_global_inconsistent_blocked_parent_makes_evidence_incomplete,
+    test_global_empty_tracks_are_not_reported_as_people_waits,
+    test_global_service_consumer_uses_the_same_classification_and_sort_as_cli,
 ]
 
 
