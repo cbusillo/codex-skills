@@ -11,6 +11,8 @@ writes, owner-specific routing, or authorization decisions.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable
 from typing import Any
@@ -265,6 +267,169 @@ def is_direction_repository(repo: str) -> bool:
     return len(parts) == 2 and bool(parts[0]) and parts[1].casefold() == "direction"
 
 
+def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *, complete: bool) -> dict[str, Any]:
+    """Carry the discussion, not a guess about arbitrary human prose, to selection."""
+    snapshot = {
+        "body": issue.get("body") or "",
+        "updated_at": issue.get("updated_at"),
+        "comments": [{
+            "id": comment.get("id"), "author": (comment.get("user") or {}).get("login"),
+            "updated_at": comment.get("updated_at"), "url": comment.get("html_url"),
+            "body": comment.get("body") or "",
+        } for comment in comments],
+        "complete": complete,
+    }
+    return {**snapshot, "digest": hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()}
+
+
+def validate_selection_context(context: Any) -> dict[str, Any]:
+    """A caller's current evidence snapshot is not a new planning database."""
+    if not isinstance(context, dict) or set(context) - {"repository_holds", "issues"}:
+        raise ValueError("selection context needs only repository_holds and issues objects")
+    for field in ("repository_holds", "issues"):
+        entries = context.get(field, {})
+        if not isinstance(entries, dict):
+            raise ValueError(f"selection context {field} must be an object")
+        for key, entry in entries.items():
+            pattern = r"[\w.-]+/[\w.-]+" + (r"#[1-9]\d*" if field == "issues" else "")
+            if not re.fullmatch(pattern, key) or not isinstance(entry, dict):
+                raise ValueError(f"invalid {field} entry: {key}")
+            if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+                raise ValueError(f"{key} needs a reason")
+            evidence = entry.get("evidence")
+            if not isinstance(evidence, list) or not evidence or any(not isinstance(value, str) or not value.strip() for value in evidence):
+                raise ValueError(f"{key} needs evidence sources")
+            if field == "issues" and entry.get("state") not in {"available", "underway", "waiting", "ineligible"}:
+                raise ValueError(f"{key} has an invalid review state")
+    return context
+
+
+def repository_hold(context: dict[str, Any], repo: str) -> dict[str, Any] | None:
+    return next((value for key, value in context.get("repository_holds", {}).items() if key.casefold() == repo.casefold()), None)
+
+
+def include_parent_context(
+    item: dict[str, Any], parents: list[dict[str, Any]], *, complete: bool,
+    tracking_roots: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Do not let discovery bypass a whole-plan wait hidden above the child."""
+    tracking = {(root["repo"].casefold(), root["number"]) for root in tracking_roots}
+    discussion: dict[str, Any] = {**item.get("discussion", {}), "parents": parents, "ancestry_complete": complete}
+    discussion["complete"] = bool(discussion.get("complete") and complete and all(
+        (parent.get("discussion") or {}).get("complete") for parent in parents
+    ))
+    discussion.pop("digest", None)
+    discussion["digest"] = hashlib.sha256(json.dumps(discussion, sort_keys=True).encode()).hexdigest()
+    result = {**item, "discussion": discussion}
+    if not complete:
+        return {**result, "exclusion": "unknown_ancestry"}
+    for parent in parents:
+        if (parent["repo"].casefold(), parent["number"]) in tracking:
+            continue
+        if parent.get("exclusion") in {"waiting", "later_focus", "label_blocked_without_native_edge"}:
+            return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"]}
+    return result
+
+
+def rank_portfolio_work(
+    graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
+    milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
+    repository_milestones: dict[str, list[str] | None] | None = None,
+) -> dict[str, Any]:
+    """Share final evidence handling across adapters without inferring permission.
+
+    Unreviewed issues remain possible work, never independently available work.
+    Callers interpret direction and full discussions and supply current ownership
+    evidence; neither labels nor an incomplete session list establish availability.
+    """
+    context = validate_selection_context(selection_context or {})
+    reviews = {key.casefold(): value for key, value in context.get("issues", {}).items()}
+    candidates: list[dict[str, Any]] = []
+    excluded = list(graph.get("excluded", []))
+    waiting = list(graph.get("waiting", []))
+    underway: list[dict[str, Any]] = []
+    seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
+    work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
+    for raw, discovered in work:
+        key = f"{raw['repo']}#{raw['number']}".casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {**raw, "availability": "needs_review"}
+        hold = repository_hold(context, item["repo"])
+        if hold:
+            excluded.append({**item, "exclusion": "repository_held", "review": hold})
+            continue
+        if item.get("exclusion"):
+            excluded.append(item)
+            if item["exclusion"] in {"waiting", "parent_waiting"}:
+                status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
+                waiting.extend(waiting_records(item, status_text) or [{
+                    "repo": item["repo"], "number": item["number"], "url": item["url"],
+                    "waiting_for": item.get("waiting_on_parent") or status_text or "Waiting party or condition not recorded",
+                    "reported_by": item["url"], "reported_at": item.get("updated_at"),
+                }])
+            continue
+        discussion = item.get("discussion") or {}
+        review = reviews.get(key)
+        if discovered and discussion.get("ancestry_complete") is not True:
+            item["review_required"] = "complete_parent_context"
+        elif not discussion.get("complete"):
+            item["review_required"] = "complete_issue_discussion"
+        elif review is None or review.get("discussion_digest") != discussion.get("digest"):
+            item["review_required"] = "direction_discussion_and_current_ownership"
+        elif review["state"] == "underway":
+            underway.append({**item, "availability": "underway", "review": review})
+            continue
+        elif review["state"] == "waiting":
+            waiting.append({**item, "waiting_for": review["reason"], "review": review})
+            excluded.append({**item, "exclusion": "reviewed_wait", "review": review})
+            continue
+        elif review["state"] == "ineligible":
+            excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
+            continue
+        elif review.get("ownership_complete") is not True:
+            item["review_required"] = "current_ownership_evidence_incomplete"
+        else:
+            category = review.get("category")
+            if item.get("via") and category != "live_incident":
+                category = "milestone"
+            occurrences = review.get("stop_occurrences") or []
+            if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and not item.get("via")):
+                item["review_required"] = "direction_eligibility"
+            elif category == "repeated_stop_tooling" and (
+                not isinstance(occurrences, list)
+                or len({url for url in occurrences if isinstance(url, str) and url.startswith("https://")}) < 2
+            ):
+                item["review_required"] = "two_linked_stop_occurrences"
+            else:
+                item.update(availability="available", category=category, review=review)
+        candidates.append(item)
+    for repo, titles in (repository_milestones or {}).items():
+        group = [item for item in candidates if not item.get("via") and item["repo"].casefold() == repo.casefold()]
+        rank_next_candidates(group, direction_milestones=titles)
+        for item in group:
+            item["repository_rank"] = item["rank"]
+    rank_next_candidates(candidates, direction_milestones=milestone_titles)
+    priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
+    candidates.sort(key=lambda candidate: (
+        priority.get(candidate.get("category"), 1 if candidate.get("via") else 4),
+        candidate["rank"] if candidate.get("via") else candidate.get("repository_rank", candidate["rank"]),
+        str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
+    ))
+    for rank, item in enumerate(candidates, 1):
+        item["rank"] = rank
+    available = [item for item in candidates if item["availability"] == "available"]
+    return {
+        "candidates": candidates, "candidate_count": len(candidates),
+        "available_candidates": available, "available_candidate_count": len(available),
+        "review_required_count": len(candidates) - len(available),
+        "underway": underway, "waiting": waiting, "excluded": excluded,
+        "repository_holds": context.get("repository_holds", {}),
+        "ownership_context": {"source": "caller_evidence", "all_active_sessions_searched": False},
+    }
+
+
 def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
     """Keep explicitly reported waits separate from a parent's independent work.
 
@@ -457,6 +622,7 @@ def rank_direction_work(
         "excluded": excluded,
         "waiting": waiting,
         "completed_milestones": [title for title in milestone_titles if title in completed],
+        "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "evaluated": len(seen),
         "truncated": truncated,
         "dependency_context": {

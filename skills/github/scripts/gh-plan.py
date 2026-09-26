@@ -2182,6 +2182,8 @@ def cmd_next(args: argparse.Namespace) -> None:
     if github_direction_next.is_direction_repository(repo):
         cmd_direction_next(args, repo)
         return
+    if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit", "comment_limit", "selection_context")):
+        raise PlanError("Global discovery options require an OWNER/direction repository")
     config = load_config(repo)
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
@@ -2344,11 +2346,120 @@ def cmd_next(args: argparse.Namespace) -> None:
     })
 
 
+def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
+    path = getattr(args, "selection_context", None)
+    try:
+        return github_direction_next.validate_selection_context(json.loads(pathlib.Path(path).read_text()) if path else {})
+    except (OSError, ValueError) as exc:
+        raise PlanError(f"Invalid selection context: {exc}") from exc
+
+
+def next_source_error(exc: PlanError) -> str:
+    # Preserve the existing provider/auth/quota stop policy and actor identity.
+    if isinstance(exc, ClassifiedPlanError) or (exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found"}):
+        raise exc
+    return github_api_core.redact_string(str(exc))
+
+
+def read_next_parent(repo: str, number: int) -> dict[str, Any] | None:
+    try:
+        _, parent = api_json("GET", f"/repos/{repo}/issues/{number}/parent", bucket="rest_core", failed_step="next_parent_issue")
+    except PlanError as exc:
+        if (exc.api_result or {}).get("status") == 404:
+            return None
+        raise
+    ref = compact_relationship_issue(parent, "parent")
+    return {**parent, "repo": ref["repo"]}
+
+
+def discover_direction_work(
+    repo: str, args: argparse.Namespace, *, selection_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Inventory the current actor's owner repositories, including non-plan issues.
+
+    No name/label heuristic can decide product vs tooling or override an owner
+    hold. Return merged direction and explicit source coverage for that review.
+    """
+    repo_limit = getattr(args, "repo_limit", None) or 100
+    issue_limit = getattr(args, "repository_issue_limit", None) or 100
+    app_configured = github_identity.github_app_config() is not None
+    path = "/installation/repositories" if app_configured else "/user/repos"
+    coverage: dict[str, Any] = {
+        "source": path, "owner": repo.split("/")[0], "repository_limit": repo_limit,
+        "issue_limit_per_repository": issue_limit, "repositories": [],
+        "complete": True, "inventory_truncated": False,
+        "scope": "repositories accessible to the configured actor; owner repositories only",
+        "outside_scope": ["repositories not accessible to this actor", "closed issues", "pull requests", "active session inventory"],
+    }
+    try:
+        _, repositories = collect_paged_rest_items(
+            path, query={} if app_configured else {"affiliation": "owner,collaborator,organization_member"},
+            collection_key="repositories" if app_configured else None,
+            bucket="rest_core", step_prefix="next_repository_inventory", limit=repo_limit + 1,
+        )
+    except PlanError as exc:
+        coverage.update(complete=False, error=next_source_error(exc), inventory_count=None)
+        return [], coverage
+    coverage["inventory_count"] = min(len(repositories), repo_limit)
+    coverage["inventory_truncated"] = len(repositories) > repo_limit
+    coverage["complete"] = not coverage["inventory_truncated"]
+    queues: list[list[dict[str, Any]]] = []
+    for repository in sorted(repositories[:repo_limit], key=lambda item: str(item.get("full_name", "")).casefold()):
+        name = repository.get("full_name")
+        source: dict[str, Any] = {"repo": name}
+        coverage["repositories"].append(source)
+        if not isinstance(name, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", name):
+            source.update(exclusion="invalid_repository_inventory_entry")
+            coverage["complete"] = False
+            continue
+        reason = None
+        if name.split("/")[0].casefold() != coverage["owner"].casefold():
+            reason = "other_owner"
+        elif repository.get("archived") or repository.get("disabled"):
+            reason = "archived_or_disabled"
+        elif repository.get("has_issues") is False:
+            reason = "issues_disabled"
+        elif repository.get("size") == 0 and repository.get("open_issues_count") == 0:
+            reason = "empty_without_open_issues"
+        hold = github_direction_next.repository_hold(selection_context, name)
+        if hold:
+            source["hold"] = hold
+            reason = "repository_held"
+        if reason:
+            source["exclusion"] = reason
+            continue
+        try:
+            source["direction"] = load_direction(name)
+            _, issues = collect_paged_rest_items(
+                f"/repos/{name}/issues", query={"state": "open", "sort": "updated", "direction": "desc"},
+                bucket="rest_core", step_prefix="next_repository_issues", limit=issue_limit + 1, issue_only=True,
+            )
+            source.update(issue_count=min(len(issues), issue_limit), truncated=len(issues) > issue_limit)
+            coverage["complete"] &= not source["truncated"]
+            listed: list[dict[str, Any]] = [{**issue, "repo": name} for issue in issues[:issue_limit]]
+            prioritized: list[dict[str, Any]] = [{**compact_list_issue(name, issue), "milestone": next_milestone_context(issue)} for issue in listed]
+            rank_next_candidates(prioritized, direction_milestones=direction_milestone_titles(source["direction"]) if source["direction"] else None)
+            ranks: dict[int, int] = {int(item["number"]): int(item["rank"]) for item in prioritized}
+            listed.sort(key=lambda issue: ranks[issue["number"]])
+            # Round-robin sources so a large tooling backlog cannot consume the
+            # whole evaluation budget before smaller own projects are inspected.
+            queues.append(listed)
+        except PlanError as exc:
+            source.update(error=next_source_error(exc), exclusion="source_unavailable")
+            coverage["complete"] = False
+    ordered = [queue[index] for index in range(max((len(queue) for queue in queues), default=0)) for queue in queues if index < len(queue)]
+    coverage["issue_inventory_count"] = len(ordered)
+    return ordered, coverage
+
+
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
+    selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
     titles = direction_milestone_titles(direction_text or "")
-    if not titles:
+    if direction_text is None or not re.search(r"(?m)^##\s+Milestones\s*$", direction_text):
         raise PlanError(f"Global next needs the ordered milestones in {repo}/{DIRECTION_FILE}")
+    if not titles and section_map(direction_text).get("Milestones", "").strip():
+        raise PlanError(f"Could not parse the nonempty Milestones section in {repo}/{DIRECTION_FILE}")
     gh_cmd, expected_actor = milestone_route()
     milestone_inventory = github_milestone_core.list_milestones(
         repo, state="all", limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
@@ -2382,14 +2493,18 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
+    nodes: dict[tuple[str, int], dict[str, Any]] = {}
+    parents: dict[tuple[str, int], dict[str, Any] | None] = {}
 
     def read_node(issue_repo: str, number: int) -> dict[str, Any]:
         nonlocal actor
         key = (issue_repo.casefold(), number)
-        raw = seeds.get(key)
+        if key in nodes:
+            return nodes[key]
+        raw_issue = seeds.get(key)
         try:
-            if raw is None:
-                issue_actor, raw = get_issue(str(number), issue_repo)
+            if raw_issue is None:
+                issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
             if issue_repo not in contexts:
                 target_config = load_config(issue_repo)
@@ -2398,36 +2513,78 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 contexts[issue_repo] = (target_config, focus_values)
                 focus_contexts[issue_repo] = focus_context
             target_config, focus_values = contexts[issue_repo]
-            focus = focus_values.get(raw.get("html_url") or raw.get("url"))
+            focus = focus_values.get(raw_issue.get("html_url") or raw_issue.get("url"))
             base = {
-                **compact_list_issue(issue_repo, raw),
-                "plan_status": next_plan_status(raw, target_config),
+                **compact_list_issue(issue_repo, raw_issue),
+                "plan_status": next_plan_status(raw_issue, target_config),
                 "focus": focus,
-                "milestone": next_milestone_context(raw),
+                "milestone": next_milestone_context(raw_issue),
             }
-            if raw.get("pull_request") is not None:
+            if raw_issue.get("pull_request") is not None:
                 return {"item": {**base, "exclusion": "pull_request"}}
-            static = next_static_exclusion(raw, config=target_config, focus=focus)
+            static = next_static_exclusion(raw_issue, config=target_config, focus=focus)
             if static:
-                return {"item": static}
-            relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
-            actor = relation_actor or actor
-            return github_direction_next.evaluate_direction_node(
-                raw, config=target_config, focus=focus, relationships=relationships,
-                truncated_relationships=truncated,
+                evaluated_node = {"item": static}
+            else:
+                relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
+                actor = relation_actor or actor
+                evaluated_node = github_direction_next.evaluate_direction_node(
+                    raw_issue, config=target_config, focus=focus, relationships=relationships,
+                    truncated_relationships=truncated,
+                )
+            comment_limit = getattr(args, "comment_limit", None) or 100
+            _, comments = collect_paged_rest_items(
+                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+                step_prefix="next_issue_comments", limit=comment_limit + 1,
             )
+            evaluated_node["item"]["discussion"] = github_direction_next.discussion_snapshot(
+                raw_issue, comments[:comment_limit], complete=len(comments) <= comment_limit,
+            )
+            nodes[key] = evaluated_node
+            return evaluated_node
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.
-            if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found"}:
-                raise
-            if isinstance(exc, ClassifiedPlanError):
-                raise
             return {"item": {
                 "repo": issue_repo, "number": number,
                 "url": f"https://github.com/{issue_repo}/issues/{number}",
-                "exclusion": "unknown_dependencies", "detail": github_api_core.redact_string(str(exc)),
+                "exclusion": "unknown_dependencies", "detail": next_source_error(exc),
             }}
+
+    def with_ancestry(leaf_item: dict[str, Any]) -> dict[str, Any]:
+        ancestors: list[dict[str, Any]] = []
+        key = (leaf_item["repo"].casefold(), leaf_item["number"])
+        visited = {key}
+        complete = False
+        detail = "parent ancestry exceeded the limit of 10 or contains a cycle"
+        # GitHub ancestry is separate from the downward graph. Bound it even
+        # when a provider returns a cycle or an unexpectedly deep chain.
+        for _ in range(10):
+            try:
+                if key not in parents:
+                    parents[key] = read_next_parent(*key)
+                parent = parents[key]
+                if parent is None:
+                    complete = True
+                    break
+                key = (parent["repo"].casefold(), parent["number"])
+                if key in visited:
+                    break
+                visited.add(key)
+                seeds[key] = parent
+                classified = read_node(parent["repo"], parent["number"])["item"]
+                ancestors.append(classified)
+                if classified.get("exclusion") == "unknown_dependencies":
+                    break
+            except PlanError as exc:
+                detail = next_source_error(exc)
+                break
+        annotated_item = github_direction_next.include_parent_context(
+            leaf_item, ancestors, complete=complete, tracking_roots=ranked["tracking_roots"],
+        )
+        if not complete:
+            annotated_item["detail"] = detail
+        return annotated_item
 
     roots = [{
         **compact_list_issue(repo, item), "milestone": next_milestone_context(item),
@@ -2441,7 +2598,49 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked["truncated"] = True
         ranked["dependency_context"]["complete"] = False
     ranked["dependency_context"]["milestone_inventory_truncated"] = milestones_truncated
+    graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"], "truncated": ranked["truncated"]}
+    discoveries: list[dict[str, Any]] = []
+    discovery: dict[str, Any] = {"complete": False, "exclusion": "explicit_milestone_scope"}
+    if scope is None:
+        inventory, discovery = discover_direction_work(repo, args, selection_context=selection_context)
+        seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
+        inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
+        discovery.update(evaluated=min(len(inventory), args.scan_limit), scan_limit=args.scan_limit, unevaluated_count=max(0, len(inventory) - args.scan_limit))
+        discovery["parent_limit_per_issue"] = 10
+        discovery["complete"] &= not discovery["unevaluated_count"]
+        for raw in inventory[:args.scan_limit]:
+            ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
+            seeds[(raw["repo"].casefold(), raw["number"])] = raw
+            node = read_node(raw["repo"], raw["number"])
+            item = {**node["item"], "source": "repository_discovery"}
+            if not item.get("exclusion"):
+                item = with_ancestry(item)
+            if not (item.get("discussion") or {}).get("complete"):
+                discovery["complete"] = False
+            if item.get("exclusion"):
+                ranked["excluded"].append(item)
+                reports = node.get("waiting") or []
+                ranked["waiting"].extend(reports)
+                if item["exclusion"] in {"waiting", "parent_waiting"} and not reports:
+                    ranked["waiting"].append({
+                        "repo": item["repo"], "number": item["number"], "url": item["url"],
+                        "waiting_for": item.get("waiting_on_parent") or node.get("status_text") or "Waiting party or condition not recorded",
+                        "reported_by": item["url"], "reported_at": item.get("updated_at"),
+                    })
+                if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
+                    discovery["complete"] = False
+            else:
+                discoveries.append(item)
+    portfolio = github_direction_next.rank_portfolio_work(
+        ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
+        repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
+    )
+    ranked.update(portfolio)
     ranked["candidates"] = ranked["candidates"][:args.limit]
+    ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
+    ranked["graph_context"] = graph_coverage
+    ranked["discovery_context"] = discovery
+    ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")
     emit({
         "ok": True, "actor": actor, "repo": repo,
@@ -2457,6 +2656,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             "waiting_reports_are_current_status_evidence_not_dependency_edges",
             "live_breakage_and_repeated_tooling_stops_require_direction_context",
             "weekly_own_project_share_is_audit_context_not_a_per_call_quota",
+            "candidates_are_possible_work_until_direction_discussion_and_ownership_review",
+            "graph_coverage_is_not_portfolio_or_active_session_coverage",
         ],
     })
 
@@ -3424,6 +3625,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5)
     p.add_argument("--scan-limit", type=positive_limit, default=50)
+    p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
+    p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: open issues per repository (default 100)")
+    p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
+    p.add_argument("--selection-context", help="Global next: current owner holds and issue review evidence JSON; never a durable plan")
     p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")

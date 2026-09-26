@@ -399,12 +399,49 @@ The global `--scan-limit` bounds unique graph nodes, not just roots. Cycles,
 missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
+An explicitly empty Milestones section is valid: discovery can still find own
+projects when there is no business milestone to traverse. Nonempty text with no
+parseable milestone titles is an error, not an empty graph.
 Closed milestones still listed in direction appear in `completed_milestones`,
 instead of making the graph incomplete while their direction edit is pending.
 The returned `direction_context` preserves Order and Capacity for caller
 judgment: unlinked live incidents and repeat-stop tooling exceptions need their
 own evidence, and the weekly own-project share remains an audit, not a per-call
-quota. This query does not scan every repository or authorize writes.
+quota. With no `--milestone`, the query also inventories accessible owner
+repositories and their open issues, including non-plan issues, and returns their
+merged direction. Other owners, archived/disabled repos, disabled issue trackers,
+and empty repos without open issues have explicit exclusions. Forks remain
+eligible for discovery. An App uses `/installation/repositories`; a configured
+non-App actor uses `/user/repos`, without switching identities on failure.
+
+`graph_context` covers native traversal; `discovery_context` covers repository
+inventory and issue reads; neither proves active ownership. `--repo-limit`
+(default 100), `--repository-issue-limit` (100), and `--comment-limit` (100) bound
+the new sources. `--scan-limit` separately bounds graph nodes and discovered issue
+evaluations. Discovery visits repositories round-robin after local milestone
+ordering, so one large backlog does not consume the entire evaluation budget.
+`--limit` caps displayed candidates, not coverage. Unevaluated issues, truncated
+comments/inventories, and inaccessible sources remain explicit. `--milestone`
+retains its narrow graph scope and reports portfolio discovery as excluded.
+For a discovered leaf, up to ten native parent links are read using GitHub's
+[parent issue endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue).
+Parent discussions accompany the child, whole-plan waits remain excluded, and
+failed reads, cyclic, or deeper ancestry stays unknown. Parent discussion changes
+also invalidate the review digest. These reads are cached within the invocation.
+As with repository inventory, coverage is limited to the actor's visible data:
+a parent-endpoint 404 establishes no visible parent, not proof that an
+inaccessible parent cannot exist. Global-only options are rejected by local next.
+
+Candidates carry full bounded `discussion` snapshots and a digest. Their
+`availability=needs_review` is not a recommendation to start. Current caller
+judgments may be supplied with `--selection-context FILE`; read the
+[global selection procedure](../../github-plan/references/global-next.md) for
+the small evidence format. Known repository holds exclude all work there.
+Reviewed available work appears in `available_candidates`, occupied work in
+`underway`, and comment-only waits in `waiting`. Stale/incomplete discussion,
+partial ownership evidence, and unproven tooling eligibility cannot produce an
+available candidate. Selection context is temporary evidence, not a plan database.
+No `next` mode mutates planning state or authorizes execution.
 
 `scripts/github_direction_next.py:rank_direction_work` is the reusable ranking
 entry point for service consumers such as Launchplane. It accepts tracking
@@ -418,6 +455,15 @@ node rather than treating the visible prefix as a complete dependency list.
 Neither classification nor ranking makes network calls or mutations. Adapters
 only collect evidence with their authenticated, bounded readers, mapping
 inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
+`discussion_snapshot` normalizes bounded comments for both adapters, and
+`include_parent_context` preserves ancestor waits and discussion freshness;
+`rank_portfolio_work` combines graph candidates, discoveries, and caller selection
+evidence with the same holds, review states, and priority. Services must supply
+repository milestone order and bounded parent evidence through those shared
+functions, and report their discovery coverage separately. A repository hold
+filters work in that repository without cutting native paths to independent
+work in another. Calling only `rank_direction_work` proves
+graph coverage, not portfolio discovery.
 
 ### Planning: Milestones
 
