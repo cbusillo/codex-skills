@@ -56,12 +56,13 @@ until they pass.
 
 ## Milestones
 
-- `Odoo tools proven on the CM website` proves that on the CM website
-  repository, an executing agent lands an Odoo change with the JetBrains
-  inspection and the Odoo plugin giving a real green or red result while other
-  sessions inspect at the same time. Breaking the website there is acceptable.
-  Ends if an inspection returns unknown because the IDE was busy, or the Odoo
-  check is skipped.
+- `Shorter skills proven in use` proves that every maintained skill is reviewed
+  and either simplified or retained with a recorded reason. Three frequently
+  used workflows validate the approach first; then apply it to the remaining
+  worthwhile candidates. Reductions lower instruction load while retaining
+  required decisions and constraints in matched Codex and Claude Code runs and
+  ordinary sessions. Ends if shorter wording repeatedly makes completion less
+  reliable or increases recovery work.
 - `Adopted beyond this repository` proves that the other two owners' agents
   adopt direction and the review policy from the steps on GitHub alone and
   report a clean or triaged first audit; ends if adoption needs a hand edit
