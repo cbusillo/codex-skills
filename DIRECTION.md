@@ -56,8 +56,10 @@ until they pass.
 
 ## Milestones
 
-- `Shorter skills proven in use` proves that a catalog audit and a bounded pass
-  over three frequently used workflows reduce instruction load while retaining
+- `Shorter skills proven in use` proves that every maintained skill is reviewed
+  and either simplified or retained with a recorded reason. Three frequently
+  used workflows validate the approach first; then apply it to the remaining
+  worthwhile candidates. Reductions lower instruction load while retaining
   required decisions and constraints in matched Codex and Claude Code runs and
   ordinary sessions. Ends if shorter wording repeatedly makes completion less
   reliable or increases recovery work.
