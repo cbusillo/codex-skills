@@ -858,12 +858,12 @@ test_refs = ["github/scripts/test_gh_plan_direction.py:test_gate_reads_the_targe
 id = "github.plan.next"
 capabilities = ["issues_read", "contents_read", "projects_read"]
 permission_mode = "input_dependent"
-permission_note = "Read issues and merged direction; optional Project focus reads use the owner-compatible Project actor and degrade to project_focus_unavailable."
+permission_note = "Read issues and merged direction, including native graph nodes across repositories and owners for owner/direction. Existing Issues/Contents read capabilities suffice; inaccessible nodes remain unknown without auth fallback or grant changes. Optional Project focus reads use the owner-compatible Project actor and degrade to project_focus_unavailable."
 entrypoint = "github/scripts/gh-plan.py next"
 intent = "Rank actionable durable plans by merged direction milestone order, native dependency impact, and issue creation time while retaining configured Project Focus as advisory context."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "GET merged DIRECTION.md; bounded paged GET open plan inventory; GET native blocked_by, blocking, and sub_issues per prioritized scan candidate; optional gh project list/item-list reads for configured Focus context"
+endpoint_or_command = "GET merged DIRECTION.md; bounded paged GET open plan inventory; GET /repos/{repo}/issues/{number} for reached cross-repository nodes in owner/direction scope; GET native blocked_by, blocking, and sub_issues per prioritized scan candidate; optional gh project list/item-list reads for configured Focus context"
 quota_bucket = "mixed"
 actor_policy = "automation_required_with_explicit_project_override"
 mutation_class = "read"
@@ -871,8 +871,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "GraphQL is retained only for read-only Project Focus context; plan discovery, milestone context, and authoritative dependency relationships use REST."
-source_refs = ["github/scripts/gh-plan.py:cmd_next", "github/scripts/gh-plan.py:evaluate_next_plan", "github/scripts/gh-plan.py:rank_next_candidates", "github/scripts/gh-plan.py:load_direction", "github/scripts/gh-plan.py:direction_milestone_titles", "github/scripts/gh-plan.py:next_focus_context", "github/scripts/gh-plan.py:read_next_issue_relationships"]
-test_refs = ["github/scripts/test_gh_plan_next.py:test_next_beta_rc_stable_chain_respects_native_blockers", "github/scripts/test_gh_plan_next.py:test_next_excludes_non_actionable_states_with_reasons", "github/scripts/test_gh_plan_next.py:test_next_closed_milestone_is_context_not_exclusion", "github/scripts/test_gh_plan_next.py:test_next_ranking_uses_direction_then_dependencies_then_oldest_created", "github/scripts/test_gh_plan_next.py:test_next_ranking_without_direction_uses_milestone_creation_order", "github/scripts/test_gh_plan_next.py:test_next_focus_context_normalizes_keys_and_reports_truncation", "github/scripts/test_gh_plan_next.py:test_cmd_next_is_bounded_read_only_and_explainable", "github/scripts/test_gh_plan_next.py:test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed", "github/scripts/test_gh_plan_next.py:test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions", "github/scripts/test_gh_plan_next.py:test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers", "github/scripts/test_gh_plan_next.py:test_cmd_next_reraises_dependency_api_failures", "github/scripts/test_gh_plan_next.py:test_next_relationship_reads_are_bounded_and_report_truncation", "github/scripts/test_gh_plan_next.py:test_cmd_next_supports_milestone_scope_and_focus_degradation", "github/scripts/validate-operation-matrix.py:self-test"]
+source_refs = ["github/scripts/gh-plan.py:cmd_next", "github/scripts/gh-plan.py:cmd_direction_next", "github/scripts/github_direction_next.py:rank_direction_work", "github/scripts/gh-plan.py:evaluate_next_plan", "github/scripts/gh-plan.py:rank_next_candidates", "github/scripts/gh-plan.py:load_direction", "github/scripts/gh-plan.py:direction_milestone_titles", "github/scripts/gh-plan.py:next_focus_context", "github/scripts/gh-plan.py:read_next_issue_relationships"]
+test_refs = ["github/scripts/test_gh_plan_next.py:test_global_next_follows_cross_owner_blockers_and_reports_partial_waits", "github/scripts/test_gh_plan_next.py:test_global_relationship_truncation_and_permissions_do_not_create_candidates", "github/scripts/test_gh_plan_next.py:test_next_beta_rc_stable_chain_respects_native_blockers", "github/scripts/test_gh_plan_next.py:test_next_excludes_non_actionable_states_with_reasons", "github/scripts/test_gh_plan_next.py:test_next_closed_milestone_is_context_not_exclusion", "github/scripts/test_gh_plan_next.py:test_next_ranking_uses_direction_then_dependencies_then_oldest_created", "github/scripts/test_gh_plan_next.py:test_next_ranking_without_direction_uses_milestone_creation_order", "github/scripts/test_gh_plan_next.py:test_next_focus_context_normalizes_keys_and_reports_truncation", "github/scripts/test_gh_plan_next.py:test_cmd_next_is_bounded_read_only_and_explainable", "github/scripts/test_gh_plan_next.py:test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed", "github/scripts/test_gh_plan_next.py:test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions", "github/scripts/test_gh_plan_next.py:test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers", "github/scripts/test_gh_plan_next.py:test_cmd_next_reraises_dependency_api_failures", "github/scripts/test_gh_plan_next.py:test_next_relationship_reads_are_bounded_and_report_truncation", "github/scripts/test_gh_plan_next.py:test_cmd_next_supports_milestone_scope_and_focus_degradation", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.close"
@@ -1917,7 +1917,7 @@ documentation = "https://docs.github.com/en/packages/learn-github-packages/intro
 [api_surface_fingerprints]
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "2a85642c6bad4a1d3cda1158496bcc5578478e029811cf2300e02593aa57ceba"
+"github/scripts/gh-plan.py" = "c4f98306dd7a6c460492b786b363d1d5565f2042f40e4b22174431c3f4936c22"
 "github/scripts/gh-pr.py" = "d58b23c06d224c485dc493561c7fd91835c2c65a9df5c5555f1368fbaab11a81"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
 "github/scripts/gh-with-env-token" = "c7c75b081fe64fe1ec224c595f593528a1385d93f1fae299ae521f0297eefa82"

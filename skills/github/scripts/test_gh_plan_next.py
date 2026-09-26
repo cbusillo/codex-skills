@@ -10,8 +10,10 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
@@ -630,6 +632,260 @@ def test_cmd_next_supports_milestone_scope_and_focus_degradation() -> None:
     assert "project_focus_unavailable" in captured["notes"]
 
 
+def global_issue(repo: str, number: int, *, body: str = "", **kwargs: Any) -> dict[str, Any]:
+    return {**issue(number, **kwargs), "repo": repo, "html_url": f"https://github.com/{repo}/issues/{number}", "body": body}
+
+
+def track(repo: str, number: int, title: str) -> dict[str, Any]:
+    return global_issue(
+        repo, number, title=f"Track: {title}", labels=["plan", "plan:waiting"],
+        milestone=milestone_data(number, title, created_at="2026-01-01T00:00:00Z"),
+    )
+
+
+@contextmanager
+def global_fixture(
+    roots: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    edges: dict[tuple[str, int], dict[str, list[dict[str, Any]]]],
+    *,
+    repo: str = "someone/direction",
+) -> Any:
+    module = load_module()
+    captured: dict[str, Any] = {}
+    reads: list[tuple[str, int]] = []
+    by_key = {(node["repo"], node["number"]): node for node in nodes}
+
+    def get_node(ref: str, target_repo: str) -> Any:
+        key = (target_repo, int(ref))
+        reads.append(key)
+        if key not in by_key:
+            raise module.PlanError("not accessible")
+        return "automation-gh", by_key[key]
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        assert path == f"/repos/{repo}/issues"
+        assert kwargs["issue_only"] is True
+        assert kwargs["query"]["state"] == "open"
+        assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
+        return "automation-gh", roots
+
+    def read_relationships(target_repo: str, number: int) -> Any:
+        return "automation-gh", {
+            name: [module.compact_relationship_issue(node, name) for node in values]
+            for name, values in edges.get((target_repo, number), relationships()).items()
+        }, []
+
+    with patch.multiple(
+        module,
+        default_repo=lambda explicit: explicit or repo,
+        load_config=lambda *_: module.DEFAULT_CONFIG,
+        load_direction=lambda *_: DIRECTION,
+        collect_paged_rest_items=collect,
+        next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
+        read_next_issue_relationships=read_relationships,
+        get_issue=get_node,
+        emit=captured.update,
+    ):
+        yield module, captured, reads
+
+
+def next_args(*, repo: str | None = "someone/direction", scan_limit: int = 50, milestone: str | None = None) -> Any:
+    return type("Args", (), {"repo": repo, "milestone": milestone, "limit": 10, "scan_limit": scan_limit})()
+
+
+def test_global_next_follows_cross_owner_blockers_and_reports_partial_waits() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    parent = global_issue("someone/site", 91, body="## Current Status\n\nState: Active.\nWaiting for: Justin's owner review of #92 remains pending. Independent backup work continues.")
+    backup = global_issue("another/platform", 2309, labels=["plan", "plan:blocked"])
+    provider = global_issue("another/platform", 2307, created_at="2026-07-01T00:00:00Z")
+    later = global_issue("someone/product", 8, created_at="2025-01-01T00:00:00Z")
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[parent]),
+        ("someone/direction", 2): relationships(sub_issues=[later]),
+        ("someone/site", 91): relationships(blocked_by=[backup]),
+        ("another/platform", 2309): relationships(blocked_by=[provider]),
+        ("another/platform", 2307): relationships(blocking=[backup]),
+    }
+    with global_fixture(roots, [parent, backup, provider, later], edges) as (module, result, reads):
+        module.cmd_next(next_args())
+    assert [(node["repo"], node["number"]) for node in result["candidates"]] == [("another/platform", 2307), ("someone/product", 8)]
+    first = result["candidates"][0]
+    assert first["milestone"]["title"] == "First"
+    assert [node["number"] for node in first["via"]] == [1, 91, 2309, 2307]
+    assert first["via"][-1]["relationship"] == "blocked_by"
+    assert first["reasons"][0] == "direction_milestone_1"
+    assert first["issue_milestone"] is None
+    assert result["waiting"][0]["repo"] == "someone/site"
+    assert result["waiting"][0]["number"] == 92
+    assert "Justin" in result["waiting"][0]["waiting_for"]
+    assert result["waiting"][0]["reported_by"].endswith("/issues/91")
+    assert result["dependency_context"]["complete"] is True
+    assert len(reads) == len(set(reads)) == 4
+
+
+def test_global_waiting_milestone_hands_off_to_next_not_unlinked_tooling() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"), global_issue("someone/direction", 3, title="Improve tools")]
+    waiting = global_issue("someone/product", 10, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+    ready = global_issue("someone/product", 11)
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[waiting]),
+        ("someone/direction", 2): relationships(sub_issues=[ready]),
+    }
+    with global_fixture(roots, [waiting, ready], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+    assert [node["number"] for node in result["candidates"]] == [11]
+    assert result["waiting"][0]["waiting_for"] == "Customer testing."
+    assert any(node.get("number") == 3 and node["exclusion"] == "outside_direction_tracks" for node in result["excluded"])
+
+
+def test_global_next_implicit_repository_and_explicit_repository_match() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 3)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+        module.cmd_next(next_args(repo=None))
+        implicit = dict(result)
+        result.clear()
+        module.cmd_next(next_args())
+        assert result == implicit
+        assert result["scope"]["kind"] == "direction"
+        assert result["scope"]["owner"] == "someone"
+    assert module.github_direction_next.is_direction_repository("Other/Direction")
+    assert not module.github_direction_next.is_direction_repository("someone/product")
+    assert not module.github_direction_next.is_direction_repository("direction")
+
+
+def test_global_cycles_unreadable_edges_and_scan_limits_are_incomplete() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    a = global_issue("someone/product", 3)
+    b = global_issue("someone/product", 4)
+    missing = global_issue("elsewhere/private", 5)
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[a, missing]),
+        ("someone/product", 3): relationships(blocked_by=[b]),
+        ("someone/product", 4): relationships(blocked_by=[a]),
+    }
+    with global_fixture(roots, [a, b], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert result["dependency_context"]["complete"] is False
+        assert result["dependency_context"]["degraded_count"] == 2
+        assert {node["exclusion"] for node in result["excluded"]} >= {"dependency_cycle", "unknown_dependencies"}
+        result.clear()
+        module.cmd_next(next_args(scan_limit=2))
+        assert result["truncated"] is True
+        assert result["evaluated"] == 2
+        assert result["dependency_context"]["complete"] is False
+
+
+def test_global_shared_leaf_is_read_once_and_keeps_earliest_milestone() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/tooling", 3, milestone=milestone_data(8, "Product milestone", created_at="2025-01-01T00:00:00Z"))
+    edges = {(root["repo"], root["number"]): relationships(sub_issues=[leaf]) for root in roots}
+    with global_fixture(roots, [leaf], edges) as (module, result, reads):
+        module.cmd_next(next_args())
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0]["milestone"]["title"] == "First"
+    assert result["candidates"][0]["issue_milestone"]["title"] == "Product milestone"
+    assert reads == [("someone/tooling", 3)]
+
+
+def test_global_missing_direction_refuses_instead_of_local_fallback() -> None:
+    with global_fixture([], [], {}) as (module, result, _reads):
+        for text in (None, "# Direction\n\nNo ordered milestones"):
+            module.load_direction = lambda *_: text
+            try:
+                module.cmd_next(next_args())
+            except module.PlanError as exc:
+                assert "ordered milestones" in str(exc)
+            else:
+                raise AssertionError("global ranking must not guess a milestone order")
+        assert not result
+
+
+def test_global_missing_tracks_and_inventory_truncation_remain_visible() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    with global_fixture(roots, [], {}) as (module, result, _reads):
+        module.NEXT_PLAN_INVENTORY_LIMIT = 1
+        module.cmd_next(next_args())
+        assert result["truncated"] is True
+        assert result["dependency_context"]["complete"] is False
+        assert result["dependency_context"]["missing_tracking_milestones"] == ["Second"]
+        assert result["candidates"] == []
+
+
+def test_global_relationship_truncation_and_permissions_do_not_create_candidates() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    with global_fixture(roots, [], {}) as (module, result, _reads):
+        module.read_next_issue_relationships = lambda *_: ("automation-gh", relationships(), ["blocked_by"])
+        module.cmd_next(next_args())
+        assert result["excluded"][0]["truncated_relationships"] == ["blocked_by"]
+        assert result["candidates"] == []
+        for cause in ("not_found", "permission_denied", "rest_primary_rate_limited"):
+            failure = module.github_api_core.FailureDetail(cause=cause, message="cannot read", retryable=False, fallback_eligible=False, disposition="stop")
+            module.read_next_issue_relationships = lambda *_: (_ for _ in ()).throw(module.PlanError("cannot read", failure=failure))
+            result.clear()
+            try:
+                module.cmd_next(next_args())
+            except module.PlanError:
+                assert cause == "rest_primary_rate_limited"
+            else:
+                assert cause != "rest_primary_rate_limited"
+                assert result["candidates"] == []
+                assert result["dependency_context"]["degraded_count"] == 1
+
+
+def test_global_waits_use_current_status_and_never_reclassify_mentioned_work() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    waiting = global_issue("someone/product", 3, body="## Objective\nWaiting for: Old decision.\n## Current Status\nState: Waiting.\nWaiting for: Alex to test [PR](https://github.com/other/product/pull/42).")
+    edges = {("someone/direction", 1): relationships(sub_issues=[waiting])}
+    with global_fixture(roots, [waiting], edges) as (module, result, reads):
+        module.cmd_next(next_args())
+    assert result["candidates"] == []
+    assert result["waiting"][0]["repo"] == "other/product"
+    assert result["waiting"][0]["number"] == 42
+    assert result["waiting"][0]["url"].endswith("/pull/42")
+    assert "Old" not in result["waiting"][0]["waiting_for"]
+    assert reads == [("someone/product", 3)]
+
+
+def test_global_milestone_scope_and_direction_order_capacity_context() -> None:
+    roots = [track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/product", 3)
+    edges = {("someone/direction", 2): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+        module.load_direction = lambda *_: DIRECTION + "\n## Order\n\nLive breakage first; other tooling needs two linked stops.\n\n## Capacity\n\nAt least 20% of weekly merged PRs are own projects; audit, not quota.\n"
+        with patch.object(module, "milestone_route", return_value=("gh", "automation-gh")), patch.object(module.github_milestone_core, "show_milestone", return_value={"milestone": roots[0]["milestone"]}):
+            module.cmd_next(next_args(milestone="Second"))
+        assert result["milestone_order"]["titles"] == ["Second"]
+        assert result["scope"]["milestone"]["title"] == "Second"
+        assert result["dependency_context"]["missing_tracking_milestones"] == []
+        assert "Live breakage first" in result["direction_context"]["Order"]
+        assert "20%" in result["direction_context"]["Capacity"]
+
+
+def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    parent = global_issue("someone/product", 3)
+    leaf = global_issue("someone/product", 4)
+    edges = {
+        ("someone/direction", 1): relationships(sub_issues=[parent]),
+        ("someone/product", 3): relationships(sub_issues=[leaf], blocked_by=[leaf]),
+    }
+    for body, labels in [
+        ("## Current Status\nState: Waiting.\nWaiting for: Customer's sequencing decision.", ["plan", "plan:active"]),
+        ("", ["plan", "plan:waiting"]),
+    ]:
+        parent["body"] = body
+        parent["labels"] = labels
+        with global_fixture(roots, [parent, leaf], edges) as (module, result, reads):
+            module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert reads == [("someone/product", 3)]
+        assert any(node.get("number") == 3 and node["exclusion"] == "waiting" for node in result["excluded"])
+
+
 TESTS = [
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
@@ -644,6 +900,17 @@ TESTS = [
     test_cmd_next_reraises_dependency_api_failures,
     test_next_relationship_reads_are_bounded_and_report_truncation,
     test_cmd_next_supports_milestone_scope_and_focus_degradation,
+    test_global_next_follows_cross_owner_blockers_and_reports_partial_waits,
+    test_global_waiting_milestone_hands_off_to_next_not_unlinked_tooling,
+    test_global_next_implicit_repository_and_explicit_repository_match,
+    test_global_cycles_unreadable_edges_and_scan_limits_are_incomplete,
+    test_global_shared_leaf_is_read_once_and_keeps_earliest_milestone,
+    test_global_missing_direction_refuses_instead_of_local_fallback,
+    test_global_missing_tracks_and_inventory_truncation_remain_visible,
+    test_global_relationship_truncation_and_permissions_do_not_create_candidates,
+    test_global_waits_use_current_status_and_never_reclassify_mentioned_work,
+    test_global_milestone_scope_and_direction_order_capacity_context,
+    test_global_whole_parent_wait_does_not_select_its_children_or_dependencies,
 ]
 
 

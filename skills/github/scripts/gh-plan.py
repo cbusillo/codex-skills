@@ -26,6 +26,7 @@ import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
 import github_identity
+import github_direction_next
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -2407,6 +2408,9 @@ def rank_next_candidates(
 
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
+    if github_direction_next.is_direction_repository(repo):
+        cmd_direction_next(args, repo)
+        return
     config = load_config(repo)
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
@@ -2566,6 +2570,135 @@ def cmd_next(args: argparse.Namespace) -> None:
         "candidate_count": len(candidates),
         "excluded": excluded,
         "notes": notes,
+    })
+
+
+def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
+    direction_text = load_direction(repo)
+    titles = direction_milestone_titles(direction_text or "")
+    if not titles:
+        raise PlanError(f"Global next needs the ordered milestones in {repo}/{DIRECTION_FILE}")
+    scope = None
+    if args.milestone:
+        gh_cmd, expected_actor = milestone_route()
+        result = github_milestone_core.show_milestone(
+            repo, args.milestone, operation=CURRENT_OPERATION,
+            actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd,
+        )
+        scope = result["milestone"]
+        if scope["title"] not in titles:
+            raise PlanError("The selected milestone is not listed in the owner's direction")
+        titles = [scope["title"]]
+    config = load_config(repo)
+    query = {"labels": config["labels"]["plan"], "state": "open", "sort": "created", "direction": "asc"}
+    if scope:
+        query["milestone"] = scope["number"]
+    actor, issues = collect_paged_rest_items(
+        f"/repos/{repo}/issues", query=query, bucket="rest_core",
+        step_prefix="next_plan_issues", limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+    )
+    inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
+    issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
+    seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
+    contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
+    focus_contexts: dict[str, dict[str, Any]] = {}
+
+    def read_node(issue_repo: str, number: int) -> dict[str, Any]:
+        nonlocal actor
+        key = (issue_repo.casefold(), number)
+        raw = seeds.get(key)
+        try:
+            if raw is None:
+                issue_actor, raw = get_issue(str(number), issue_repo)
+                actor = issue_actor or actor
+            if issue_repo not in contexts:
+                target_config = load_config(issue_repo)
+                focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)
+                actor = focus_actor or actor
+                contexts[issue_repo] = (target_config, focus_values)
+                focus_contexts[issue_repo] = focus_context
+            target_config, focus_values = contexts[issue_repo]
+            focus = focus_values.get(raw.get("html_url") or raw.get("url"))
+            base = {
+                **compact_list_issue(issue_repo, raw),
+                "plan_status": next_plan_status(raw, target_config),
+                "focus": focus,
+                "milestone": next_milestone_context(raw),
+            }
+            if raw.get("pull_request") is not None:
+                return {"item": {**base, "exclusion": "pull_request"}}
+            static = next_static_exclusion(raw, config=target_config, focus=focus)
+            if static:
+                return {"item": static}
+            relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
+            actor = relation_actor or actor
+            if truncated:
+                return {"item": {
+                    **base, "exclusion": "unknown_dependencies", "truncated_relationships": truncated,
+                    "detail": f"relationship limit {NEXT_RELATIONSHIP_LIMIT} exceeded",
+                }}
+            _, evaluated = evaluate_next_plan(raw, config=target_config, focus=focus, relationships=relationships)
+            status_text = section_map(raw.get("body") or "").get("Current Status", "").strip()
+            status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
+            reports = github_direction_next.waiting_records(base, status_text)
+            # A whole-plan wait is explicit; a wait naming another issue/PR may
+            # coexist with this parent's independent actionable dependencies.
+            if (
+                next_plan_status(raw, target_config) == "waiting"
+                or (focus or "").casefold() == "waiting"
+                or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
+                or any(report["repo"] == issue_repo and report["number"] == number for report in reports)
+            ):
+                evaluated["exclusion"] = "waiting"
+            summary = next_relationship_summary(relationships)
+            return {
+                "item": evaluated,
+                "blockers": summary["open_blockers"],
+                "children": summary["open_sub_issues"],
+                "waiting": reports,
+                "status_text": status_text,
+            }
+        except PlanError as exc:
+            # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
+            # auth and provider failures retain the shared helper's stop policy.
+            if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found"}:
+                raise
+            if isinstance(exc, ClassifiedPlanError):
+                raise
+            return {"item": {
+                "repo": issue_repo, "number": number,
+                "url": f"https://github.com/{issue_repo}/issues/{number}",
+                "exclusion": "unknown_dependencies", "detail": github_api_core.redact_string(str(exc)),
+            }}
+
+    roots = [{
+        **compact_list_issue(repo, item), "milestone": next_milestone_context(item),
+    } for item in issues]
+    ranked = github_direction_next.rank_direction_work(
+        roots, milestone_titles=titles, read_node=read_node,
+        scan_limit=args.scan_limit, rank_candidates=rank_next_candidates,
+    )
+    ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
+    if inventory_truncated:
+        ranked["truncated"] = True
+        ranked["dependency_context"]["complete"] = False
+    ranked["candidates"] = ranked["candidates"][:args.limit]
+    sections = section_map(direction_text or "")
+    emit({
+        "ok": True, "actor": actor, "repo": repo,
+        "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},
+        "milestone_order": {"source": f"{repo}:{DIRECTION_FILE}", "titles": titles, "fallback_reason": None, "error": None},
+        "direction_context": {name: sections[name] for name in ("Order", "Capacity") if name in sections},
+        "focus_context": {"repositories": focus_contexts},
+        "inventory_count": len(issues), "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
+        **ranked,
+        "notes": [
+            "native_blocked_by_relationships_are_authoritative",
+            "tracking_wait_labels_do_not_hide_linked_work",
+            "waiting_reports_are_current_status_evidence_not_dependency_edges",
+            "live_breakage_and_repeated_tooling_stops_require_direction_context",
+            "weekly_own_project_share_is_audit_context_not_a_per_call_quota",
+        ],
     })
 
 

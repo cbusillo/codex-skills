@@ -368,6 +368,44 @@ or Project focus state.
   and are summarized in top-level dependency context. `--limit` bounds the
   ranked candidate list while preserving evaluated exclusion evidence.
 
+For `<owner>/direction`, `next` automatically selects global direction scope;
+no flag is needed. The target repository's merged `DIRECTION.md` is required,
+including when the command runs elsewhere with `--repo`. In milestone order,
+it walks the open `Track:` plans through native blockers and sub-issues, across
+owners as well as repositories. Waiting summary labels on these tracking
+containers do not hide their linked work. Ordinary waiting, stale, completed,
+Later-focus, and inconsistently blocked plans remain excluded. Tracking issues
+without open work are reported, never selected as implementation tasks.
+
+Global candidates have `repo`, `number`, overall `milestone`, `issue_milestone`,
+`reasons`, and a `via` path. Shared prerequisites appear once under the earliest
+milestone that reaches them. A blocker can itself have blockers; the command
+continues to actionable leaves instead of selecting an intermediate blocked
+issue. Product-repository `next` behavior and output are unchanged.
+
+`waiting` contains explicit Current Status reports, with `waiting_for`,
+`reported_by`, and `reported_at`. A wait naming another issue or PR identifies
+that subject without turning prose into a native dependency or claiming a live
+review decision. Missing people/conditions remain unknown. Whole-plan waiting
+states stop that branch, while a partial wait in an active parent does not hide
+its independent work. Read the selected issue's full discussion before acting.
+
+The global `--scan-limit` bounds unique graph nodes, not just roots. Cycles,
+missing tracking issues, inaccessible nodes, and truncated reads are explicit;
+`dependency_context.complete=false` means the answer is partial. Missing or
+unreadable direction never silently falls back to product-repository ranking.
+The returned `direction_context` preserves Order and Capacity for caller
+judgment: unlinked live incidents and repeat-stop tooling exceptions need their
+own evidence, and the weekly own-project share remains an audit, not a per-call
+quota. This query does not scan every repository or authorize writes.
+
+`scripts/github_direction_next.py:rank_direction_work` is the reusable ranking
+entry point for service consumers such as Launchplane. It accepts tracking
+roots, ordered milestone titles, a node reader, the scan bound, and the common
+candidate ranker. It performs no network calls or mutations itself; the CLI
+adapter supplies the existing authenticated, bounded GitHub readers and local
+plan evaluation.
+
 ### Planning: Milestones
 
 - `milestone-list --state open|closed|all [--limit <n>]`: List milestones with
