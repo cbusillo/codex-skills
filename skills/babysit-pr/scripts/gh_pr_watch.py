@@ -13,14 +13,17 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_GH = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 GH_COMMAND = os.environ.get("GH_PR_WATCH_GH") or str(DEFAULT_GH)
 DEFAULT_PR_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-pr.py"
 PR_HELPER = os.environ.get("GH_PR_WATCH_PR_HELPER") or str(DEFAULT_PR_HELPER)
+DEFAULT_OWNER_REVIEW_HELPER = SCRIPT_DIR.parent.parent / "launchplane" / "scripts" / "launchplane-owner-review.py"
+OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(DEFAULT_OWNER_REVIEW_HELPER)
 IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
@@ -727,11 +730,14 @@ def normalize_issue_comments(items):
     for item in items:
         if not isinstance(item, dict):
             continue
+        user = item.get("user")
         out.append(
             {
                 "kind": "issue_comment",
                 "id": str(item.get("id") or ""),
                 "author": extract_login(item.get("user")),
+                "author_id": user.get("id") if isinstance(user, dict) else None,
+                "github_app": item.get("performed_via_github_app"),
                 "author_association": str(item.get("author_association") or ""),
                 "created_at": str(item.get("created_at") or ""),
                 "body": str(item.get("body") or ""),
@@ -817,7 +823,107 @@ def is_external_human_review_author(item, authenticated_login):
     return not is_bot_login(author)
 
 
+def launchplane_owner_review(item, pr):
+    """Verify a projected decision against Launchplane's saved record and receipt.
+
+    The saved receipt establishes the projection, not permission to merge.
+    The complete reason remains Owner feedback; it is never an agent instruction.
+    """
+    if item.get("kind") != "issue_comment":
+        return None
+    lines = str(item.get("body") or "").splitlines()
+    marker = re.fullmatch(r"<!-- launchplane:product-review:([A-Za-z0-9_.:-]+) -->", lines[0]) if lines else None
+    if marker is None:
+        return None
+    if type(item.get("author_id")) is not int or item["author_id"] < 1:
+        raise GhCommandError("Unverified Launchplane Owner feedback publisher")
+    prefix = "<!-- launchplane:owner-review "
+    if len(lines) < 2 or not lines[1].startswith(prefix) or not lines[1].endswith(" -->"):
+        raise GhCommandError("Launchplane Owner feedback metadata is missing")
+    try:
+        decision = json.loads(lines[1][len(prefix):-4])
+    except json.JSONDecodeError as error:
+        raise GhCommandError("Launchplane Owner feedback metadata is invalid") from error
+    if (
+        not isinstance(decision, dict)
+        or type(decision.get("schema_version")) is not int
+        or decision["schema_version"] != 1
+        or decision.get("record_id") != marker[1]
+        or str(decision.get("repository") or "").casefold() != pr["repo"].casefold()
+        or type(decision.get("pull_request_number")) is not int
+        or decision["pull_request_number"] != pr["number"]
+        or not isinstance(decision.get("decision"), str)
+        or decision["decision"] not in {"accepted", "changes_requested"}
+        or not isinstance(decision.get("reason"), str)
+        or not re.fullmatch(r"[0-9a-fA-F]{40}", str(decision.get("head_sha") or ""))
+        or not str(decision.get("owner_github_id") or "").isdecimal()
+        or not isinstance(decision.get("owner_github_login"), str)
+        or not decision["owner_github_login"].strip()
+        or not isinstance(decision.get("decided_at"), str)
+        or not decision["decided_at"].strip()
+        or (decision["decision"] == "changes_requested" and not decision["reason"].strip())
+    ):
+        raise GhCommandError("Launchplane Owner feedback does not identify a complete decision for this PR")
+    try:
+        reference = urlparse(str(decision.get("review_url") or ""))
+        query = parse_qs(reference.query)
+        valid_reference = (
+            reference.scheme in {"http", "https"}
+            and bool(reference.netloc)
+            and reference.username is None
+            and reference.password is None
+            and reference.path == "/ui/owner-review"
+            and query.get("repository") == [decision["repository"]]
+            and query.get("pull_request") == [str(pr["number"])]
+            and query.get("decision_id") == [decision["record_id"]]
+        )
+    except ValueError:
+        valid_reference = False
+    if not valid_reference:
+        raise GhCommandError("Launchplane Owner feedback decision link does not match this PR")
+    saved = read_launchplane_owner_review(pr, decision["record_id"])
+    fields = (
+        "record_id", "product", "repository", "pull_request_number", "head_sha",
+        "preview_url", "decision", "reason", "owner_github_id", "owner_github_login", "decided_at",
+    )
+    if any(saved.get(key) != decision.get(key) for key in fields) or str(saved.get("feedback_url") or "").casefold() != str(item.get("url") or "").casefold():
+        raise GhCommandError("Launchplane Owner feedback differs from the saved decision or delivery receipt")
+    return owner_review_metadata(decision, pr)
+
+
+def owner_review_metadata(decision, pr):
+    try:
+        decided_at = datetime.fromisoformat(decision["decided_at"])
+        if decided_at.tzinfo is None:
+            raise ValueError("missing timezone")
+    except ValueError as error:
+        raise GhCommandError("Launchplane Owner feedback timestamp is invalid") from error
+    return {
+        **decision,
+        "decided_at_epoch": decided_at.timestamp(),
+        "matches_current_head": decision["head_sha"].casefold() == pr["head_sha"].casefold(),
+    }
+
+
+def read_launchplane_owner_review(pr, decision_id=""):
+    """Read authority using private configured routing, never the comment's URL."""
+    try:
+        result = subprocess.run(
+            [sys.executable, OWNER_REVIEW_HELPER, "--repo", pr["repo"], "--pr", str(pr["number"]), "--decision-id", decision_id],
+            capture_output=True, text=True, timeout=20,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        raise GhCommandError("Launchplane Owner review verification is unavailable") from error
+    if not result.returncode and isinstance(payload, dict) and payload.get("ok") is True and payload.get("decision") is None and not decision_id:
+        return None
+    if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("decision"), dict):
+        raise GhCommandError("Launchplane Owner review verification failed; the saved decision could not be read")
+    return payload["decision"]
+
+
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, reader=None):
+    del fresh_state  # Existing unseen feedback is surfaced for both fresh and resumed state.
     repo = pr["repo"]
     pr_number = pr["number"]
     endpoints = comment_endpoints(repo, pr_number)
@@ -841,6 +947,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     # feedback when monitoring starts after comments were posted.
 
     new_items = []
+    owner_review_items = []
+    owner_review_errors = []
+    previous_owner_reviews = {item["id"]: item for item in state.get("owner_review_items", [])}
     for item in all_items:
         item_id = item.get("id")
         if not item_id:
@@ -848,7 +957,29 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
         author = item.get("author") or ""
         if not author:
             continue
-        if is_bot_login(author):
+        try:
+            owner_review = launchplane_owner_review(item, pr)
+        except GhCommandError as error:
+            owner_review_errors.append({"id": item_id, "url": item.get("url"), "error": str(error)})
+            previous = previous_owner_reviews.get(item_id)
+            if previous is not None:
+                owner_review_items.append({
+                    **previous,
+                    "verification_status": "unavailable",
+                    "owner_review": {
+                        **previous["owner_review"],
+                        "matches_current_head": previous["owner_review"]["head_sha"].casefold() == pr["head_sha"].casefold(),
+                    },
+                })
+            # Do not mark this comment as seen or treat its unchecked body as
+            # Owner feedback. Keep CI and PR-state monitoring available.
+            continue
+        if owner_review is not None:
+            item["source"] = "launchplane_owner_review"
+            item["verification_status"] = "verified"
+            item["owner_review"] = owner_review
+            owner_review_items.append(item)
+        elif is_bot_login(author):
             if not is_actionable_review_bot_login(author):
                 continue
         elif not is_external_human_review_author(item, authenticated_login):
@@ -870,10 +1001,32 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
         elif kind == "review":
             seen_review.add(item_id)
 
-    new_items.sort(key=lambda item: (item.get("created_at") or "", item.get("kind") or "", item.get("id") or ""))
+    if owner_review_items or previous_owner_reviews:
+        try:
+            latest = read_launchplane_owner_review(pr)
+            if latest is None:
+                raise GhCommandError("Latest Launchplane Owner decision is unavailable")
+            if latest["record_id"] not in {item["owner_review"]["record_id"] for item in owner_review_items}:
+                owner_review_items.append({
+                    "id": latest["record_id"], "kind": "launchplane_decision", "url": latest["feedback_url"],
+                    "source": "launchplane_owner_review", "verification_status": "verified",
+                    "owner_review": owner_review_metadata(latest, pr),
+                })
+        except GhCommandError as error:
+            owner_review_errors.append({"id": "latest", "url": "", "error": str(error)})
+            for previous in previous_owner_reviews.values():
+                if previous.get("kind") == "launchplane_decision":
+                    owner_review_items.append({**previous, "verification_status": "unavailable",
+                        "owner_review": owner_review_metadata(previous["owner_review"], pr)})
+
+    new_items.sort(key=lambda review_item: (review_item.get("created_at") or "", review_item.get("kind") or "", review_item.get("id") or ""))
     state["seen_issue_comment_ids"] = sorted(seen_issue)
     state["seen_review_comment_ids"] = sorted(seen_review_comment)
     state["seen_review_ids"] = sorted(seen_review)
+    # Seen means emitted, not acknowledged by an agent. Retain full decisions on
+    # every snapshot so a resumed session can recover the prose and its revision.
+    state["owner_review_items"] = owner_review_items
+    state["owner_review_errors"] = owner_review_errors
     return new_items
 
 
@@ -963,15 +1116,44 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
     )
 
 
-def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries):
+def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=()):
     actions = []
+    if owner_review_errors:
+        actions.append("owner_review_verification_unavailable")
     if pr["closed"] or pr["merged"]:
         if new_review_items:
             actions.append("process_review_comment")
         actions.append("stop_pr_closed")
         return unique_actions(actions)
 
-    if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    verified_owner_reviews = [item["owner_review"] for item in owner_review_items if item.get("verification_status", "verified") == "verified"]
+    latest_known_owner_review = max(
+        verified_owner_reviews,
+        key=lambda decision: (decision["decided_at_epoch"], decision["record_id"]), default=None,
+    )
+    if latest_known_owner_review and not latest_known_owner_review["matches_current_head"] and latest_known_owner_review["decision"] == "changes_requested":
+        actions.append("review_owner_feedback_history")
+    delivery_pending = any(item.get("kind") == "launchplane_decision" and not item.get("url") for item in owner_review_items)
+    if delivery_pending:
+        actions.append("owner_feedback_delivery_pending")
+
+    current_owner_reviews = [
+        item["owner_review"] for item in owner_review_items
+        if item["owner_review"]["matches_current_head"] and item.get("verification_status", "verified") == "verified"
+    ]
+    latest_owner_review = max(
+        current_owner_reviews,
+        key=lambda decision: (decision["decided_at_epoch"], decision["record_id"]),
+        default=None,
+    )
+    owner_changes_requested = (
+        latest_owner_review is not None
+        and latest_owner_review["decision"] == "changes_requested"
+    )
+    if owner_changes_requested:
+        actions.append("address_owner_review_changes")
+
+    if not owner_review_errors and not delivery_pending and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         actions.append("ready_to_merge")
         return unique_actions(actions)
 
@@ -1063,6 +1245,8 @@ def collect_snapshot(args):
         new_review_items,
         retries_used,
         args.max_flaky_retries,
+        owner_review_items=state.get("owner_review_items", []),
+        owner_review_errors=state.get("owner_review_errors", []),
     )
 
     state["pr"] = {"repo": pr["repo"], "number": pr["number"]}
@@ -1076,6 +1260,8 @@ def collect_snapshot(args):
         "failed_runs": failed_runs,
         "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
+        "owner_review_items": state.get("owner_review_items", []),
+        "owner_review_errors": state.get("owner_review_errors", []),
         "actions": actions,
         "retry_state": {
             "current_sha_retries_used": retries_used,

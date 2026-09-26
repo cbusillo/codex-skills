@@ -4,6 +4,9 @@ description: Use for Launchplane-managed product/runtime state, secrets, config,
 metadata:
   short-description: Operate Launchplane-managed state
 resources:
+  - path: scripts/launchplane-owner-review.py
+    kind: script
+    description: Reads one scoped saved Owner decision with its full prose and GitHub delivery receipt.
   - path: scripts/launchplane-context.py
     kind: script
     description: Read Launchplane context for a repository, branch, issue, or pull request.
@@ -56,6 +59,12 @@ resources:
     kind: reference
     description: Public-safe example for private operator helper configuration.
 commands:
+  - name: launchplane-owner-review
+    source: skill
+    resource_path: scripts/launchplane-owner-review.py
+    example_argv:
+      ["uv", "run", "scripts/launchplane-owner-review.py", "--repo", "OWNER/REPO", "--pr", "42"]
+    purpose: Reads private Owner feedback and its saved delivery receipt through the configured scoped service route.
   - name: launchplane-contract-validate
     source: skill
     resource_path: scripts/check-agent-operator-contract.py
@@ -739,6 +748,17 @@ readiness.
 - **Reporting**: Report readiness, blockers, and next action based on context.
 - **Contract**: See `references/context-helper-contract.md` for config,
   fallback, and redaction behavior.
+
+### Owner feedback
+
+Use `uv run scripts/launchplane-owner-review.py --repo OWNER/REPO --pr NUMBER`
+to retrieve the complete saved Owner reason; add `--decision-id ID` for a
+historical decision. This narrow read uses the existing private operator config
+and the product's `product_profile.read` permission. It is a bounded local
+extension of `/v1/product-review`, separate from the public-safe context output.
+The output contains Owner prose: keep it in task-private evidence unless its
+publication is authorized. A failed read means unavailable, not no feedback.
+The PR watcher uses this reader to verify its GitHub projection and receipt.
 
 ## Stable Deploy Identity
 
