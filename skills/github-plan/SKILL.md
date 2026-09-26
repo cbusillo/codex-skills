@@ -371,11 +371,12 @@ with its recorded owner, with a recommendation based on the evidence. Keep this
 owner decision visible even when recommending independent work. An unavailable
 or partial session inventory is not proof that nobody owns an item.
 
-If the returned candidates are all occupied, check the result's candidate count,
-truncation and dependency coverage; increase the bounded `--limit` when needed
-before claiming no available work remains. If all eligible work is underway or
-waiting, say so instead of presenting an occupied item as the next new task or
-claiming the milestone is complete.
+If the returned candidates are all occupied and `candidate_count` exceeds the
+returned list length, increase the bounded `--limit` to inspect the remaining
+candidates. A truncated inventory or incomplete dependency coverage is a partial
+answer; raising the output limit does not repair either. If complete evidence
+shows all eligible work is underway or waiting, say so instead of presenting an
+occupied item as the next new task or claiming the milestone is complete.
 
 On `go`, where posting is authorized, make the start visible before implementation
 through the existing Current Status or automation-owned planning comment. Record the
