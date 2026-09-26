@@ -407,6 +407,9 @@ roots, ordered milestone titles, completed milestone titles, a node reader,
 and the scan bound. The same module's `evaluate_direction_node` classifies raw
 issue, relationship, label and Focus evidence, including Current Status waits;
 `rank_next_candidates` supplies the common ordering for local and global calls.
+Bounded readers must pass `truncated_relationships` or `relationship_error`
+to the classifier when their evidence is incomplete; it then returns an unknown
+node rather than treating the visible prefix as a complete dependency list.
 Neither classification nor ranking makes network calls or mutations. Adapters
 only collect evidence with their authenticated, bounded readers, mapping
 inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.

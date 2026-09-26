@@ -276,7 +276,9 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
         match = re.match(r"\s*(?:[-*]\s+)?(?:Waiting for|Parked until):\s*(.+)", line, re.I)
         if not match:
             continue
-        reason = re.split(r"(?<=[.!?])\s+", match.group(1).strip(), maxsplit=1)[0]
+        reason = match.group(1).strip()
+        if reason.casefold().rstrip(" .") in {"none", "n/a", "nothing", "-"}:
+            continue
         references: dict[tuple[str, int], str] = {}
         for ref in re.finditer(
             r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
@@ -306,21 +308,31 @@ def evaluate_direction_node(
     *,
     config: dict[str, Any],
     focus: str | None,
-    relationships: dict[str, list[dict[str, Any]]],
+    relationships: dict[str, list[dict[str, Any]]] | None,
+    relationship_error: str | None = None,
+    truncated_relationships: list[str] | None = None,
 ) -> dict[str, Any]:
     """Classify raw issue evidence identically for CLI and service consumers."""
-    _, item = evaluate_next_plan(issue, config=config, focus=focus, relationships=relationships)
+    if truncated_relationships:
+        relationship_error = "Relationship evidence exceeded the reader's collection limit"
+    _, item = evaluate_next_plan(
+        issue, config=config, focus=focus, relationships=relationships,
+        relationship_error=relationship_error,
+    )
+    if truncated_relationships:
+        item["truncated_relationships"] = truncated_relationships
+    if item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies"}:
+        return {"item": item}
     if issue.get("pull_request") is not None:
         return {"item": {**item, "exclusion": "pull_request"}}
     status_text = section_map(issue.get("body") or "").get("Current Status", "")
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
     reports = waiting_records(item, status_text)
-    summary = next_relationship_summary(relationships)
-    if item.get("exclusion") not in {"completed", "stale_needs_review", "unknown_dependencies"} and (
+    summary = next_relationship_summary(relationships or {})
+    if (
         next_plan_status(issue, config) == "waiting"
         or (focus or "").casefold() == "waiting"
         or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
-        or any(report["repo"] == issue["repo"] and report["number"] == issue["number"] for report in reports)
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))
     ):
         item["exclusion"] = "waiting"

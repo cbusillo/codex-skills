@@ -2413,13 +2413,9 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 return {"item": static}
             relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
             actor = relation_actor or actor
-            if truncated:
-                return {"item": {
-                    **base, "exclusion": "unknown_dependencies", "truncated_relationships": truncated,
-                    "detail": f"relationship limit {NEXT_RELATIONSHIP_LIMIT} exceeded",
-                }}
             return github_direction_next.evaluate_direction_node(
                 raw, config=target_config, focus=focus, relationships=relationships,
+                truncated_relationships=truncated,
             )
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,

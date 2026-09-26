@@ -957,6 +957,50 @@ def test_global_service_consumer_uses_the_same_classification_and_sort_as_cli() 
         assert ranked["waiting"][0]["number"] == 92
 
 
+def test_global_placeholder_waits_do_not_park_actionable_work() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    for value in ("None.", "n/a", "nothing", "-"):
+        leaf = global_issue("someone/product", 3, body="## Current Status\nState: Active.\nWaiting for: " + value)
+        edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+        with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [3]
+        assert result["waiting"] == []
+
+
+def test_global_active_parent_partial_wait_need_not_name_an_issue() -> None:
+    roots = [track("someone/direction", 1, "First")]
+    leaf = global_issue("someone/platform", 3)
+    for reason in ("Justin to point DNS at the new host.", "Justin's review. See #92."):
+        parent = global_issue("someone/site", 91, body="## Current Status\nState: Active.\nWaiting for: " + reason)
+        edges = {
+            ("someone/direction", 1): relationships(sub_issues=[parent]),
+            ("someone/site", 91): relationships(blocked_by=[leaf]),
+        }
+        with global_fixture(roots, [parent, leaf], edges) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [3]
+        assert result["waiting"][0]["waiting_for"] == reason
+        if "#92" in reason:
+            assert result["waiting"][0]["number"] == 92
+
+
+def test_global_shared_classifier_preserves_incomplete_relationship_evidence() -> None:
+    module = load_module()
+    shared = module.github_direction_next
+    leaf = global_issue("someone/product", 3)
+    for kwargs in ({"truncated_relationships": ["blocked_by"]}, {"relationship_error": "Not accessible"}):
+        node = shared.evaluate_direction_node(leaf, config=module.DEFAULT_CONFIG, focus=None, relationships=relationships(), **kwargs)
+        assert node["item"]["exclusion"] == "unknown_dependencies"
+        if "truncated_relationships" in kwargs:
+            assert node["item"]["truncated_relationships"] == ["blocked_by"]
+        root = track("someone/direction", 1, "First")
+        root["url"] = root["html_url"]
+        result = shared.rank_direction_work([root], milestone_titles=["First"], read_node=lambda *_: node, scan_limit=50)
+        assert result["candidates"] == []
+        assert result["dependency_context"]["complete"] is False
+
+
 TESTS = [
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
@@ -987,6 +1031,9 @@ TESTS = [
     test_global_inconsistent_blocked_parent_makes_evidence_incomplete,
     test_global_empty_tracks_are_not_reported_as_people_waits,
     test_global_service_consumer_uses_the_same_classification_and_sort_as_cli,
+    test_global_placeholder_waits_do_not_park_actionable_work,
+    test_global_active_parent_partial_wait_need_not_name_an_issue,
+    test_global_shared_classifier_preserves_incomplete_relationship_evidence,
 ]
 
 
