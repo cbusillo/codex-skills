@@ -35,7 +35,6 @@ from github_direction_next import (
     relationship_refs,
     next_milestone_context,
     next_plan_status,
-    next_relationship_summary,
     next_static_exclusion,
     evaluate_next_plan,
     rank_next_candidates,

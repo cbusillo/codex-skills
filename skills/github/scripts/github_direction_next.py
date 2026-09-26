@@ -282,7 +282,7 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
         references: dict[tuple[str, int], str] = {}
         for ref in re.finditer(
             r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
-            r"|(?<![\w/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b",
+            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b",
             reason,
         ):
             repo = ref.group(1) or ref.group(4) or issue["repo"]
@@ -375,14 +375,16 @@ def rank_direction_work(
             tracks.append(root)
         else:
             excluded.append({**root, "exclusion": "outside_direction_tracks"})
-    tracks.sort(key=lambda root: (order[root["milestone"]["title"]], root["number"]))
+    tracks.sort(key=lambda candidate: (order[candidate["milestone"]["title"]], candidate["number"]))
     present = {root["milestone"]["title"] for root in tracks}
     missing = [title for title in milestone_titles if title not in present and title not in completed]
     seen: set[tuple[str, int]] = set()
     degraded = 0
     truncated = False
     # A stack keeps even a deep dependency chain within the explicit scan bound.
-    pending = [(root, root["milestone"], [], True) for root in reversed(tracks)]
+    pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool]] = [
+        (root, root["milestone"], [], True) for root in reversed(tracks)
+    ]
     while pending:
         ref, milestone, path, tracking = pending.pop()
         key = (ref["repo"].casefold(), ref["number"])
@@ -447,7 +449,7 @@ def rank_direction_work(
                 *(item.get("reasons") or []),
             ]
             candidates.append(item)
-    candidates.sort(key=lambda item: (item["repo"].casefold(), item["number"]))
+    candidates.sort(key=lambda candidate: (candidate["repo"].casefold(), candidate["number"]))
     rank_next_candidates(candidates, direction_milestones=milestone_titles)
     return {
         "candidates": candidates,
