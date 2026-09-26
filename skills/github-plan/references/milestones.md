@@ -23,12 +23,14 @@ alternate backlogs.
 
 With a root `DIRECTION.md`, use only milestone titles listed in the merged file.
 Propose a new waypoint through the `direction` skill before creating it. The
-helpers refuse other titles and renames. Closing a shipped milestone is normal
-planning work; removing its stale direction line requires a direction PR.
+helpers refuse creating or renaming to unlisted titles. Closing a shipped
+milestone is normal planning work; removing its stale direction line requires
+a direction PR.
 
 Use `gh-plan.py milestone-list`, `milestone-show`, `milestone-create`,
 `milestone-update`, and `milestone-close` for container operations.
 `milestone-update` can reopen a milestone but cannot close it;
 `milestone-close` refuses while any open issue or PR remains assigned. Resolve
 scope and membership under existing authority rather than bypassing that check.
-For command arguments and result fields, use the GitHub helper CLI reference.
+For command arguments and result fields, use
+[Planning: Milestones](../../github/references/cli-reference.md#planning-milestones).

@@ -39,8 +39,8 @@ explicit, reviewed migration from issue history.
 
 `show` may read contributor-owned planning sections without granting write
 ownership. Inspect its provenance: `automation_managed`, `contributor_envelope`,
-or `contributor_unmanaged`. A disallowed section update leaves the current body
-read-only. A plain request without unmarked planning headings or reserved
+or `contributor_unmanaged`. `section_updates_allowed: false` leaves the current
+body read-only. A plain request without unmarked planning headings or reserved
 markers may be adopted through `update-section`'s preservation envelope; do not
 rewrite the source request yourself.
 

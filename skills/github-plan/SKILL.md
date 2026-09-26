@@ -139,10 +139,12 @@ skill's base directory for the path:
 uv run <skill-dir>/../github/scripts/gh-plan.py <command>
 ```
 
-The frontmatter owns command-policy routing. Prefer these helpers; if they are
-unavailable, use the `github` skill's body-safe fallback while keeping GitHub
-issues as the durable record. Do not bypass a helper's ownership or dependency
-refusal by changing tools or identities.
+The frontmatter owns command-policy routing. Use the sibling `github/scripts/gh-issue`
+and `github/scripts/gh-comment` for multiline issue/comment writes. If planning
+helpers are unavailable, use `gh` with body files and compact JSON reads under
+the `github` skill's authentication rules. Keep GitHub issues as the durable
+record; never bypass an ownership or dependency refusal by changing tools or
+identities.
 
 ## Choose Work
 
@@ -165,9 +167,10 @@ refusal by changing tools or identities.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On `go`, recheck ownership
    and, where posting is authorized, record the worker/session, branch, and next
-   action before implementation, then read back for competing activity. Keep
-   that record current through handoff or completion; reuse preserved work
-   under the repository's worktree rules.
+   action in owned Current Status or a bot-authored planning comment before
+   implementation, then read back for competing activity. Keep that record
+   current through handoff or completion; reuse preserved work under the
+   repository's worktree rules.
 
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
@@ -177,10 +180,11 @@ list does not establish milestone completion. Ownership checks and status
 records do not provide an exclusive lock.
 
 In an `<owner>/direction` repository, `next` follows each `Track:` issue's native
-sub-issues and blockers across repositories; `--repo <owner>/direction` selects
-the same scope elsewhere. Read its direction context and waiting reports:
-unlinked live breakage, repeat-stop tooling evidence, and weekly capacity still
-need judgment. A waiting milestone hands off to the next milestone, not
+sub-issues and blockers across repositories; `gh-plan.py --repo <owner>/direction next`
+selects the same scope elsewhere. Read its direction context and waiting reports:
+live breakage comes first; unrelated tooling needs the direction's linked
+repeat-stop evidence. Weekly own-project capacity is audit context, not a
+per-call quota. A waiting milestone hands off to the next milestone, not
 unlinked tooling. The traversal grants no cross-owner write or deployment
 authority. For graph paths, scope, or incomplete coverage, read
 [Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
@@ -288,10 +292,11 @@ access failures; views never replace the issue graph.
 
 ## Keep The Plan Current
 
-At implementation boundaries, surprising findings, adjacent work, handoff, or
-a "what's next" request, reconnect the next action to the current plan. Run
-`next` before selecting roadmap work. Update Current Status only when durable
-recovery state materially changes; a passing checkpoint needs no artifact.
+Run a Plan Direction Checkpoint at implementation boundaries, surprising findings,
+adjacent work, handoff, a "what's next" request, and before creating, closing, or
+superseding issues: reconnect the next action to the current plan. Run `next`
+before selecting roadmap work. Update Current Status only when durable recovery
+state materially changes; a passing checkpoint needs no artifact.
 
 If scope changes, reconcile the canonical issue, sub-issues, blockers, labels,
 and configured Focus before pivoting. Classify discoveries as current scope,
@@ -323,7 +328,7 @@ helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project fields stale.
 
 Before closing a planning issue, run
-`uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
+`uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
 Any attention result or degraded coverage requires a response or explicit
 handoff; a bot response never proves owner acknowledgement.
 
@@ -340,7 +345,7 @@ internal task is conclusively complete. After merge, inspect referenced issues:
 close only those whose finish lines are satisfied; otherwise record what
 remains. Use `gh-plan.py close --comment-file` for durable plan issues.
 
-For closure failures, partial Project synchronization, retry/reconciliation,
+For closure failures, partial Project synchronization, quota or retry/reconciliation,
 or helper output details, read
 [Planning: Management](../github/references/cli-reference.md#planning-management)
 and the shared API contract there. Keep degraded evidence visible; do not

@@ -21,8 +21,9 @@ another skill's task; see [using skills](using-skills.md). For `next` and plan
 updates use `github-plan`; for reviews use `model-review` when the review
 reference calls for one.
 
-Before recommending or starting an item, apply the `github-plan` active-ownership
-check. Report higher-ranked work already underway separately from the next
+Before recommending or starting an item, apply
+[Choose Work](../github-plan/SKILL.md#choose-work), including its ownership check.
+Report higher-ranked work already underway separately from the next
 independent item available to this session.
 
 `go` authorizes implementation; merge still requires authorization for the
