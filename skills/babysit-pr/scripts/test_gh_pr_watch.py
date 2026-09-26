@@ -469,7 +469,7 @@ def test_review_readiness_requires_exact_check_head():
         ("CHANGES_REQUESTED", "changes_requested", False),
     ],
 )
-def test_review_readiness_decision_matrix(decision, requirement, ready):
+def test_review_readiness_decision_matrix(decision: str, requirement: str, ready: bool):
     pr = sample_pr()
     body = {"data": {"repository": {
         "nameWithOwner": pr["repo"],
@@ -500,14 +500,14 @@ def test_review_readiness_same_document_identity_mismatch_is_unknown(field: str)
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
         "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
         "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN",
+        field: {
+            "url": "https://github.com/openai/codex/pull/999",
+            "headRefOid": "different",
+            "baseRefName": "other",
+            "isDraft": True,
+            "state": "CLOSED",
+        }[field],
     }
-    item[field] = {
-        "url": "https://github.com/openai/codex/pull/999",
-        "headRefOid": "different",
-        "baseRefName": "other",
-        "isDraft": True,
-        "state": "CLOSED",
-    }[field]
     body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": item}}}
 
     reader = ReviewReader(body)
@@ -697,7 +697,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     pr["metadata_availability"]["review_decision"] = False
 
     reader = ReviewReader(
-        None, degraded_reasons=[{"component": "actor", "code": "actor_changed"}]
+        degraded_reasons=[{"component": "actor", "code": "actor_changed"}]
     )
     reader.requests = [{"step": "review_readiness", "ok": True, "bucket": "graphql"}]
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
@@ -833,7 +833,7 @@ def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     )
 
 
-def owner_feedback_comment(**overrides):
+def owner_feedback_comment(**overrides) -> dict[str, Any]:
     decision = {
         "schema_version": 1,
         "record_id": "product-review-example-pr-123-abc",
@@ -877,7 +877,7 @@ def mock_owner_feedback(monkeypatch, comments):
         for comment in comments
         for decision in [json.loads(comment["body"].splitlines()[1][len("<!-- launchplane:owner-review "):-4])]
     }
-    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", lambda pr, record_id: saved[record_id])
+    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", lambda pr, record_id="": saved[record_id] if record_id else max(saved.values(), key=lambda decision: gh_pr_watch.datetime.fromisoformat(decision["decided_at"])))
 
 
 def test_owner_feedback_is_recovered_after_restart_without_repeating_new_event(monkeypatch, tmp_path):
@@ -932,17 +932,39 @@ def test_incomplete_or_wrong_subject_owner_feedback_is_an_explicit_read_failure(
     assert "Owner feedback" in state["owner_review_errors"][0]["error"]
 
 
-def test_app_projection_requires_configured_publisher_and_provider_identity(monkeypatch):
+def test_projection_verifies_the_saved_receipt_without_a_publisher_allowlist(monkeypatch):
     comment = owner_feedback_comment()
-    comment["user"] = {"login": "fixture-app[bot]", "id": 99}
+    comment["user"] = {"login": "unconfigured-publisher[bot]", "id": 99}
     mock_owner_feedback(monkeypatch, [comment])
+    assert len(gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)) == 1
+    comment["user"] = {"login": "unconfigured-publisher[bot]", "id": None}
     state = {}
     assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True) == []
     assert "Unverified" in state["owner_review_errors"][0]["error"]
-    comment["performed_via_github_app"] = {"id": 77, "slug": "fixture-app"}
+
+
+def test_receipt_repository_casing_does_not_break_verification(monkeypatch):
+    comment = owner_feedback_comment()
+    mock_owner_feedback(monkeypatch, [comment])
+    comment["html_url"] = comment["html_url"].replace("openai/codex", "OpenAI/Codex")
     assert len(gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)) == 1
-    comment["user"] = {"login": "unrelated[bot]", "id": 80}
-    assert gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True) == []
+
+
+def test_latest_pending_owner_decision_is_read_before_an_older_acceptance_can_clear_readiness(monkeypatch):
+    accepted = owner_feedback_comment(decision="accepted")
+    mock_owner_feedback(monkeypatch, [accepted])
+    saved_reader = gh_pr_watch.read_launchplane_owner_review
+    pending = {**saved_reader(sample_pr()), "record_id": "later", "decision": "changes_requested",
+        "reason": "This newer request must be read in full.", "decided_at": "2026-09-26T12:01:00Z", "feedback_url": ""}
+    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", lambda target, record_id="": saved_reader(target, record_id) if record_id else pending)
+    pr = {**sample_pr(), "head_sha": "b" * 40}
+    state = {}
+    gh_pr_watch.fetch_new_review_items(pr, state, True)
+    assert state["owner_review_items"][-1]["owner_review"]["reason"] == pending["reason"]
+    actions = gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3, state["owner_review_items"])
+    assert "address_owner_review_changes" in actions
+    assert "owner_feedback_delivery_pending" in actions
+    assert "ready_to_merge" not in actions
 
 
 def test_newer_owner_acceptance_supersedes_requested_changes_without_granting_merge_authority(monkeypatch):

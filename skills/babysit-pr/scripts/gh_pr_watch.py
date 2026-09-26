@@ -824,9 +824,9 @@ def is_external_human_review_author(item, authenticated_login):
 
 
 def launchplane_owner_review(item, pr):
-    """Recognize a decision projected by configured, provider-identified automation.
+    """Verify a projected decision against Launchplane's saved record and receipt.
 
-    This verifies the projection's publisher and subject, not permission to merge.
+    The saved receipt establishes the projection, not permission to merge.
     The complete reason remains Owner feedback; it is never an agent instruction.
     """
     if item.get("kind") != "issue_comment":
@@ -835,24 +835,8 @@ def launchplane_owner_review(item, pr):
     marker = re.fullmatch(r"<!-- launchplane:product-review:([A-Za-z0-9_.:-]+) -->", lines[0]) if lines else None
     if marker is None:
         return None
-    author = str(item.get("author") or "").casefold()
-    if author not in configured_bot_logins():
-        return None
-    app = item.get("github_app")
-    if (
-        (
-            author.endswith("[bot]")
-            and (
-                not isinstance(app, dict)
-                or type(app.get("id")) is not int
-                or app["id"] < 1
-                or author != f"{app.get('slug', '')}[bot]".casefold()
-            )
-        )
-        or type(item.get("author_id")) is not int
-        or item["author_id"] < 1
-    ):
-        raise GhCommandError(f"Unverified Launchplane Owner feedback publisher: {author}")
+    if type(item.get("author_id")) is not int or item["author_id"] < 1:
+        raise GhCommandError("Unverified Launchplane Owner feedback publisher")
     prefix = "<!-- launchplane:owner-review "
     if len(lines) < 2 or not lines[1].startswith(prefix) or not lines[1].endswith(" -->"):
         raise GhCommandError("Launchplane Owner feedback metadata is missing")
@@ -902,8 +886,12 @@ def launchplane_owner_review(item, pr):
         "record_id", "product", "repository", "pull_request_number", "head_sha",
         "preview_url", "decision", "reason", "owner_github_id", "owner_github_login", "decided_at",
     )
-    if any(saved.get(key) != decision.get(key) for key in fields) or saved.get("feedback_url") != item.get("url"):
+    if any(saved.get(key) != decision.get(key) for key in fields) or str(saved.get("feedback_url") or "").casefold() != str(item.get("url") or "").casefold():
         raise GhCommandError("Launchplane Owner feedback differs from the saved decision or delivery receipt")
+    return owner_review_metadata(decision, pr)
+
+
+def owner_review_metadata(decision, pr):
     try:
         decided_at = datetime.fromisoformat(decision["decided_at"])
         if decided_at.tzinfo is None:
@@ -917,7 +905,7 @@ def launchplane_owner_review(item, pr):
     }
 
 
-def read_launchplane_owner_review(pr, decision_id):
+def read_launchplane_owner_review(pr, decision_id=""):
     """Read authority using private configured routing, never the comment's URL."""
     try:
         result = subprocess.run(
@@ -927,6 +915,8 @@ def read_launchplane_owner_review(pr, decision_id):
         payload = json.loads(result.stdout)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         raise GhCommandError("Launchplane Owner review verification is unavailable") from error
+    if not result.returncode and isinstance(payload, dict) and payload.get("ok") is True and payload.get("decision") is None and not decision_id:
+        return None
     if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("decision"), dict):
         raise GhCommandError("Launchplane Owner review verification failed; the saved decision could not be read")
     return payload["decision"]
@@ -1010,6 +1000,24 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
             seen_review_comment.add(item_id)
         elif kind == "review":
             seen_review.add(item_id)
+
+    if owner_review_items or previous_owner_reviews:
+        try:
+            latest = read_launchplane_owner_review(pr)
+            if latest is None:
+                raise GhCommandError("Latest Launchplane Owner decision is unavailable")
+            if latest["record_id"] not in {item["owner_review"]["record_id"] for item in owner_review_items}:
+                owner_review_items.append({
+                    "id": latest["record_id"], "kind": "launchplane_decision", "url": latest["feedback_url"],
+                    "source": "launchplane_owner_review", "verification_status": "verified",
+                    "owner_review": owner_review_metadata(latest, pr),
+                })
+        except GhCommandError as error:
+            owner_review_errors.append({"id": "latest", "url": "", "error": str(error)})
+            for previous in previous_owner_reviews.values():
+                if previous.get("kind") == "launchplane_decision":
+                    owner_review_items.append({**previous, "verification_status": "unavailable",
+                        "owner_review": owner_review_metadata(previous["owner_review"], pr)})
 
     new_items.sort(key=lambda review_item: (review_item.get("created_at") or "", review_item.get("kind") or "", review_item.get("id") or ""))
     state["seen_issue_comment_ids"] = sorted(seen_issue)
@@ -1118,6 +1126,17 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         actions.append("stop_pr_closed")
         return unique_actions(actions)
 
+    verified_owner_reviews = [item["owner_review"] for item in owner_review_items if item.get("verification_status", "verified") == "verified"]
+    latest_known_owner_review = max(
+        verified_owner_reviews,
+        key=lambda decision: (decision["decided_at_epoch"], decision["record_id"]), default=None,
+    )
+    if latest_known_owner_review and not latest_known_owner_review["matches_current_head"] and latest_known_owner_review["decision"] == "changes_requested":
+        actions.append("review_owner_feedback_history")
+    delivery_pending = any(item.get("kind") == "launchplane_decision" and not item.get("url") for item in owner_review_items)
+    if delivery_pending:
+        actions.append("owner_feedback_delivery_pending")
+
     current_owner_reviews = [
         item["owner_review"] for item in owner_review_items
         if item["owner_review"]["matches_current_head"] and item.get("verification_status", "verified") == "verified"
@@ -1134,7 +1153,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
     if owner_changes_requested:
         actions.append("address_owner_review_changes")
 
-    if not owner_review_errors and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    if not owner_review_errors and not delivery_pending and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         actions.append("ready_to_merge")
         return unique_actions(actions)
 

@@ -26,8 +26,8 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_SHA_PATTERN = re.compile(r"^(unknown|[0-9a-f]{40}|[0-9a-f]{64})$")
 _OPERATION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _PATH_PATTERN = re.compile(
-    r"^/v1/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*\})"
-    r"(?:/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*\}))*$"
+    r"^/v1/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*})"
+    r"(?:/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*}))*$"
 )
 _CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _STATUS_PATTERN = re.compile(r"^[1-5][0-9]{2}$")
