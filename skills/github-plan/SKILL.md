@@ -120,414 +120,97 @@ policy:
 
 # GitHub Plan
 
-Apply [task scope and authorization](../references/execution-scope.md) when
-using this workflow; it defines how existing approval and task boundaries apply.
+Use GitHub issues as the durable planning database: one canonical issue or
+graph with an observable finish line, current status, next action, and accurate
+dependencies. Keep fuzzy ideas in chat until they need a durable record. Projects
+and other views display that record; use local plans only for an explicitly
+requested offline/private workflow.
 
-## Outcome
+Apply [task scope and authorization](../references/execution-scope.md) and
+[talking with the owner](../references/talking-with-the-owner.md). Follow the
+[executing loop](../references/executing-loop.md) for `next` and `go`.
+Use `github` for PRs, Actions, and landing; use `direction` for changes to
+`DIRECTION.md` or the owner's waypoints.
 
-For repositories with `DIRECTION.md`, follow the shared
-[executing loop](../references/executing-loop.md) when an owner says `next`,
-`go`, or both.
-
-Use GitHub issues as the durable planning database. Keep chat planning
-ephemeral until the work should survive the current conversation.
-
-Optional surfaces such as GitHub Projects, LaunchPlane, or other local planning
-views may make work easier to scan, prioritize, or recover, but they are not
-separate planning backends. GitHub issues remain canonical for plan prose,
-relationships, blockers, labels, validation, and completion state.
-
-This skill supersedes local file-backed plans for normal GitHub-backed planning.
-Use local plan files only when the user explicitly asks for an offline/local
-plan or the work must not be written to GitHub.
-
-Success means one canonical issue or issue graph has a concrete finish line,
-current recovery state, next action, and accurate dependencies. Optional
-Projects or local surfaces may improve visibility, but they do not become a
-second planning backend.
-
-## Operating Model
-
-- Think in chat first; do not immediately create issues for fuzzy ideas.
-- Search before creating; update an existing issue when intent overlaps.
-- Promote durable work to one canonical issue with the configured planning
-  label, usually `plan`.
-- Treat every human-authored title and body as immutable source material,
-  regardless of whether GitHub reports the author as `OWNER`, `MEMBER`,
-  `COLLABORATOR`, or `CONTRIBUTOR`. Repository role grants permissions, not
-  automation ownership of authored words.
-  Prefer a bot-authored planning comment or a linked maintainer-owned plan. If
-  planning must remain in the contributor issue body, preserve the original
-  request verbatim and update only the marker-delimited automation-owned plan
-  block. Unknown authors and issues created outside the configured automation
-  login set fail closed into this preservation mode. Do not retitle
-  human-authored issues as part of plan expansion. A managed-provenance marker
-  alone never transfers a human-authored body to automation ownership.
-- Allow `show` to read human-authored planning sections, but report their
-  contributor-owned, unmanaged provenance and keep content writes fail-closed.
-  Read permission never grants title or body ownership.
-- Treat generic GitHub operation comments such as
-  `<!-- github-skill-operation:... -->` only as retry/reconciliation evidence;
-  they never establish ownership of an issue body. A body is fully managed only
-  when the issue was authored by the acting planning bot or an owner-controlled
-  login in `CODEX_AUTOMATION_BOT_LOGINS`. Existing contributor envelopes remain
-  contributor-owned even if the author's repository association changes later.
-- Keep issue bodies structured and current; `Current Status` is the recovery
-  point for future sessions and the preferred durable handoff surface for
-  GitHub-backed planning work.
-- Use native GitHub dependencies and sub-issues for relationships, including
-  cross-repo relationships.
-- Use Projects and other configured surfaces as view layers, not sources of
-  truth.
-- Use milestones as strict release, phase, or date gates under the contract
-  below.
-- Avoid ad hoc label taxonomies; ask before creating new labels. Generic labels
-  such as `waiting`, `blocked`, or `ready` are discouraged unless the repo
-  explicitly documents a narrow local convention.
-- Prefer `Refs #123` from PRs unless the user explicitly wants auto-close or the
-  issue is an internal task that can be conclusively closed. `Refs` is
-  deliberately non-closing; after merge, sweep referenced issues and close only
-  the ones whose finish line was actually satisfied.
-- Optimize for the user finishing work, not for cataloging every possible idea.
-
-## Milestone Contract
-
-Milestones describe what must be true to close a release or phase. They are not
-theme labels or alternate backlogs.
-
-- Before adding an issue, ask: "Can this milestone honestly close while this
-  issue remains open?" If yes, keep the issue outside the milestone even when
-  it is useful or thematically related.
-- Put the exact ship or phase-exit criteria in the GitHub milestone
-  description. When assessing readiness or changing milestone membership, read
-  that description and the milestone's open issues first. Do not duplicate
-  transient milestone state in repository instructions or docs.
-- Prefer one active milestone per release train. Multiple active milestones are
-  appropriate only for genuinely independent trains with separate exit gates.
-- Give each active milestone a due date or a named gate, dependency, or decision
-  that determines when it can close.
-- Treat removal as normal scope control. Record why an incomplete issue no
-  longer blocks, then return it to the backlog or deliberately admit it to a
-  later milestone. For an agent admission to a milestone listed in
-  `DIRECTION.md`, blockquote the exact phrase from that line the issue proves
-  or protects as described in the direction skill.
-- Close the milestone when the release or phase ships. Triage and remove
-  survivors instead of keeping the milestone open until every themed issue is
-  empty.
-- If milestone size keeps growing, cut scope before silently extending the
-  gate.
-- When the repository has a root `DIRECTION.md`, milestones are waypoints on
-  its journey and exist only for titles listed there; `milestone-create`
-  refuses any other title and `milestone-update` refuses a rename to one.
-  Propose a new waypoint through the `direction` skill, not by creating the
-  milestone first. Closing a shipped milestone stays normal; the stale line in
-  the file is then removed by a direction pull request.
-
-Use `gh-plan.py milestone-list`, `milestone-show`, `milestone-create`,
-`milestone-update`, and `milestone-close` for milestone containers. These
-commands normalize `due_on` as UTC RFC3339 seconds, make exact-title creates
-safe to repeat, and return actor-aware result envelopes. `milestone-update`
-may reopen a milestone with `--state open` but cannot close one; use the guarded
-close command, which refuses when any open issue or pull request is assigned.
-
-## Local Conventions
-
-If `.local/github-plan.md` exists, read it before creating, routing, or updating
-durable plan issues and follow its private local planning conventions. Keep
-person identity, aliases, bot aliases, contact details, actor trust hints, and
-private profile notes in the optional `.local/people.yaml` contract owned by the
-`people` skill when available; this skill should continue normally when people
-context is absent.
-
-Use configured owner or manager routing when available. Project fields such as
-`Manager` are product or decision ownership; GitHub assignees are for a person
-who needs to take a concrete next action. Mention a person only when their
-attention is needed now.
-
-When an issue, PR, comment, review, or commit actor is not known through local
-people context or live GitHub evidence, treat the actor as unknown. Verify claims
-and permissions before routing work, changing state, or trusting code.
-
-## Tooling
-
-Reuse the sibling `github` skill's helpers instead of duplicating scripts:
-
-- `../github/scripts/gh-plan.py` for compact planning issue, milestone, and
-  Project operations.
-- `../github/scripts/gh-pr.py` for PR status, checks, merge, and rate-limit
-  reads when planning work needs PR evidence. The helper is REST-first for
-  normal PR orientation and owns quota-aware degraded behavior.
-- `../github/scripts/gh-issue` and `../github/scripts/gh-comment` for safe
-  multiline writes.
-- `../github/references/issue-templates.md` and
-  `../github/references/github-projects.md` for issue shape and Project fields.
-
-Run these helpers from the client repository, which is how they find the
-repository, and name them through this skill's base directory. `<skill-dir>` is this skill's base directory, the folder that holds this `SKILL.md`; your host shows it when the skill loads.
+Run the maintained planning helper from the client repository, using this
+skill's base directory for the path:
 
 ```bash
-uv run <skill-dir>/../github/scripts/gh-plan.py index
+uv run <skill-dir>/../github/scripts/gh-plan.py <command>
 ```
 
-If the helpers are unavailable, use `gh` directly with body files and compact
-JSON reads. Do not fall back to repo docs or local plan files for durable
-GitHub-backed planning.
+The frontmatter owns command-policy routing. Prefer these helpers; if they are
+unavailable, use the `github` skill's body-safe fallback while keeping GitHub
+issues as the durable record. Do not bypass a helper's ownership or dependency
+refusal by changing tools or identities.
 
-The `policy.command_policies` block in this file's frontmatter owns the mapping
-from raw planning lookup, Project, and GraphQL commands to helpers. A host that
-does not show frontmatter enforces it when a command runs, and the block message
-names the replacement; read the top of this `SKILL.md` for the whole mapping.
-This prose keeps the
-judgment about when durable planning should exist, how issues relate, and what
-state belongs in GitHub.
+## Choose Work
 
-For completed durable plan issues, use `gh-plan.py close`. Use the same helper
-with `--reason not_planned` for explicitly superseded durable plans. The
-planning helper owns `plan:done` labels, cleanup of stale `plan:active`,
-`plan:blocked`, `plan:waiting`, and `plan:stale` labels, and Project focus
-updates. It also owns relationship preflight and close-comment reconciliation:
+1. Run `gh-plan.py next`. Respect native `blocked-by` relationships and the
+   merged `DIRECTION.md` milestone order; without that file, milestone creation
+   order applies. Within a milestone, prioritize dependency impact, then issue
+   age. Project Focus is context, not an override.
+2. Read the candidate with `show <issue> --full`: original request, finish
+   line, Current Status, blockers, and all comments. Reconcile comment-only
+   requirements before recommending or implementing it.
+3. Check current ownership using available issue/PR/branch/worktree evidence
+   and supported read-only task/session tools. Recommend the highest-ranked
+   available independent item; report work owned by another active worker as
+   underway. A label or old worktree alone does not prove active ownership, and
+   a partial session inventory does not prove availability.
+4. Preserve explicit continuation requests and verified handoffs. If ownership
+   remains uncertain, ask whether to resume the item or leave it with its
+   recorded owner, with a recommendation; keep this decision visible while
+   recommending independent work.
+5. For `next`, report the selected issue, why it fits the plan, and recorded
+   waits, then stop without changing planning state. On `go`, recheck ownership
+   and, where posting is authorized, record the worker/session, branch, and next
+   action before implementation, then read back for competing activity. Keep
+   that record current through handoff or completion; reuse preserved work
+   under the repository's worktree rules.
 
-Before closing a planning issue, run
-`uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
-Any attention result or degraded coverage requires a response
-or explicit handoff; a bot response never proves owner acknowledgement.
+Check beyond occupied results before saying no work is available.
+`candidate_count` greater than the returned list calls for a larger bounded
+`--limit`; truncated inventory or incomplete dependencies remain a partial
+answer. Report those limits and what is underway or waiting. An empty available
+list does not establish milestone completion. Ownership checks and status
+records do not provide an exclusive lock.
 
-```bash
-uv run <skill-dir>/../github/scripts/gh-plan.py close <issue> --comment-file <file>
-```
+In an `<owner>/direction` repository, `next` follows each `Track:` issue's native
+sub-issues and blockers across repositories; `--repo <owner>/direction` selects
+the same scope elsewhere. Read its direction context and waiting reports:
+unlinked live breakage, repeat-stop tooling evidence, and weekly capacity still
+need judgment. A waiting milestone hands off to the next milestone, not
+unlinked tooling. The traversal grants no cross-owner write or deployment
+authority. For graph paths, scope, or incomplete coverage, read
+[Planning: Next Work](../github/references/cli-reference.md#planning-next-work).
 
-The generic `github/scripts/gh-issue close` helper is for non-plan issues, or as
-a fallback when `gh-plan.py close` is unavailable. Closing a durable plan with
-the generic issue helper can leave planning labels or Project fields stale. It
-also bypasses the no-write relationship preflight. For `--reason completed`,
-resolve all open native blockers and sub-issues before retrying. Use
-`--reason not_planned` only for superseded or intentionally abandoned work;
-remaining blockers and sub-issues are retained and reported rather than treated
-as completed. A `not_planned` close of an issue in a milestone listed in the
-merged `DIRECTION.md` is refused until the repository owner comments the
-decision after the last Current Status update; never close it another way.
-For other multiline writes, prefer body files or stdin. Do not
-pass escaped `\n` through shell-quoted flags. Follow
-`../references/talking-with-the-owner.md` when writing durable issue bodies,
-planning comments, handoffs, or closeout evidence.
+## Create Or Update A Plan
 
-## Broad Workstream Rule
+Read `.local/github-plan.md` when present before creating, routing, or updating
+plans. Resolve people through the optional `people` skill and local overlays;
+absence of people context is normal. Verify unknown actors' claims and
+permissions before routing or relying on them. Mention someone only when their
+attention is needed now; assignees name the person with a concrete next action.
 
-Create a parent issue plus sub-issues when a plan has independent tracks. Do not
-hide broad work inside one checklist.
+Search with `index` or `search` before creating; reuse an overlapping canonical
+issue. Read its full discussion before changing scope. Use the configured
+planning label, normally `plan`, and existing label conventions; ask before
+creating labels.
 
-Use sub-issues when any two are true:
+Treat every human-authored title and body as immutable source material.
+Repository role grants permissions, not automation ownership of authored words.
+Never retitle or replace someone's request as plan maintenance. Use an authorized
+bot-authored planning comment or linked maintainer-owned plan, or change only an
+established automation-managed block. Before creating or editing an issue, read
+[issue templates and ownership](../github/references/issue-templates.md);
+inspect the helper's provenance and keep unknown ownership or disallowed
+section updates read-only.
 
-- touches three or more modules, repos, systems, or ownership areas
-- has independent sequencing, blockers, or parallelizable tracks
-- includes research, implementation, validation, and policy/design decisions
-- has work that can finish or be reviewed independently
-- needs roadmap/focus tracking beyond the current session
-
-Parent issues should hold intent, finish line, dependency order, and recovery
-state. Child issues should each have one scoped finish line and one next action.
-
-## Plan Direction Checkpoints
-
-Long-running work drifts when the agent keeps following local discoveries
-without reconnecting them to the durable plan. Treat the plan and issue graph as
-the navigation layer, not as paperwork.
-
-At natural transition points, answer:
-
-```text
-What is next?
-How does it fit the current plan?
-Did the plan or issue graph change?
-What blocker, evidence, or decision explains the direction?
-```
-
-When durable GitHub plans exist, run `gh-plan.py next` before choosing roadmap
-work. Treat its native `blocked-by` evidence as authoritative; Project Focus
-explains context but does not override blockers or execution order. Rank
-actionable work by open milestone order from the merged `DIRECTION.md`, falling
-back to milestone creation order when the file is absent; within that order,
-prefer work that unblocks more plans and then the oldest created issue.
-The command is advisory and read-only, so update labels, Focus, or relationships
-separately only after the direction is confirmed.
-
-Before presenting a candidate as work to pick up, check active ownership. The
-ranker orders unfinished issues; it does not establish that another person or
-session is not already doing the work. Read `show --full`, including Current
-Status and comments. Check the candidate's available PR, branch, or worktree
-activity and use the host's supported read-only task/session tools when exposed.
-A `plan:active` label means actionable, and an assignee or an old PR/worktree
-alone does not prove that a worker is currently active.
-
-Report work actively owned elsewhere as already underway and select the next
-independent candidate in the same ranking order. Do not recommend starting a
-second implementation or take over its worktree. For a continuation of the
-current session's work or a verified handoff from a finished session, inspect
-and reuse the preserved work under the repository's worktree rules.
-Recheck ownership before `go` starts work; a recommendation does not reserve an
-issue. When in-progress evidence cannot be reconciled with current ownership,
-state the uncertainty and ask whether to resume the named item or leave it
-with its recorded owner, with a recommendation based on the evidence. Keep this
-owner decision visible even when recommending independent work. An unavailable
-or partial session inventory is not proof that nobody owns an item.
-
-If the returned candidates are all occupied and `candidate_count` exceeds the
-returned list length, increase the bounded `--limit` to inspect the remaining
-candidates. A truncated inventory or incomplete dependency coverage is a partial
-answer; raising the output limit does not repair either. If complete evidence
-shows all eligible work is underway or waiting, say so instead of presenting an
-occupied item as the next new task or claiming the milestone is complete.
-
-On `go`, where posting is authorized, make the start visible before implementation
-through the existing Current Status or automation-owned planning comment. Record the
-worker or session, task branch, and next action, then read back current ownership
-evidence and reconcile any competing activity. Keep `next` read-only and respect
-body ownership and posting authority; this coordination record is not a lock or
-permission to overwrite someone else's work. Update it when handing off or
-finishing so a departed session does not remain the recorded active worker.
-
-In an `<owner>/direction` repository, the same `next` command follows each
-`Track:` issue's native sub-issues and blockers across repositories, including
-other owners' repositories, in the merged direction's milestone order. Passing
-`--repo <owner>/direction` gives the same answer from any checkout. Product
-repositories keep their own ranking. Each global candidate includes its overall
-milestone, original product milestone, and the path explaining its priority.
-Read the returned waiting reports and direction context alongside candidates:
-live breakage still comes first, unrelated tooling needs the direction's linked
-repeat-stop evidence, and own-project capacity is judged by the weekly audit.
-The graph does not discover unlinked incidents or measure weekly capacity.
-A waiting milestone hands off to the next milestone, not to unlinked tooling.
-Waiting reports name the person or condition recorded in Current Status and
-retain their source; a parent can report a PR review wait while its independent
-blocker is actionable. Read the selected issue with `show --full` before work.
-An incomplete dependency context is a partial answer, not proof of the global
-first task or milestone completion. Traversal is read-only and grants no new
-cross-owner write, merge, or deployment authority. See the
-[next-work contract](../github/references/cli-reference.md#planning-next-work)
-for bounds and the reusable ranking entry point.
-
-Run this checkpoint:
-
-- after each implementation slice
-- after surprising findings
-- before starting adjacent work that was not already planned
-- before creating, closing, or superseding issues
-- before handoff or closeout
-- when the user asks "what's next", "where are we", or "how does this fit"
-
-If the next action still matches the plan, answer briefly and continue. A
-passing checkpoint does not need a written artifact. Update `Current Status`
-only when the durable recovery state materially changed. If reality changed the
-plan, update the canonical parent issue, sub-issues, blockers, relationships,
-labels, and Project focus before relying on chat memory. If a new thread of work
-appears, classify it as current scope, sub-issue, blocker, related issue, or
-later. Do not let it become an untracked pivot.
-
-For broad workstreams, prefer issue graph changes over prose-only status:
-
-- create a sub-issue for independently finishable work
-- add `blocked-by` / `blocks` for real execution dependencies
-- use `related` for context that should not drive sequencing
-- mark stale or superseded plans clearly
-- keep the parent issue's `Current Status` as the recovery point
-
-When another repo workflow is waiting on CI, deploy, review, or post-merge
-health, keep the main checkout available for verification and parallelize safely:
-use read-only exploration or isolated work only for independent planning or
-implementation prep, then return to the waiting workflow before calling it done.
-
-Use Focus lanes when configured:
-
-- `Now`: one thing the user and Code are actively trying to finish.
-- `Next`: ready after Now or after the manager chooses it.
-- `Waiting`: blocked or awaiting an external decision/event.
-- `Later`: real but intentionally out of focus.
-
-Prefer at most one `Now` item unless the user explicitly chooses parallel work.
-
-Use planning status labels with narrow meanings:
-
-- `plan:active`: actionable now.
-- `plan:blocked`: blocked by a real, current dependency, preferably represented
-  by a native GitHub `blocked-by` relationship to an open issue.
-- `plan:waiting`: intentionally parked on non-issue evidence, a
-  user/customer/maintainer decision, or a future real-world event. Use this only
-  on durable planning issues labeled `plan`, not on ordinary bugs, PRs pending
-  QA, preview review, reporter validation, deploy, or merge readiness.
-- `plan:stale`: needs review before it should guide work.
-- `plan:done`: completed or superseded.
-
-Do not use `plan:blocked` merely because work is not currently in focus. If an
-issue has no open native blocker, prefer `plan:waiting` and make `Current
-Status` say `Waiting for:` or `Parked until:` with the concrete condition.
-If a non-issue condition truly blocks execution, include `Blocked by: No native
-issue blocker; waiting for ...` so future audits do not chase missing edges.
-
-If LaunchPlane or another local context helper is configured and useful for
-orientation, call it once before or alongside `index`. Treat unavailable,
-unauthorized, invalid, or missing context as normal absence and continue with
-GitHub-only planning. Use local surface output only as a hint for source links,
-readiness, blockers, and next inspection targets; do not copy private context
-payloads into public issues, PRs, or handoffs unless they have been reviewed for
-public safety.
-
-## Token Discipline
-
-Prefer the installed `github/scripts/gh-plan.py` helper for planning state. It
-returns compact JSON and avoids loading issue bodies unless needed.
-
-`index` uses paged repository-issue REST reads and explicitly excludes pull
-requests. `search` uses paged REST issue search with `repo:` and `is:issue`
-constraints plus the dedicated search quota bucket. Use `show` or `deps` when
-relationship, dependency, or sub-issue details are required; index and search
-intentionally preserve their smaller legacy result shape. Label maintenance
-uses paged REST label reads and reconciles concurrent creates without retrying
-the write blindly.
-
-`create` performs exact-title dedupe through REST issue search, ensures labels
-through REST, and delegates the non-idempotent issue write to the shared issue
-helper so unknown outcomes carry reconciliation evidence. `close` first pages
-native `blocked_by` dependencies and sub-issues through REST and fails before
-mutation when a completed plan is incomplete or relationship reads are unsafe.
-Configured Project synchronization remains the only GraphQL-backed phase and
-runs before issue closure so the item stays discoverable. Confirmed or
-read-reconciled issue closure is the commit point for planning labels and the
-optional timeline comment. Re-running the same command reconciles partial
-metadata and reuses an identical acting-user comment instead of duplicating it.
-If closure fails after Project writes, report the helper's split `project_state`
-and rerun the same close command; do not add completion labels or comments by
-hand while the issue may still be open.
-
-Project v2, native sub-issues, and native dependency operations may require
-GraphQL. Before batching those operations, check rate limits when failures look
-quota-related. If GraphQL is exhausted but REST/core is available, keep issue
-body/status updates moving through REST-backed helpers and record Project or
-native relationship updates as waiting rather than retrying until the LLM
-workflow stalls.
-
-- Use `index` or `search` before creating.
-- Use `show` for selected sections and all comments; use `show --full` for the
-  entire body and all comments before implementation. Both modes page the
-  complete discussion and fail if a comment page cannot be read. Inspect the
-  returned provenance before attempting a body update;
-  `section_updates_allowed: false` means the current body shape must remain
-  read-only. A plain contributor request without unmarked planning headings or
-  reserved ownership markers may still be wrapped in the preservation envelope
-  by `update-section`.
-- Treat `ownership` values as `automation_managed`, `contributor_envelope`, or
-  `contributor_unmanaged`. If ownership markers are malformed, `show --full`
-  still returns the raw body with `ownership: unknown`, while section parsing
-  and every body write remain fail-closed.
-- Use `update-section` instead of rewriting the whole body.
-- Use installed `github/scripts/gh-issue` and `github/scripts/gh-comment` for
-  multiline Markdown bodies.
-
-## Issue Shape
-
-Durable planning issues should use the headings in
-`../github/references/issue-templates.md`.
-
-Keep `Current Status` short and concrete:
+Use `create` for a new plan and `update-section` for an owned section. Use body
+files or stdin for multiline content through the maintained helpers. Keep the
+finish line observable, with scope, acceptance evidence, and one next action.
+Keep Current Status concise:
 
 ```text
 State:
@@ -537,162 +220,141 @@ Waiting for:
 Last verified:
 ```
 
-Use `Blocked by:` for issue dependencies and `Waiting for:` or `Parked until:`
-for non-issue conditions. Avoid listing completed work as a blocker; move it to
-`Relationships` as completed or historical context.
+Record decisive evidence and links needed to resume. Keep raw logs and lengthy
+validation details in the PR or linked evidence. Completed prerequisites belong
+in Relationships, not the current blocker list.
 
-Include decisive validation evidence only when it changes recovery state, such
-as the current blocker, last verified environment, or proof needed to resume.
-Keep raw logs, large check output, screenshots, and detailed run evidence in the
-linked PR, workflow run, artifact, or comment instead of bloating `Current
-Status`.
+### Broad Workstreams
 
-Keep `Finish Line` observable. If the finish line is vague, narrow it before
-creating sub-issues or Project fields.
+Use a parent issue plus independently finishable sub-issues when any two apply:
 
-## Relationship Semantics
+- the work touches three or more modules, repositories, systems, or owners
+- it has independent sequencing, blockers, or parallel tracks
+- it includes research, implementation, validation, and policy/design decisions
+- parts can finish or be reviewed independently
+- tracking must survive this session
 
-- `blocked-by`: current issue cannot move until the target changes.
-- `blocks`: current issue is holding up the target.
-- `subissue`: target is part of the current workstream and can be tracked
-  independently.
-- `related`: useful context without execution dependency.
+Keep intent, finish line, dependency order, and recovery state on the parent;
+give each child its own finish line and next action.
 
-Use native relationships first when the helper/API supports them. Body
-references are explanatory, not canonical.
-Native `blocked-by`, `blocks`, and `subissue` operations do not require
-ownership of either issue body because they update GitHub relationships without
-rewriting source text. `related` remains a markdown body update and therefore
-keeps the normal plan-body ownership checks.
+### Relationships
 
-Completed closure requires every native `blocked-by` target and sub-issue to be
-closed. Issues that the plan itself blocks do not prevent closure. An unavailable
-or malformed relationship read is a no-write failure, not permission to assume
-the graph is clear. `not_planned` closure is intentionally different: it may
-retain open blockers or sub-issues, reports them in the result, and preserves the
-GitHub `not_planned` state reason as the durable supersession signal.
+Use native `blocked-by`, `blocks`, and `subissue` links for execution
+dependencies and decomposition, including across repositories. `related`
+provides context without changing sequencing. Body references explain links
+but do not replace them.
+
+Native relationship changes do not rewrite either issue's body and do not
+require body ownership; they still require authorization for the relationship
+write. `related` changes Markdown, so body-ownership rules apply.
 
 ### Missing Cross-Repository Gates
 
-When another repository's maintainer must create or identify a prerequisite
-issue before downstream blockers can be linked, include a return-and-link action
-in the canonical waiting record. Use an automation-owned `Current Status` or a
-bot-authored planning comment under the existing body-ownership rules:
+When a maintainer must create or identify a prerequisite, record who returns
+the canonical links, the return thread, and who verifies and connects the native
+blockers afterward. Explicitly request that return within existing posting
+authority; otherwise prepare the draft and name the remaining action. Read the
+[missing-gate template](../github/references/issue-templates.md#waiting-on-an-external-gate)
+for the waiting record. Once the gate is known, verify and link it without
+adding another handoff.
 
-- Name the gate maintainer, downstream coordinator, return thread, and affected
-  downstream issues, using the existing [actor routing](#local-conventions).
-- Explicitly ask the maintainer to reply/tag the coordinator in that thread with
-  the canonical gate links and relevant completion criteria when ready.
-- Name who will verify the returned gate's scope/status and add or reconcile the
-  native blockers under existing authorization. Relationship updates do not
-  require rewriting a protected issue body.
+## Milestones And Status
 
-Use `Waiting for:` and, while no native blocker exists, `Blocked by: No native
-issue blocker; waiting for ...`. Existing label and Focus rules still apply;
-milestone membership or a mention alone does not establish a native dependency.
-Do not claim the missing gate or link exists until verified. Once the gate is
-known, use normal dependency tracking without an extra return round-trip.
-Reuse applicable approval; when posting authority is missing, prepare the draft
-and identify the remaining action. This rule does not authorize messages,
-mentions, unrelated writes, or recurring notifications/monitoring.
+Treat milestones as release or phase-exit gates. Before assigning an issue or
+creating, changing, assessing, or closing a milestone, read the
+[milestone contract](references/milestones.md), its description, and its open
+issues. With `DIRECTION.md`, only listed milestone titles are eligible; propose
+new waypoints through `direction`.
 
-Example draft: "Gate maintainer: create or identify the prerequisite for
-`OWNER/CLIENT#28`, then reply to the client coordinator on that issue with its
-canonical link and completion criteria. The coordinator will verify it and
-reconcile the native blocker under existing authorization. Until then, the
-client issue waits for gate identification and linkage."
+Use status labels narrowly:
 
-## Related Issue Sweep
+- `plan:active`: actionable now.
+- `plan:blocked`: a current dependency, preferably an open native blocker.
+- `plan:waiting`: a durable plan parked on a named person, decision, or event.
+  Do not apply it to ordinary bugs or PRs awaiting QA, review, or deployment.
+- `plan:stale`: needs review before guiding work.
+- `plan:done`: completed or deliberately superseded.
+
+Do not label an item blocked just because it is out of focus. Without a native
+blocker, use `Waiting for:` or `Parked until:` with the concrete condition.
+For a blocking non-issue condition, say `Blocked by: No native issue blocker;
+waiting for ...`.
+
+When Projects are configured or requested, use the small set of human-facing
+fields and Focus lanes in [Projects and roadmaps](../github/references/github-projects.md).
+Prefer one `Now` item unless the owner chooses parallel work. Read that reference
+when using a Project or local context surface, including synchronization or
+access failures; views never replace the issue graph.
+
+## Keep The Plan Current
+
+At implementation boundaries, surprising findings, adjacent work, handoff, or
+a "what's next" request, reconnect the next action to the current plan. Run
+`next` before selecting roadmap work. Update Current Status only when durable
+recovery state materially changes; a passing checkpoint needs no artifact.
+
+If scope changes, reconcile the canonical issue, sub-issues, blockers, labels,
+and configured Focus before pivoting. Classify discoveries as current scope,
+sub-issue, blocker, related context, or later work. Record owner decisions so a
+future session does not ask again. Keep detailed implementation evidence in
+the PR and recovery-critical state in the issue.
+
+While another workflow waits on CI, deployment, or review, use independent
+read-only work or isolated preparation within authorization; return to the
+waiting workflow before calling it complete.
+
+## Close Or Hand Off
 
 Stale GitHub planning state is a regression source. Before closeout, handoff,
-or declaring a workstream done, search for related, duplicate, stale, parent,
-sub-issue, blocker, and PR-linked issues that might still describe the old
-state.
+or declaring a workstream done, search related issues. Update every related
+issue whose Current Status, labels, blockers, relationships, or acceptance
+criteria changed. Reconcile stale or duplicate plans rather than leaving
+corrections only in chat or PR comments.
 
-- Update every related issue whose `Current Status`, labels, blockers,
-  relationships, or acceptance criteria changed.
-- Close or relabel stale duplicate issues when they no longer represent current
-  work.
-- Prefer updating the canonical parent and linked sub-issues over leaving
-  corrective context only in chat or PR comments.
-- If an old issue might mislead a future agent, treat it as unfinished cleanup,
-  not optional housekeeping.
+Before calling the plan captured or complete, verify that stale, duplicate,
+related, and PR-linked issues were swept, the canonical graph has the needed
+parent/children and blockers, and its finish line and next action match reality.
 
-After a canonical PR merges, inspect the issues it references with `Refs`,
-`Closes`, `Fixes`, or `Resolves`. `Refs` should remain non-closing by default.
-For each referenced issue, either close it with evidence when the merge
-conclusively satisfies the finish line, or update/comment the remaining state
-and leave it open. Use `gh-plan.py close --comment-file` for durable plan issues
-so planning labels and Project fields stay synchronized. Use installed
-`github/scripts/gh-issue close` with a multiline evidence comment for non-plan
-issues.
+For completed durable plan issues, use `gh-plan.py close`. It owns `plan:done`
+labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
+`plan:stale` labels, and Project focus updates. The generic
+`github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
+helper is unavailable. Closing a durable plan with the generic issue helper can
+leave planning labels or Project fields stale.
 
-Local handoff documents are not durable planning records unless the user asked
-for offline/private handoff. If a session created `handoff*.md` or similar
-scratch files, migrate recovery-critical content into the owning GitHub issue or
-PR comment before closeout and then delete or explicitly preserve the file.
+Before closing a planning issue, run
+`uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
+Any attention result or degraded coverage requires a response or explicit
+handoff; a bot response never proves owner acknowledgement.
 
-When repository cleanup finds valuable local work that needs parking, read the
-shared [repository cleanup and preservation](../references/repo-cleanup.md) and
-[parking and handoff procedures](../work-closeout/references/parking-and-handoff.md).
-Do not create planning state for routine disposable artifacts. For bulk cleanup
-or repository retirement, use a GitHub issue only after its capability, canonical
-ownership, publication authorization, and durable recovery contents satisfy
-those policies.
+Completed closure requires all native blockers and sub-issues closed and their
+reads complete. Issues the plan blocks do not prevent its closure. Use
+`--reason not_planned` only for explicitly superseded or abandoned plans;
+retained open relationships are not completion evidence. For an issue in a
+milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
+owner's decision comment after the last Current Status update. Never bypass a
+closure refusal through another tool.
 
-## Projects And Surfaces
+Prefer non-closing `Refs` from PRs unless the owner requests auto-close or an
+internal task is conclusively complete. After merge, inspect referenced issues:
+close only those whose finish lines are satisfied; otherwise record what
+remains. Use `gh-plan.py close --comment-file` for durable plan issues.
 
-Planning surfaces are optional views over GitHub issue-backed plan data. They
-may help people choose work, inspect roadmap shape, or recover context, but they
-must not replace the GitHub issue as the durable record.
+For closure failures, partial Project synchronization, retry/reconciliation,
+or helper output details, read
+[Planning: Management](../github/references/cli-reference.md#planning-management)
+and the shared API contract there. Keep degraded evidence visible; do not
+manually mark an issue done while closure is uncertain or silently switch to
+human authentication.
 
-Add plans to Projects when repo/workspace config defines a default Project or
-the user asks for Project tracking. Use only a few human-facing fields: `Focus`,
-`Manager`, `Finish Line`, `Roadmap Start`, and `Roadmap Target`.
+Local handoff files are scratch unless the owner requested offline/private
+handoff. Migrate recovery-critical content to the owning issue or PR before
+closeout, then remove or explicitly preserve the scratch file. For valuable
+local work found during cleanup, read
+[repository preservation](../references/repo-cleanup.md) and
+[parking and handoff](../work-closeout/references/parking-and-handoff.md).
+Routine disposable artifacts do not need planning issues.
 
-When issue create/close succeeds but the helper returns a non-blocking Project
-warning, mention it briefly and present the helper's human choices. Do not retry
-repeatedly or silently switch to active human auth. Project auth/config fixes are
-human decisions: grant automation Project access, use Project-capable auth,
-disable Project sync, or correct stale Project config.
-
-Treat roadmap dates as planning anchors, not commitments. Keep them useful for
-LLM-assisted coding by using honest day, week, or month windows and moving or
-clearing stale dates when reality changes.
-
-## Closeout Check
-
-Before saying a plan is captured, verify:
-
-- existing issues were searched
-- parent issue exists for a broad workstream
-- sub-issues exist when the Broad Workstream Rule applies
-- blockers/dependencies are represented
-- stale, duplicate, related, and PR-linked issues were swept and reconciled
-- `Current Status` and next action are concrete
-- the next action says how it fits the current plan
-- issue graph changes caused by the session were applied or explicitly parked
-- docs are not being used as active plan state
-
-## Workflow
-
-1. Decide whether the work is ephemeral or durable.
-2. Resolve the repo and run `gh-plan.py show <issue> --full` before implementing
-   it. Read the original request, finish line, `Current Status`, next action,
-   blockers, and returned `comments`; comments may add requirements or supersede
-   the original body. Reconcile them into the implementation scope.
-3. Run `next` before selecting roadmap work, and use `index` or `search` before
-   creating anything; then draft or revise the issue shape with the user in chat
-   when intent is unclear.
-4. Create or update the canonical parent issue and choose one next action.
-5. For broad workstreams, create scoped sub-issues and represent blockers,
-   dependencies, and related context in the issue graph.
-6. When discoveries change direction, run a Plan Direction Checkpoint and
-   update durable state before pivoting.
-7. Add configured Project fields only as view/tracking layers; keep the user in
-   maker mode instead of duplicating management state in prose.
-8. Before pausing, keep `Current Status`, acceptance criteria, decisions,
-   validation, and the next action current. Do not leave a local handoff file as
-   the only recovery source for GitHub-backed work.
-9. When work completes, update status and close durable plan issues with
-   `gh-plan.py close`; do not leave stale local plan files behind.
+Finish with the current outcome, evidence or uncertainty, next action and its
+owner, and any owner decisions still open. Use the executing loop's handoff
+rules for its commands.
