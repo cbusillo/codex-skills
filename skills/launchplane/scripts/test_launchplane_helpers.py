@@ -104,7 +104,7 @@ def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
     )
     assert summary["operation_count"] == 20
     assert summary["protected_workflow_count"] == 4
-    assert summary["local_extension_count"] == 9
+    assert summary["local_extension_count"] == 10
     assert summary["internal_helper_route_count"] == 1
     assert summary["hermetic_only"] is True
     assert summary["upstream_freshness_proven"] is False

@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
@@ -19,7 +20,7 @@ import gh_pr_watch
 import pytest
 
 
-def sample_pr():
+def sample_pr() -> dict[str, Any]:
     return {
         "number": 123,
         "url": "https://github.com/openai/codex/pull/123",
@@ -493,7 +494,7 @@ def test_review_readiness_decision_matrix(decision, requirement, ready):
 
 
 @pytest.mark.parametrize("field", ["url", "headRefOid", "baseRefName", "isDraft", "state"])
-def test_review_readiness_same_document_identity_mismatch_is_unknown(field):
+def test_review_readiness_same_document_identity_mismatch_is_unknown(field: str):
     pr = sample_pr()
     item = {
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
@@ -702,7 +703,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda active_reader=None: "octocat")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         gh_pr_watch.github_read,
@@ -926,16 +927,18 @@ def test_earlier_owner_feedback_is_history_for_a_new_revision(monkeypatch):
 ])
 def test_incomplete_or_wrong_subject_owner_feedback_is_an_explicit_read_failure(monkeypatch, change):
     mock_owner_feedback(monkeypatch, [owner_feedback_comment(**change)])
-    with pytest.raises(gh_pr_watch.GhCommandError, match="Owner feedback"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True) == []
+    assert "Owner feedback" in state["owner_review_errors"][0]["error"]
 
 
 def test_app_projection_requires_configured_publisher_and_provider_identity(monkeypatch):
     comment = owner_feedback_comment()
     comment["user"] = {"login": "fixture-app[bot]", "id": 99}
     mock_owner_feedback(monkeypatch, [comment])
-    with pytest.raises(gh_pr_watch.GhCommandError, match="Unverified"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True) == []
+    assert "Unverified" in state["owner_review_errors"][0]["error"]
     comment["performed_via_github_app"] = {"id": 77, "slug": "fixture-app"}
     assert len(gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)) == 1
     comment["user"] = {"login": "unrelated[bot]", "id": 80}
@@ -961,13 +964,14 @@ def test_own_automation_cannot_forge_owner_feedback_or_copy_a_receipt(monkeypatc
     mock_owner_feedback(monkeypatch, [legitimate])
     forged = owner_feedback_comment(reason="This did not come from the Owner.")
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **_: [forged] if "/issues/" in endpoint else [])
-    with pytest.raises(gh_pr_watch.GhCommandError, match="saved decision or delivery receipt"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, authenticated_login="fixture-service")
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True, authenticated_login="fixture-service") == []
+    assert "saved decision or delivery receipt" in state["owner_review_errors"][0]["error"]
     forged["body"] = legitimate["body"]
     forged["id"] = 11
     forged["html_url"] = "https://github.com/openai/codex/pull/123#issuecomment-11"
-    with pytest.raises(gh_pr_watch.GhCommandError, match="saved decision or delivery receipt"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True) == []
+    assert "saved decision or delivery receipt" in state["owner_review_errors"][0]["error"]
 
 
 def test_launchplane_read_failure_does_not_erase_retained_owner_feedback(monkeypatch):
@@ -978,9 +982,24 @@ def test_launchplane_read_failure_does_not_erase_retained_owner_feedback(monkeyp
     def unavailable(*_):
         raise gh_pr_watch.GhCommandError("Launchplane read unavailable")
     monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", unavailable)
-    with pytest.raises(gh_pr_watch.GhCommandError, match="Launchplane read unavailable"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), state, False)
-    assert state == original
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, False) == []
+    assert state["owner_review_items"][0]["owner_review"] == original["owner_review_items"][0]["owner_review"]
+    assert state["owner_review_items"][0]["verification_status"] == "unavailable"
+    assert state["owner_review_errors"][0]["error"] == "Launchplane read unavailable"
+    actions = gh_pr_watch.recommend_actions(sample_pr(), sample_checks(), [], [], [], 0, 3,
+        state["owner_review_items"], state["owner_review_errors"])
+    assert "owner_review_verification_unavailable" in actions
+    assert "ready_to_merge" not in actions
+    failed = {**sample_checks(), "failed_count": 1}
+    assert "diagnose_ci_failure" in gh_pr_watch.recommend_actions(sample_pr(), failed, [], [], [], 0, 3,
+        state["owner_review_items"], state["owner_review_errors"])
+    closed = {**sample_pr(), "closed": True}
+    assert "stop_pr_closed" in gh_pr_watch.recommend_actions(closed, sample_checks(), [], [], [], 0, 3,
+        state["owner_review_items"], state["owner_review_errors"])
+    mock_owner_feedback(monkeypatch, [owner_feedback_comment()])
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, False) == []
+    assert state["owner_review_errors"] == []
+    assert state["owner_review_items"][0]["verification_status"] == "verified"
 
 
 def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():

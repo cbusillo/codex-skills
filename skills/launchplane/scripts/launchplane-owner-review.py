@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Any
 import urllib.error
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -19,7 +20,7 @@ spec = importlib.util.spec_from_file_location(
     "launchplane_write_action", SCRIPT_DIR / "launchplane-write-action.py"
 )
 assert spec is not None and spec.loader is not None
-operator = importlib.util.module_from_spec(spec)
+operator: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(operator)
 
 DECISION_FIELDS = (
@@ -50,7 +51,7 @@ def read_review(args):
     # public-safe context/write helper intentionally never emits Owner prose.
     payload = operator.request_launchplane_read(
         service_url=settings["service_url"],
-        path="/v1/product-review",
+        path=operator.helper_command_path("owner-review-read"),
         settings=settings,
         query=query,
         timeout=args.timeout,

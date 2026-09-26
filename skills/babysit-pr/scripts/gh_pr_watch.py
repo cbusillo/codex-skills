@@ -933,6 +933,7 @@ def read_launchplane_owner_review(pr, decision_id):
 
 
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, reader=None):
+    del fresh_state  # Existing unseen feedback is surfaced for both fresh and resumed state.
     repo = pr["repo"]
     pr_number = pr["number"]
     endpoints = comment_endpoints(repo, pr_number)
@@ -957,6 +958,8 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
 
     new_items = []
     owner_review_items = []
+    owner_review_errors = []
+    previous_owner_reviews = {item["id"]: item for item in state.get("owner_review_items", [])}
     for item in all_items:
         item_id = item.get("id")
         if not item_id:
@@ -964,9 +967,26 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
         author = item.get("author") or ""
         if not author:
             continue
-        owner_review = launchplane_owner_review(item, pr)
+        try:
+            owner_review = launchplane_owner_review(item, pr)
+        except GhCommandError as error:
+            owner_review_errors.append({"id": item_id, "url": item.get("url"), "error": str(error)})
+            previous = previous_owner_reviews.get(item_id)
+            if previous is not None:
+                owner_review_items.append({
+                    **previous,
+                    "verification_status": "unavailable",
+                    "owner_review": {
+                        **previous["owner_review"],
+                        "matches_current_head": previous["owner_review"]["head_sha"].casefold() == pr["head_sha"].casefold(),
+                    },
+                })
+            # Do not mark this comment as seen or treat its unchecked body as
+            # Owner feedback. Keep CI and PR-state monitoring available.
+            continue
         if owner_review is not None:
             item["source"] = "launchplane_owner_review"
+            item["verification_status"] = "verified"
             item["owner_review"] = owner_review
             owner_review_items.append(item)
         elif is_bot_login(author):
@@ -991,13 +1011,14 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
         elif kind == "review":
             seen_review.add(item_id)
 
-    new_items.sort(key=lambda item: (item.get("created_at") or "", item.get("kind") or "", item.get("id") or ""))
+    new_items.sort(key=lambda review_item: (review_item.get("created_at") or "", review_item.get("kind") or "", review_item.get("id") or ""))
     state["seen_issue_comment_ids"] = sorted(seen_issue)
     state["seen_review_comment_ids"] = sorted(seen_review_comment)
     state["seen_review_ids"] = sorted(seen_review)
     # Seen means emitted, not acknowledged by an agent. Retain full decisions on
     # every snapshot so a resumed session can recover the prose and its revision.
     state["owner_review_items"] = owner_review_items
+    state["owner_review_errors"] = owner_review_errors
     return new_items
 
 
@@ -1087,8 +1108,10 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
     )
 
 
-def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=()):
+def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=()):
     actions = []
+    if owner_review_errors:
+        actions.append("owner_review_verification_unavailable")
     if pr["closed"] or pr["merged"]:
         if new_review_items:
             actions.append("process_review_comment")
@@ -1097,7 +1120,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
 
     current_owner_reviews = [
         item["owner_review"] for item in owner_review_items
-        if item["owner_review"]["matches_current_head"]
+        if item["owner_review"]["matches_current_head"] and item.get("verification_status", "verified") == "verified"
     ]
     latest_owner_review = max(
         current_owner_reviews,
@@ -1111,7 +1134,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
     if owner_changes_requested:
         actions.append("address_owner_review_changes")
 
-    if not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    if not owner_review_errors and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
         actions.append("ready_to_merge")
         return unique_actions(actions)
 
@@ -1204,6 +1227,7 @@ def collect_snapshot(args):
         retries_used,
         args.max_flaky_retries,
         owner_review_items=state.get("owner_review_items", []),
+        owner_review_errors=state.get("owner_review_errors", []),
     )
 
     state["pr"] = {"repo": pr["repo"], "number": pr["number"]}
@@ -1218,6 +1242,7 @@ def collect_snapshot(args):
         "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
         "owner_review_items": state.get("owner_review_items", []),
+        "owner_review_errors": state.get("owner_review_errors", []),
         "actions": actions,
         "retry_state": {
             "current_sha_retries_used": retries_used,

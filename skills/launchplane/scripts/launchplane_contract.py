@@ -249,6 +249,11 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "owner-review-read": {
+        "method": "GET",
+        "path": "/v1/product-review",
+        "mode": "read",
+    },
     "product-expected-config-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/expected-config/apply",
