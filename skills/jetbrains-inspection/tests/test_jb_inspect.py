@@ -13700,5 +13700,65 @@ class PythonSdkPreparationTests(unittest.TestCase):
         self.assertEqual(record["python_sdk_preparation"], self.response)
 
 
+class NativeCompletionObservationTests(unittest.TestCase):
+    @staticmethod
+    def observation(run_id: int | None = 17):
+        return {
+            "schema_version": 1, "mode": "report_only", "inspection_run_id": run_id,
+            "enumeration_complete": True, "candidate_execution_count": 2,
+            "matched_candidate_count": 1, "missing_completion_count": 1,
+            "candidate_rule_would_block_clean": True,
+            "missing_examples": [{"tool": "PythonCheck", "file": "/private/project/app.py"}],
+            "exclusions": {"language_not_applicable": 3},
+            "limitations": ["empty_visitors_and_other_silent_skips_unobservable"],
+        }
+
+    def test_observation_survives_every_verdict_without_changing_classification(self):
+        for status, verdict in (("clean", "GREEN"), ("findings", "RED"), ("stale_results", "UNKNOWN")):
+            with self.subTest(verdict=verdict):
+                payload = {
+                    "command": "agent-inspect", "inspection_run_id": 17,
+                    "status": status, "verdict": verdict, "total_problems": 1 if verdict == "RED" else 0,
+                    "inspection_attribution": {"inspection_run_id": 17, "plugin_build_fingerprint": "candidate-clean"},
+                }
+                jb_inspect.apply_verdict(payload)
+                before = {key: payload.get(key) for key in ("verdict", "retry_policy", "agent_result")}
+                payload["capture_diagnostic"] = {"native_tool_completion_observation": self.observation()}
+                jb_inspect.apply_verdict(payload)
+                self.assertEqual({key: payload.get(key) for key in before}, before)
+                compact = jb_inspect.compact_agent_result_payload(payload, 0)
+                observed = compact["diagnostic"]["native_tool_completion_observation"]
+                self.assertEqual(observed["actual_verdict"], verdict)
+                self.assertEqual(observed["hypothetical_candidate_rule_verdict"], "UNKNOWN" if verdict == "GREEN" else verdict)
+                record = jb_inspect.outcome_log_record(payload, 0)
+                saved = record["native_tool_completion_observation"]
+                self.assertEqual(saved["missing_completion_count"], 1)
+                self.assertEqual(saved["missing_examples"][0]["file_hash"], jb_inspect.stable_value_hash("/private/project/app.py"))
+                self.assertNotIn("/private/project", json.dumps(record))
+                self.assertEqual(record["plugin_build_fingerprint"], "candidate-clean")
+
+    def test_stale_and_unpinned_observations_cannot_attach_to_current_run(self):
+        for observation_run in (16, None):
+            payload = {"inspection_run_id": 17, "capture_diagnostic": {"native_tool_completion_observation": self.observation(observation_run)}}
+            self.assertEqual(jb_inspect.native_completion_observation(payload), {})
+        payload = {
+            "inspection_run_id": 17,
+            "wait": {"inspection_run_id": 16, "capture_diagnostic": {"native_tool_completion_observation": self.observation(16)}},
+        }
+        self.assertEqual(jb_inspect.native_completion_observation(payload), {})
+
+    def test_incomplete_enumeration_has_no_hypothetical_verdict_and_examples_are_bounded(self):
+        observation = self.observation()
+        observation["enumeration_complete"] = False
+        observation["missing_examples"] *= 100
+        observation["unexpected_field"] = "private data"
+        payload = {"inspection_run_id": 17, "verdict": "GREEN", "capture_diagnostic": {"native_tool_completion_observation": observation}}
+        saved = jb_inspect.native_completion_observation(payload)
+        self.assertIsNone(saved["candidate_rule_would_block_clean"])
+        self.assertIsNone(saved["hypothetical_candidate_rule_verdict"])
+        self.assertLess(len(saved["missing_examples"]), len(observation["missing_examples"]))
+        self.assertNotIn("unexpected_field", saved)
+
+
 if __name__ == "__main__":
     unittest.main()

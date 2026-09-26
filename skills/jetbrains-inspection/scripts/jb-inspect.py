@@ -3569,6 +3569,67 @@ def redact_inspection_diagnostic_text(value: str) -> str:
     )
 
 
+def native_completion_observation(payload: dict[str, Any], target_run_id: int | None = None) -> dict[str, Any]:
+    target_run_id = target_run_id or inspection_diagnostic_target_run_id(payload)
+    if target_run_id is None:
+        return {}
+    for candidate, candidate_run_id in inspection_diagnostic_payloads(payload):
+        if candidate_run_id not in {None, target_run_id}:
+            continue
+        observation = candidate.get("native_tool_completion_observation")
+        if not isinstance(observation, dict) or positive_run_id(observation.get("inspection_run_id")) != target_run_id:
+            continue
+        if observation.get("schema_version") != 1 or observation.get("mode") != "report_only":
+            continue
+        bounded: dict[str, Any] = {
+            "schema_version": observation["schema_version"],
+            "mode": "report_only",
+            "inspection_run_id": target_run_id,
+            "enumeration_complete": observation.get("enumeration_complete") is True,
+        }
+        for key in (
+            "candidate_execution_count", "completion_event_count", "distinct_completion_count",
+            "matched_candidate_count", "missing_completion_count", "unmatched_completion_count",
+            "negative_problem_count_events", "examples_limit",
+        ):
+            count = nonnegative_int(observation.get(key))
+            if count is not None:
+                bounded[key] = count
+        reason = observation.get("unavailable_reason")
+        if isinstance(reason, str):
+            bounded["unavailable_reason"] = redact_inspection_diagnostic_text(reason)[:200]
+        for key in ("missing_examples", "completed_examples", "exclusion_examples"):
+            examples = observation.get(key)
+            if isinstance(examples, list):
+                bounded[key] = [
+                    {field: redact_inspection_diagnostic_text(value)[:1024]
+                     for field, value in example.items()
+                     if field in {"tool", "file", "file_hash", "reason"} and isinstance(value, str)}
+                    for example in examples[:25] if isinstance(example, dict)
+                ]
+        exclusions = observation.get("exclusions")
+        if isinstance(exclusions, dict):
+            bounded["exclusions"] = {
+                key: exclusions[key] for key in ("language_not_applicable", "disabled_for_file", "disabled_or_unresolved_scope")
+                if nonnegative_int(exclusions.get(key)) is not None
+            }
+        limitations = observation.get("limitations")
+        if isinstance(limitations, list):
+            bounded["limitations"] = [redact_inspection_diagnostic_text(value)[:200]
+                                      for value in limitations[:10] if isinstance(value, str)]
+        would_block = observation.get("candidate_rule_would_block_clean")
+        if not bounded["enumeration_complete"] or not isinstance(would_block, bool):
+            would_block = None
+        actual = inspection_outcome_for_payload(payload).get("verdict") or payload.get("verdict")
+        bounded["candidate_rule_would_block_clean"] = would_block
+        bounded["actual_verdict"] = actual
+        bounded["hypothetical_candidate_rule_verdict"] = (
+            None if would_block is None else "UNKNOWN" if actual == "GREEN" and would_block else actual
+        )
+        return bounded
+    return {}
+
+
 def inspection_stage_diagnostics(payload: Any, target_run_id: int | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -7530,6 +7591,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
             "inspection_outcome": lane.get("inspection_outcome"),
             "lifecycle_outcome": lane.get("lifecycle_outcome"),
             "inspection_attempts": (lane.get("diagnostic") or {}).get("inspection_attempts"),
+            "native_tool_completion_observation": native_completion_observation(lane),
             **inspection_stage_diagnostics(
                 lane,
                 positive_run_id((lane.get("evidence_ids") or {}).get("inspection_run_id")),
@@ -7611,6 +7673,9 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "inspection_lanes": lane_summaries or None,
     }
     record.update(inspection_stage_diagnostics(public, positive_run_id(record.get("inspection_run_id"))))
+    record["native_tool_completion_observation"] = native_completion_observation(
+        public, positive_run_id(record.get("inspection_run_id")),
+    )
     return public, record
 
 
@@ -8752,6 +8817,9 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
         "outcome_log_error": payload.get("outcome_log_error"),
     }
     diagnostic.update(stage_diagnostic)
+    observation = native_completion_observation(payload, stage_pin_run_id)
+    if observation:
+        diagnostic["native_tool_completion_observation"] = observation
     attempt_diagnostics = compact_inspection_attempt_diagnostics(payload)
     if attempt_diagnostics:
         diagnostic["inspection_attempts"] = attempt_diagnostics
