@@ -351,6 +351,25 @@ prefer work that unblocks more plans and then the oldest created issue.
 The command is advisory and read-only, so update labels, Focus, or relationships
 separately only after the direction is confirmed.
 
+Before presenting a candidate as work to pick up, check active ownership. The
+ranker orders unfinished issues; it does not establish that another person or
+session is not already doing the work. Read `show --full`, including Current
+Status and comments, and check available read-only task/session state and the
+candidate's PR, branch, or worktree activity. A `plan:active` label means
+actionable, and an assignee or an old PR/worktree alone does not prove that a
+worker is currently active.
+
+Report work actively owned elsewhere as already underway and select the next
+independent candidate in the same ranking order. Do not recommend starting a
+second implementation or take over its worktree. If the request is to resume
+the current session's work or an explicit handoff, use that context instead.
+Recheck ownership before `go` starts work; a recommendation does not reserve an
+issue. When in-progress evidence cannot be reconciled with current ownership,
+state the uncertainty and look for independent work rather than claiming the
+item is free. An unavailable session inventory is not proof that nobody owns
+it. If all eligible work is underway or waiting, say so instead of presenting
+an occupied item as the next new task or claiming the milestone is complete.
+
 In an `<owner>/direction` repository, the same `next` command follows each
 `Track:` issue's native sub-issues and blockers across repositories, including
 other owners' repositories, in the merged direction's milestone order. Passing
