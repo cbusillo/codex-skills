@@ -48,6 +48,17 @@ deployment-manifest content SHA-256, inspection-started state, cleanup, and
 ordered internal-attempt summaries. Durable rows hash local paths and project
 keys and redact token-like fields and path tokens in diagnostic prose.
 
+Broad-scope runs from plugins that supply `native_tool_completion_observation`
+retain that report-only diagnostic in compact responses and all verdict outcome
+rows. It is pinned to the accepted inspection run; counts, bounded examples,
+known exclusions, and limitations travel with the existing build provenance.
+`actual_verdict` is unchanged. `hypothetical_candidate_rule_verdict` shows what
+requiring a finish for every candidate would do to a GREEN result. Incomplete
+enumeration has no hypothetical verdict. A missing completion can be a legitimate
+silent skip; it is not an inspection failure. Matching candidates likewise adds
+no execution proof. Do not change verdicts, retries, or qualification using this
+measurement. Missing observations from older plugins are not zero missing events.
+
 ## Strict Outcome Qualification
 
 Use strict mode only with an explicit schema-v1 qualification file:
