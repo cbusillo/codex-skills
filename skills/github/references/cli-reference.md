@@ -350,6 +350,11 @@ or Project focus state.
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
 
+When GraphQL quota is exhausted but REST is available, keep independently
+authorized REST-backed body/status work moving. Record unavailable Project or
+relationship updates as waiting; respect the helper's retry limits instead of
+retrying until planning stalls.
+
 ### Planning: Next Work
 
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:

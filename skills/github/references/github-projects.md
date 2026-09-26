@@ -1,7 +1,8 @@
 # GitHub Projects & Roadmaps
 
-GitHub Projects are optional view layers over issue data. Use them to prioritize
-work, track focus, and visualize roadmap dates.
+Read when using a configured or requested Project, or another local planning
+view. GitHub issues remain the source of truth. Keep view fields limited to
+`Focus`, `Manager`, `Finish Line`, `Roadmap Start`, and `Roadmap Target`.
 
 ## Focus States
 
@@ -50,3 +51,18 @@ exact date would be artificial.
 
 Do not duplicate the entire issue body into Project fields. Keep Project
 fields (like `Finish Line`) compact and observable.
+
+When an issue operation succeeds with a non-blocking Project warning, report
+that split outcome and the helper's choices. Do not repeatedly retry or silently
+switch to human authentication. The owner chooses whether to grant automation
+Project access, use Project-capable auth, disable synchronization, or correct
+stale configuration. Do not treat an unavailable view as missing issue data.
+
+## Local Context Views
+
+If Launchplane or another configured context helper is useful, call it once
+before or alongside `index`. Unavailable, unauthorized, invalid, or missing
+context is normal absence; continue with GitHub-only planning. Treat view
+output as a source-link or inspection hint, not runtime authority or a second
+plan. Do not copy private payloads into public issues, PRs, or handoffs without
+reviewing them for public safety.
