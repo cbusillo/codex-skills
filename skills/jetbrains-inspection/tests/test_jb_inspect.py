@@ -13701,7 +13701,8 @@ class PythonSdkPreparationTests(unittest.TestCase):
 
 
 class NativeCompletionObservationTests(unittest.TestCase):
-    def observation(self, run_id=17):
+    @staticmethod
+    def observation(run_id: int | None = 17):
         return {
             "schema_version": 1, "mode": "report_only", "inspection_run_id": run_id,
             "enumeration_complete": True, "candidate_execution_count": 2,
