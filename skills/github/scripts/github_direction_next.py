@@ -308,6 +308,29 @@ def repository_hold(context: dict[str, Any], repo: str) -> dict[str, Any] | None
     return next((value for key, value in context.get("repository_holds", {}).items() if key.casefold() == repo.casefold()), None)
 
 
+def include_parent_context(
+    item: dict[str, Any], parents: list[dict[str, Any]], *, complete: bool,
+    tracking_roots: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Do not let discovery bypass a whole-plan wait hidden above the child."""
+    tracking = {(root["repo"].casefold(), root["number"]) for root in tracking_roots}
+    discussion = {**item.get("discussion", {}), "parents": parents}
+    discussion["complete"] = bool(discussion.get("complete") and complete and all(
+        (parent.get("discussion") or {}).get("complete") for parent in parents
+    ))
+    discussion.pop("digest", None)
+    discussion["digest"] = hashlib.sha256(json.dumps(discussion, sort_keys=True).encode()).hexdigest()
+    result = {**item, "discussion": discussion}
+    if not complete:
+        return {**result, "exclusion": "unknown_ancestry"}
+    for parent in parents:
+        if (parent["repo"].casefold(), parent["number"]) in tracking:
+            continue
+        if parent.get("exclusion") in {"waiting", "later_focus", "label_blocked_without_native_edge"}:
+            return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"]}
+    return result
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
@@ -586,6 +609,7 @@ def rank_direction_work(
         "excluded": excluded,
         "waiting": waiting,
         "completed_milestones": [title for title in milestone_titles if title in completed],
+        "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "evaluated": len(seen),
         "truncated": truncated,
         "dependency_context": {

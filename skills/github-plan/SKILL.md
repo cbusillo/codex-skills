@@ -149,6 +149,9 @@ identities.
 
 ## Choose Work
 
+Check known repository-wide owner holds before selection or implementation;
+active issue labels and continuing background jobs do not lift a hold.
+
 1. Run `gh-plan.py next`. Respect native `blocked-by` relationships and the
    merged `DIRECTION.md` milestone order; without that file, milestone creation
    order applies. Within a milestone, prioritize dependency impact, then issue

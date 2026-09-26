@@ -16,7 +16,9 @@ Read for `next` in an owner's direction repository, including explicit
    discussion, including the latest comments, and current PR/branch/worktree and
    supported session evidence. A complete `discussion` snapshot is the full
    issue body and comments; use `show ISSUE --full` when it is incomplete or needs
-   refreshing. Comments can reveal a wait or completed implementation despite
+   refreshing. Discovered children include bounded parent discussions; a
+   whole-plan parent wait remains excluded, and changes to parent discussion
+   invalidate the child's review digest. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
 4. Select under the owner's direction: live incidents first, listed milestones
    in order, other tooling only with two linked occurrences of the stop it fixes,
@@ -70,5 +72,7 @@ invalidates the issue review. Recheck holds and ownership on every selection;
 unchanged issue text alone cannot establish their freshness.
 
 Repository holds apply across graph and discovery before any available review.
+They exclude work in the held repository while preserving native paths to
+independent work in other repositories; they do not invent cross-repository holds.
 Keep snapshots private when they contain session or operational context. Ordinary
 read-only `next` does not write a snapshot, update an issue, or start a worker.

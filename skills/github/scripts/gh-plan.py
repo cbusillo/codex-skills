@@ -2359,6 +2359,17 @@ def next_source_error(exc: PlanError) -> str:
     return github_api_core.redact_string(str(exc))
 
 
+def read_next_parent(repo: str, number: int) -> dict[str, Any] | None:
+    try:
+        _, parent = api_json("GET", f"/repos/{repo}/issues/{number}/parent", bucket="rest_core", failed_step="next_parent_issue")
+    except PlanError as exc:
+        if (exc.api_result or {}).get("status") == 404:
+            return None
+        raise
+    ref = compact_relationship_issue(parent, "parent")
+    return {**parent, "repo": ref["repo"]}
+
+
 def discover_direction_work(
     repo: str, args: argparse.Namespace, *, selection_context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2443,7 +2454,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
     titles = direction_milestone_titles(direction_text or "")
-    if not titles:
+    if direction_text is None or not re.search(r"(?m)^##\s+Milestones\s*$", direction_text):
         raise PlanError(f"Global next needs the ordered milestones in {repo}/{DIRECTION_FILE}")
     gh_cmd, expected_actor = milestone_route()
     milestone_inventory = github_milestone_core.list_milestones(
@@ -2479,6 +2490,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
+    parents: dict[tuple[str, int], dict[str, Any] | None] = {}
 
     def read_node(issue_repo: str, number: int) -> dict[str, Any]:
         nonlocal actor
@@ -2506,18 +2518,16 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             }
             if raw.get("pull_request") is not None:
                 return {"item": {**base, "exclusion": "pull_request"}}
-            hold = github_direction_next.repository_hold(selection_context, issue_repo)
-            if hold:
-                return {"item": {**base, "exclusion": "repository_held", "review": hold}}
             static = next_static_exclusion(raw, config=target_config, focus=focus)
             if static:
-                return {"item": static}
-            relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
-            actor = relation_actor or actor
-            node = github_direction_next.evaluate_direction_node(
-                raw, config=target_config, focus=focus, relationships=relationships,
-                truncated_relationships=truncated,
-            )
+                node = {"item": static}
+            else:
+                relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number)
+                actor = relation_actor or actor
+                node = github_direction_next.evaluate_direction_node(
+                    raw, config=target_config, focus=focus, relationships=relationships,
+                    truncated_relationships=truncated,
+                )
             comment_limit = getattr(args, "comment_limit", 100)
             _, comments = collect_paged_rest_items(
                 f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
@@ -2536,6 +2546,41 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 "url": f"https://github.com/{issue_repo}/issues/{number}",
                 "exclusion": "unknown_dependencies", "detail": next_source_error(exc),
             }}
+
+    def with_ancestry(item: dict[str, Any]) -> dict[str, Any]:
+        ancestors: list[dict[str, Any]] = []
+        key = (item["repo"].casefold(), item["number"])
+        visited = {key}
+        complete = False
+        detail = "parent ancestry exceeded the limit of 10 or contains a cycle"
+        # GitHub ancestry is separate from the downward graph. Bound it even
+        # when a provider returns a cycle or an unexpectedly deep chain.
+        for _ in range(10):
+            try:
+                if key not in parents:
+                    parents[key] = read_next_parent(*key)
+                parent = parents[key]
+                if parent is None:
+                    complete = True
+                    break
+                key = (parent["repo"].casefold(), parent["number"])
+                if key in visited:
+                    break
+                visited.add(key)
+                seeds[key] = parent
+                classified = read_node(parent["repo"], parent["number"])["item"]
+                ancestors.append(classified)
+                if classified.get("exclusion") == "unknown_dependencies":
+                    break
+            except PlanError as exc:
+                detail = next_source_error(exc)
+                break
+        result = github_direction_next.include_parent_context(
+            item, ancestors, complete=complete, tracking_roots=ranked["tracking_roots"],
+        )
+        if not complete:
+            result["detail"] = detail
+        return result
 
     roots = [{
         **compact_list_issue(repo, item), "milestone": next_milestone_context(item),
@@ -2557,16 +2602,26 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
         inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
         discovery.update(evaluated=min(len(inventory), args.scan_limit), scan_limit=args.scan_limit, unevaluated_count=max(0, len(inventory) - args.scan_limit))
+        discovery["parent_limit_per_issue"] = 10
         discovery["complete"] &= not discovery["unevaluated_count"]
         for raw in inventory[:args.scan_limit]:
             ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
             item = {**node["item"], "source": "repository_discovery"}
+            if not item.get("exclusion"):
+                item = with_ancestry(item)
             if item.get("exclusion"):
                 ranked["excluded"].append(item)
-                ranked["waiting"].extend(node.get("waiting") or [])
-                if item["exclusion"] == "unknown_dependencies":
+                reports = node.get("waiting") or []
+                ranked["waiting"].extend(reports)
+                if item["exclusion"] in {"waiting", "parent_waiting"} and not reports:
+                    ranked["waiting"].append({
+                        "repo": item["repo"], "number": item["number"], "url": item["url"],
+                        "waiting_for": item.get("waiting_on_parent") or node.get("status_text") or "Waiting party or condition not recorded",
+                        "reported_by": item["url"], "reported_at": item.get("updated_at"),
+                    })
+                if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
                     discovery["complete"] = False
             else:
                 discoveries.append(item)

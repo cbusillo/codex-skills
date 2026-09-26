@@ -399,6 +399,8 @@ The global `--scan-limit` bounds unique graph nodes, not just roots. Cycles,
 missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
+An explicitly empty Milestones section is valid: discovery can still find own
+projects when there is no business milestone to traverse.
 Closed milestones still listed in direction appear in `completed_milestones`,
 instead of making the graph incomplete while their direction edit is pending.
 The returned `direction_context` preserves Order and Capacity for caller
@@ -420,6 +422,11 @@ ordering, so one large backlog does not consume the entire evaluation budget.
 `--limit` caps displayed candidates, not coverage. Unevaluated issues, truncated
 comments/inventories, and inaccessible sources remain explicit. `--milestone`
 retains its narrow graph scope and reports portfolio discovery as excluded.
+For a discovered leaf, up to ten native parent links are read using GitHub's
+[parent issue endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue).
+Parent discussions accompany the child, whole-plan waits remain excluded, and
+inaccessible, cyclic, or deeper ancestry stays unknown. Parent discussion changes
+also invalidate the review digest. These reads are cached within the invocation.
 
 Candidates carry full bounded `discussion` snapshots and a digest. Their
 `availability=needs_review` is not a recommendation to start. Current caller
@@ -445,9 +452,13 @@ Neither classification nor ranking makes network calls or mutations. Adapters
 only collect evidence with their authenticated, bounded readers, mapping
 inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
 `discussion_snapshot` normalizes bounded comments for both adapters, and
+`include_parent_context` preserves ancestor waits and discussion freshness;
 `rank_portfolio_work` combines graph candidates, discoveries, and caller selection
 evidence with the same holds, review states, and priority. Services must supply
-their discovery coverage separately; calling only `rank_direction_work` proves
+repository milestone order and bounded parent evidence through those shared
+functions, and report their discovery coverage separately. A repository hold
+filters work in that repository without cutting native paths to independent
+work in another. Calling only `rank_direction_work` proves
 graph coverage, not portfolio discovery.
 
 ### Planning: Milestones

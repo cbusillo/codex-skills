@@ -657,6 +657,9 @@ def global_fixture(
     captured: dict[str, Any] = {}
     reads: list[tuple[str, int]] = []
     by_key = {(node["repo"], node["number"]): node for node in nodes}
+    all_nodes = {(node["repo"], node["number"]): node for node in [*roots, *nodes, *(discovered or [])]}
+    parent_map = {(child["repo"].casefold(), child["number"]): all_nodes[key]
+                  for key, values in edges.items() for child in values["sub_issues"]}
 
     def get_node(ref: str, target_repo: str) -> Any:
         key = (target_repo, int(ref))
@@ -690,6 +693,7 @@ def global_fixture(
         discover_direction_work=lambda *_args, **_kwargs: (discovered or [], {"complete": True, "repositories": []}),
         next_focus_context=lambda *_: (None, {}, {"available": False, "reason": "project_not_configured"}),
         read_next_issue_relationships=read_relationships,
+        read_next_parent=lambda target, number: parent_map.get((target.casefold(), number)),
         get_issue=get_node,
         milestone_route=lambda: ("gh", "automation-gh"),
         emit=captured.update,
@@ -1162,6 +1166,8 @@ def test_portfolio_nontrack_direction_issues_and_repository_milestone_order() ->
     with global_fixture([unlinked], [], {}, discovered=[unlinked]) as (module, result, _reads):
         module.cmd_next(next_args())
         assert [item["number"] for item in result["candidates"]] == [10]
+        assert result["available_candidates"] == []
+        assert "category" not in result["candidates"][0]
         assert not any(item["number"] == 10 for item in result["excluded"])
         shared = module.github_direction_next
         discovered = [{
@@ -1192,7 +1198,77 @@ def test_portfolio_repository_inventory_truncation_and_auth_failure() -> None:
             raise AssertionError("quota failures must preserve stop policy")
 
 
+def test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/project", 2, body="## Current Status\nState: Waiting.\nWaiting for: owner sequencing.")
+    child = global_issue("someone/project", 3)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent]), (parent["repo"], 2): relationships(sub_issues=[child])}
+    for roots in ([root], []):
+        active_edges = edges if roots else {(parent["repo"], 2): edges[(parent["repo"], 2)]}
+        with global_fixture(roots, [parent, child], active_edges, discovered=[child]) as (module, result, _reads):
+            module.cmd_next(next_args())
+        assert result["available_candidates"] == result["candidates"] == []
+        blocked = next(item for item in result["excluded"] if item.get("number") == 3)
+        assert blocked["exclusion"] == "parent_waiting"
+        assert blocked["discussion"]["parents"][0]["number"] == 2
+        assert any(wait["number"] == 3 for wait in result["waiting"])
+
+
+def test_portfolio_hold_preserves_other_repository_milestone_work_and_service_parity() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/mediaforce", 5)
+    child = global_issue("elsewhere/independent", 6)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent]), (parent["repo"], 5): relationships(sub_issues=[child])}
+    context = {"repository_holds": {parent["repo"]: {"reason": "Owner parked new development here", "evidence": ["owner instruction"]}}}
+    with global_fixture([root], [parent, child], edges) as (module, result, _reads):
+        module.cmd_next(next_args())
+        service = module.github_direction_next.rank_portfolio_work(
+            result, [], milestone_titles=["First", "Second"], selection_context=context,
+        )
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert result["candidates"] == service["candidates"]
+        assert [item["number"] for item in result["candidates"]] == [6]
+        assert result["candidates"][0]["milestone"]["title"] == "First"
+        assert len(result["candidates"][0]["via"]) == 3
+        assert result["graph_context"]["complete"] is False  # Second has no Track.
+
+
+def test_portfolio_empty_milestones_and_unspecified_wait_are_supported() -> None:
+    waiting = global_issue("someone/product", 1, labels=["plan", "plan:waiting"])
+    own = global_issue("someone/product", 2)
+    with global_fixture([], [], {}, discovered=[waiting, own]) as (module, result, _reads):
+        with patch.object(module, "load_direction", return_value="# Direction\n## Order\nOwn projects.\n## Milestones\n"):
+            module.cmd_next(next_args())
+        assert [item["number"] for item in result["candidates"]] == [2]
+        assert result["waiting"][0]["number"] == 1
+        assert result["graph_context"]["complete"] is True
+
+
+def test_portfolio_unreadable_parent_and_changed_parent_comment_require_review() -> None:
+    parent = global_issue("someone/product", 1)
+    child = global_issue("someone/product", 2)
+    comments = {(parent["repo"], 1): [{"body": "Work may proceed."}]}
+    with global_fixture([], [parent], {(parent["repo"], 1): relationships(sub_issues=[child])}, discovered=[child], comments=comments) as (module, result, _reads):
+        module.cmd_next(next_args())
+        first = result["candidates"][0]
+        context = {"issues": {"someone/product#2": reviewed(first)}}
+        comments[(parent["repo"], 1)].append({"body": "Wait for the next release."})
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert result["available_candidates"] == []
+        assert result["candidates"][0]["discussion"]["digest"] != first["discussion"]["digest"]
+        with patch.object(module, "read_next_parent", side_effect=module.PlanError("parent inaccessible")):
+            module.cmd_next(next_args())
+        assert result["candidates"] == []
+        assert result["discovery_context"]["complete"] is False
+
+
 TESTS = [
+    test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,
+    test_portfolio_hold_preserves_other_repository_milestone_work_and_service_parity,
+    test_portfolio_empty_milestones_and_unspecified_wait_are_supported,
+    test_portfolio_unreadable_parent_and_changed_parent_comment_require_review,
     test_portfolio_nontrack_direction_issues_and_repository_milestone_order,
     test_portfolio_repository_inventory_truncation_and_auth_failure,
     test_portfolio_empty_business_graph_discovers_available_own_project,
