@@ -19,6 +19,20 @@
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
 
+## Tests
+
+- Keep a test only if it fails when the product breaks and passes when someone
+  makes an intended change.
+- Never assert a literal defined elsewhere, such as a version, toolchain, hash,
+  policy id, or instruction wording. Assert agreement with the one source of
+  truth, or assert nothing.
+- Never assert workflow or config text. Enforce the rule where it runs: in the
+  workflow, in a helper with its own tests, or in a linter.
+- Verification code must not depend on working-tree state such as untracked
+  files or the host's installed runtime. Read tracked files or fixtures.
+- Byte-exact and hash gates belong only on real artifacts and immutable
+  evidence.
+
 ## Runtime Checkout Discipline
 
 - Resolve the active skills directory with `CODE_HOME`, then `CODEX_HOME`, then

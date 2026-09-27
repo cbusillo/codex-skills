@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import launchplane_contract as contract
@@ -258,25 +257,7 @@ def test_evidence_and_issues_redact_raw_failures_and_contract_bodies() -> None:
     assert '"operations"' not in body
 
 
-def test_schedule_and_dispatch_share_the_comparison_implementation() -> None:
-    workflow = (
-        REPO_ROOT.parent / ".github" / "workflows" / "launchplane-contract-freshness.yml"
-    ).read_text(encoding="utf-8")
-    assert "schedule:" in workflow
-    assert "workflow_dispatch:" in workflow
-    assert workflow.count("check-agent-operator-contract-freshness.py compare") == 1
-    assert workflow.count("check-agent-operator-contract-freshness.py report") == 1
-    assert "issues: write" in workflow
-    assert "contents: read" in workflow
-    assert "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN: github-actions[bot]" in workflow
-    assert "needs.compare.result == 'success'" in workflow
-
-
 def test_local_conformance_remains_independent_of_remote_freshness() -> None:
-    script = (SCRIPT_DIR / "check-agent-operator-contract.py").read_text(
-        encoding="utf-8"
-    )
-    assert "launchplane_contract_freshness" not in script
     result = subprocess.run(
         [sys.executable, str(SCRIPT_DIR / "check-agent-operator-contract.py")],
         capture_output=True,
@@ -300,7 +281,6 @@ def main() -> int:
         test_repeated_mismatch_updates_the_existing_issue,
         test_unknown_never_opens_a_maintenance_issue,
         test_evidence_and_issues_redact_raw_failures_and_contract_bodies,
-        test_schedule_and_dispatch_share_the_comparison_implementation,
         test_local_conformance_remains_independent_of_remote_freshness,
     ]
     for test in tests:

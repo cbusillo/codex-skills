@@ -630,7 +630,7 @@ class GitHubWorkflowClientTests(unittest.TestCase):
         self.assertEqual(reference.run_id, 123)
         dispatch_call = calls[-1]
         self.assertEqual(dispatch_call["method"], "POST")
-        self.assertEqual(dispatch_call["api_version"], "2026-03-10")
+        self.assertEqual(dispatch_call["api_version"], workflow_babysit.DISPATCH_API_VERSION)
         self.assertEqual(dispatch_call["operation"], "github.workflow.dispatch")
         self.assertNotIn("runs?", dispatch_call["path"])
 

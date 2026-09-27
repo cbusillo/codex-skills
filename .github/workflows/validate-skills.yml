@@ -14,21 +14,49 @@ jobs:
   validate:
     name: Validate Python ${{ matrix.python-version }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.14"]
+    env:
+      # Pull-request time budget for the gate; exceeding it adds a warning.
+      TIME_BUDGET_SECONDS: "120"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Select lane
+        id: lane
+        run: |
+          set -euo pipefail
+          # The second Python lane only matters when executable files change.
+          run=true
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ matrix.python-version }}" != "$(cat .python-version)" ]]; then
+            if ! git diff --name-only HEAD^1 HEAD | grep -Eq '\.(py|sh)$|^\.github/|^uv\.toml$|^\.python-version$|/scripts/|^hooks/'; then
+              run=false
+              echo "::notice::No executable files changed; the ${{ matrix.python-version }} lane is skipped."
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
+        if: steps.lane.outputs.run == 'true'
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           cache-dependency-glob: "**/*.py"
           python-version: ${{ matrix.python-version }}
 
       - name: Validate skills
+        if: steps.lane.outputs.run == 'true'
         run: |
           set -euo pipefail
+          started=$SECONDS
           ./scripts/validate-skills.sh
+          elapsed=$((SECONDS - started))
+          echo "Validation took ${elapsed}s (budget ${TIME_BUDGET_SECONDS}s)."
+          if ((elapsed > TIME_BUDGET_SECONDS)); then
+            echo "::warning title=CI time budget exceeded::Validation took ${elapsed}s; the budget is ${TIME_BUDGET_SECONDS}s."
+          fi

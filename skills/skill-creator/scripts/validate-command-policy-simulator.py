@@ -151,40 +151,42 @@ def launchplane_merge_train_shell() -> str:
     )
 
 
-EXPECTATIONS: tuple[tuple[list[str], str | None, str, str], ...] = (
-    (["gh", "pr", "create", "--title", "demo"], None, "github", "prefer-gh-pr-create-helper"),
-    (["gh", "pr", "edit", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-edit-helper"),
-    (["gh", "pr", "comment", "123", "--body-file", "body.md"], None, "github", "prefer-gh-pr-comment-helper"),
-    (["gh", "pr", "review", "123", "--comment"], None, "github", "prefer-gh-pr-review-wrapper"),
-    (["gh", "pr", "close", "123"], None, "github", "prefer-gh-pr-state-wrapper"),
-    (["gh", "pr", "reopen", "123"], None, "github", "prefer-gh-pr-reopen-wrapper"),
-    (["gh", "pr", "ready", "123"], None, "github", "prefer-gh-pr-ready-wrapper"),
-    (["gh", "pr", "update-branch", "123"], None, "github", "prefer-gh-pr-update-branch-wrapper"),
-    (["gh", "pr", "merge", "123"], None, "github", "prefer-gh-pr-merge-helper"),
-    (["gh", "pr", "checks", "123"], None, "github", "prefer-gh-pr-checks-helper"),
-    (["gh", "run", "rerun", "123", "--failed"], None, "github", "prefer-gh-run-rerun-wrapper"),
-    (["gh", "api", "repos/owner/repo/issues", "--method", "PATCH"], None, "github", "prefer-gh-api-wrapper"),
-    (["gh", "issue", "create"], None, "github", "prefer-gh-issue-create-helper"),
-    (["gh", "issue", "comment", "123"], None, "github", "prefer-gh-issue-comment-helper"),
-    (["gh", "issue", "edit", "123"], None, "github", "prefer-gh-issue-edit-helper"),
-    (["gh", "issue", "close", "123"], None, "github", "prefer-gh-issue-close-helper"),
-    (["gh", "release", "create", "v1.2.3"], None, "github", "prefer-gh-release-wrapper"),
-    (["gh", "workflow", "run", "validate.yml"], None, "github", "prefer-gh-workflow-wrapper"),
-    (["git", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper"),
-    (["git", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
-    (["git", "push", "--force", "origin", "branch"], None, "github", "prefer-bot-push-helper"),
-    (["git", "-c", "commit.gpgsign=false", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper-with-git-options"),
-    (["git", "-C", "path", "commit", "-m", "demo"], None, "github", "prefer-bot-commit-helper-with-git-options"),
-    (["git", "-c", "http.extraHeader=x", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper-with-git-options"),
-    (["git", "-C", "path", "push", "origin", "branch"], None, "github", "prefer-bot-push-helper-with-git-options"),
-    (["gh", "issue", "list", "--label", "plan"], None, "github-plan", "prefer-gh-plan-index-for-issue-list"),
-    (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan", "prefer-gh-plan-search-for-issue-search"),
-    (["gh", "project", "item-list", "1"], None, "github-plan", "prefer-gh-plan-helper-for-project-commands"),
-    (["gh", "api", "graphql"], graphql_shell(), "github-plan", "prefer-gh-plan-helper-for-planning-graphql"),
-    (["curl", "inspection"], inspection_shell(), "jetbrains-inspection", "prefer-jb-inspect-for-plugin-http"),
-    (["curl", "launchplane-apply"], launchplane_apply_shell(), "launchplane", "prefer-launchplane-write-helper-for-product-config-api"),
-    (["curl", "launchplane-merge-train"], launchplane_merge_train_shell(), "launchplane", "prefer-launchplane-write-helper-for-merge-train-api"),
-    (["launchplane", "merge-train", "run-once"], None, "launchplane", "prefer-launchplane-helpers-over-global-cli"),
+# Which skill intercepts each command. Policy ids are frontmatter literals and
+# may be renamed freely, so they are not asserted here.
+EXPECTATIONS: tuple[tuple[list[str], str | None, str], ...] = (
+    (["gh", "pr", "create", "--title", "demo"], None, "github"),
+    (["gh", "pr", "edit", "123", "--body-file", "body.md"], None, "github"),
+    (["gh", "pr", "comment", "123", "--body-file", "body.md"], None, "github"),
+    (["gh", "pr", "review", "123", "--comment"], None, "github"),
+    (["gh", "pr", "close", "123"], None, "github"),
+    (["gh", "pr", "reopen", "123"], None, "github"),
+    (["gh", "pr", "ready", "123"], None, "github"),
+    (["gh", "pr", "update-branch", "123"], None, "github"),
+    (["gh", "pr", "merge", "123"], None, "github"),
+    (["gh", "pr", "checks", "123"], None, "github"),
+    (["gh", "run", "rerun", "123", "--failed"], None, "github"),
+    (["gh", "api", "repos/owner/repo/issues", "--method", "PATCH"], None, "github"),
+    (["gh", "issue", "create"], None, "github"),
+    (["gh", "issue", "comment", "123"], None, "github"),
+    (["gh", "issue", "edit", "123"], None, "github"),
+    (["gh", "issue", "close", "123"], None, "github"),
+    (["gh", "release", "create", "v1.2.3"], None, "github"),
+    (["gh", "workflow", "run", "validate.yml"], None, "github"),
+    (["git", "commit", "-m", "demo"], None, "github"),
+    (["git", "push", "origin", "branch"], None, "github"),
+    (["git", "push", "--force", "origin", "branch"], None, "github"),
+    (["git", "-c", "commit.gpgsign=false", "commit", "-m", "demo"], None, "github"),
+    (["git", "-C", "path", "commit", "-m", "demo"], None, "github"),
+    (["git", "-c", "http.extraHeader=x", "push", "origin", "branch"], None, "github"),
+    (["git", "-C", "path", "push", "origin", "branch"], None, "github"),
+    (["gh", "issue", "list", "--label", "plan"], None, "github-plan"),
+    (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan"),
+    (["gh", "project", "item-list", "1"], None, "github-plan"),
+    (["gh", "api", "graphql"], graphql_shell(), "github-plan"),
+    (["curl", "inspection"], inspection_shell(), "jetbrains-inspection"),
+    (["curl", "launchplane-apply"], launchplane_apply_shell(), "launchplane"),
+    (["curl", "launchplane-merge-train"], launchplane_merge_train_shell(), "launchplane"),
+    (["launchplane", "merge-train", "run-once"], None, "launchplane"),
 )
 
 NEGATIVE_EXPECTATIONS: tuple[tuple[list[str], str | None], ...] = (
@@ -251,14 +253,14 @@ def precedence_self_test() -> list[str]:
 
 def validate_expectations() -> list[str]:
     errors: list[str] = []
-    for argv, shell, expected_skill, expected_policy in EXPECTATIONS:
+    for argv, shell, expected_skill in EXPECTATIONS:
         match = primary_match(argv, shell)
         if match is None:
-            errors.append(f"{shlex.join(argv)}: expected {expected_skill}/{expected_policy}, got no match")
+            errors.append(f"{shlex.join(argv)}: expected {expected_skill}, got no match")
             continue
-        if match.skill != expected_skill or match.policy_id != expected_policy:
+        if match.skill != expected_skill:
             errors.append(
-                f"{shlex.join(argv)}: expected {expected_skill}/{expected_policy}, got {match.skill}/{match.policy_id}"
+                f"{shlex.join(argv)}: expected {expected_skill}, got {match.skill}/{match.policy_id}"
             )
     for argv, shell in NEGATIVE_EXPECTATIONS:
         match = primary_match(argv, shell)

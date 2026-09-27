@@ -249,7 +249,7 @@ def test_uv_resolution_is_pypi_only_direct_and_stable() -> None:
             os.environ["UV_OVERRIDE"] = original_override
     assert versions == {"pytest": "9.1.1", "pyyaml": "6.0.3"}
     assert captured_command[captured_command.index("--index-url") + 1] == MODULE.PYPI_INDEX
-    assert captured_command[captured_command.index("--python-version") + 1] == "3.12"
+    assert captured_command[captured_command.index("--python-version") + 1] == MODULE.MINIMUM_PYTHON
     assert captured_command[captured_command.index("--prerelease") + 1] == "disallow"
     for flag in ("--no-deps", "--no-sources", "--refresh"):
         assert flag in captured_command

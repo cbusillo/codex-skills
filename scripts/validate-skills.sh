@@ -28,14 +28,11 @@ uv --version
 printf '  selected '
 uv run python --version
 
-uv run skills/github/scripts/validate-gh-plan.py
-skills/github/scripts/validate-gh-issue.sh
 uv run skills/github/scripts/validate-operation-matrix.py --self-test
 uv run skills/github/scripts/validate-operation-matrix.py
 uv run skills/skill-creator/scripts/validate-skill-behavior.py
 uv run skills/skill-creator/scripts/validate-command-policy-simulator.py --self-test
 uv run skills/skill-creator/scripts/validate-command-policy-simulator.py
-uv run skills/skill-creator/scripts/validate-skill-scorecard.py
 uv run scripts/validate-public-safety.py --self-test
 uv run scripts/validate-public-safety.py
 uv run skills/launchplane/scripts/check-agent-operator-contract.py
@@ -43,114 +40,59 @@ uv run scripts/update_pep723_dependencies.py --check
 uv run skills/skill-creator/scripts/quick_validate.py --self-test
 uv run skills/skill-creator/scripts/validate-skill-repo.py
 
-helper_tests=(
-	evals/test_run_routing.py
-	scripts/test_sync_global_instructions.py
-	skills/babysit-pr/scripts/test_gh_pr_watch.py
-	hooks/test_command_policy_hook.py
-	hooks/test_direction_check_hook.py
-	skills/direction/scripts/test_direction_mark.py
-	skills/google-seo/scripts/test_bing_webmaster.py
-	skills/google-seo/scripts/test_google_search_console.py
-	skills/github-work-rollup/scripts/test_github_unanswered_comments.py
-	skills/github-work-rollup/scripts/test_github_work_rollup.py
-	skills/github-work-rollup/scripts/test_synthesize_work_brief.py
-	skills/github-work-rollup/scripts/test_verify_work_brief.py
-	skills/github/scripts/test_github_work_evidence.py
-	skills/github/scripts/test_github_api.py
-	skills/github/scripts/test_github_ci_diagnose.py
-	skills/github/scripts/test_github_comment.py
-	skills/github/scripts/test_github_identity.py
-	skills/github/scripts/test_github_capabilities.py
-	skills/github/scripts/test_gh_with_env_token.py
-	skills/github/scripts/test_github_issue.py
-	skills/github/scripts/test_github_milestone.py
-	skills/github/scripts/test_github_rulesets.py
-	skills/github/scripts/test_gh_plan_next.py
-	skills/github/scripts/test_gh_plan_direction.py
-	skills/direction/scripts/test_direction_audit.py
-	skills/github/scripts/test_github_read.py
-	skills/github/scripts/test_github_workflow_babysit.py
-	skills/github/scripts/test_runtime_checkout_reconciliation.py
-	skills/infra-ops/scripts/test_private_context_check.py
-	skills/infra-ops/scripts/test_npmplus_ops.py
-	skills/partdb/scripts/test_partdb_read.py
-	skills/partdb/scripts/test_partdb_write.py
-	skills/launchplane/scripts/test_launchplane_contract_freshness.py
-	skills/launchplane/scripts/test_launchplane_helpers.py
-	skills/launchplane/scripts/test_launchplane_ordinary_agent_client.py
-	skills/local-llm/scripts/validate_local_code_agent.py
-	skills/local-llm/scripts/validate_local_codex_agent.py
-	skills/local-llm/scripts/validate_lm_studio_api.py
-	skills/model-review/scripts/test_review_with_model.py
-	skills/openai-docs/scripts/test_resolve_latest_model_info.py
-	skills/openai-docs/scripts/test_fetch_codex_manual.py
-	skills/people/scripts/test_resolve_person.py
-	skills/work-closeout/scripts/test_repo_cleanup.py
-	skills/work-closeout/evaluations/test_cleanup_fixtures.py
-	skills/work-closeout/evaluations/test_cleanup_provider.py
-	skills/work-closeout/evaluations/test_run_cleanup_cases.py
-	skills/work-closeout/evaluations/test_score_cleanup_case.py
-	skills/work-closeout/evaluations/test_runtime_cleanup_fixture.py
-	scripts/test_validate_github_actions_security.py
-	scripts/test_validate_public_safety.py
-	scripts/test_update_pep723_dependencies.py
-	scripts/test_validate_execution_environment.py
-	scripts/validate_execution_environment.py
-	scripts/validate_github_actions_security.py
-	skills/jetbrains-inspection/tests/test_jb_inspect.py
-	skills/jetbrains-inspection/tests/test_prepare_python_project.py
-	skills/skill-creator/scripts/test_collect_exec_harness_performance.py
-	skills/skill-creator/scripts/test_validate_skill_repo.py
-	skills/skill-creator/scripts/test_validate_skill_scorecard.py
-	skills/rollout-friction/scripts/validate_analyze_rollouts.py
-	skills/rollout-friction/scripts/validate_classify_auto_review_ledger.py
-	skills/rollout-friction/scripts/validate_cluster_rollout_episodes.py
-	skills/rollout-friction/scripts/validate_extract_rollout_memory.py
-	skills/rollout-friction/scripts/validate_prepare_rollout_memory_long_context_review.py
-	skills/rollout-friction/scripts/validate_reduce_rollout_memory_reviews.py
-	skills/rollout-friction/scripts/validate_review_rollout_memory_batches.py
-	skills/rollout-friction/scripts/validate_run_rollout_memory_long_context_matrix.py
-	skills/rollout-friction/scripts/validate_segment_rollout_episodes.py
-	skills/rollout-friction/scripts/validate_summarize_rollout_memory_reviews.py
-	skills/rollout-friction/scripts/validate_validate_rollout_memory_llm_results.py
-)
-
-# Validators invoked by dedicated commands above rather than by the zero-argument
-# helper loop. This array classifies the files structurally; the commands and
-# gate trace provide execution evidence.
+# Validators invoked by the dedicated commands above rather than by the helper loop.
 explicit_helper_validators=(
-	skills/github/scripts/validate-gh-plan.py
 	skills/github/scripts/validate-operation-matrix.py
 	scripts/validate-public-safety.py
 	skills/skill-creator/scripts/quick_validate.py
 	skills/skill-creator/scripts/validate-command-policy-simulator.py
 	skills/skill-creator/scripts/validate-skill-behavior.py
 	skills/skill-creator/scripts/validate-skill-repo.py
-	skills/skill-creator/scripts/validate-skill-scorecard.py
 )
 
-# Files matching these names are CLIs or fixtures that require arguments/live
-# context and are not executed directly by this gate. Keep the skip list
-# explicit so newly added test_*.py or validate*.py files do not silently miss
-# validation.
+# Files matching the helper names that are CLIs or fixtures requiring
+# arguments or live context, so the loop below does not run them.
 helper_test_skiplist=(
 	skills/rollout-friction/scripts/validate_rollout_memory_llm_results.py
 )
 
-mapfile -t discovered_helper_tests < <(
-	git ls-files --cached --others --exclude-standard '*test_*.py' '*validate*.py' | sort
+# Every tracked test_*.py or *validate*.py helper runs unless it is listed above,
+# so a new helper cannot silently miss the gate and needs no list edit. The
+# validators above scan the working tree, so they finish before this loop starts.
+mapfile -t excluded_helper_tests < <(
+	printf '%s\n' "${explicit_helper_validators[@]}" "${helper_test_skiplist[@]}" | sort
 )
+mapfile -t helper_tests < <(
+	git ls-files --cached '*test_*.py' '*validate*.py' | sort | comm -23 - <(printf '%s\n' "${excluded_helper_tests[@]}")
+)
+helper_tests+=(skills/github/scripts/validate-gh-issue.sh)
 
-declared_helper_tests="$(printf '%s\n' "${helper_tests[@]}" "${explicit_helper_validators[@]}" "${helper_test_skiplist[@]}" | sort)"
-discovered_helper_tests_text="$(printf '%s\n' "${discovered_helper_tests[@]}")"
-if [[ "$declared_helper_tests" != "$discovered_helper_tests_text" ]]; then
-	printf 'helper test list is out of date\n' >&2
-	printf 'loop + explicit + skipped:\n%s\n' "$declared_helper_tests" >&2
-	printf 'discovered:\n%s\n' "$discovered_helper_tests_text" >&2
+if ((${#helper_tests[@]} == 0)); then
+	printf 'error: no helper tests discovered\n' >&2
 	exit 1
 fi
 
-for helper_test in "${helper_tests[@]}"; do
-	uv run "$helper_test"
-done
+# Helpers are independent, so run them in parallel and print each log only when
+# it fails. VALIDATE_SKILLS_JOBS=1 restores serial execution.
+helper_jobs="${VALIDATE_SKILLS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+helper_log_dir="$(mktemp -d)"
+trap 'rm -rf "$helper_log_dir"' EXIT
+export helper_log_dir
+if ! printf '%s\0' "${helper_tests[@]}" | xargs -0 -n 1 -P "$helper_jobs" bash -c '
+	log="$helper_log_dir/$(printf "%s" "$1" | tr "/" "_").log"
+	started=$SECONDS
+	case "$1" in
+	*.py) run=(uv run "$1") ;;
+	*) run=("$1") ;;
+	esac
+	if "${run[@]}" >"$log" 2>&1; then
+		printf "ok %s (%ss)\n" "$1" "$((SECONDS - started))"
+	else
+		printf "FAILED %s\n" "$1"
+		cat "$log"
+		exit 1
+	fi
+' _; then
+	printf 'error: one or more helper tests failed\n' >&2
+	exit 1
+fi

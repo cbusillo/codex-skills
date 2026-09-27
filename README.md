@@ -256,11 +256,10 @@ by its full path rather than combine conflicting workflows:
 - `skill-creator`
 
 Keep that override allowlist explicit in the repo validator. Runtime `.system`
-caches can differ by host and build, so validation fails only when an active
-top-level skill overrides a bundled system skill that is not allowlisted. If a host
-adds a new bundled system skill with the same name as a top-level skill, update
-the top-level override skill or the validator allowlist intentionally instead of
-editing `.system/` directly.
+caches differ by host and build, so the repository gate does not read them. If a
+host adds a new bundled system skill with the same name as a top-level skill,
+update the top-level override skill or the validator allowlist intentionally
+instead of editing `.system/` directly.
 
 If an injected available-skills list points at a missing repo-local path such as
 `.system/plan/SKILL.md`, treat that as stale runtime metadata. For allowlisted

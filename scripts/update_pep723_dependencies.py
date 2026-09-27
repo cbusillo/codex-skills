@@ -248,8 +248,6 @@ def discover_python_files(root: Path) -> tuple[Path, ...]:
             str(root),
             "ls-files",
             "--cached",
-            "--others",
-            "--exclude-standard",
             "--",
             "*.py",
         ],

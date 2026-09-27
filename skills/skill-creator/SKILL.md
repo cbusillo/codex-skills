@@ -15,7 +15,7 @@ resources:
     description: Generate initial agents/openai.yaml UI metadata for a skill.
   - path: scripts/validate-skill-behavior.py
     kind: script
-    description: Run behavioral smoke checks for skill routing and invocation expectations.
+    description: Run skill helpers and declared commands and check what they do.
   - path: scripts/validate-skill-repo.py
     kind: script
     description: Validate all active skills in this repository.
@@ -74,7 +74,7 @@ commands:
     source: skill
     resource_path: scripts/validate-skill-behavior.py
     example_argv: ["uv", "run", "scripts/validate-skill-behavior.py"]
-    purpose: Runs repository-level behavior checks for high-impact skill guidance.
+    purpose: Runs skill helpers and declared commands and checks their behavior.
   - name: validate-skill-repo
     source: skill
     resource_path: scripts/validate-skill-repo.py
