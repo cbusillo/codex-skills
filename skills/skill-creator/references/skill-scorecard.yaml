@@ -3,6 +3,7 @@
 # baselines below are frozen historical records, not current execution routes.
 # Their commands and gates must not schedule new runs. Active static/helper
 # checks remain current. See exec_harness.md and validation.md.
+# This file is no longer validated; adding or removing a skill needs no edit here.
 schema_version: 1
 owner_issue: 298
 normalization:

@@ -490,7 +490,9 @@ def fake_endpoint(mode: str) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
         return Handler(request, client_address, fixture_server)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler_factory)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
     thread.start()
     port = server.server_address[1]
     endpoint = normalize_endpoint(

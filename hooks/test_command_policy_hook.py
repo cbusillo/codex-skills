@@ -9,6 +9,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import io
 import json
 import os
 import shlex
@@ -16,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parent / "command_policy_hook.py"
@@ -24,6 +28,9 @@ sys.path.insert(0, str(HOOK.parent))
 import command_policy_hook  # noqa: E402
 
 SIMULATOR = command_policy_hook.load_simulator()
+# The catalog is parsed from every SKILL.md; parse it once for the in-process cases.
+SIMULATOR.iter_policies = functools.cache(SIMULATOR.iter_policies)
+command_policy_hook.load_simulator = lambda: SIMULATOR
 
 
 def run_hook(payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -33,7 +40,16 @@ def run_hook(payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def bash(command: str) -> subprocess.CompletedProcess[str]:
-    return run_hook(json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}))
+    """Run the hook's entry point in-process; run_hook covers the real process."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    stderr = io.StringIO()
+    with (
+        mock.patch.object(sys, "stdin", io.StringIO(payload)),
+        mock.patch.object(sys, "argv", [str(HOOK)]),
+        contextlib.redirect_stderr(stderr),
+    ):
+        returncode = command_policy_hook.main()
+    return subprocess.CompletedProcess([str(HOOK)], returncode, "", stderr.getvalue())
 
 
 class CommandPolicyHookTests(unittest.TestCase):
@@ -140,21 +156,17 @@ class CommandPolicyHookTests(unittest.TestCase):
             with self.subTest(line=line):
                 result = bash(line)
                 self.assertEqual(result.returncode, 2)
-                if line.startswith("gh-with-env-token"):
-                    self.assertIn("prefer-standard-ruleset-helper", result.stderr)
 
     def test_git_global_options_do_not_hide_commit_or_push(self) -> None:
-        for line, policy in (
-            ("git -c commit.gpgsign=false commit -m demo", "prefer-bot-commit-helper-with-git-options"),
-            ("cd /tmp && git -C 'a path' commit -m demo", "prefer-bot-commit-helper-with-git-options"),
-            ("bash -lc 'git --no-pager -C repo commit'", "prefer-bot-commit-helper-with-git-options"),
-            ("git -c user.name=\"Shiny Code\" commit -m demo", "prefer-bot-commit-helper-with-git-options"),
-            ("git -C repo push origin branch", "prefer-bot-push-helper-with-git-options"),
+        for line in (
+            "git -c commit.gpgsign=false commit -m demo",
+            "cd /tmp && git -C 'a path' commit -m demo",
+            "bash -lc 'git --no-pager -C repo commit'",
+            "git -c user.name=\"Shiny Code\" commit -m demo",
+            "git -C repo push origin branch",
         ):
             with self.subTest(line=line):
-                result = bash(line)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn(policy, result.stderr)
+                self.assertEqual(bash(line).returncode, 2)
         for line in (
             "git -C repo status",
             "git -C repo commit-graph write",

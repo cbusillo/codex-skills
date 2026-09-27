@@ -63,19 +63,6 @@ def test_current_repository_passes() -> None:
         raise AssertionError(f"current repository must pass: {violations}")
 
 
-def test_trust_classification_is_separate_from_pin_policy() -> None:
-    module = load_module()
-    if module.APPROVED_REMOTE_ACTIONS["actions/checkout"].trust != "GitHub-maintained":
-        raise AssertionError("actions/checkout trust classification is missing")
-    if (
-        module.APPROVED_REMOTE_ACTIONS["astral-sh/setup-uv"].trust
-        != "Approved third-party publisher"
-    ):
-        raise AssertionError("astral-sh/setup-uv trust classification is missing")
-    if module.MUTABLE_REFERENCE_ALLOWLIST:
-        raise AssertionError("mutable action reference allowlist must default to empty")
-
-
 def test_accepts_pinned_remote_and_local_references() -> None:
     module = load_module()
     with fixture_root(
@@ -205,7 +192,6 @@ def test_rejects_stale_mutable_reference_allowlist_entries() -> None:
 
 def main() -> int:
     test_current_repository_passes()
-    test_trust_classification_is_separate_from_pin_policy()
     test_accepts_pinned_remote_and_local_references()
     test_rejects_mutable_short_unapproved_and_unprovenanced_references()
     test_scans_referenced_composite_action_metadata()

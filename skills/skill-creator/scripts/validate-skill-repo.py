@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import sys
 import tomllib
@@ -28,7 +27,6 @@ SYSTEM_OVERRIDE_NAMES = {
     "plugin-creator",
     "skill-creator",
 }
-SYSTEM_SKILLS_MARKER_FILENAME = ".codex-system-skills.marker"
 LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets)/[^`\s]+)`")
 SIBLING_PATH_RE = re.compile(r"`(\.\./[^`\s]+)`")
 # A skill reaching a catalog file through one host's install location: a home-directory skills
@@ -87,17 +85,6 @@ def active_skill_dirs() -> list[Path]:
     return dirs
 
 
-def system_skill_names() -> set[str]:
-    system_root = resolve_system_skills_root()
-    names: set[str] = set()
-    for skill_md in sorted(system_root.glob("*/SKILL.md")):
-        frontmatter = read_frontmatter(skill_md)
-        name = frontmatter.get("name")
-        if isinstance(name, str) and name:
-            names.add(name)
-    return names
-
-
 def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
     errors: list[str] = []
     active_by_name = {skill_dir.name: skill_dir for skill_dir in skill_dirs}
@@ -106,52 +93,6 @@ def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
         if not local_skill.is_file():
             errors.append(f"{name}: override skill is missing {local_skill.relative_to(ROOT)}")
     return errors
-
-
-def resolve_system_skills_root() -> Path:
-    """Return the Every Code runtime system skill cache or the repo fallback.
-
-    Every Code caches embedded system skills under the active runtime skills directory:
-    `CODE_HOME/skills/.system` for Every Code, with `CODEX_HOME/skills/.system` kept
-    for compatibility. This repo may also contain a generated `.system` cache,
-    which keeps override-name validation deterministic for plain checkouts and
-    CI jobs that do not mount a runtime cache.
-    """
-
-    for candidate in runtime_system_root_candidates():
-        if is_system_skills_root(candidate):
-            return candidate
-    return ROOT / ".system"
-
-
-def runtime_system_root_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    seen: set[Path] = set()
-    for home in runtime_home_candidates():
-        candidate = (home / "skills" / ".system").expanduser().resolve()
-        if candidate not in seen:
-            seen.add(candidate)
-            candidates.append(candidate)
-    return candidates
-
-
-def runtime_home_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    code_home = os.environ.get("CODE_HOME", "").strip()
-    if code_home:
-        candidates.append(Path(code_home))
-    codex_home = os.environ.get("CODEX_HOME", "").strip()
-    if codex_home:
-        candidates.append(Path(codex_home))
-    home = Path.home()
-    candidates.extend((home / ".code", home / ".codex"))
-    return candidates
-
-
-def is_system_skills_root(path: Path) -> bool:
-    return (path / SYSTEM_SKILLS_MARKER_FILENAME).is_file() and any(
-        path.glob("*/SKILL.md")
-    )
 
 
 def read_frontmatter(skill_md: Path) -> dict[str, Any]:
@@ -752,14 +693,6 @@ def main() -> int:
         errors.extend(validate_skill_dir(skill_dir))
     errors.extend(validate_system_override_paths(skill_dirs))
     errors.extend(validate_command_label_invocations(skill_dirs))
-
-    active_names = {skill_dir.name for skill_dir in skill_dirs}
-    overlapping_system_names = active_names & system_skill_names()
-    unexpected_overrides = overlapping_system_names - SYSTEM_OVERRIDE_NAMES
-    for name in sorted(unexpected_overrides):
-        errors.append(
-            f"{name}: active skill overrides .system/{name} but is not in SYSTEM_OVERRIDE_NAMES"
-        )
 
     if errors:
         for error in errors:

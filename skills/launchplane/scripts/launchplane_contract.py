@@ -64,7 +64,6 @@ _WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
 EXPECTED_OPERATION_CONTRACTS = {
     "admit_ordinary_agent_job": {
         "method": "POST",
-        "purpose": "Admit one finite qualification or guarded-delivery job from authenticated caller intent.",
         "supported_surfaces": ["ordinary_agent_client"],
         "modes": ["finite-admission"],
         "idempotency": "body",
@@ -72,7 +71,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_ordinary_agent_job": {
         "method": "GET",
-        "purpose": "Read this ordinary principal's finite job state.",
         "supported_surfaces": ["ordinary_agent_client"],
         "modes": ["read"],
         "idempotency": "none",
@@ -80,7 +78,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "cancel_ordinary_agent_session": {
         "method": "POST",
-        "purpose": "Cancel this ordinary principal's issued session.",
         "supported_surfaces": ["ordinary_agent_client"],
         "modes": ["cancel"],
         "idempotency": "none",
@@ -88,7 +85,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "propose_ordinary_agent_enrollment": {
         "method": "POST",
-        "purpose": "Propose an exact agent connection for signed administrator review.",
         "supported_surfaces": ["terminal_agent_client"],
         "modes": ["plan"],
         "idempotency": "none",
@@ -96,7 +92,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_proposed_ordinary_agent_enrollment": {
         "method": "GET",
-        "purpose": "Read the authenticated terminal client's connection request.",
         "supported_surfaces": ["terminal_agent_client"],
         "modes": ["read"],
         "idempotency": "none",
@@ -104,7 +99,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "propose_ordinary_agent_session": {
         "method": "POST",
-        "purpose": "Propose a bounded session using the current ordinary credential.",
         "supported_surfaces": ["ordinary_agent_client"],
         "modes": ["plan"],
         "idempotency": "none",
@@ -112,7 +106,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_ordinary_agent_session_operation": {
         "method": "GET",
-        "purpose": "Read this ordinary principal's session request.",
         "supported_surfaces": ["ordinary_agent_client"],
         "modes": ["read"],
         "idempotency": "none",
@@ -120,7 +113,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "claim_ordinary_agent_credential": {
         "method": "POST",
-        "purpose": "Recover a receiver-bound credential directly into private client custody.",
         "supported_surfaces": ["private_agent_client"],
         "modes": ["claim"],
         "idempotency": "none",
@@ -128,7 +120,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_agent_context": {
         "method": "GET",
-        "purpose": "Read public-safe Launchplane context for an agent task.",
         "supported_surfaces": ["agent_helper", "read_only_service"],
         "modes": ["read"],
         "idempotency": "none",
@@ -136,7 +127,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "evaluate_agent_write_intent": {
         "method": "POST",
-        "purpose": "Evaluate a bounded agent write intent before mutation.",
         "supported_surfaces": ["agent_helper", "service_api"],
         "modes": ["preflight"],
         "idempotency": "optional",
@@ -144,7 +134,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "apply_product_config": {
         "method": "POST",
-        "purpose": "Dry-run or apply reviewed product configuration.",
         "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "apply",
@@ -152,7 +141,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "apply_change_impact_policy": {
         "method": "POST",
-        "purpose": "Dry-run or apply a reviewed change-impact policy revision.",
         "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "none",
@@ -160,7 +148,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_change_impact_policy": {
         "method": "GET",
-        "purpose": "Read active change-impact policy revision evidence.",
         "supported_surfaces": ["agent_helper", "read_only_service"],
         "modes": ["read"],
         "idempotency": "none",
@@ -168,7 +155,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "write_merge_train_controller_run_once": {
         "method": "POST",
-        "purpose": "Advance one merge-train controller phase with bounded recovery evidence.",
         "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
         "modes": ["dry-run", "mutate"],
         "idempotency": "mutate",
@@ -176,7 +162,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "remediate_preview_pr_feedback": {
         "method": "POST",
-        "purpose": "Dry-run or apply bounded historical preview-feedback remediation.",
         "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "apply",
@@ -184,7 +169,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "execute_product_retirement": {
         "method": "POST",
-        "purpose": "Plan or apply protected product retirement.",
         "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
         "modes": ["plan", "apply"],
         "idempotency": "always",
@@ -192,7 +176,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "execute_detached_application_retirement": {
         "method": "POST",
-        "purpose": "Plan or apply detached application retirement with zero authority writes.",
         "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
         "modes": ["plan", "apply"],
         "idempotency": "always",
@@ -200,7 +183,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "reconcile_managed_authz_policy": {
         "method": "POST",
-        "purpose": "Dry-run or apply managed authorization reconciliation.",
         "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "apply",
@@ -208,7 +190,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "apply_product_stable_lane_repair": {
         "method": "POST",
-        "purpose": "Dry-run or apply a bounded stable-lane profile repair.",
         "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
         "modes": ["dry-run", "apply"],
         "idempotency": "apply",
@@ -216,7 +197,6 @@ EXPECTED_OPERATION_CONTRACTS = {
     },
     "read_governance_projection": {
         "method": "GET",
-        "purpose": "Read governance evidence without granting mutation authority.",
         "supported_surfaces": ["read_only_service", "operator_ui"],
         "modes": ["read"],
         "idempotency": "none",
