@@ -13759,6 +13759,44 @@ class NativeCompletionObservationTests(unittest.TestCase):
         self.assertLess(len(saved["missing_examples"]), len(observation["missing_examples"]))
         self.assertNotIn("unexpected_field", saved)
 
+    def test_silent_skip_classification_survives_with_its_own_hypothetical_verdict(self):
+        observation = self.observation() | {
+            "missing_classification_complete": True,
+            "missing_classification_counts": {"empty_visitor": 1, "non_empty_visitor": 0, "not_probed": 0},
+            "unexplained_missing_completion_count": 0,
+            "silent_skip_rule_would_block_clean": False,
+            "unexplained_missing_examples": [],
+        }
+        payload = {"inspection_run_id": 17, "verdict": "GREEN", "capture_diagnostic": {"native_tool_completion_observation": observation}}
+        saved = jb_inspect.native_completion_observation(payload)
+        self.assertEqual(saved["hypothetical_candidate_rule_verdict"], "UNKNOWN")
+        self.assertEqual(saved["hypothetical_silent_skip_rule_verdict"], "GREEN")
+        self.assertEqual(saved["missing_classification_counts"]["empty_visitor"], 1)
+        self.assertEqual(saved["unexplained_missing_completion_count"], 0)
+
+        observation["silent_skip_rule_would_block_clean"] = True
+        observation["unexplained_missing_examples"] = [{"tool": "PythonCheck", "file": "/private/project/app.py"}]
+        saved = jb_inspect.native_completion_observation(payload)
+        self.assertEqual(saved["hypothetical_silent_skip_rule_verdict"], "UNKNOWN")
+        record = jb_inspect.outcome_log_record(payload | {"command": "agent-inspect", "status": "clean"}, 0)
+        durable = record["native_tool_completion_observation"]
+        self.assertEqual(durable["unexplained_missing_examples"][0]["file_hash"], jb_inspect.stable_value_hash("/private/project/app.py"))
+        self.assertNotIn("/private/project", json.dumps(record))
+
+    def test_unfinished_classification_has_no_silent_skip_verdict(self):
+        observation = self.observation() | {
+            "missing_classification_complete": False,
+            "missing_classification_unavailable_reason": "classification_time_limit",
+            "silent_skip_rule_would_block_clean": False,
+            "unexplained_missing_examples": [{"tool": "PythonCheck", "file": "/private/project/app.py"}],
+        }
+        payload = {"inspection_run_id": 17, "verdict": "GREEN", "capture_diagnostic": {"native_tool_completion_observation": observation}}
+        saved = jb_inspect.native_completion_observation(payload)
+        self.assertIsNone(saved["silent_skip_rule_would_block_clean"])
+        self.assertIsNone(saved["hypothetical_silent_skip_rule_verdict"])
+        self.assertEqual(saved["missing_classification_unavailable_reason"], "classification_time_limit")
+        self.assertNotIn("unexplained_missing_examples", saved)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3598,7 +3598,7 @@ def native_completion_observation(payload: dict[str, Any], target_run_id: int | 
         reason = observation.get("unavailable_reason")
         if isinstance(reason, str):
             bounded["unavailable_reason"] = redact_inspection_diagnostic_text(reason)[:200]
-        for key in ("missing_examples", "completed_examples", "exclusion_examples"):
+        for key in ("missing_examples", "completed_examples", "exclusion_examples", "unexplained_missing_examples"):
             examples = observation.get(key)
             if isinstance(examples, list):
                 bounded[key] = [
@@ -3625,6 +3625,29 @@ def native_completion_observation(payload: dict[str, Any], target_run_id: int | 
         bounded["actual_verdict"] = actual
         bounded["hypothetical_candidate_rule_verdict"] = (
             None if would_block is None else "UNKNOWN" if actual == "GREEN" and would_block else actual
+        )
+        classified = bounded["enumeration_complete"] and observation.get("missing_classification_complete") is True
+        bounded["missing_classification_complete"] = classified
+        reason = observation.get("missing_classification_unavailable_reason")
+        if isinstance(reason, str):
+            bounded["missing_classification_unavailable_reason"] = redact_inspection_diagnostic_text(reason)[:200]
+        counts = observation.get("missing_classification_counts")
+        if classified and isinstance(counts, dict):
+            bounded["missing_classification_counts"] = {
+                key: counts[key] for key in ("empty_visitor", "non_empty_visitor", "not_probed")
+                if nonnegative_int(counts.get(key)) is not None
+            }
+        unexplained = nonnegative_int(observation.get("unexplained_missing_completion_count"))
+        if classified and unexplained is not None:
+            bounded["unexplained_missing_completion_count"] = unexplained
+        if not classified:
+            bounded.pop("unexplained_missing_examples", None)
+        silent_skip_block = observation.get("silent_skip_rule_would_block_clean")
+        if not classified or not isinstance(silent_skip_block, bool):
+            silent_skip_block = None
+        bounded["silent_skip_rule_would_block_clean"] = silent_skip_block
+        bounded["hypothetical_silent_skip_rule_verdict"] = (
+            None if silent_skip_block is None else "UNKNOWN" if actual == "GREEN" and silent_skip_block else actual
         )
         return bounded
     return {}
