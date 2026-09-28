@@ -1945,6 +1945,152 @@ def _project_change_impact_policy_read_model(value: object) -> dict[str, object]
     return projected
 
 
+ODOO_ADDON_SETTINGS_RESULT_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "context",
+    "instance",
+    "addon",
+    "production_lane",
+    "record_exists",
+    "changed",
+    "applied",
+    "rendered_action",
+    "changes",
+    "read_back",
+    "read_back_matches",
+    "reason",
+    "source_label",
+    "record_sha256_before",
+    "record_sha256_after",
+    "plan_sha256",
+    "next_actions",
+}
+ODOO_ADDON_SETTING_EVIDENCE_FIELDS = {
+    "setting",
+    "source",
+    "value",
+    "value_present",
+    "secret_binding_id",
+    "secret_binding_present",
+}
+# Only these settings may show a literal value. Everything else shows presence only.
+ODOO_ADDON_SETTINGS_NON_SECRET_SETTINGS = {
+    "shop_url_key",
+    "api_version",
+    "test_store",
+    "allow_production",
+    "production_indicators",
+}
+ODOO_ADDON_SETTINGS_PAYLOAD_FIELDS = {
+    "schema_version",
+    "product",
+    "context",
+    "instance",
+    "addon",
+    "reason",
+    "shopify",
+}
+ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS = {
+    "shop_url_key",
+    "api_version",
+    "api_token_secret_binding_id",
+    "webhook_key_secret_binding_id",
+    "test_store",
+}
+
+
+def _optional_sha256(value: object) -> str:
+    if value in {None, ""}:
+        return ""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_odoo_addon_setting_evidence(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in ODOO_ADDON_SETTING_EVIDENCE_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    setting = public_code(source.get("setting"))
+    value_source = source.get("source")
+    if value_source not in {"literal", "secret_binding"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "setting": setting,
+        "source": value_source,
+        "present": bool(source.get("value_present")),
+    }
+    if value_source == "secret_binding":
+        if source.get("value") is not None:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        projected["binding_ref"] = public_identifier(source.get("secret_binding_id"))
+        binding_present = _optional_bool(source.get("secret_binding_present"))
+        if binding_present is not None:
+            projected["binding_present"] = binding_present
+        return projected
+    literal = source.get("value")
+    if literal is None:
+        return projected
+    if setting not in ODOO_ADDON_SETTINGS_NON_SECRET_SETTINGS:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected["literal"] = literal if isinstance(literal, bool) else public_identifier(literal)
+    return projected
+
+
+def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in ODOO_ADDON_SETTINGS_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": public_code(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "addon": public_code(source.get("addon")),
+        "rendered_action": public_code(source.get("rendered_action")),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+    }
+    for key in ("production_lane", "record_exists", "changed", "applied"):
+        projected[key] = bool(_optional_bool(source.get(key)))
+    read_back_matches = _optional_bool(source.get("read_back_matches"))
+    if read_back_matches is not None:
+        projected["read_back_matches"] = read_back_matches
+    changes = source.get("changes", [])
+    if not isinstance(changes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_changes: list[dict[str, object]] = []
+    for change_value in changes:
+        change = _require_dict(change_value)
+        if any(str(key) not in {"setting", "action", "before", "after"} for key in change):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        projected_change: dict[str, object] = {
+            "setting": public_code(change.get("setting")),
+            "action": public_code(change.get("action")),
+        }
+        for side in ("before", "after"):
+            if change.get(side) is not None:
+                projected_change[side] = _project_odoo_addon_setting_evidence(change[side])
+        projected_changes.append(projected_change)
+    projected["changes"] = projected_changes
+    read_back = source.get("read_back", [])
+    if not isinstance(read_back, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["read_back"] = [_project_odoo_addon_setting_evidence(item) for item in read_back]
+    next_actions = source.get("next_actions", [])
+    if not isinstance(next_actions, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["next_actions"] = [public_summary_string(item) for item in next_actions]
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_success_output(operation: str, provider_payload: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
     if operation in {
         "generic-web-deploy-recovery-dry-run",
@@ -2046,6 +2192,11 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
         return records, _project_repository_inventory_apply_result(
             provider_payload.get("result")
         )
+    if operation in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_odoo_addon_settings_result(provider_payload.get("result"))
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -2194,6 +2345,15 @@ def summarize_success(
                 "Save and review this redacted dry-run evidence before applying the exact same private payload."
                 if operation == "repository-inventory-dry-run"
                 else "Read back the current repository inventory record before relying on the mutation."
+            )
+        elif operation in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the diff, then apply the exact same "
+                "private payload with --expected-plan-digest."
+                if operation == "odoo-addon-settings-dry-run"
+                else "Check read_back_matches, then run Odoo post-deploy for the lane and verify "
+                "the settings in its database."
             )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
@@ -2464,6 +2624,78 @@ def _require_apply_eligible_recovery_dry_run(
         or result.get("instance") != expected_instance
     ):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def _require_apply_eligible_odoo_addon_settings_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_plan_digest: str,
+    expected_product: str,
+    expected_context: str,
+    expected_instance: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if (
+        evidence.get("operation") != "odoo-addon-settings-dry-run"
+        or evidence.get("status") != "accepted"
+        or result.get("status") != "ok"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+        or result.get("product") != expected_product
+        or result.get("context") != expected_context
+        or result.get("instance") != expected_instance
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if any(str(key) not in ODOO_ADDON_SETTINGS_PAYLOAD_FIELDS for key in body):
+        raise ValueError("unsupported_payload_field")
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    identity: dict[str, str] = {}
+    for field in ("product", "context", "instance", "reason"):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+        identity[field] = value.strip()
+    if body.get("addon", "shopify") != "shopify":
+        raise ValueError("unsupported_addon")
+    shopify = body.get("shopify")
+    if not isinstance(shopify, dict):
+        raise ValueError("shopify_settings_required")
+    # Only binding references are accepted for secret settings; plaintext fields are refused.
+    if any(str(key) not in ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS for key in shopify):
+        raise ValueError("unsupported_shopify_field")
+    if not isinstance(shopify.get("test_store"), bool):
+        raise ValueError("test_store_boolean_required")
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+        _require_apply_eligible_odoo_addon_settings_dry_run(
+            args,
+            expected_plan_digest=expected_plan_digest,
+            expected_product=identity["product"],
+            expected_context=identity["context"].lower(),
+            expected_instance=identity["instance"].lower(),
+        )
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
 
 
 def generic_web_deploy_recovery_body(
@@ -2941,6 +3173,7 @@ def execute_post(
             )
         except LaunchplaneSafetyError:
             if operation not in {
+                "odoo-addon-settings-apply",
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
                 "repository-inventory-apply",
@@ -3373,6 +3606,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed inventory dry-run.",
     )
 
+    odoo_addon_settings_dry_run = subparsers.add_parser(
+        "odoo-addon-settings-dry-run",
+        help="Dry-run an Odoo lane's addon settings from a private payload of binding references.",
+    )
+    odoo_addon_settings_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_addon_settings_dry_run.set_defaults(idempotency_key="")
+
+    odoo_addon_settings_apply = subparsers.add_parser(
+        "odoo-addon-settings-apply",
+        help="Apply reviewed Odoo addon settings bound to the saved dry-run digest.",
+    )
+    odoo_addon_settings_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_addon_settings_apply.add_argument("--idempotency-key", required=True)
+    odoo_addon_settings_apply.add_argument("--reviewed-dry-run", action="store_true")
+    odoo_addon_settings_apply.add_argument("--expected-plan-digest", required=True)
+    odoo_addon_settings_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed addon-settings dry-run.",
+    )
+
     recovery_dry_run = subparsers.add_parser(
         "generic-web-deploy-recovery-dry-run",
         help="Submit a private generic-web deploy-recovery dry-run payload.",
@@ -3616,6 +3874,24 @@ def main(argv: list[str]) -> int:
                 "terminal_status": args.terminal_status,
             }
             body = preview_feedback_remediation_body(args)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
+            mode = "apply" if args.command == "odoo-addon-settings-apply" else "dry-run"
+            body = odoo_addon_settings_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": public_identifier(body["instance"]),
+                "addon": "shopify",
+                "payload_source": "private_file",
+            }
             return execute_post(
                 args=args,
                 operation=args.command,

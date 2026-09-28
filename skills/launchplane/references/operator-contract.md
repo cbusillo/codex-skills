@@ -16,8 +16,9 @@ prove that the vendored artifact is current upstream. A source-provenance-only
 change is non-gating when schema version, normalization version, semantic digest,
 and contract content are unchanged.
 
-The merge-train policy import and generic-web deploy-recovery routes remain
-bounded local extensions until the upstream public projection includes them.
+The merge-train policy import, generic-web deploy-recovery, and Odoo
+addon-settings routes remain bounded local extensions until the vendored public
+projection includes them.
 Their private-file, dry-run, review, digest-binding, idempotency, redaction, and
 trace requirements remain fully enforced, but they must not be reported as
 contract-backed.
