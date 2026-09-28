@@ -949,6 +949,17 @@ def _project_product_config_preflight_result(result: object) -> dict[str, object
     return projected
 
 
+def _project_retired_provider_keys(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 256:
+        raise LaunchplaneSafetyError("invalid_response")
+    keys = _public_string_list(value)
+    if len(set(keys)) != len(keys) or any(
+        re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", key) is None for key in keys
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return keys
+
+
 def _project_runtime_environment(value: object) -> dict[str, object]:
     source = _require_dict(value)
     allowed = {
@@ -960,6 +971,8 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
         "changed_keys",
         "unchanged_keys",
         "env_value_count_after",
+        "retired_provider_keys_before",
+        "retired_provider_keys_after",
         "record",
     }
     if any(str(key) not in allowed for key in source):
@@ -986,6 +999,12 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
     for key in ("keys", "changed_keys", "unchanged_keys"):
         if key in source:
             projected[key] = _public_string_list(source[key])
+    for key in ("retired_provider_keys_before", "retired_provider_keys_after"):
+        if key in source:
+            retired_keys = _project_retired_provider_keys(source[key])
+            if retired_keys and scope != "instance":
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[key] = retired_keys
     if "env_value_count_after" in source:
         projected["env_value_count_after"] = _nonnegative_int(
             source["env_value_count_after"]
@@ -1003,10 +1022,15 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
                 "source_label",
                 "env_keys",
                 "env_value_count",
+                "retired_provider_keys",
             }
             for key in record_source
         ):
             raise LaunchplaneSafetyError("unsafe_response_shape")
+        if "retired_provider_keys" in record_source:
+            retired_keys = _project_retired_provider_keys(record_source["retired_provider_keys"])
+            if retired_keys and scope != "instance":
+                raise LaunchplaneSafetyError("invalid_response")
     return projected
 
 

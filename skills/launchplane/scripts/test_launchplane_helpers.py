@@ -2154,7 +2154,18 @@ def test_current_launchplane_service_response_shapes() -> None:
                     "changed_keys": ["EXAMPLE_MODE"],
                     "unchanged_keys": [],
                     "env_value_count_after": 1,
-                    "record": None,
+                    "retired_provider_keys_before": [],
+                    "retired_provider_keys_after": ["LEGACY_API_PASSWORD"],
+                    "record": {
+                        "scope": "instance",
+                        "context": "testing",
+                        "instance": "example-instance",
+                        "updated_at": "2026-07-19T23:00:00Z",
+                        "source_label": "product-config-api",
+                        "env_keys": ["EXAMPLE_MODE"],
+                        "env_value_count": 1,
+                        "retired_provider_keys": ["LEGACY_API_PASSWORD"],
+                    },
                 },
                 "runtime_key_safety": {
                     "required": True,
@@ -2190,6 +2201,11 @@ def test_current_launchplane_service_response_shapes() -> None:
         },
     )
     assert apply["result"]["runtime_environment"]["changed_keys"] == ["EXAMPLE_MODE"]
+    assert apply["result"]["runtime_environment"]["retired_provider_keys_before"] == []
+    assert apply["result"]["runtime_environment"]["retired_provider_keys_after"] == [
+        "LEGACY_API_PASSWORD"
+    ]
+    assert "record" not in apply["result"]["runtime_environment"]
     assert apply["result"]["secrets"] == [
         {
             "action": "rotated",
@@ -2251,6 +2267,58 @@ def test_product_config_projection_accepts_context_scoped_runtime_environment() 
         "unchanged_keys": [],
         "env_value_count_after": 1,
     }
+
+
+def test_runtime_retirement_projection_rejects_values_and_malformed_metadata() -> None:
+    runtime: dict[str, Any] = {
+        "action": "updated",
+        "scope": "instance",
+        "context": "testing",
+        "instance": "example-instance",
+    }
+    for field in (
+        "retired_provider_keys_before",
+        "retired_provider_keys_after",
+        "record",
+    ):
+        for invalid in (
+            None,
+            "LEGACY_KEY",
+            {"LEGACY_KEY": "private-value"},
+            ["Bearer private-example"],
+            ["https://private.example.invalid"],
+            [42],
+            ["LEGACY_KEY", "LEGACY_KEY"],
+            ["K" * 129],
+            [f"KEY_{index}" for index in range(257)],
+        ):
+            candidate = {
+                **runtime,
+                field: {"retired_provider_keys": invalid} if field == "record" else invalid,
+            }
+            try:
+                write_action._project_runtime_environment(candidate)
+            except safety.LaunchplaneSafetyError:
+                pass
+            else:
+                raise AssertionError("expected malformed retirement metadata to fail closed")
+
+    for extra in (
+        {"record": {"retired_provider_keys": ["LEGACY_KEY"], "env": {"KEY": "value"}}},
+        {"provider_environment": {"KEY": "value"}},
+        {"scope": "context", "instance": "", "retired_provider_keys_after": ["LEGACY_KEY"]},
+    ):
+        try:
+            write_action._project_runtime_environment({**runtime, **extra})
+        except safety.LaunchplaneSafetyError:
+            pass
+        else:
+            raise AssertionError("expected unsafe retirement response to fail closed")
+
+    cleared = write_action._project_runtime_environment(
+        {**runtime, "retired_provider_keys_before": ["LEGACY_KEY"], "retired_provider_keys_after": []}
+    )
+    assert cleared["retired_provider_keys_after"] == []
 
 
 def test_optional_public_identifier_rejects_null_values() -> None:
@@ -3264,6 +3332,7 @@ def main() -> int:
         test_change_impact_apply_success_projection_failure_is_unverified,
         test_invalid_private_payload_does_not_expose_path,
         test_product_config_projection_accepts_context_scoped_runtime_environment,
+        test_runtime_retirement_projection_rejects_values_and_malformed_metadata,
         test_optional_public_identifier_rejects_null_values,
         test_runtime_environment_projection_enforces_scope_identity,
         test_merge_train_idle_preserves_author_refusal_without_pr_content,
