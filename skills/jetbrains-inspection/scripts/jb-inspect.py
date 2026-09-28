@@ -6544,6 +6544,11 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
             return "Update the inspection plugin to a native broad-scope proof build, restart the IDE, and rerun; the installed plugin cannot prove this clean scope."
         if execution_proof_reason == "native_attestation_context_creation_failed":
             return "Update or reinstall the inspection plugin, restart the IDE, resolve the route again, and rerun; native attestation could not be initialized."
+        if execution_proof_reason == "native_cpp_batch_annotator_unproven":
+            return (
+                "Do not report GREEN and do not retry: C/C++ files in this scope use batch-annotator inspections "
+                "(such as CLion Radler) that never report completion. Inspect a scope without C/C++ files, or report UNKNOWN."
+            )
         if execution_proof_reason == "native_scope_enumeration_failed":
             return "Stop retrying and report the execution_proof diagnostics; the plugin could not enumerate the requested native inspection scope."
         if execution_proof_reason in {"native_inspection_failures", "native_inspection_reported_problems"}:
@@ -7095,6 +7100,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "native_inspection_scope_empty",
             "native_inspection_scope_incomplete",
             "native_inspection_scope_mismatch",
+            "native_cpp_batch_annotator_unproven",
         }:
             return "environment_blocked"
         return "tool_bug"
