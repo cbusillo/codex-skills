@@ -45,6 +45,15 @@ retired, and the milestones on the way. When an issue, milestone, comment, or
 plan disagrees with that file, the file wins and the other source is corrected
 or closed. Issues are a work list, not instructions.
 
+An owner who works across repositories also keeps one repository named exactly
+`direction` under their account, `OWNER/direction`. Its root `DIRECTION.md` is
+the overall direction: what the work is for, the order of repositories, the
+share of capacity each kind of work gets, and waypoints that span them. Agents
+read it before any repository's own file, and it follows the same containers
+and gate below. It does not replace each repository's `DIRECTION.md`. Setting
+up direction starts there; see `github-plan` for how `next` there selects work
+across the owner's repositories.
+
 ## Three Containers, One Gate
 
 - **`DIRECTION.md`** holds the direction. It changes only by pull request that
