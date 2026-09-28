@@ -3634,7 +3634,7 @@ def native_completion_observation(payload: dict[str, Any], target_run_id: int | 
         counts = observation.get("missing_classification_counts")
         if classified and isinstance(counts, dict):
             bounded["missing_classification_counts"] = {
-                key: counts[key] for key in ("empty_visitor", "non_empty_visitor", "not_probed")
+                key: counts[key] for key in ("empty_visitor", "non_empty_visitor", "external_annotator_batch", "not_probed")
                 if nonnegative_int(counts.get(key)) is not None
             }
         unexplained = nonnegative_int(observation.get("unexplained_missing_completion_count"))
