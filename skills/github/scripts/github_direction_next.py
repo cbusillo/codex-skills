@@ -20,22 +20,11 @@ from typing import Any
 import github_milestone as github_milestone_core
 
 
-def normalize_labels(items: list[Any] | None) -> list[str]:
-    names: list[str] = []
-    for item in items or []:
-        if isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, dict) and isinstance(item.get("name"), str):
-            names.append(item["name"])
-    return names
-
-
-def issue_labels(issue: dict[str, Any]) -> list[str]:
-    raw_labels = issue.get("labels")
-    if not isinstance(raw_labels, list):
+def normalize_labels(items: Any) -> list[str]:
+    if not isinstance(items, list):
         return []
     names: list[str] = []
-    for item in raw_labels:
+    for item in items:
         if isinstance(item, str):
             names.append(item)
         elif isinstance(item, dict) and isinstance(item.get("name"), str):
@@ -93,7 +82,7 @@ def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | None:
-    issue_label_names = {name.casefold() for name in issue_labels(issue)}
+    issue_label_names = {name.casefold() for name in normalize_labels(issue.get("labels"))}
     plan_labels = config.get("labels") or {}
     for status in ("done", "stale", "blocked", "waiting", "active"):
         label = plan_labels.get(status)
@@ -259,7 +248,6 @@ def rank_next_candidates(
     )
     for rank, item in enumerate(candidates, start=1):
         item["rank"] = rank
-
 
 
 def is_direction_repository(repo: str) -> bool:
