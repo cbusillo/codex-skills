@@ -2318,6 +2318,7 @@ def test_runtime_retirement_projection_rejects_values_and_malformed_metadata() -
     cleared = write_action._project_runtime_environment(
         {**runtime, "retired_provider_keys_before": ["LEGACY_KEY"], "retired_provider_keys_after": []}
     )
+    assert cleared["retired_provider_keys_before"] == ["LEGACY_KEY"]
     assert cleared["retired_provider_keys_after"] == []
 
 

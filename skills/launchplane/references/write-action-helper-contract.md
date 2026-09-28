@@ -526,6 +526,7 @@ provider dictionary pass-through:
   validated but not emitted. Older responses may omit these fields. Runtime
   values and unknown response fields remain rejected; this response support
   does not change authorization, private-file, review, or apply requirements.
+  Keep these bounds aligned with the service's runtime-retirement contract.
 - `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
   apply status, policy record id, digest, revision, policy status, and effective
   timestamp, plus the bounded attribution status/audit summary described above.
