@@ -511,7 +511,28 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_merge(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
-    pr = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    pr: dict[str, Any] = rest_json("GET", f"/repos/{repo}/pulls/{number}")
+    if pr.get("mergeable_state") == "behind":
+        # GitHub reports "behind" only when the base requires up-to-date branches,
+        # so the merge would be refused; send the caller to the update flow instead.
+        raise PrHelperError(
+            "PR head is behind a base that requires up-to-date branches",
+            failure=github_api_core.FailureDetail(
+                cause="update_behind_branch",
+                message="Update the PR branch, wait for required checks on the new head, then merge.",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="not_started",
+                failed_step="merge_preflight",
+            ),
+            operation="merge",
+            repo=repo,
+            pr=number,
+            headSha=pr["head"]["sha"],
+            baseSha=(pr.get("base") or {}).get("sha"),
+            **merge_observations(pr),
+        )
     payload: dict[str, Any] = {"merge_method": args.method, "sha": pr["head"]["sha"]}
     if args.commit_title:
         payload["commit_title"] = args.commit_title
