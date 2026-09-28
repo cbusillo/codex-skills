@@ -13762,7 +13762,7 @@ class NativeCompletionObservationTests(unittest.TestCase):
     def test_silent_skip_classification_survives_with_its_own_hypothetical_verdict(self):
         observation = self.observation() | {
             "missing_classification_complete": True,
-            "missing_classification_counts": {"empty_visitor": 1, "non_empty_visitor": 0, "not_probed": 0},
+            "missing_classification_counts": {"empty_visitor": 1, "non_empty_visitor": 0, "external_annotator_batch": 2, "not_probed": 0},
             "unexplained_missing_completion_count": 0,
             "silent_skip_rule_would_block_clean": False,
             "unexplained_missing_examples": [],
@@ -13772,6 +13772,7 @@ class NativeCompletionObservationTests(unittest.TestCase):
         self.assertEqual(saved["hypothetical_candidate_rule_verdict"], "UNKNOWN")
         self.assertEqual(saved["hypothetical_silent_skip_rule_verdict"], "GREEN")
         self.assertEqual(saved["missing_classification_counts"]["empty_visitor"], 1)
+        self.assertEqual(saved["missing_classification_counts"]["external_annotator_batch"], 2)
         self.assertEqual(saved["unexplained_missing_completion_count"], 0)
 
         observation["silent_skip_rule_would_block_clean"] = True
