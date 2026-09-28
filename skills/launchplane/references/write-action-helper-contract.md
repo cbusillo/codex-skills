@@ -519,7 +519,14 @@ provider dictionary pass-through:
 - `product-config-preflight`, `product-config-dry-run`, and
   `product-config-apply` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
-  codes, and product-config/intent record ids.
+  codes, and product-config/intent record ids. Schema-v2 runtime retirement
+  responses also expose the before/after lists of retired provider key names.
+  Each list is bounded, unique, and restricted to uppercase environment key
+  names; nonempty lists require instance scope. Nested record metadata is
+  validated but not emitted. Older responses may omit these fields. Runtime
+  values and unknown response fields remain rejected; this response support
+  does not change authorization, private-file, review, or apply requirements.
+  Keep these bounds aligned with the service's runtime-retirement contract.
 - `change-impact-policy-dry-run` and `change-impact-policy-apply` may emit only
   apply status, policy record id, digest, revision, policy status, and effective
   timestamp, plus the bounded attribution status/audit summary described above.
