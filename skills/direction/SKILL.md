@@ -302,7 +302,8 @@ request path above.
 3. Create the listed milestones with `gh-plan.py milestone-create`. In
    `OWNER/direction`, also open one `Track: <milestone title>` plan issue in
    each milestone and link each repository's work to it as sub-issues or
-   blockers; global `next` walks only those Track issues.
+   blockers; global `next` ranks milestone work by walking from those Track
+   issues.
 4. Run the audit script for this repository once and clear its findings. That
    first run also enters the repository in the marker's `audits` map, which is
    how later weekly audits know to include it.
