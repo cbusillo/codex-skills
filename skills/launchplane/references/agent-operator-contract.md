@@ -76,7 +76,7 @@ does not grant runtime authority or change helper permissions, and it must not
 block ordinary Launchplane helper reads.
 
 The merge-train policy import, repository inventory, product expected configuration,
-and generic-web deploy-recovery commands, plus the private Owner-review reader,
+generic-web deploy-recovery, and Odoo addon-settings commands, plus the private Owner-review reader,
 are currently bounded local extensions because they are consumed by local helpers but are not present
 in the upstream public operation projection. The validator keeps these explicit
 and fails if an upstream artifact later projects the same routes, forcing a

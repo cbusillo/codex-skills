@@ -23,7 +23,7 @@ from contextlib import contextmanager, redirect_stdout
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 
@@ -3304,6 +3304,9 @@ def main() -> int:
         test_agent_operator_contract_identity_and_provenance_semantics,
         test_agent_operator_contract_rejects_drift_and_unsafe_content,
         test_agent_operator_contract_routes_every_local_consumer,
+        test_odoo_addon_settings_projection_redacts_secret_settings,
+        test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest,
+        test_odoo_addon_settings_cli_dispatches_local_extension_route,
         test_repository_inventory_review_evidence_binds_exact_private_payload,
         test_repository_inventory_projection_is_bounded_and_fail_closed,
         test_agent_operator_contract_cli_is_public_safe_and_hermetic,
@@ -3360,6 +3363,234 @@ def main() -> int:
         test()
     print(f"ok - {len(tests)} tests")
     return 0
+
+
+
+def _odoo_addon_settings_payload() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "product": "example-odoo",
+        "context": "example",
+        "instance": "testing",
+        "addon": "shopify",
+        "reason": "Load the development store for testing restores.",
+        "shopify": {
+            "shop_url_key": "example-dev-store",
+            "api_version": "2025-07",
+            "api_token_secret_binding_id": "secret-shopify-api-token-binding",
+            "webhook_key_secret_binding_id": "secret-shopify-webhook-key-binding",
+            "test_store": True,
+        },
+    }
+
+
+def _odoo_addon_settings_result(*, mode: str = "dry-run") -> dict[str, object]:
+    return {
+        "status": "ok",
+        "mode": mode,
+        "product": "example-odoo",
+        "context": "example",
+        "instance": "testing",
+        "addon": "shopify",
+        "production_lane": False,
+        "record_exists": True,
+        "changed": True,
+        "applied": mode == "apply",
+        "rendered_action": "apply",
+        "changes": [
+            {
+                "setting": "shop_url_key",
+                "action": "add",
+                "before": None,
+                "after": {
+                    "setting": "shop_url_key",
+                    "source": "literal",
+                    "value": "example-dev-store",
+                    "value_present": True,
+                    "secret_binding_id": "",
+                    "secret_binding_present": None,
+                },
+            },
+            {
+                "setting": "api_token",
+                "action": "update",
+                "before": {
+                    "setting": "api_token",
+                    "source": "literal",
+                    "value": None,
+                    "value_present": True,
+                    "secret_binding_id": "",
+                    "secret_binding_present": None,
+                },
+                "after": {
+                    "setting": "api_token",
+                    "source": "secret_binding",
+                    "value": None,
+                    "value_present": True,
+                    "secret_binding_id": "secret-shopify-api-token-binding",
+                    "secret_binding_present": True,
+                },
+            },
+        ],
+        "read_back": [],
+        "read_back_matches": True if mode == "apply" else None,
+        "reason": "Load the development store for testing restores.",
+        "source_label": "service:odoo-addon-settings",
+        "record_sha256_before": "b" * 64,
+        "record_sha256_after": "c" * 64 if mode == "apply" else "",
+        "plan_sha256": "a" * 64,
+        "next_actions": ["Run Odoo post-deploy for this lane."],
+    }
+
+
+def _odoo_addon_settings_evidence(**result_overrides: object) -> dict[str, Any]:
+    projected: dict[str, Any] = write_action.summarize_success(
+        operation="odoo-addon-settings-dry-run",
+        request={"mode": "dry-run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_addon_settings",
+            "records": {"product_profile": "example-odoo", "context": "example", "instance": "testing"},
+            "result": {**_odoo_addon_settings_result(), **result_overrides},
+        },
+    )
+    return projected
+
+
+def test_odoo_addon_settings_projection_redacts_secret_settings() -> None:
+    projected = _odoo_addon_settings_evidence()
+    assert projected["status"] == "accepted"
+    assert projected["summary"]["plan_sha256"] == "a" * 64
+    changes = {change["setting"]: change for change in projected["result"]["changes"]}
+    assert changes["shop_url_key"]["after"]["literal"] == "example-dev-store"
+    assert changes["api_token"]["after"]["binding_ref"] == "secret-shopify-api-token-binding"
+    assert changes["api_token"]["after"]["binding_present"] is True
+    assert "literal" not in changes["api_token"]["before"]
+    assert changes["api_token"]["before"]["present"] is True
+
+    leaked = _odoo_addon_settings_result()
+    leaked_changes = cast(list[dict[str, Any]], leaked["changes"])
+    leaked_before = cast(dict[str, Any], leaked_changes[1]["before"])
+    leaked_before["value"] = "plaintext-token-value"
+    try:
+        write_action.summarize_success(
+            operation="odoo-addon-settings-dry-run",
+            request={},
+            provider_payload={"status": "accepted", "records": {}, "result": leaked},
+        )
+    except write_action.LaunchplaneSafetyError:
+        pass
+    else:
+        raise AssertionError("secret literal must not be projected")
+
+    extra = {**_odoo_addon_settings_result(), "unexpected": "field"}
+    try:
+        write_action.summarize_success(
+            operation="odoo-addon-settings-dry-run",
+            request={},
+            provider_payload={"status": "accepted", "records": {}, "result": extra},
+        )
+    except write_action.LaunchplaneSafetyError:
+        pass
+    else:
+        raise AssertionError("unknown result fields must fail closed")
+
+
+def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "addon-settings.json"
+        evidence_path = Path(directory) / "addon-settings-dry-run.json"
+        payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
+        evidence_path.write_text(json.dumps(_odoo_addon_settings_evidence()), encoding="utf-8")
+
+        dry_run_body = write_action.odoo_addon_settings_body(
+            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+            mode="dry-run",
+        )
+        assert dry_run_body["mode"] == "dry-run"
+        assert "reviewed_plan_sha256" not in dry_run_body
+
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="example-testing-shopify-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        apply_body = write_action.odoo_addon_settings_body(apply_args, mode="apply")
+        assert apply_body["reviewed_plan_sha256"] == "a" * 64
+
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+            ({"idempotency_key": ""}, "idempotency_key_required"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            try:
+                write_action.odoo_addon_settings_body(args, mode="apply")
+            except ValueError as exc:
+                assert str(exc) == code
+            else:
+                raise AssertionError(f"expected {code}")
+
+        plaintext = _odoo_addon_settings_payload()
+        cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
+        payload_path.write_text(json.dumps(plaintext), encoding="utf-8")
+        try:
+            write_action.odoo_addon_settings_body(
+                argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+                mode="dry-run",
+            )
+        except ValueError as exc:
+            assert str(exc) == "unsupported_shopify_field"
+        else:
+            raise AssertionError("plaintext secret field must be refused")
+
+
+def test_odoo_addon_settings_cli_dispatches_local_extension_route() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "addon-settings.json"
+        evidence_path = Path(directory) / "addon-settings-dry-run.json"
+        payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
+        evidence_path.write_text(json.dumps(_odoo_addon_settings_evidence()), encoding="utf-8")
+        calls: list[dict[str, Any]] = []
+
+        def fake_execute_post(**kwargs: Any) -> int:
+            calls.append(kwargs)
+            return 0
+
+        with temporary_attribute(write_action, "execute_post", fake_execute_post):
+            assert (
+                write_action.main(
+                    ["odoo-addon-settings-dry-run", "--payload-file", str(payload_path)]
+                )
+                == 0
+            )
+            assert (
+                write_action.main(
+                    [
+                        "odoo-addon-settings-apply",
+                        "--payload-file",
+                        str(payload_path),
+                        "--idempotency-key",
+                        "example-testing-shopify-1",
+                        "--reviewed-dry-run",
+                        "--expected-plan-digest",
+                        "a" * 64,
+                        "--dry-run-evidence-file",
+                        str(evidence_path),
+                    ]
+                )
+                == 0
+            )
+    assert [call["path"] for call in calls] == [
+        "/v1/product-config/odoo-addon-settings/apply",
+        "/v1/product-config/odoo-addon-settings/apply",
+    ]
+    assert calls[0]["body"]["mode"] == "dry-run"
+    assert calls[1]["body"]["mode"] == "apply"
+    assert "secret-shopify-api-token-binding" not in json.dumps(calls[1]["request"])
 
 
 if __name__ == "__main__":
