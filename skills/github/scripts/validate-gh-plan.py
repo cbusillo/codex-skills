@@ -4978,6 +4978,58 @@ def test_merge_reconciliation_rejects_head_drift() -> None:
             pr.github_api_core.default_retry_policy = original_policy
 
 
+def test_merge_refuses_head_behind_strict_base() -> None:
+    pr = load_pr_module()
+    pr.CURRENT_OPERATION = "github.pr.merge"
+    behind_pr = {
+        "number": 12,
+        "title": "Demo",
+        "state": "open",
+        "mergeable": True,
+        "mergeable_state": "behind",
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"ref": "topic", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "sha": "a" * 40, "repo": {"full_name": "owner/repo"}},
+    }
+    calls: list[tuple[str, str]] = []
+    original_call = pr.github_api_core.call_gh
+
+    def fake_call(method: str, path: str, _body: Any = None, **kwargs: Any) -> Any:
+        calls.append((method, path))
+        return pr.github_api_core.ApiResult(
+            ok=True,
+            status=200,
+            body=behind_pr,
+            operation=kwargs.get("operation"),
+            actor=pr.EXPECTED_ACTOR,
+            expected_actor=pr.EXPECTED_ACTOR,
+            host=pr.github_api_core.DEFAULT_HOST,
+            bucket="rest_core",
+        )
+
+    pr.github_api_core.call_gh = fake_call
+    try:
+        try:
+            pr.cmd_merge(types.SimpleNamespace(
+                repo="owner/repo",
+                pr="12",
+                method="merge",
+                commit_title=None,
+                commit_message=None,
+                delete_branch=False,
+            ))
+        except pr.PrHelperError as exc:
+            assert exc.failure is not None
+            assert exc.failure.cause == "update_behind_branch", exc.failure
+            assert exc.payload["headSha"] == "b" * 40, exc.payload
+            assert exc.payload["baseSha"] == "a" * 40, exc.payload
+        else:
+            raise AssertionError("a head behind a strict base must not be merged")
+    finally:
+        pr.github_api_core.call_gh = original_call
+    assert calls == [("GET", "/repos/owner/repo/pulls/12")], calls
+
+
 def test_merge_identity_reread_rejects_head_drift() -> None:
     pr = load_pr_module()
     pr.CURRENT_OPERATION = "github.pr.merge"
@@ -6558,6 +6610,7 @@ def main() -> None:
         test_delete_ref_keeps_a_rejected_delete_failed_when_the_branch_still_exists,
         test_merge_reconciles_accepted_unknown_outcome_to_final_sha,
         test_merge_reconciliation_rejects_head_drift,
+        test_merge_refuses_head_behind_strict_base,
         test_merge_identity_reread_rejects_head_drift,
         test_pr_helper_merge_404_includes_recovery_context,
         test_pr_helper_merge_semantic_rejection_exits_nonzero,
