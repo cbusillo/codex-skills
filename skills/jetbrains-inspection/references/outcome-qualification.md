@@ -56,7 +56,7 @@ known exclusions, and limitations travel with the existing build provenance.
 requiring a finish for every candidate would do to a GREEN result. Incomplete
 enumeration has no hypothetical verdict. Plugins that classify missing pairs add
 `missing_classification_counts` and `hypothetical_silent_skip_rule_verdict`,
-which counts only pairs whose rebuilt visitor was not empty; an unfinished
+which treats every pair except a rebuilt empty visitor as unexplained, including `external_annotator_batch` tools that the batch runner calls without a finish event; an unfinished
 classification has no silent-skip verdict. A missing completion can be a legitimate
 silent skip; it is not an inspection failure. Matching candidates likewise adds
 no execution proof. Do not change verdicts, retries, or qualification using this
