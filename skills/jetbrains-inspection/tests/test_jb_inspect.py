@@ -10068,6 +10068,25 @@ class HumanOutputTest(unittest.TestCase):
         self.assertFalse(payload["retry_policy"]["retry"])
         self.assertIn("requested scope", payload["agent_result"]["next_action"])
 
+    def test_unproven_c_family_batch_annotators_block_without_retry(self):
+        payload = {
+            "scope": "whole_project",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_block_reason": "native_cpp_batch_annotator_unproven",
+            },
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(payload["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        self.assertIn("C/C++", payload["agent_result"]["next_action"])
+
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "whole_project",
