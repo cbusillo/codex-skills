@@ -269,6 +269,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/repository-inventory/apply",
         "mode": "apply",
     },
+    "odoo-addon-settings-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-config/odoo-addon-settings/apply",
+        "mode": "dry-run",
+    },
+    "odoo-addon-settings-apply": {
+        "method": "POST",
+        "path": "/v1/product-config/odoo-addon-settings/apply",
+        "mode": "apply",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",

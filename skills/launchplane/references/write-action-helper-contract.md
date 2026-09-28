@@ -14,12 +14,39 @@ helper bindings without network access. This is local consistency evidence, not
 proof of upstream freshness.
 
 Merge-train policy import, repository inventory, product expected configuration,
-and generic-web deploy recovery are intentionally listed as bounded local extensions because their
-routes are not in the current upstream projection. The conformance gate fails
+generic-web deploy recovery, and Odoo addon settings are intentionally listed as bounded local extensions because their
+routes are not in the current vendored projection. The conformance gate fails
 if those routes later appear upstream so migration cannot leave duplicate route
 authorities behind.
 
 The helper lives at `scripts/launchplane-write-action.py`.
+
+## Odoo addon settings
+
+`odoo-addon-settings-dry-run` and `odoo-addon-settings-apply` call
+`POST /v1/product-config/odoo-addon-settings/apply` to set an Odoo lane's
+Shopify addon settings on its instance-override record. The Launchplane
+operation is `apply_odoo_addon_settings`; it is a local extension here until the
+vendored artifact is refreshed, and the conformance gate then forces migration
+to a projected command.
+
+- The private payload file, outside the repository, holds `schema_version`,
+  `product`, `context`, `instance`, `reason`, and a `shopify` block with
+  `shop_url_key`, `api_version`, `api_token_secret_binding_id`,
+  `webhook_key_secret_binding_id` and boolean `test_store`. Any other field,
+  including a plaintext `api_token` or `webhook_key`, is refused before any
+  request is sent.
+- Create the secrets first through product-config for the exact lane, with
+  binding keys `ODOO_OVERRIDE_SECRET__ADDON__SHOPIFY__API_TOKEN` and
+  `ODOO_OVERRIDE_SECRET__ADDON__SHOPIFY__WEBHOOK_KEY`.
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest` equal to the saved `plan_sha256`,
+  `--dry-run-evidence-file` for the same product, context and instance, and
+  `--idempotency-key`.
+- Output shows setting names, change actions, presence, binding references and
+  non-secret literals only. A literal on any other setting fails closed.
+- Apply changes the record, not the database. Check `read_back_matches`, then
+  run Odoo post-deploy for the lane and verify the settings there.
 
 ## Product expected configuration
 

@@ -672,9 +672,9 @@ workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
-and generic-web deploy-recovery commands are explicit bounded local extensions
-because the upstream public operation projection does not contain their
-routes. Do not describe them as contract-backed. If a later artifact adds those
+generic-web deploy-recovery, and Odoo addon-settings commands are explicit bounded
+local extensions because the vendored public operation projection does not
+contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
 
@@ -988,6 +988,14 @@ verification.
 - `POST /v1/admin/generic-web/deploy-recovery/apply`: Generic-web
   deploy-recovery apply path; requires the original deploy idempotency key,
   the dry-run digest, and reviewed acknowledgement.
+- `POST /v1/product-config/odoo-addon-settings/apply`: Bounded local-extension
+  path for an Odoo lane's Shopify addon settings on its instance-override record
+  (`odoo-addon-settings-dry-run` / `odoo-addon-settings-apply`). The private
+  payload carries the store key, API version and `test_store` as literals and
+  the token and webhook key as managed secret binding ids only. Apply requires
+  the saved dry-run evidence, `--expected-plan-digest`, reviewed
+  acknowledgement and an idempotency key. The record change is intent only: run
+  Odoo post-deploy for the lane afterwards.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
