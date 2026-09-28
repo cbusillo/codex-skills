@@ -29,7 +29,6 @@ import github_identity
 import github_direction_next
 from github_direction_next import (
     normalize_labels,
-    issue_labels,
     compact_list_issue,
     section_map,
     relationship_refs,
@@ -3122,7 +3121,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             completed_steps.append("close_issue")
 
     label_source = close_result if isinstance(close_result.get("labels"), list) else issue
-    current_labels = {name.casefold() for name in issue_labels(label_source)}
+    current_labels = {name.casefold() for name in normalize_labels(label_source.get("labels"))}
     done_label = plan_labels.get("done")
     add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
     remove_labels = [
