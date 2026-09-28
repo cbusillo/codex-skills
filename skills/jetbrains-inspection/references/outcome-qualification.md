@@ -54,7 +54,10 @@ rows. It is pinned to the accepted inspection run; counts, bounded examples,
 known exclusions, and limitations travel with the existing build provenance.
 `actual_verdict` is unchanged. `hypothetical_candidate_rule_verdict` shows what
 requiring a finish for every candidate would do to a GREEN result. Incomplete
-enumeration has no hypothetical verdict. A missing completion can be a legitimate
+enumeration has no hypothetical verdict. Plugins that classify missing pairs add
+`missing_classification_counts` and `hypothetical_silent_skip_rule_verdict`,
+which counts only pairs whose rebuilt visitor was not empty; an unfinished
+classification has no silent-skip verdict. A missing completion can be a legitimate
 silent skip; it is not an inspection failure. Matching candidates likewise adds
 no execution proof. Do not change verdicts, retries, or qualification using this
 measurement. Missing observations from older plugins are not zero missing events.
