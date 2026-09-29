@@ -609,6 +609,8 @@ failures require the documented read-after-failure reconciliation before retry.
 Human warnings and progress remain on stderr, and the process exit code matches
 `exit_code`.
 
+## Authentication And Identity
+
 `scripts/gh-with-env-token` is automation-first when a token is configured. It
 loads `$CODE_HOME/local.env` by default, falling back to
 `$CODEX_HOME/local.env` and then `~/.code/local.env`. When

@@ -702,314 +702,206 @@ policy:
 
 # GitHub Expert
 
-For repositories with `DIRECTION.md`, follow the shared
-[executing loop](../references/executing-loop.md) through PR landing and
-runtime reconciliation.
+Use this skill for repository execution: branches, pull requests, Actions,
+reviews, merge and deploy state, issue comments, and safe cleanup. Pull
+requests are the implementation record. For repositories with `DIRECTION.md`,
+follow the shared [executing loop](../references/executing-loop.md) through PR
+landing and runtime reconciliation. Apply
+[task scope and authorization](../references/execution-scope.md); it defines
+how existing approval and task boundaries apply.
 
-Apply [task scope and authorization](../references/execution-scope.md) when
-using this workflow; it defines how existing approval and task boundaries apply.
+## Workflow
 
-Use this skill to manage repository execution: branches, pull requests, Actions,
-reviews, merge/deploy state, issue comments, and safe cleanup.
+1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Use `github-plan` when
+   planning state matters. [Repo workflow](references/repo-workflow.md) holds
+   orientation, PR, check, review, merge-readiness, and cleanup detail; read
+   the section for the step you are on.
+2. **Act**: On a default, shared, release, or production branch, create a
+   focused task branch before editing. Commit and push with the bot helpers and
+   open a PR.
+3. **Verify**: Run the pre-push quality gate, diagnose CI failures, and address
+   review feedback. Hand repeated CI, review, or mergeability follow-through to
+   `babysit-pr`.
+4. **Land**: Merge only as described in [Merging](#merging).
+5. **Close**: Complete [After A Merge](#after-a-merge), then use `github-plan`
+   to sweep stale, duplicate, and related planning issues, and clean up.
 
-## Core Mandate
+## Planning Boundary
 
-Keep execution grounded in current GitHub and local repo state. Use Pull
-Requests as the implementation record. For durable planning, workstream graphs,
-blockers, milestones, Projects, or roadmap tracking, use the `github-plan`
-skill.
+`github-plan` owns durable planning: plan issues, parent and sub-issue graphs,
+blockers, milestones, Projects, roadmap and focus state, stale or duplicate
+plan cleanup, replacing local plan files, and the raw commands behind them
+(`gh issue list`, `gh search issues`, `gh project`, and planning GraphQL
+relationship and Project operations). This skill owns transactional execution:
+PR create, edit, comment, and merge; issue create, edit, and close bodies; CI
+diagnosis; and repository cleanup. It may comment on, link, or close issues
+during implementation, but it does not flatten broad planning into one issue.
+Do not copy roadmap, blocker, or checklist state into repo docs; change docs
+only when they must describe current behavior, configuration, or policy.
 
-## Durable Planning Boundary
+## Helpers And Identity
 
-Use `github-plan` for planning surfaces: durable Issues, parent/sub-issue
-graphs, blockers, milestones, Projects, roadmap/focus state, stale or duplicate
-plan cleanup, and replacing local plan files with GitHub issues.
+The `policy.command_policies` block in this file's frontmatter maps raw `gh`
+write and check commands to helpers. A host that hides frontmatter enforces it
+when a command runs, and the refusal names the replacement; read the top of
+this file for the full mapping and the `commands` entries. Use raw `gh` only
+for a surface no helper covers, route it through `scripts/gh-with-env-token`,
+and say why.
 
-Raw planning lookups and Project mutations are intentionally not owned by this
-skill's command policies. `github-plan` owns `gh issue list`, `gh search issues`,
-`gh project`, and planning GraphQL relationship/Project operations. This skill
-owns transactional execution such as PR create/edit/comment/merge, issue
-create/edit/close bodies, CI diagnosis, and repository cleanup.
+- **PRs**: `scripts/gh-pr.py view|checks|create|edit|comment|merge|supersede`.
+  `--repo` is global and comes first:
+  `uv run scripts/gh-pr.py --repo OWNER/REPO merge 123 --method merge`. To
+  create a PR in another repository, run from it or pass `--repo` with an
+  explicit `--head BRANCH`.
+- **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
+  and `scripts/git-push-as-bot`.
+- **Issue bodies and close comments**: `scripts/gh-issue`; from the repository
+  root, `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
+- **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
+  `scripts/gh-comment` for timeline comments;
+  `scripts/gh-with-env-token pr review --body-file` for review feedback.
+- **CI failures**: `github-ci-diagnose.py`. Raw `gh run view` or `gh api` log
+  reads are fallback diagnostics.
 
-This skill may comment on, link to, or close issues as part of implementation
-workflow, but it should not flatten broad planning work into a single issue.
+`gh-issue`, `gh-comment`, and `gh-with-env-token` are shell executables without
+a `.sh` suffix; run them directly. Run PEP 723 `.py` helpers with `uv run`; see
+[Helper Invocation](references/cli-reference.md#helper-invocation). Pass
+Markdown bodies through a file or stdin; an unquoted heredoc runs command
+substitution inside backticks.
 
-Do not duplicate active roadmap, blocker, or checklist state into repo docs.
-Update repo docs only through implementation work when they need to describe
-current behavior, configuration, or operational policy.
+GitHub writes belong to the configured automation account. The helpers select
+its credentials and fail closed, without changing actor, when bot auth is
+unavailable, rejected, or rate-limited. Never fall back to the active human
+`gh` account unless the user explicitly approves that one-off; then set
+`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. For
+credential sources, automation-only mode, or identity configuration, read
+[Authentication And Identity](references/cli-reference.md#authentication-and-identity).
 
-## Implementation & Workflow (PRs & Branches)
+Helpers own retries and write reconciliation through `scripts/github_api.py`
+and `references/operation-matrix.toml`; do not add retry loops or rebuild
+helper behavior. When a result is not a confirmed success, for example an
+`unknown` `outcome_certainty` or `write_outcome`, or a
+`recommended_next_action`, read that operation's entry in the
+[CLI reference](references/cli-reference.md) and its
+[Shared Retry Policy](references/cli-reference.md#shared-retry-policy) before
+acting. Read the object back before any retry. Never replay an unknown write,
+and never under another identity. For another operation's arguments or response
+contract, read its CLI reference section; skip unrelated recipes.
 
-Use PRs for all non-trivial code changes.
+## Pull Requests
 
-Use the bundled `gh-*`, `git-*`, and `github-*` helper scripts first for GitHub work. The
-`policy.command_policies` block in this file's frontmatter owns the mapping from
-raw `gh` write and check commands to helpers. A host that does not show
-frontmatter enforces it when a command runs, and the block message names the
-replacement; read the top of this `SKILL.md` for the whole mapping. This prose
-keeps the judgment around branch
-discipline, merge method, formatting, verification, and exceptions. Reach for raw
-`gh` only when no helper covers the operation, and route those calls through
-`scripts/gh-with-env-token`.
+Use PRs for all non-trivial changes.
 
-Helper-first ritual for PR work:
+- **Pre-push quality**: For code changes with an available IDE project, run
+  `jetbrains-inspection` on the changed files before pushing or updating a PR.
+  If `.github/github.json` defines `qualityGate.inspection`, PR creation and
+  updates, ready-to-merge claims, and merges carry that evidence or an explicit
+  not-run reason. A recorded contention or preemption `UNKNOWN` under the
+  `repo-readiness` milestone exception permits an already authorized merge while
+  readiness stays not fully ready; keep the reason and follow-up. If that config
+  is blank, missing, contradictory, or surprising, use a one-off
+  `changed_files` check only when the helper can infer the route, and ask before
+  changing durable config or trusting a suspicious value.
+- **Body**: Explain why before what changed. Describe the net change, not
+  abandoned attempts, and include purposeful verification rather than routine
+  CI steps. Preserve existing screenshots, images, and links. Use repo-relative
+  paths or GitHub links and no self-references. Follow
+  [talking with the owner](../references/talking-with-the-owner.md) for durable
+  PR, issue, review, and closeout text.
+- **Labels**: Planning labels are only for durable planning issues. PR labels
+  follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
+  `preview-ready`, the optional `awaiting-qa` handoff, and `ready-to-merge`,
+  which still needs a fresh readiness check and merge authorization.
+- **Follow-through**: When an open PR needs repeated CI, review, mergeability,
+  or merged/closed polling, hand off to `babysit-pr`. Use its `--once` snapshot
+  for a merged or closed PR's closeout evidence.
+- **Superseded PRs**: Pick the canonical PR, make stale PRs use `Refs` instead
+  of closing keywords, comment with the winner, and close them with
+  `scripts/gh-pr.py supersede`. Remove their branches and worktrees only under
+  [repository cleanup](../references/repo-cleanup.md), after confirming no
+  issue, PR, owner, or runtime depends on them.
+- **Handoffs**: Put recovery-critical handoff content in the owning issue or
+  PR. Local handoff files are scratch unless intentionally committed.
 
-- Use `scripts/gh-pr.py view/checks/create/edit/comment/merge` for PR reads,
-  writes, check snapshots, and approved merges.
-- Use `scripts/git-commit-as-bot` for commits made by Code or spawned agents so
-  the configured automation name and email are used.
-- Use `scripts/git-push-as-bot` for pushes made by Code or spawned agents so
-  GitHub push events and Actions runs are attributed to the configured automation account.
-- Use `github-ci-diagnose.py` for CI failure diagnosis, and switch to
-  `babysit-pr` when the task becomes repeated PR CI/review/mergeability
-  follow-through.
-- Use a normal merge commit by default via
-  `scripts/gh-pr.py merge <pr> --method merge`; avoid squash or rebase unless the
-  user requests it, repo policy requires it, or you have explicit confirmation.
-- Use raw `gh` only for unsupported surfaces or fallback diagnostics, and say why
-  the helper path did not fit.
+## Merging
 
-`--repo` is a global option of `gh-pr.py`; put it before the subcommand, for
-example `uv run scripts/gh-pr.py --repo OWNER/REPO merge 123 --method merge`.
+Merging implementation work means merging its PR through GitHub. Never merge a
+task branch locally into a protected branch as a shortcut; local integration is
+only for explicit synchronization or stack maintenance, and the result still
+lands through a PR. If that happens by accident, preserve the work, restore the
+local protected branch to the remote tip, push the task branch, and continue
+through the PR. Never push the accidental merge.
 
-Do not infer Python from a `scripts/` path. `scripts/gh-issue`,
-`scripts/gh-comment`, and `scripts/gh-with-env-token` are executable shell
-helpers without `.sh` suffixes; run them directly. Python `.py` helpers with PEP
-723 inline metadata should use `uv run path/to/helper.py` when dependency or
-interpreter selection matters. See `references/cli-reference.md` for the helper
-invocation rules.
+Before a merge:
 
-- **Branch Discipline**: Protect default, shared, release, and production
-  branches. Create focused task branches before editing when currently on a
-  protected branch.
-- **Merges & Stacks**: For GitHub-backed repositories, merging implementation
-  work means merging a Pull Request through GitHub. When the user approves a
-  merge and does not specify the method, state that you are using a normal merge
-  commit and run `scripts/gh-pr.py merge <pr> --method merge` for GitHub
-  helper-backed merge execution. Do not locally merge a task branch into a
-  protected, default, shared, release, or production branch as an implementation
-  shortcut. Local branch integration is only appropriate for explicit local
-  synchronization or stack maintenance, and the resulting implementation still
-  lands through a PR. Do not use `--squash` or `--rebase` unless the user
-  explicitly asks, repo policy requires it, or you ask and receive confirmation.
-  For stacked PRs, consider a rollup branch when merging each layer would rerun
-  expensive checks or create avoidable conflict churn, unless repo metadata or
-  task context says Launchplane owns the merge train. In Launchplane-managed
-  trains, do not hand-collapse stacks in GitHub; delegate stack handling to the
-  `launchplane` workflow.
-- **Runtime-Bound Checkout Reconciliation**: After GitHub confirms a merge, keep
-  the remote merge result separate from local runtime reconciliation. If the
-  repository is bound into the active skills runtime, invoke the landed
-  repo-local `scripts/reconcile-runtime-checkout.py` helper with the source
-  worktree and full landing SHA. Use `merge.sha` from a successful direct merge
-  or `mergeCommitOid` from a fresh merged-PR view; never substitute the PR head
-  SHA. The helper may only fast-forward the resolved
-  runtime checkout when it is clean, already on the configured default branch,
-  and shares Git identity with the merged worktree. A blocked or failed local
-  reconciliation never changes a confirmed remote merge into a failed merge and
-  must never cause the merge to be retried. Report both outcomes and treat stale
-  runtime-dependent evidence as unavailable until reconciliation or explicit
-  source-revision verification succeeds.
-- **Local Default-Branch Freshness**: After every confirmed merge, inspect the
-  repository's unique local default-branch worktree when one exists. Before
-  evaluating or executing its refresh, read
-  [post-merge checkouts](references/post-merge-checkouts.md), including the
-  exact landing-SHA proofs and any explicitly requested untracked-only exception.
-  If it is already the active checkout, assess it once. Apply refresh gates in
-  this order: a runtime-bound checkout uses only the landed reconciler and stops;
-  any tracked dirt or active Git operation is report-only and stops; only then
-  may the explicitly requested untracked-only exception be considered.
-  Runtime binding is absolute: explicit user intent and untracked-only dirt
-  never make a runtime-bound checkout eligible for that exception.
-  Never reset, stash, clean, or overwrite an unsafe checkout. If the reference's
-  safety proofs fail, leave it untouched and report: `Local default checkout
-  remains stale; fast-forward it before default-branch work or audits.`
-  The active task worktree remains the authoritative agent source; a local
-  refresh never silently replaces it with the default branch or a remote ref.
-- **Auto-Review Signals**: Before declaring a PR green, ready to merge, merged,
-  releasable, or otherwise clean, check background auto-review evidence when it
-  is available in the session context or repo tooling. First match each review
-  target to the active branch/PR head SHA, for example `git rev-parse HEAD` for
-  the active checkout or `gh pr view --json headRefOid` for a PR. Treat blocking
-  findings against that current target as review feedback to address,
-  explicitly defer, or decline with a recorded reason under
-  `../references/model-review.md`; do not merge or release solely on CI-green when relevant
-  current-target findings are still in-flight or unresolved. Findings whose
-  branch/path points at a detached generated `auto-review-<hex>` worktree are
-  still current-target findings when their snapshot SHA matches the active
-  target. Detached generated auto-review findings whose snapshot SHA differs from
-  the active target are external proposal history until verified against current
-  `HEAD`. Detached auto-review worktrees remain external review context and
-  should not be treated as dirty active worktree state.
-  Use `../references/background-review-reporting.md` for point-in-time state and
-  durable wording. If no matching lifecycle evidence is visible before a
-  possible post-turn trigger, report `not yet observable`; never infer
-  `skipped`, `not emitted`, or another terminal outcome from absence. Do not
-  delay a final response solely waiting for that trigger. When later terminal
-  evidence is observed, preserve the original point-in-time summary and add a
-  follow-up.
-- **Accidental Local Default-Branch Merge Recovery**: If implementation work is
-  accidentally merged into a protected/default/shared branch locally, preserve
-  the commit or branch if needed, restore the local protected branch to the
-  remote tip, push or update the task branch, and continue through the PR flow.
-  Do not push the accidental local protected-branch merge.
-- **Cross-Repo PRs**: When creating a PR for a repository other than the current
-  working directory, run `uv run scripts/gh-pr.py create` from that
-  repository or pass both `--repo OWNER/REPO` and an explicit `--head` branch.
-  Put the global option first:
-  `uv run scripts/gh-pr.py --repo OWNER/REPO create --head BRANCH`.
-- **Pre-Push Quality**: For code changes, use `jetbrains-inspection` to run
-  targeted JetBrains inspections on changed files or touched directories before
-  pushing a branch or updating a PR whenever the repo has an IDE project
-  available. If `.github/github.json` defines `qualityGate.inspection`, PR
-  creation/update, ready-to-merge claims, and merges must carry JetBrains
-  evidence from the delegated helper or an explicit not-run reason. If that
-  evidence is a recorded contention or preemption `UNKNOWN` under the narrow
-  `repo-readiness` milestone exception, it permits an already authorized merge
-  while readiness remains not fully ready; preserve the reason and follow-up.
-  If that inspection config is blank, missing, contradictory, or surprising, do not
-  silently invent repo policy: use a safe one-off `changed_files` check only when
-  the helper can infer the correct route, and ask the user before changing
-  durable config or treating a suspicious value as authoritative. If unavailable,
-  record the not-run reason before pushing.
-- **Verification**: After merge, verify Actions and relevant security/quality
-  signals before closing related planning state.
-- **Labels**: Use `github-plan` labels only for durable planning issues. For PR
-  execution state, follow the repo workflow taxonomy in
-  `references/repo-workflow.md`: `preview-ready` means a preview is available
-  for review, `awaiting-qa` is an optional repo-local QA handoff label, and
-  `ready-to-merge` is a configured merge readiness signal that still requires a
-  fresh readiness check and merge authorization as defined in
-  `../references/execution-scope.md`.
-- **Refs Closeout**: Treat `Refs #...` as intentionally non-closing. After the
-  canonical PR merges, sweep referenced issues and close only those whose finish
-  line is conclusively satisfied; otherwise comment/update durable state and
-  leave them open.
-- **Human Comment Gate**: Before a merge or close settles an issue or PR, run
+- **Authority**: Merge only when [task scope](../references/execution-scope.md)
+  authorizes the change and destination. A readiness question is not merge
+  authority.
+- **Fresh head**: Read the PR and its checks for the current head SHA. Match
+  background review evidence to that SHA. Unresolved blocking findings against
+  it block the merge even when CI is green, until they are addressed, deferred,
+  or declined with a recorded reason under
+  [reviews by another model](../references/model-review.md). Findings from a
+  detached `auto-review-<hex>` worktree are current when their snapshot SHA
+  matches the head and history otherwise; those worktrees are not dirty local
+  state. Report review lifecycle under
+  [background review reporting](../references/background-review-reporting.md):
+  no matching evidence is `not yet observable`, never `skipped`, and a final
+  response does not wait for a review that starts after it.
+- **Human comments**: Before a merge or close settles an issue or PR, run
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
-  Any attention result
-  or degraded coverage requires a response or explicit handoff before the
-  thread is settled; a bot response never proves owner acknowledgement.
-- **Handoffs**: For GitHub-backed work, put recovery-critical handoff content in
-  the owning issue or PR comment. Local handoff files are scratch unless they
-  are intentionally committed docs.
-- **Formatting**: From this repository root, use `github/scripts/gh-issue` for
-  issue create/edit bodies and issue close comments, for example
-  `github/scripts/gh-issue create "Issue title" --repo OWNER/REPO < body.md`.
-  From inside this skill directory, use `scripts/gh-pr.py create --body-file`
-  and `scripts/gh-pr.py edit --body-file` for PR bodies,
-  `scripts/gh-pr.py comment --body-file` or `scripts/gh-comment pr` for PR
-  timeline comments, and `scripts/gh-with-env-token pr review --body-file` for
-  PR review feedback when no review helper exists. Avoid unquoted heredocs for
-  Markdown bodies because
-  shell command substitution runs inside backticks. Follow
-  `../references/talking-with-the-owner.md` when writing durable PR, issue,
-  review, or closeout text.
-- **PR Body Quality**: Preserve important existing PR body content, especially
-  screenshots, images, and links that the author may not be able to recover.
-  Explain why the change is being made before listing what changed. Describe the
-  net change of the PR, not abandoned implementation attempts. Include
-  purposeful verification evidence, but avoid padding the body with routine CI
-  steps. Avoid absolute local paths; use repo-relative paths or GitHub links.
-  Mention related issues or PRs when useful, and avoid self-references to the PR
-  being edited.
-- **Bot Ownership**: Work performed by Code or spawned agents should be owned by
-  the configured automation account in GitHub. Use `scripts/git-commit-as-bot` for commits,
-  `scripts/git-push-as-bot` for pushes, helper-backed PR/issue/comment/merge
-  flows for GitHub writes, and `scripts/gh-with-env-token` for unsupported raw
-  `gh` surfaces such as API, review, workflow, release, and Actions commands. Do
-  not let write actions fall back to the active human `gh` account unless the
-  user explicitly approves that one-off and you set
-  `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command.
-- **Authentication**: The helpers own token selection, fallback behavior,
-  consistent warnings, and parseable output. `scripts/gh-with-env-token` loads
-  automation auth and prefers a configured GitHub App installation over legacy
-  user-token variables. It verifies the App slug through JWT authentication,
-  caches the installation token with owner-only permissions, and presents the
-  verified App bot login to helper actor preflights without treating the
-  installation token as a user token. It fails closed without changing actor
-  when bot auth is unavailable, rejected, or rate-limited. Active local `gh`
-  auth is used only
-  when the user explicitly approves the one-off and
-  `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` is set. Use
-  `scripts/gh-with-env-token --print-auth-account ...` when the acting account
-  should be visible; it writes the account receipt to stderr so JSON stdout
-  remains parseable. Security-sensitive automation-only helpers pass the
-  wrapper prefix `--require-automation-auth`; shell callers may use the
-  equivalent `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1`. Both take
-  precedence over fallback settings loaded from the local env file.
-  Configure the portable automation role with `CODEX_AUTOMATION_LOGIN` and
-  `CODEX_AUTOMATION_EMAIL` in the ignored `local.env`; optionally set a quoted
-  `CODEX_AUTOMATION_BOT_LOGINS` list for additional owner-controlled automation
-  accounts used for bot classification and trusted managed-plan authorship. Do
-  not list third-party bots. The selected local env file is loaded after ambient
-  variables and therefore wins when the same identity key is present in both
-  places.
-- **Workflow Detail**: See `references/repo-workflow.md` for orientation,
-  PR/check/review handling, and cleanup guardrails.
-- **PR Follow-through**: When PR diagnosis or an update/rebase/rerun/review-fix
-  push leaves an open PR needing repeated CI, review, mergeability, or
-  merged/closed polling, hand off to `babysit-pr` instead of continuing ad hoc
-  polling in this skill. Use a `babysit-pr --once` snapshot for already
-  merged/closed PR closeout evidence.
-- **Superseded PRs**: When multiple PRs target the same issue or workstream,
-  pick a canonical PR, ensure stale PRs use `Refs` instead of closing keywords,
-  comment with the winning PR, and close superseded PRs with
-  `scripts/gh-pr.py supersede` when appropriate. Clean up unused remote task
-  branches and local worker/review worktrees only under the shared repository
-  cleanup policy after confirming the exact work disposition and that no active
-  issue, PR, owner, or runtime still depends on them.
+  An attention result or degraded coverage needs a response or explicit
+  handoff first; a bot response never proves owner acknowledgement.
 
-## Diagnostics & Hygiene
+When the user does not name a method, say you are using a normal merge commit
+and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--squash` or
+`--rebase` only when the user asks, repo policy requires it, or you ask and get
+confirmation.
 
-- **Permission Coverage**: For App setup, access refusals, or new GitHub API
-  surfaces, use [capability profiles](references/github-permissions.md). Derive
-  the full-operation profile from the operation matrix and audit the configured
+For stacked PRs, when repo metadata or task context says Launchplane owns the
+merge train, delegate stack handling to the `launchplane` workflow and never
+hand-collapse the stack in GitHub. Otherwise consider a rollup branch when
+merging each layer would rerun expensive checks or churn conflicts.
+
+## After A Merge
+
+Remote merge success and local reconciliation are separate outcomes; report
+both. A blocked or failed local step never turns a confirmed merge into a
+failure and never causes a merge retry.
+
+- **Landing SHA**: Use `merge.sha` from a successful direct merge,
+  `mergeCommitOid` from a fresh merged-PR view, or the final landing commit from
+  a terminal train controller result. Never substitute a PR head, candidate, or
+  other intermediate SHA.
+- **Runtime checkout**: If the repository is bound into the active skills
+  runtime, run the landed repo-local `scripts/reconcile-runtime-checkout.py`
+  with the source worktree and full landing SHA; see
+  [Runtime Checkout Reconciliation](references/cli-reference.md#runtime-checkout-reconciliation).
+  It fast-forwards only a clean checkout already on the default branch that
+  shares Git identity with the merged worktree. Treat runtime-dependent evidence
+  as stale until it succeeds or the source revision is verified.
+- **Local default checkout**: Before evaluating or refreshing the repository's
+  local default-branch worktree, read
+  [post-merge checkouts](references/post-merge-checkouts.md) for its gate
+  order, landing-SHA proofs, the explicitly requested untracked-only exception,
+  and the stale-checkout report. A runtime-bound checkout only ever uses the
+  reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
+  active task worktree stays the agent's source.
+- **Verify and sweep**: Check Actions and relevant security and quality signals
+  before closing planning state. `Refs #...` is non-closing: after the canonical
+  PR merges, close only issues whose finish line is conclusively met and update
+  the rest.
+
+## Diagnostics And Hygiene
+
+- **Permissions**: For App setup, access refusals, or new API surfaces, use
+  [capability profiles](references/github-permissions.md): derive the
+  full-operation profile from the operation matrix and audit the configured
   installation. Distinguish missing grants from disabled features, installation
-  scope and unavailable evidence; preserve existing task authorization and actor
-  boundaries. A repository grant does not update Launchplane author policy.
-- **CI Failure**: Use the `github-ci-diagnose.py` helper to classify and fix
-  failures when available. Raw `gh run view` / `gh api` log commands are
-  fallback diagnostics or watcher-specific probes, not the preferred path.
-- **Hygiene**: Use `github-repo-snapshot.sh` for situational snapshots. For
-  ordinary task branch/worktree cleanup, an explicit bulk cleanup audit, or
+  scope, and unavailable evidence, and keep existing authorization and actor
+  boundaries. A repository grant does not change Launchplane author policy.
+- **Cleanup**: For task branch or worktree cleanup, a bulk cleanup audit, or
   repository retirement, read
-  [repository cleanup and preservation](../references/repo-cleanup.md) and apply
-  its evidence, disposition, preservation, authorization, and reporting contract.
-
-## Tools & Scripts
-
-Use the bundled scripts and the `commands` entries in this file's frontmatter
-(read the top of this `SKILL.md` if your host did not show them) for state,
-authentication, and writes. For an operation's arguments, transport, or response
-contract, read the relevant section of [CLI reference](references/cli-reference.md).
-Do not load unrelated command recipes or rebuild helper behavior in ad hoc code.
-
-Retry behavior is owned by `scripts/github_api.py` and
-`references/operation-matrix.toml`. Do not add ad hoc helper loops. A matrix
-row marked `safe` or `conditional` may retry only when the shared failure
-contract permits it; an absent or `manual` row performs one remote call and
-fails closed. Primary exhaustion waits for the reported reset plus bounded
-jitter, secondary throttling honors `Retry-After`, and all waits honor the
-earlier of the configured maximum and inherited request deadline. Concurrent
-helpers share `$CODE_HOME/state/github-retry` cooldowns by host, actor, and
-bucket. That same deadline bounds subprocesses, cooldown-lock acquisition, and
-reconciliation reads. Progress stays on stderr, provider bucket evidence is
-validated, actor changes require explicit authorization and begin a distinct
-retry context, and unknown non-idempotent outcomes must reconcile by operation
-marker plus a pre-write candidate snapshot. Create markers are unique per
-invocation and provider-visible in hidden HTML comments, so concurrent
-identical writes cannot claim one another; a unique new match is recovered and
-every other unknown outcome fails closed without replay. Legacy GraphQL
-failures lacking reset metadata use one bounded quota probe before waiting.
-
-## Workflow Loop
-
-1. **Orient**: Run `github-repo-snapshot.sh`; use `github-plan` if planning
-   state matters.
-2. **Plan**: Delegate durable planning to `github-plan`.
-3. **Act**: Create a task branch, commit, and open a PR.
-4. **Verify**: Address CI and review feedback using `github-ci-diagnose.py`.
-5. **Close**: Merge, verify post-merge signals, use `github-plan` to sweep
-   stale/duplicate/related planning issues, close or relabel reconciled issues,
-   and clean up.
+  [repository cleanup and preservation](../references/repo-cleanup.md) and
+  apply its evidence, disposition, preservation, authorization, and reporting
+  contract.
