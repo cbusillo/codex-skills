@@ -117,6 +117,19 @@ class RoutingScoreTests(unittest.TestCase):
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 
+    def test_a_required_reference_is_read_before_the_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/github'}\n"}]}}
+            turns = [{"expect": {"owner": "github", "read": "cli-reference\\.md"}}]
+            view = call("Bash", {"command": "uv run scripts/gh-pr.py view 23"})
+            by_tool = call("Read", {"file_path": "/catalog/skills/github/references/cli-reference.md"})
+            by_shell = call("Bash", {"command": "sed -n 170,230p references/cli-reference.md"})
+            for messages, passed in [([base, by_tool, view], True), ([base, by_shell, view], True),
+                                     ([base, view, by_tool], False), ([base, view], False)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

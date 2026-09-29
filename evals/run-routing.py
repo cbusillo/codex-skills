@@ -103,6 +103,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                 if block.get("type") == "tool_use":
                     if block.get("name") == "Bash":
                         sequence.append(("shell", block["input"]["command"]))
+                    elif block.get("name") == "Read":
+                        sequence.append(("read", block["input"].get("file_path", "")))
         elif message.get("type") == "user":
             for block in message.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "text":
@@ -160,6 +162,12 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["required_operation"] = any(re.search(expect["require"], command) for command in commands)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
+    if "read" in expect:
+        # A reference must be read before the turn acts on it: a Read path or a read-only shell command.
+        operations, sequence = seen["operations"], seen["sequence"]
+        before = sequence[:operations[0][0]] if operations else sequence
+        checks["read_before_operation"] = any(kind in {"read", "shell"} and re.search(expect["read"], value)
+                                              for kind, value in before)
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
     return checks
@@ -395,7 +403,8 @@ def main() -> int:
     # Multi-turn cases use turns.yaml so the native plugin eval does not load them.
     candidates = [*sorted((ROOT / "evals" / "owning-skill").glob("*/case.yaml")),
                   *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml")),
-                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml"))]
+                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml")),
+                  *sorted((ROOT / "evals" / "github-execution").glob("*/turns.yaml"))]
     cases = []
     for path in candidates:
         data = yaml.safe_load(path.read_text())
