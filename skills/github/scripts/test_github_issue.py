@@ -968,6 +968,8 @@ def _state_and_label_callback(method: str, path: str, body: Any, **_kwargs: Any)
         return success([])
     if method == "PATCH" and "state" in body:
         return success(issue_body(state=body["state"], state_reason=body["state_reason"]))
+    if method == "PATCH":
+        return success(issue_body(body=body.get("body", "body")))
     assert method == "GET", (method, path)
     return success(issue_body())
 
@@ -1061,6 +1063,23 @@ def test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths() -> None:
     with_call_stub(_state_and_label_callback, run)
 
 
+def test_edit_body_file_can_clear_the_body() -> None:
+    def run(calls: list[dict[str, Any]]) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            empty_body = pathlib.Path(temp_dir) / "empty.md"
+            empty_body.write_text("", encoding="utf-8")
+            exit_code, payload = _run_cli(
+                ["edit", "owner/repo#42", "--body-file", str(empty_body)],
+                io.StringIO(""),
+                timeout=10,
+            )
+        assert exit_code == 0, payload
+        patches = [call["body"] for call in calls if call["method"] == "PATCH"]
+        assert patches == [{"body": ""}], calls
+
+    with_call_stub(_state_and_label_callback, run)
+
+
 def test_close_rejects_comment_with_comment_file() -> None:
     parser = github_issue.build_parser()
     for command in ("close", "reopen"):
@@ -1096,6 +1115,7 @@ TESTS = [
     test_close_reason_and_duplicate_target_are_mutually_exclusive,
     test_state_and_edit_commands_return_with_open_idle_stdin,
     test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths,
+    test_edit_body_file_can_clear_the_body,
     test_close_rejects_comment_with_comment_file,
 ]
 

@@ -1508,10 +1508,11 @@ def main() -> int:
             )
         elif args.command == "edit":
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
-            body = _read_input_file(args.body_file) if args.body_file else _read_implicit_stdin()
+            # An explicit file may clear the body; empty implicit stdin means no body change.
+            body = _read_input_file(args.body_file) if args.body_file else (_read_implicit_stdin() or None)
             payload = edit_issue(
                 target_number,
-                body=body if body else None,
+                body=body,
                 title=args.title,
                 repo=target_repo,
                 add_labels=args.add_label,
