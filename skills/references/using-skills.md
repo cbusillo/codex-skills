@@ -10,8 +10,8 @@ skill's task. Reading a direction or planning skill does not load the skills
 for its later GitHub, validation, or closeout work.
 
 At the start of each turn, name the steps it will take and the skill that owns
-each, then load that set before acting. Do it again when the kind of work
-changes.
+each, then load each skill before its first step. Do it again when the kind of
+work changes.
 
 | Step | Owning skill |
 | --- | --- |
