@@ -60,6 +60,10 @@ one.
 
    Providers are `openai`, `anthropic`, and `google`. Each is started so that
    it reads the repository with its own tools and has no way to write to it.
+   That includes dropping MCP servers, which the harnesses do not sandbox, and
+   the reviewed repository's own tool settings, which could start hooks. The
+   `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
+   such as its default model, do not apply.
 3. Read `model` in the JSON result and report reviewers by provider and that
    model. When `model_source` says the CLI did not report it, say so instead of
    stating it as fact. A provider's default may be the author's own model; pass
