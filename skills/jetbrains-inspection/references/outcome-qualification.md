@@ -61,6 +61,12 @@ classification has no silent-skip verdict. A missing completion can be a legitim
 silent skip; it is not an inspection failure. Matching candidates likewise adds
 no execution proof. Do not change verdicts, retries, or qualification using this
 measurement. Missing observations from older plugins are not zero missing events.
+Newer plugins enforce a completion rule themselves: a broad-scope run whose
+missing finishes are not all empty visitors or inapplicable batch annotators, or
+whose enumeration or classification is incomplete, is `UNKNOWN` with
+`execution_proof_block_reason: "native_tool_completion_unproven"`. A batch
+annotator paired with an annotator for a non-C/C++ file, such as ShellCheck,
+reports `"native_batch_annotator_unproven"`. Neither is retryable.
 
 ## Strict Outcome Qualification
 

@@ -6549,6 +6549,16 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
                 "Do not report GREEN and do not retry: C/C++ files in this scope use batch-annotator inspections "
                 "(such as CLion Radler) that never report completion. Inspect a scope without C/C++ files, or report UNKNOWN."
             )
+        if execution_proof_reason == "native_batch_annotator_unproven":
+            return (
+                "Do not report GREEN and do not retry: files in this scope use batch-annotator inspections "
+                "(such as ShellCheck) that never report completion. Inspect a scope without those files, or report UNKNOWN."
+            )
+        if execution_proof_reason == "native_tool_completion_unproven":
+            return (
+                "Do not report GREEN and do not retry: not every inspection tool that applies to this scope reported "
+                "finishing. Inspect a narrower scope, or report UNKNOWN with native_tool_completion_observation."
+            )
         if execution_proof_reason == "native_scope_enumeration_failed":
             return "Stop retrying and report the execution_proof diagnostics; the plugin could not enumerate the requested native inspection scope."
         if execution_proof_reason in {"native_inspection_failures", "native_inspection_reported_problems"}:
@@ -7101,6 +7111,8 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "native_inspection_scope_incomplete",
             "native_inspection_scope_mismatch",
             "native_cpp_batch_annotator_unproven",
+            "native_batch_annotator_unproven",
+            "native_tool_completion_unproven",
         }:
             return "environment_blocked"
         return "tool_bug"
