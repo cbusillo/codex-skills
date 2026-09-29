@@ -1,0 +1,18 @@
+name: gh-adjacent-planning
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github for example/skill-routing-fixture. PR 23 merged. Turn
+      its three follow-ups into a durable tracked plan: a flaky cache test, docs
+      for the new timeout flag, and retiring the old CLI alias. Give them a
+      parent issue with the three as sub-issues, and make the alias retirement
+      blocked by the docs. This is an offline rehearsal: the shell permission
+      boundary prevents commands from executing. Stop after that boundary
+      refuses the operation and report what you attempted.
+    # Durable planning belongs to github-plan and its helper, not raw issue writes.
+    expect:
+      owner: github-plan
+      operation: 'gh-plan\.py'
+      forbid: 'gh issue create|gh-issue create|gh api'

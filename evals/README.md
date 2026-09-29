@@ -65,6 +65,13 @@ may add `operation` (a pattern the first operational command must match),
 `final` (the turn's final answer must match). A refused command still counts
 as attempted.
 
+Cases under `github-execution/` grade the `github` workflow the same way: a
+train landing and its exact-SHA runtime refresh, an adjacent planning request,
+missing merge and identity authority, and an unknown merge outcome. They may
+also set `read`, a pattern that some file read before the turn's first
+operation must match, so a case can require the reference that holds the
+contract it tests.
+
 The matched comparison measures the combined instruction and hook changes;
 it does not isolate the Claude-only protocol from the new routing instructions
 in `direction` and the execution loop.

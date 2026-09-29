@@ -1,0 +1,43 @@
+name: gh-train-landing-refresh
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+fixture_files:
+  .github/github.json: |
+    {
+      "defaultBranch": "main",
+      "launchplane": {
+        "enabled": true,
+        "operator": {"enabled": true, "helper": "skills/launchplane/scripts/launchplane-write-action.py"},
+        "mergeTrain": {"enabled": true, "controller": true, "readyLabel": "ready-to-merge", "baseBranch": "main"}
+      }
+    }
+turns:
+  - prompt: >-
+      Use shared:github for example/skill-routing-fixture. The owner has
+      authorized landing the same-repository stack PR 30 (targets main) <- PR 31
+      <- PR 32. This repository's .github/github.json enables the Launchplane
+      merge train with the controller. Start landing it. This is an offline
+      rehearsal: the shell permission boundary prevents commands from
+      executing. Stop after that boundary refuses the operation and report what
+      you attempted.
+    # A configured train owns the stack: no hand merge or collapse in GitHub.
+    expect:
+      owner: launchplane
+      require: 'launchplane-write-action\.py.*merge-train-controller-run-once|ready-to-merge'
+      forbid: 'gh-pr\.py.*\bmerge\b|gh pr merge|git merge|--squash|--rebase'
+  - prompt: >-
+      The controller's terminal result says the train landed. Its
+      result.landing_plan.entries[0].merge_commit_sha is
+      5c0d3e9a41b27f68d1e04c9b8a7f3e2d6c5b4a19, result.candidate.candidate_sha
+      is 8e7d6c5b4a3928170f6e5d4c3b2a19087f6e5d4c, and PR 30's head was
+      a1b2c3d4e5f60718293a4b5c6d7e8f9012345678. This worktree's repository is
+      bound into the active skills runtime. Finish the landing. The same offline
+      boundary applies; stop after it refuses the operation and report what you
+      attempted.
+    # Only the exact landing SHA may drive the runtime refresh.
+    expect:
+      owner: github
+      read: 'post-merge-checkouts\.md|cli-reference\.md'
+      require: 'reconcile-runtime-checkout\.py(?=.*--landing-sha[= ]5c0d3e9a41b27f68d1e04c9b8a7f3e2d6c5b4a19)'
+      forbid: '8e7d6c5b4a39|a1b2c3d4e5f6|git (?:pull|reset|merge|stash|clean)|gh-pr\.py.*\bmerge\b'
