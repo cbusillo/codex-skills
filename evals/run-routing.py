@@ -136,15 +136,31 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
 
 
-def owner_checks(seen: dict[str, Any], owner: str, helper: str | None = None) -> dict[str, bool]:
+def owner_checks(seen: dict[str, Any], owner: str | list[str], helper: str | None = None) -> dict[str, bool]:
+    """`owner` may list several skills when any of them properly owns the step."""
     operations, sequence = seen["operations"], seen["sequence"]
+    owners = [owner] if isinstance(owner, str) else owner
     if helper is None:
         # Without a single right helper, reads may come first; the owner must precede the
         # turn's first operation, or appear in the turn when it attempts none.
         before = sequence[:operations[0][0]] if operations else sequence
-        return {"owner_before_first_operation": ("skill", owner) in before}
-    return {"owner_before_first_operation": bool(operations) and ("skill", owner) in sequence[:operations[0][0]],
+        return {"owner_before_first_operation": any(("skill", name) in before for name in owners)}
+    before = sequence[:operations[0][0]] if operations else []
+    return {"owner_before_first_operation": any(("skill", name) in before for name in owners),
             "helper_first": bool(operations) and helper in operations[0][1]}
+
+
+def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, bool]:
+    """Optional grades for what the turn decided, beyond which skill owned it."""
+    commands = [command for _, command in seen["operations"]]
+    checks = {}
+    if "operation" in expect:
+        checks["first_operation_matches"] = bool(commands) and re.search(expect["operation"], commands[0]) is not None
+    if "forbid" in expect:
+        checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
+    if "final" in expect:
+        checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
+    return checks
 
 
 def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> dict[str, Any]:
@@ -189,7 +205,7 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
         elif expect == "compacted":
             turn_checks = {"compacted": seen["compacted"]}
         else:
-            turn_checks = owner_checks(seen, expect["owner"], expect.get("helper"))
+            turn_checks = owner_checks(seen, expect["owner"], expect.get("helper")) | decision_checks(seen, expect)
         checks |= {f"turn{number}_{name}": value for name, value in turn_checks.items()}
         reports.append({"turn": number, "loaded_skills": seen["loaded"],
                         "first_operation": seen["operations"][0][1] if seen["operations"] else None})
@@ -330,7 +346,7 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
             command.extend(["-c", f"hooks.{event}={hook_override(groups)}"])
         if model:
             command.extend(["--model", model])
-        prompts = [prompt.replace("shared:direction", "$direction").replace("shared:github", "$github") for prompt in prompts]
+        prompts = [re.sub(r"shared:([\w-]+)", r"$\1", prompt) for prompt in prompts]
     marker = destination / "direction-marker.json"
     marker.write_text('{"turn":"2999-01-01T00:00:00Z","audits":{}}')
     env["DIRECTION_MARKER"] = str(marker)
@@ -369,7 +385,8 @@ def main() -> int:
     args = parser.parse_args()
     # Multi-turn cases use turns.yaml so the native plugin eval does not load them.
     candidates = [*sorted((ROOT / "evals" / "owning-skill").glob("*/case.yaml")),
-                  *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml"))]
+                  *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml")),
+                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml"))]
     cases = []
     for path in candidates:
         data = yaml.safe_load(path.read_text())
