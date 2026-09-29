@@ -7,8 +7,11 @@ does not make a match. Respect skills that require explicit user invocation.
 
 Load the skill that owns each step **before that step**, even inside another
 skill's task. Reading a direction or planning skill does not load the skills
-for its later GitHub, validation, or closeout work. Recheck the catalog when
-the kind of work changes.
+for its later GitHub, validation, or closeout work.
+
+At the start of each turn, name the steps it will take and the skill that owns
+each, then load that set before acting. Do it again when the kind of work
+changes.
 
 | Step | Owning skill |
 | --- | --- |
@@ -24,9 +27,11 @@ the kind of work changes.
 Use the host's skill invocation tool when available (including the catalog's
 namespace, such as `shared:github`). Otherwise open the listed `SKILL.md`.
 Read its instructions before acting, announce its first use briefly, and read
-linked references only when their conditions apply. Reuse skills already loaded
-in the current context. A remembered command or a previous run's summary is
-not a substitute for loading the current owning skill.
+linked references only when their conditions apply. Within a turn, one load
+covers every step that skill owns. In a later turn, and after the conversation
+is compacted or summarized, load it again before its next step. A skill loaded
+in an earlier turn, a remembered command, or a previous run's summary is not a
+substitute for loading the current owning skill.
 
 Choose the smallest set of skills that covers the work. Follow the user's
 instructions and existing task authorization; loading a skill does not grant
