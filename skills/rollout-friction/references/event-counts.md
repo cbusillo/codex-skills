@@ -63,8 +63,9 @@ record's `message.content` and pair them through `tool_use_id`. A result's
 cannot turn it into a failure. A leading `Exit code N` line on a failed result
 supplies its exit status, and a record's `toolDenialKind` marks a hook or
 permission denial. Bookkeeping records such as `mode`, `last-prompt`, and
-`file-history-snapshot` produce no events; `system` and `attachment` records are
-context. Claude Code reports a nonzero exit it interprets as expected, such as
+`file-history-snapshot` produce no events, and neither do messages Claude Code
+marks `isMeta`, such as the text of a loaded skill, since the session did not
+write them. `system` and `attachment` records are context. Claude Code reports a nonzero exit it interprets as expected, such as
 a search with no matches, as a success without its exit status, so that result
 is absent from `nonzero_exit_count` and `expected_nonzero_count`.
 

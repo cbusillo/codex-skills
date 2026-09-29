@@ -1255,6 +1255,8 @@ def claude_code_parts(record: Any) -> list[RecordPart] | None:
         return []
     if "sessionId" not in record:
         return None
+    if record.get("isMeta") is True:
+        return []
     if record_type in CLAUDE_CONTEXT_TYPES:
         return [RecordPart({key: record[key] for key in ("subtype", "content", "attachment") if key in record}, "", "context")]
     message = record.get("message")

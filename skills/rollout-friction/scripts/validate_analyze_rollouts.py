@@ -2217,6 +2217,24 @@ def test_claude_code_error_flag_decides_the_outcome() -> None:
         raise AssertionError("tool results must pair with their calls through tool_use_id")
 
 
+def test_claude_code_injected_text_is_not_a_signal() -> None:
+    module = load_module()
+    phrase = "cached findings withheld: stale_results"
+
+    def record(**extra: object) -> dict[str, object]:
+        return {"type": "user", "sessionId": "session-synthetic",
+                "message": {"role": "user", "content": [{"type": "text", "text": phrase}]}, **extra}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        injected = module.scan([write_trace(Path(tmp), [record(isMeta=True)])], 100_000, 240)
+    with tempfile.TemporaryDirectory() as tmp:
+        typed = module.scan([write_trace(Path(tmp), [record()])], 100_000, 240)
+    if "stale_results" not in typed:
+        raise AssertionError("control: the phrase must match when a person or agent wrote it")
+    if injected:
+        raise AssertionError(f"harness-injected text such as a loaded skill is not session evidence: {list(injected)}")
+
+
 def main() -> int:
     tests = [
         candidate
