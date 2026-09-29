@@ -99,7 +99,11 @@ def failed(provider: str, error: str, **extra: Any) -> dict[str, Any]:
 
 def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path) -> dict[str, Any]:
     answer = scratch / "answer.md"
-    argv = ["codex", "exec", "-C", str(repo), "-s", "read-only", "-o", str(answer)]
+    # `-s read-only` does not reach MCP servers: they run outside the sandbox, and a tool that calls
+    # itself read-only runs without approval. Ignoring the user's config drops their servers, plugins,
+    # and project trust, so a reviewed repository's own `.codex/config.toml` cannot start one either.
+    argv = ["codex", "exec", "--ignore-user-config", "--disable", "plugins", "--disable", "apps"]
+    argv += ["-C", str(repo), "-s", "read-only", "-o", str(answer)]
     if model:
         argv += ["-m", model]
     proc = run_cli([*argv, prompt], repo, timeout)
