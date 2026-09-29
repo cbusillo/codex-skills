@@ -324,20 +324,27 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
         skills = fixture / ".agents" / "skills"
         skills.parent.mkdir()
         skills.symlink_to(catalog / "skills", target_is_directory=True)
+        # Codex always scans $HOME/.agents/skills, so an installed catalog there
+        # would compete with the tested one. Give each run an empty home and
+        # keep the shared uv cache so hooks still start quickly.
+        env.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
+        env["HOME"] = str(destination / "home")
+        (destination / "home").mkdir()
         # The test sources are authored and inspected here. Trust bypass applies
         # only to these per-invocation test hooks; shell sandboxing stays read-only.
         command = ["codex", "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
                    "--sandbox", "read-only", "--json", "--dangerously-bypass-hook-trust",
                    "-c", 'model_reasoning_effort="medium"']
+        # A per-run Codex home keeps the owner's sessions and installed skills
+        # out of the run; only the login is shared.
+        home = destination / "codex-home"
+        home.mkdir()
+        source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+        (home / "auth.json").symlink_to(source_home / "auth.json")
+        env["CODEX_HOME"] = str(home)
         if turns:
-            # Resuming needs a recorded session; keep it in a per-run home so the
-            # owner's session history is untouched. Only the login is shared.
+            # Resuming needs a recorded session, kept in that per-run home.
             command.remove("--ephemeral")
-            home = destination / "codex-home"
-            home.mkdir()
-            source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-            (home / "auth.json").symlink_to(source_home / "auth.json")
-            env["CODEX_HOME"] = str(home)
         declarations = json.loads((catalog / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
         for group in declarations:
             for handler in group["hooks"]:

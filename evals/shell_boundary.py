@@ -18,13 +18,15 @@ def read_only(command: str) -> bool:
         return False
     commands: list[list[str]] = []
     for line in command.splitlines():
+        # A read that falls back to another read is still a read.
+        line = line.replace("2>/dev/null", "")
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         commands.append([])
         for token in lexer:
-            if token in {"&&", ";"}:
+            if token in {"&&", ";", "||"}:
                 commands.append([])
-            elif token in {"|", "||", "&", ">", ">>", "<", "<<", "(", ")"}:
+            elif token in {"|", "&", ">", ">>", "<", "<<", "(", ")"}:
                 return False
             else:
                 commands[-1].append(token)
