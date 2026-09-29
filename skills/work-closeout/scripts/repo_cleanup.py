@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import cleanup_forks
 import cleanup_git
 import cleanup_probe
 from cleanup_probe import PRIVATE_PARTS, ProbeError, scan_root, signature
@@ -402,6 +403,9 @@ def main() -> int:
     scan.add_argument("--expires-in", type=int, default=3600)
     for option in ("max_entries", "max_bytes", "max_depth", "root_timeout", "total_timeout"):
         scan.add_argument("--" + option.replace("_", "-"), type=type(LIMITS[option]), default=LIMITS[option])
+    forks = sub.add_parser("forks", help="Report the cleanup policy's fork disposition for each fork an owner holds.")
+    forks.add_argument("--owner", required=True)
+    forks.add_argument("--active-days", type=int, default=90, help="Recent pushes or repeated PRs in this window keep a fork.")
     for name in ("revalidate", "verify"):
         check = sub.add_parser(name)
         check.add_argument("--before", required=True)
@@ -410,7 +414,7 @@ def main() -> int:
             check.add_argument("--moved", nargs=2, action="append", default=[], metavar=("SOURCE", "DESTINATION"))
         else:
             check.add_argument("--max-age", type=int, default=300)
-    for command_parser in (scan, *list(sub.choices.values())[1:]):
+    for command_parser in sub.choices.values():
         command_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
@@ -426,12 +430,22 @@ def main() -> int:
             if args.manifest:
                 save_manifest(args.manifest, report, args.purpose, args.expires_in)
             success = report["complete"]
+        elif args.operation == "forks":
+            if args.active_days <= 0:
+                parser.error("--active-days must be positive")
+            report = {"schema_version": SCHEMA, "operation": "forks", "policy": dict(POLICY),
+                      **cleanup_forks.dispositions(args.owner, active_days=args.active_days)}
+            success = report["complete"]
         else:
             if args.operation == "verify" and not (args.removed or args.moved):
                 parser.error("verify requires at least one exact --removed or --moved root")
             report = check_manifest(load_manifest(args.before), removed=getattr(args, "removed", []),
                                     moved=getattr(args, "moved", []), max_age=getattr(args, "max_age", 300))
             success = report["ok"]
+    except cleanup_forks.GhError as exc:
+        report = {"schema_version": SCHEMA, "operation": args.operation, "policy": dict(POLICY),
+                  "ok": False, "error": str(exc)}
+        success = False
     except (OSError, ProbeError) as exc:
         report = {"schema_version": SCHEMA, "operation": args.operation, "policy": dict(POLICY),
                   "ok": False, "error": str(exc) if isinstance(exc, ProbeError) else "filesystem_unavailable"}
@@ -444,6 +458,10 @@ def main() -> int:
         print(json.dumps(public(report), indent=2, sort_keys=True))
     else:
         print(f"{args.operation}: {'evidence complete' if success else 'incomplete or changed'}; deletion is not authorized.")
+        for fork in report.get("forks", []):
+            print(f"{fork['disposition']}: {fork['fork']} (upstream {fork['upstream']}); {'; '.join(fork['reasons'] + fork['errors'])}")
+        if report.get("forks"):
+            print("Code search cannot prove nothing uses a fork. Confirm that, and show the operator the exact delete list, before deleting.")
         for root in report.get("roots", []):
             print(f"{root['disposition']}: {json.dumps(root['requested'])} ({root['coverage']})")
             print(f"  Holds: {', '.join(root['holds']) or 'none observed'}; live use: {root['live_use']['state']}.")
