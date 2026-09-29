@@ -58,7 +58,9 @@ relying on them:
   default, so change it through the repository's normal branch and PR workflow.
 - **Scratch stores:** project folders are created for every directory a session
   runs in, including evaluation workspaces and temporary checkouts. Report them
-  separately; an empty or orphaned folder is not an active store.
+  separately; an empty or orphaned folder is not an active store. A worktree's
+  folder has an empty `memory/` because the repository's store serves it; that
+  is expected, not lost memory.
 - **Mutation contract:** memory files are plain Markdown the model edits directly,
   with no regeneration step. An approved change edits or removes the topic file
   and updates its `MEMORY.md` entry in the same action. Applied evidence is the
@@ -67,9 +69,11 @@ relying on them:
   same repository with auto memory enabled, for example a non-interactive
   `claude -p` run, and observe the index or topic-file retrieval in its
   transcript. The session saves memories during ordinary work, so deny it file
-  writes; if writes cannot be denied, report verification as pending. For a
-  subagent store, invoke that subagent in the fresh session, since the main
-  conversation does not load its memory.
+  writes by limiting its tools, for example `claude -p --tools Read,Grep,Glob`;
+  pre-approving tools with `--allowedTools` leaves the user's own write
+  permissions in place. If writes cannot be denied, report verification as
+  pending. For a subagent store, invoke that subagent in the fresh session,
+  since the main conversation does not load its memory.
 
 ## Apply the owning client's contract
 
