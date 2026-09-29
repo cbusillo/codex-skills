@@ -123,10 +123,20 @@ class RoutingScoreTests(unittest.TestCase):
             base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/github'}\n"}]}}
             turns = [{"expect": {"owner": "github", "read": "cli-reference\\.md"}}]
             view = call("Bash", {"command": "uv run scripts/gh-pr.py view 23"})
-            by_tool = call("Read", {"file_path": "/catalog/skills/github/references/cli-reference.md"})
-            by_shell = call("Bash", {"command": "sed -n 170,230p references/cli-reference.md"})
-            for messages, passed in [([base, by_tool, view], True), ([base, by_shell, view], True),
-                                     ([base, view, by_tool], False), ([base, view], False)]:
+
+            def read(name: str, arguments: dict[str, str], error: bool = False) -> list[dict]:
+                use = call(name, arguments)
+                use["message"]["content"][0]["id"] = arguments.get("file_path", arguments.get("command"))
+                return [use, {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": use["message"]["content"][0]["id"], "is_error": error}]}}]
+
+            by_tool = read("Read", {"file_path": "/catalog/skills/github/references/cli-reference.md"})
+            by_shell = read("Bash", {"command": "sed -n 170,230p references/cli-reference.md"})
+            failed = read("Read", {"file_path": "/catalog/skills/github/references/cli-reference.md"}, error=True)
+            listing = read("Bash", {"command": "ls references/cli-reference.md"})
+            for messages, passed in [([base, *by_tool, view], True), ([base, *by_shell, view], True),
+                                     ([base, view, *by_tool], False), ([base, view], False),
+                                     ([base, *failed, view], False), ([base, *listing, view], False)]:
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 

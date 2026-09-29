@@ -801,7 +801,8 @@ Use PRs for all non-trivial changes.
   readiness stays not fully ready; keep the reason and follow-up. If that config
   is blank, missing, contradictory, or surprising, use a one-off
   `changed_files` check only when the helper can infer the route, and ask before
-  changing durable config or trusting a suspicious value.
+  changing durable config or trusting a suspicious value. If inspection is
+  unavailable, record the not-run reason before pushing.
 - **Body**: Explain why before what changed. Describe the net change, not
   abandoned attempts, and include purposeful verification rather than routine
   CI steps. Preserve existing screenshots, images, and links. Use repo-relative
@@ -837,9 +838,11 @@ Before a merge:
 - **Authority**: Merge only when [task scope](../references/execution-scope.md)
   authorizes the change and destination. A readiness question is not merge
   authority.
-- **Fresh head**: Read the PR and its checks for the current head SHA. Match
-  background review evidence to that SHA. Unresolved blocking findings against
-  it block the merge even when CI is green, until they are addressed, deferred,
+- **Fresh head**: This also applies before calling a PR green, ready to merge,
+  merged, releasable, or clean, and before a release. Read the PR and its
+  checks for the current head SHA. Match background review evidence to that
+  SHA. Unresolved blocking findings against it block the merge or release even
+  when CI is green, until they are addressed, deferred,
   or declined with a recorded reason under
   [reviews by another model](../references/model-review.md). Findings from a
   detached `auto-review-<hex>` worktree are current when their snapshot SHA
@@ -880,8 +883,9 @@ failure and never causes a merge retry.
   It fast-forwards only a clean checkout already on the default branch that
   shares Git identity with the merged worktree. Treat runtime-dependent evidence
   as stale until it succeeds or the source revision is verified.
-- **Local default checkout**: Before evaluating or refreshing the repository's
-  local default-branch worktree, read
+- **Local default checkout**: After every confirmed merge, inspect the
+  repository's unique local default-branch worktree when one exists. Before
+  evaluating or refreshing it, read
   [post-merge checkouts](references/post-merge-checkouts.md) for its gate
   order, landing-SHA proofs, the explicitly requested untracked-only exception,
   and the stale-checkout report. A runtime-bound checkout only ever uses the
