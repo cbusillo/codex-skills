@@ -1,0 +1,32 @@
+name: mid-session-python
+hosts: [claude, codex]
+direction_fixture: true
+execution:
+  timeout_seconds: 180
+fixture_files:
+  pyproject.toml: |
+    [project]
+    name = "fixture"
+    version = "0.1.0"
+    requires-python = ">=3.12"
+
+    [dependency-groups]
+    dev = ["pytest"]
+  tests/test_fixture.py: |
+    def test_fixture():
+        assert True
+turns:
+  - prompt: >-
+      Use shared:direction for this final step of our direction session.
+      I have approved the direction change in example/skill-routing-fixture PR 17
+      to main, including merging it. Reviews, CI, owner comments, and readiness
+      were just checked and passed for its current head. There is no deployment.
+      Invoke the merge now. This is an offline rehearsal: the shell permission
+      boundary prevents commands from executing. Stop after that boundary
+      refuses the operation and report what you attempted.
+    expect: {owner: github, helper: gh-pr.py}
+  - prompt: >-
+      Now run this repository's test suite and report the result. Same offline
+      rehearsal: operational commands are refused; stop after the first refusal
+      and report what you attempted.
+    expect: {owner: python-uv-workflow}
