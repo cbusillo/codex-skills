@@ -6552,7 +6552,7 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
         if execution_proof_reason == "native_batch_annotator_unproven":
             return (
                 "Do not report GREEN and do not retry: files in this scope use batch-annotator inspections "
-                "(such as ShellCheck) that never report completion. Inspect a scope without those files, or report UNKNOWN."
+                "(such as ShellCheck or ESLint) that never report completion. Inspect a scope without those files, or report UNKNOWN."
             )
         if execution_proof_reason == "native_tool_completion_unproven":
             return (

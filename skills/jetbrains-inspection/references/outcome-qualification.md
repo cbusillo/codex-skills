@@ -65,7 +65,7 @@ Newer plugins enforce a completion rule themselves: a broad-scope run whose
 missing finishes are not all empty visitors or inapplicable batch annotators, or
 whose enumeration or classification is incomplete, is `UNKNOWN` with
 `execution_proof_block_reason: "native_tool_completion_unproven"`. A batch
-annotator paired with an annotator for a non-C/C++ file, such as ShellCheck,
+annotator on a non-C/C++ file it applies to, such as ShellCheck or ESLint,
 reports `"native_batch_annotator_unproven"`. Neither is retryable.
 
 ## Strict Outcome Qualification
