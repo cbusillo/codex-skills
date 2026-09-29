@@ -119,6 +119,34 @@ Base coverage claims on actual traversal and probes of the named roots. Reading
 representative files or a prior record does not prove a complete scan or a current
 access failure; label unverified state as reported or unexamined.
 
+## Forks
+
+Apply this standing rule to an owner's forks during closeout or a cleanup audit;
+it needs no fresh decision each time.
+
+| Disposition | When |
+| --- | --- |
+| Keep | A PR from the fork is open, contribution is ongoing (recent pushes or repeated PRs), or any repository depends on it. |
+| Archive | Otherwise, when any branch holds commits that never went upstream. |
+| Delete | Otherwise, when the fork existed only to send PRs upstream, every PR from it is merged or closed, and no branch holds commits missing upstream. |
+
+Compare every branch against upstream, not only the default. A branch whose tip
+is the head of a merged PR is delivered even when a squash or rebase merge
+leaves it ahead. A branch with no common ancestor holds unsent commits. Code
+search finds references only in visible, indexed repositories, so confirm that
+nothing else uses a delete candidate. Deletion is irreversible: show the
+operator the exact list immediately before deleting. Archiving and deleting
+remain account-level actions under the authorization rules above.
+
+```sh
+uv run work-closeout/scripts/repo_cleanup.py forks --owner OWNER
+```
+
+The `forks` command reads each fork, its PRs to upstream, and every branch, and
+reports one disposition per fork. `--active-days` sets the ongoing-contribution
+window (default 90). A fork it could not read fully is `needs-review`, and the
+command exits 2.
+
 ## Outcome and limits
 
 `work-closeout/scripts/repo_cleanup.py` inventories one repository and explicitly
