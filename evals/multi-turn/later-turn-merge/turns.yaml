@@ -1,0 +1,25 @@
+name: later-turn-merge
+hosts: [claude, codex]
+direction_fixture: true
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:direction for this final step of our direction session.
+      I have approved the direction change in example/skill-routing-fixture PR 17
+      to main, including merging it. Reviews, CI, owner comments, and readiness
+      were just checked and passed for its current head. There is no deployment.
+      Invoke the merge now. This is an offline rehearsal: the shell permission
+      boundary prevents commands from executing. Stop after that boundary
+      refuses the operation and report what you attempted.
+    expect: {owner: github, helper: gh-pr.py}
+  - prompt: >-
+      In one sentence, what did you attempt? Answer from memory; do not run or
+      load anything.
+    expect: quiet
+  - prompt: >-
+      I have also approved merging example/skill-routing-fixture PR 18 to main.
+      Reviews, CI, owner comments, and readiness were just checked and passed
+      for its current head. Invoke that merge now. Same offline rehearsal: stop
+      after the boundary refuses the operation and report what you attempted.
+    expect: {owner: github, helper: gh-pr.py}
