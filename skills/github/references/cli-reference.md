@@ -29,10 +29,11 @@ Choose the interpreter from the helper's extension and shebang before running
   run with `uv run path/to/helper.py` when interpreter version or dependencies
   matter. Plain `python3` is only appropriate when the skill docs explicitly
   say the helper has no managed environment needs.
-- Some hosts' shell tools leave stdin open. `scripts/gh-issue edit`, `close`,
-  and `reopen` read stdin and wait on it
-  ([#683](https://github.com/cbusillo/codex-skills/issues/683)); give them a
-  body with `<` or pass `</dev/null`.
+- Some hosts' shell tools leave stdin open and idle. `scripts/gh-issue edit`,
+  `close`, and `reopen` treat stdin as optional input: a redirected file or
+  heredoc is read, and a pipe that stays silent for about a second counts as
+  no input. For a slow producer, pass `--body-file -` (edit) or
+  `--comment-file -` (close, reopen) so the helper waits for end-of-file.
 - Write helper arguments out literally. zsh does not split an unquoted variable
   into several arguments.
 
@@ -567,7 +568,11 @@ outside this focused REST surface. Route those deliberate exceptions through
 `scripts/gh-with-env-token issue create|edit` with a body file so automation
 identity and literal Markdown remain explicit.
 
-`scripts/gh-issue close` and `scripts/gh-issue reopen` read stdin and post any
+`scripts/gh-issue close` and `scripts/gh-issue reopen` take a comment from
+`--comment-file PATH` (`-` for stdin), from optional stdin as described in
+[Helper Invocation](#helper-invocation), or from `--comment`; stdin input wins
+over `--comment`, and `--comment-file` cannot be combined with it. `edit`
+takes a new body the same way through `--body-file`. They post any
 state-change comment through the shared JSON-stdin REST comment implementation
 before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
