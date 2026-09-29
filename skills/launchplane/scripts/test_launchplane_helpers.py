@@ -2216,6 +2216,33 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert "secret-record-example" not in json.dumps(apply)
 
 
+def test_product_config_secret_results_keep_declared_secret_class() -> None:
+    projected = write_action._project_secret_results(
+        [
+            {
+                "action": "rotated",
+                "scope": "context_instance",
+                "integration": "runtime_environment",
+                "name": "EXAMPLE_API_TOKEN",
+                "binding_key": "EXAMPLE_API_TOKEN",
+                "context": "example-product",
+                "instance": "testing",
+                "secret_id": "secret-record-example",
+                "secret_class": "testing",
+            }
+        ]
+    )
+
+    assert projected == [
+        {
+            "action": "rotated",
+            "integration": "runtime_environment",
+            "binding_key": "EXAMPLE_API_TOKEN",
+            "secret_class": "testing",
+        }
+    ]
+
+
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",
