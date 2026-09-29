@@ -55,6 +55,7 @@ LOCAL_OPERATOR_ENV_KEYS = {
 READ_ONLY_OPERATIONS = {
     "change-impact-policy-read",
     "repository-inventory-read",
+    "integration-allowances-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2004,6 +2005,53 @@ ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS = {
 }
 
 
+INTEGRATION_ALLOWANCE_FIELDS = {
+    "integration",
+    "kind",
+    "reason",
+    "evidence",
+    "recorded_by",
+    "recorded_at",
+}
+INTEGRATION_ALLOWANCE_KINDS = {"dev_store", "read_only_source", "pre_live"}
+INTEGRATION_ALLOWANCES_PLAN_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "context",
+    "instance",
+    "environment_class",
+    "changed",
+    "applied",
+    "changes",
+    "read_back",
+    "read_back_matches",
+    "reason",
+    "source_label",
+    "record_sha256_before",
+    "record_sha256_after",
+    "plan_sha256",
+}
+INTEGRATION_ALLOWANCES_READ_FIELDS = {
+    "status",
+    "product",
+    "context",
+    "instance",
+    "environment_class",
+    "allowances",
+    "record_sha256",
+}
+INTEGRATION_ALLOWANCES_PAYLOAD_FIELDS = {
+    "schema_version",
+    "product",
+    "context",
+    "instance",
+    "reason",
+    "allowances",
+}
+INTEGRATION_ALLOWANCE_INPUT_FIELDS = {"integration", "kind", "reason", "evidence"}
+
+
 def _optional_sha256(value: object) -> str:
     if value in {None, ""}:
         return ""
@@ -2039,6 +2087,97 @@ def _project_odoo_addon_setting_evidence(value: object) -> dict[str, object]:
     if setting not in ODOO_ADDON_SETTINGS_NON_SECRET_SETTINGS:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     projected["literal"] = literal if isinstance(literal, bool) else public_identifier(literal)
+    return projected
+
+
+def _project_integration_allowance(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in INTEGRATION_ALLOWANCE_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    kind = source.get("kind")
+    if kind not in INTEGRATION_ALLOWANCE_KINDS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "integration": public_code(source.get("integration")),
+        "kind": kind,
+        "reason": public_summary_string(source.get("reason")),
+    }
+    if source.get("evidence"):
+        projected["evidence"] = public_summary_string(source.get("evidence"))
+    if source.get("recorded_by"):
+        projected["recorded_by"] = public_identifier(source.get("recorded_by"))
+    if source.get("recorded_at"):
+        projected["recorded_at"] = public_summary_string(source.get("recorded_at"), max_length=64)
+    return projected
+
+
+def _project_integration_allowance_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return [_project_integration_allowance(item) for item in value]
+
+
+def _project_integration_allowances_plan(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in INTEGRATION_ALLOWANCES_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": public_code(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "environment_class": public_code(source.get("environment_class")),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "changed": bool(_optional_bool(source.get("changed"))),
+        "applied": bool(_optional_bool(source.get("applied"))),
+    }
+    read_back_matches = _optional_bool(source.get("read_back_matches"))
+    if read_back_matches is not None:
+        projected["read_back_matches"] = read_back_matches
+    changes = source.get("changes", [])
+    if not isinstance(changes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_changes: list[dict[str, object]] = []
+    for change_value in changes:
+        change = _require_dict(change_value)
+        if any(str(key) not in {"integration", "action", "before", "after"} for key in change):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        action = change.get("action")
+        if action not in {"add", "update", "remove", "unchanged"}:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_change: dict[str, object] = {
+            "integration": public_code(change.get("integration")),
+            "action": action,
+        }
+        for side in ("before", "after"):
+            if change.get(side) is not None:
+                projected_change[side] = _project_integration_allowance(change[side])
+        projected_changes.append(projected_change)
+    projected["changes"] = projected_changes
+    projected["read_back"] = _project_integration_allowance_list(source.get("read_back", []))
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_integration_allowances_read(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in INTEGRATION_ALLOWANCES_READ_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "environment_class": public_code(source.get("environment_class")),
+        "allowances": _project_integration_allowance_list(source.get("allowances")),
+        "record_sha256": _optional_sha256(source.get("record_sha256")),
+    }
+    assert_public_safe_shape(projected)
     return projected
 
 
@@ -2200,6 +2339,11 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_odoo_addon_settings_result(provider_payload.get("result"))
+    if operation in {"integration-allowances-dry-run", "integration-allowances-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_integration_allowances_plan(provider_payload.get("result"))
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -2348,6 +2492,15 @@ def summarize_success(
                 "Save and review this redacted dry-run evidence before applying the exact same private payload."
                 if operation == "repository-inventory-dry-run"
                 else "Read back the current repository inventory record before relying on the mutation."
+            )
+        elif operation in {"integration-allowances-dry-run", "integration-allowances-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the per-integration diff, then apply "
+                "the exact same private payload with --expected-plan-digest."
+                if operation == "integration-allowances-dry-run"
+                else "Check read_back_matches. The allowances take effect at the lane's next "
+                "integration read-back."
             )
         elif operation in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
             summary["plan_sha256"] = result.get("plan_sha256")
@@ -2658,6 +2811,139 @@ def _require_apply_eligible_odoo_addon_settings_dry_run(
         or result.get("instance") != expected_instance
     ):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def _require_apply_eligible_integration_allowances_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_plan_digest: str,
+    expected_product: str,
+    expected_context: str,
+    expected_instance: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if (
+        evidence.get("operation") != "integration-allowances-dry-run"
+        or evidence.get("status") != "accepted"
+        or result.get("status") != "ok"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+        or result.get("product") != expected_product
+        or result.get("context") != expected_context
+        or result.get("instance") != expected_instance
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def integration_allowances_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    body = read_payload_file(args.payload_file)
+    if any(str(key) not in INTEGRATION_ALLOWANCES_PAYLOAD_FIELDS for key in body):
+        raise ValueError("unsupported_payload_field")
+    if body.get("schema_version") != 1:
+        raise ValueError("schema_version_required")
+    identity: dict[str, str] = {}
+    for field in ("product", "context", "instance", "reason"):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+        identity[field] = value.strip()
+    allowances = body.get("allowances")
+    if not isinstance(allowances, list):
+        raise ValueError("allowances_list_required")
+    for allowance in allowances:
+        if not isinstance(allowance, dict) or any(
+            str(key) not in INTEGRATION_ALLOWANCE_INPUT_FIELDS for key in allowance
+        ):
+            raise ValueError("unsupported_allowance_field")
+        if allowance.get("kind") not in INTEGRATION_ALLOWANCE_KINDS:
+            raise ValueError("unsupported_allowance_kind")
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+        _require_apply_eligible_integration_allowances_dry_run(
+            args,
+            expected_plan_digest=expected_plan_digest,
+            expected_product=identity["product"],
+            expected_context=identity["context"].lower(),
+            expected_instance=identity["instance"].lower(),
+        )
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
+
+
+def summarize_integration_allowances_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(
+        str(key) not in {"status", "trace_id", "records", "result"} for key in provider_payload
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(status=status, operation="integration-allowances-read", request=request)
+    payload["records"] = _project_records(
+        provider_payload.get("records"), {"product_profile", "context", "instance"}
+    )
+    payload["result"] = _project_integration_allowances_read(provider_payload.get("result"))
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Change allowances with integration-allowances-dry-run and "
+            "integration-allowances-apply; the request carries the lane's whole list."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
+def execute_integration_allowances_read(
+    *, args: argparse.Namespace, request: dict[str, object]
+) -> int:
+    operation = "integration-allowances-read"
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path(operation),
+            settings=settings,
+            query={
+                "product": args.product,
+                "context": args.context,
+                "instance": args.instance,
+            },
+            timeout=args.timeout,
+        )
+        emit(
+            summarize_integration_allowances_read(
+                request=request, provider_payload=provider_payload
+            )
+        )
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
 
 
 def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
@@ -3177,6 +3463,7 @@ def execute_post(
         except LaunchplaneSafetyError:
             if operation not in {
                 "odoo-addon-settings-apply",
+                "integration-allowances-apply",
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
                 "repository-inventory-apply",
@@ -3609,6 +3896,39 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed inventory dry-run.",
     )
 
+    integration_allowances_read = subparsers.add_parser(
+        "integration-allowances-read",
+        help="Read a lane's non-production integration allowances.",
+    )
+    integration_allowances_read.add_argument("--product", required=True)
+    integration_allowances_read.add_argument("--context", required=True)
+    integration_allowances_read.add_argument("--instance", required=True)
+
+    integration_allowances_dry_run = subparsers.add_parser(
+        "integration-allowances-dry-run",
+        help="Dry-run a lane's whole integration allowance list from a private payload.",
+    )
+    integration_allowances_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    integration_allowances_dry_run.set_defaults(idempotency_key="")
+
+    integration_allowances_apply = subparsers.add_parser(
+        "integration-allowances-apply",
+        help="Apply reviewed integration allowances bound to the saved dry-run digest.",
+    )
+    integration_allowances_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    integration_allowances_apply.add_argument("--idempotency-key", required=True)
+    integration_allowances_apply.add_argument("--reviewed-dry-run", action="store_true")
+    integration_allowances_apply.add_argument("--expected-plan-digest", required=True)
+    integration_allowances_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed integration-allowances dry-run.",
+    )
+
     odoo_addon_settings_dry_run = subparsers.add_parser(
         "odoo-addon-settings-dry-run",
         help="Dry-run an Odoo lane's addon settings from a private payload of binding references.",
@@ -3877,6 +4197,31 @@ def main(argv: list[str]) -> int:
                 "terminal_status": args.terminal_status,
             }
             body = preview_feedback_remediation_body(args)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == "integration-allowances-read":
+            request = {
+                "product": public_identifier(args.product),
+                "context": public_identifier(args.context),
+                "instance": public_identifier(args.instance),
+                "payload_source": "operator_argument",
+            }
+            return execute_integration_allowances_read(args=args, request=request)
+        if args.command in {"integration-allowances-dry-run", "integration-allowances-apply"}:
+            mode = "apply" if args.command == "integration-allowances-apply" else "dry-run"
+            body = integration_allowances_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": public_identifier(body["instance"]),
+                "payload_source": "private_file",
+            }
             return execute_post(
                 args=args,
                 operation=args.command,

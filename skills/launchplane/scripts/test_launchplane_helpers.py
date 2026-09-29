@@ -2312,6 +2312,128 @@ def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> N
     ]
 
 
+def _integration_allowance_payload() -> dict[str, object]:
+    return {
+        "integration": "fishbowl",
+        "kind": "read_only_source",
+        "reason": "Imports from Fishbowl with a read-only account.",
+        "evidence": "SELECT and SHOW VIEW grant read on 2026-09-28.",
+        "recorded_by": "operator-example",
+        "recorded_at": "2026-09-29T12:00:00Z",
+    }
+
+
+def test_integration_allowances_plan_projection_keeps_diff_and_digest() -> None:
+    result = write_action.summarize_success(
+        operation="integration-allowances-dry-run",
+        request={"mode": "dry-run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_allowances",
+            "records": {"product_profile": "example-product", "context": "example", "instance": "testing"},
+            "result": {
+                "status": "ok",
+                "mode": "dry-run",
+                "product": "example-product",
+                "context": "example",
+                "instance": "testing",
+                "environment_class": "testing",
+                "changed": True,
+                "applied": False,
+                "changes": [
+                    {"integration": "fishbowl", "action": "add", "before": None, "after": _integration_allowance_payload()}
+                ],
+                "read_back": [],
+                "reason": "Record the Fishbowl import source.",
+                "source_label": "service:integration-allowances",
+                "record_sha256_before": "a" * 64,
+                "record_sha256_after": "",
+                "plan_sha256": "b" * 64,
+            },
+        },
+    )
+
+    assert result["status"] == "accepted"
+    assert result["summary"]["plan_sha256"] == "b" * 64
+    change = result["result"]["changes"][0]
+    assert change["action"] == "add"
+    assert change["after"]["kind"] == "read_only_source"
+    assert "before" not in change
+
+
+def test_integration_allowances_projection_refuses_unknown_fields() -> None:
+    allowance = _integration_allowance_payload()
+    allowance["value"] = "not-allowed"
+    try:
+        write_action._project_integration_allowance(allowance)
+    except write_action.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("unknown allowance field was accepted")
+
+
+def test_integration_allowances_read_summary_projects_allowances() -> None:
+    result = write_action.summarize_integration_allowances_read(
+        request={"payload_source": "operator_argument"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_allowances_read",
+            "records": {"product_profile": "example-product", "context": "example", "instance": "testing"},
+            "result": {
+                "status": "ok",
+                "product": "example-product",
+                "context": "example",
+                "instance": "testing",
+                "environment_class": "testing",
+                "allowances": [_integration_allowance_payload()],
+                "record_sha256": "c" * 64,
+            },
+        },
+    )
+
+    assert result["result"]["allowances"][0]["integration"] == "fishbowl"
+    assert result["result"]["allowances"][0]["recorded_by"] == "operator-example"
+
+
+def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply() -> None:
+    with TemporaryDirectory() as directory:
+        payload_path = Path(directory) / "allowances.json"
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "product": "example-product",
+            "context": "example",
+            "instance": "testing",
+            "reason": "Record the Fishbowl import source.",
+            "allowances": [
+                {"integration": "fishbowl", "kind": "pre_live", "reason": "Not live yet.", "value": "x"}
+            ],
+        }
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
+        try:
+            write_action.integration_allowances_body(args, mode="dry-run")
+        except ValueError as exc:
+            assert str(exc) == "unsupported_allowance_field"
+        else:
+            raise AssertionError("unknown allowance input field was accepted")
+
+        payload["allowances"] = [{"integration": "fishbowl", "kind": "pre_live", "reason": "Not live yet."}]
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="allowances-apply-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="b" * 64,
+            dry_run_evidence_file="",
+        )
+        try:
+            write_action.integration_allowances_body(apply_args, mode="apply")
+        except ValueError as exc:
+            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
+        else:
+            raise AssertionError("apply without saved dry-run evidence was accepted")
+
+
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",
