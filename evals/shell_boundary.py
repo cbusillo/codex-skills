@@ -27,7 +27,10 @@ def git_read_only(arguments: list[str]) -> bool:
     if command == "branch":
         return all(option in {"--show-current", "-vv", "-v", "--list", "-a", "-r"} for option in rest)
     if command == "remote":
-        return rest in ([], ["-v"])
+        return rest in ([], ["-v"]) or rest[:1] == ["get-url"]
+    if command == "symbolic-ref":
+        # One ref name reads it; a second argument would write it.
+        return len([argument for argument in rest if not argument.startswith("-")]) <= 1
     return False
 
 
