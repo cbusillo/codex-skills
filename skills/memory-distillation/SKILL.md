@@ -58,8 +58,11 @@ Neither client nor a directory name makes a memory store authoritative.
   both hosts. The catalog renders each host's global instruction file from its
   public `instructions/global.md` and the ignored `.local/global-instructions.md`
   with its global-instructions sync helper. Put general rules in the public
-  source and personal ones in the local source, then preview and run the sync.
-  Never edit a generated host file directly.
+  source and personal ones in the local source. Edit the local source and run
+  the sync only in the installed runtime checkout, after any public change has
+  landed there: a task worktree has no local source, and a sync from it drops
+  every personal instruction from both hosts. Preview first and confirm the diff
+  removes nothing unintended. Never edit a generated host file directly.
 - **Local config:** private or environment-specific facts with a maintained
   schema. Use the optional `people` skill and private people config for durable
   identity, aliases, contacts, roles, and relationship context.
