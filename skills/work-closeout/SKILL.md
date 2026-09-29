@@ -94,8 +94,10 @@ preserved, or intentionally left in place.
    the explicitly requested untracked-only exception. Its essential gates, in
    order:
 
-   - A runtime-bound checkout moves only through the landed reconciler under
-     `github`, with the confirmed final landing SHA, never a PR head. If it is
+   - A runtime-bound checkout moves only through the landed
+     `skills/github/scripts/reconcile-runtime-checkout.py`, with the confirmed
+     final landing SHA; when you only have the PR head, read the PR for its
+     merge commit. Do not fetch, pull, or merge there. If reconciliation is
      blocked, the merge still succeeded, but do not claim the installed runtime
      is current.
    - Tracked changes or an active Git operation make any checkout report-only.

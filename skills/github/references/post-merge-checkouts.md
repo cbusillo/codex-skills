@@ -9,10 +9,12 @@ procedures. Remote merge success and local freshness are separate outcomes.
 
 Apply the gates in this order and stop at the first that applies:
 
-1. **Runtime-bound checkout**: use only the landed repo-local runtime
-   reconciler with the confirmed final landing SHA: `merge.sha` from a direct
-   merge or `mergeCommitOid` from a fresh merged-PR view, never a PR head,
-   candidate, or pre-merge base. Never run a generic pull there. A blocked or
+1. **Runtime-bound checkout**: run only the landed repo-local reconciler,
+   `uv run skills/github/scripts/reconcile-runtime-checkout.py --merged-worktree
+   <worktree> --repo OWNER/REPO --landing-sha <sha>`, and nothing else there: no
+   fetch, pull, or merge. The landing SHA is `merge.sha` from a direct merge or
+   `mergeCommitOid` from a fresh `github/scripts/gh-pr.py view <pr>`, never a PR
+   head, candidate, or pre-merge base; when you only have the head, read the PR. A blocked or
    failed reconciliation prevents claiming that installed runtime behavior or
    provenance-sensitive evidence is current; it does not reclassify or retry the
    confirmed merge.
@@ -91,7 +93,7 @@ because of untracked, non-ignored files may still be refreshed:
    `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`,
    `BISECT_LOG`, or `BISECT_START` exists.
 4. Enumerate every untracked entry with `git -C <path> ls-files --others
-   --exclude-standard -z`, consume the NUL-separated output without shell
+   --exclude-standard -z`, not `git status`, consume the NUL-separated output without shell
    globbing or pathspecs, and snapshot each path's file type and content or
    symlink-target hash. An entry ending in `/`, or any entry that cannot be
    fingerprinted as a regular file or symlink without descending into another
