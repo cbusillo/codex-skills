@@ -60,6 +60,11 @@ raise SystemExit(0 if args.command == 'merge' else 1)
     return result.returncode == 0
 
 
+def reads_content(command: str) -> bool:
+    """A shell read that returns file content, not only names."""
+    return any(re.match(r"\s*(?:cat|head|tail|sed -n|rg(?!.*--files))\b", part) for part in re.split(r"&&|\|\||;|\|", command))
+
+
 def load_trace(destination: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     messages = [json.loads(line) for line in (destination / "trace.jsonl").read_text().splitlines() if line.strip()]
     events_path = destination / "shell-events.jsonl"
@@ -82,6 +87,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
     successful_reads = ""
     skill_paths: list[str] = []
     foreign_skill_reads: list[str] = []
+    pending_reads: dict[str, str] = {}
 
     def credit_skill(path_text: str) -> None:
         skill_path = Path(path_text)
@@ -103,6 +109,10 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                 if block.get("type") == "tool_use":
                     if block.get("name") == "Bash":
                         sequence.append(("shell", block["input"]["command"]))
+                        if reads_content(block["input"]["command"]):
+                            pending_reads[block.get("id")] = block["input"]["command"]
+                    elif block.get("name") == "Read":
+                        pending_reads[block.get("id")] = block["input"].get("file_path", "")
         elif message.get("type") == "user":
             for block in message.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "text":
@@ -110,6 +120,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                     if match:
                         credit_skill(str(Path(match[1]) / "SKILL.md"))
                 if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
+                    if block.get("tool_use_id") in pending_reads:
+                        sequence.append(("read", pending_reads.pop(block["tool_use_id"])))
                     launched = re.fullmatch(r"Launching skill: (?:[\w-]+:)?([\w-]+)", str(block.get("content", "")).strip())
                     if launched and launched[1] in confirmed:
                         sequence.append(("skill", launched[1]))
@@ -129,6 +141,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                     if path in successful_reads:
                         credit_skill(path)
             sequence.append(("shell", command))
+            if event["allowed"] and command in successful_reads and reads_content(command):
+                sequence.append(("read", command))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
     return {"sequence": sequence, "operations": operations, "loaded": [value for kind, value in sequence if kind == "skill"],
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
@@ -160,6 +174,11 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["required_operation"] = any(re.search(expect["require"], command) for command in commands)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
+    if "read" in expect:
+        # A reference must be delivered before the turn acts on it; a listing or a failed read is not enough.
+        operations, sequence = seen["operations"], seen["sequence"]
+        before = sequence[:operations[0][0]] if operations else sequence
+        checks["read_before_operation"] = any(kind == "read" and re.search(expect["read"], value) for kind, value in before)
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
     return checks
@@ -395,7 +414,8 @@ def main() -> int:
     # Multi-turn cases use turns.yaml so the native plugin eval does not load them.
     candidates = [*sorted((ROOT / "evals" / "owning-skill").glob("*/case.yaml")),
                   *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml")),
-                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml"))]
+                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml")),
+                  *sorted((ROOT / "evals" / "github-execution").glob("*/turns.yaml"))]
     cases = []
     for path in candidates:
         data = yaml.safe_load(path.read_text())
