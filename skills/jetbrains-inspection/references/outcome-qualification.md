@@ -66,7 +66,10 @@ missing finishes are not all empty visitors or inapplicable batch annotators, or
 whose enumeration or classification is incomplete, is `UNKNOWN` with
 `execution_proof_block_reason: "native_tool_completion_unproven"`. A batch
 annotator on a non-C/C++ file it applies to, such as ShellCheck or ESLint,
-reports `"native_batch_annotator_unproven"`. Neither is retryable.
+reports `"native_batch_annotator_unproven"`. Neither is retryable. When the
+plugin names the blocking pairs in `execution_proof_unproven_batch_annotators`,
+`agent_result.unproven_batch_annotators` lists them as `{tool, file}` and the
+next action names them, so the caller can inspect the scope without those files.
 
 ## Strict Outcome Qualification
 
