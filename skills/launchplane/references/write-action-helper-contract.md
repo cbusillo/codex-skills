@@ -202,6 +202,13 @@ repository or worktree so checked-in config and examples cannot quietly become
 write payloads. Local-operator apply still requires a prior matching dry-run
 recorded by Launchplane.
 
+A secret stored for one exact lane (scope `context_instance`) may carry
+`secret_class` in the payload, the writer's key-safety classification for that
+lane, for example `testing` for a development-store credential on a testing
+lane. Launchplane refuses a class the lane does not allow. The redacted secret
+results echo the stored `secret_class` alongside `action`, `integration`, and
+`binding_key`.
+
 Unsupported secret source shapes must fail closed in caller guidance. Do not
 translate committed secret references, provider env lookups, stdin/stdout
 transport, arbitrary secret ids, or "reuse current value" requests into a

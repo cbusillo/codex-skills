@@ -1073,6 +1073,7 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
         "context",
         "instance",
         "secret_id",
+        "secret_class",
     }
     for item in value:
         source = _require_dict(item)
@@ -1082,6 +1083,8 @@ def _project_secret_results(value: object) -> list[dict[str, object]]:
         for key in ("action", "integration", "binding_key"):
             if key in source:
                 result[key] = public_identifier(source[key])
+        if "secret_class" in source:
+            result["secret_class"] = public_code(source["secret_class"], default="unknown")
         projected.append(result)
     return projected
 

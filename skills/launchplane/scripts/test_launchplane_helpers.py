@@ -2216,6 +2216,102 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert "secret-record-example" not in json.dumps(apply)
 
 
+def test_product_config_secret_results_keep_declared_secret_class() -> None:
+    projected = write_action._project_secret_results(
+        [
+            {
+                "action": "rotated",
+                "scope": "context_instance",
+                "integration": "runtime_environment",
+                "name": "EXAMPLE_API_TOKEN",
+                "binding_key": "EXAMPLE_API_TOKEN",
+                "context": "example-product",
+                "instance": "testing",
+                "secret_id": "secret-record-example",
+                "secret_class": "testing",
+            }
+        ]
+    )
+
+    assert projected == [
+        {
+            "action": "rotated",
+            "integration": "runtime_environment",
+            "binding_key": "EXAMPLE_API_TOKEN",
+            "secret_class": "testing",
+        }
+    ]
+
+
+def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> None:
+    result = write_action.summarize_success(
+        operation="product-config-dry-run",
+        request={"mode": "dry-run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_secret_class",
+            "records": {},
+            "result": {
+                "status": "ok",
+                "mode": "dry-run",
+                "product": "example-product",
+                "context": "example-product",
+                "instance": "testing",
+                "runtime_environment": {
+                    "action": "skipped",
+                    "scope": "instance",
+                    "context": "example-product",
+                    "instance": "testing",
+                    "keys": [],
+                    "changed_keys": [],
+                    "unchanged_keys": [],
+                    "env_value_count_after": 0,
+                    "retired_provider_keys_before": [],
+                    "retired_provider_keys_after": [],
+                },
+                "runtime_key_safety": {
+                    "required": True,
+                    "status": "pass",
+                    "policy_record_id": "policy-example",
+                    "policy_sha256": "abc123",
+                    "target": {
+                        "context": "example-product",
+                        "instance": "testing",
+                        "environment_class": "testing",
+                    },
+                    "checked_binding_keys": ["EXAMPLE_API_TOKEN"],
+                    "findings": [],
+                },
+                "secrets": [
+                    {
+                        "action": "rotated",
+                        "scope": "context_instance",
+                        "integration": "runtime_environment",
+                        "name": "EXAMPLE_API_TOKEN",
+                        "binding_key": "EXAMPLE_API_TOKEN",
+                        "context": "example-product",
+                        "instance": "testing",
+                        "secret_id": "secret-record-example",
+                        "secret_class": "testing",
+                    }
+                ],
+                "summary": {"runtime_changed_key_count": 0, "secret_change_count": 1},
+                "next_actions": [],
+            },
+        },
+    )
+
+    assert result["status"] == "accepted"
+    assert result["result"]["secrets"] == [
+        {
+            "action": "rotated",
+            "integration": "runtime_environment",
+            "binding_key": "EXAMPLE_API_TOKEN",
+            "secret_class": "testing",
+        }
+    ]
+
+
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",
