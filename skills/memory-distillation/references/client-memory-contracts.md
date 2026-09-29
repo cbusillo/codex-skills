@@ -66,7 +66,10 @@ relying on them:
 - **Fresh-session verification:** start a new session from a directory in the
   same repository with auto memory enabled, for example a non-interactive
   `claude -p` run, and observe the index or topic-file retrieval in its
-  transcript.
+  transcript. The session saves memories during ordinary work, so deny it file
+  writes; if writes cannot be denied, report verification as pending. For a
+  subagent store, invoke that subagent in the fresh session, since the main
+  conversation does not load its memory.
 
 ## Apply the owning client's contract
 
