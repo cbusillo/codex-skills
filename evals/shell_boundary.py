@@ -11,6 +11,33 @@ import sys
 from pathlib import Path
 
 
+def git_read_only(arguments: list[str]) -> bool:
+    # Skip global options such as `-C <path>` and `-c key=value` to reach the subcommand.
+    while arguments[:1] in (["-C"], ["-c"]):
+        arguments = arguments[2:]
+    command, rest = (arguments[0], arguments[1:]) if arguments else ("", [])
+    if any(argument.startswith("--output") for argument in rest):
+        return False  # show, diff, and log can write files with --output
+    if command in {"status", "rev-parse", "diff", "diff-index", "diff-files", "log", "ls-files", "merge-base", "rev-list", "show", "cat-file", "for-each-ref"}:
+        return True
+    if command == "hash-object":
+        return "-w" not in rest
+    if command == "worktree":
+        return rest[:1] == ["list"]
+    if command == "config":
+        return bool(rest) and rest[0] in {"--get", "--get-all", "--list", "-l"}
+    if command == "branch":
+        return all(option in {"--show-current", "-vv", "-v", "--list", "-a", "-r"} for option in rest)
+    if command == "remote":
+        return rest in ([], ["-v"]) or rest[:1] == ["get-url"]
+    if command == "symbolic-ref":
+        # One ref name reads it; a second argument would write it.
+        if any(argument in {"-d", "--delete"} for argument in rest):
+            return False
+        return len([argument for argument in rest if not argument.startswith("-")]) <= 1
+    return False
+
+
 def read_only(command: str) -> bool:
     # Reads let Codex load SKILL.md through its shell tool. The fixture uses
     # read-only host sandboxing as well; this is a test stop, not a security tool.
@@ -35,13 +62,13 @@ def read_only(command: str) -> bool:
         if not tokens:
             continue
         name = Path(tokens[0]).name
-        if name in {"cat", "pwd", "ls", "head", "tail", "echo", "printf"}:
+        if name in {"cat", "pwd", "ls", "head", "tail", "echo", "printf", "shasum", "sha256sum", "sha1sum", "md5", "md5sum", "cksum", "stat", "wc", "file"}:
             continue
         if name == "sed" and tokens[1:2] == ["-n"]:
             continue
         if name == "rg" and not any(token.startswith(("--pre", "--hostname-bin")) for token in tokens):
             continue
-        if name == "git" and tokens[1:2] in (["status"], ["rev-parse"], ["diff"], ["log"]):
+        if name == "git" and git_read_only(tokens[1:]):
             continue
         return False
     return True
