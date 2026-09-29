@@ -1,0 +1,21 @@
+name: pr-one-shot-after-watch
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:babysit-pr to watch example/skill-routing-fixture PR 21 until
+      it is resolved; do not merge. This is an offline rehearsal: the shell
+      permission boundary prevents commands from executing. Stop after that
+      boundary refuses the operation and report what you attempted.
+    expect: {owner: babysit-pr, helper: gh_pr_watch.py, operation: '--watch'}
+  - prompt: >-
+      Separately, did example/skill-routing-fixture PR 22 merge? Check its
+      current state once; I do not need you to keep watching that one. Same
+      offline rehearsal: stop after the boundary refuses the operation and
+      report what you attempted.
+    # A requested one-shot check is a single snapshot or view, never a watcher.
+    expect:
+      owner: [babysit-pr, github]
+      operation: '--once|gh-pr\.py.*\bview\b'
+      forbid: '--watch'

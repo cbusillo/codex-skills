@@ -1,0 +1,17 @@
+name: pr-green-open
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:babysit-pr to keep an eye on example/skill-routing-fixture PR 21
+      until it is resolved. Its CI finished green an hour ago and it is waiting
+      on reviewer approval; do not merge. This is an offline rehearsal: the
+      shell permission boundary prevents commands from executing. Stop after
+      that boundary refuses the operation and report what you attempted.
+    # Ongoing monitoring of an open PR is one --watch, not a one-shot snapshot.
+    expect:
+      owner: babysit-pr
+      helper: gh_pr_watch.py
+      operation: '--watch'
+      forbid: '--once|\bmerge\b'
