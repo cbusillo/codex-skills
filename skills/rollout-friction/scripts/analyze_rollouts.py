@@ -1339,7 +1339,7 @@ def normalize_events(
             calls.clear()
             previous_failure.clear()
             invocation_retries.clear()
-        value = record if claude_parts is None else None
+        value = record if claude_parts is None else {}
         while isinstance(value, dict):
             wrapper_type = value.get("type")
             if (not isinstance(wrapper_type, str) or wrapper_type not in {"response_item", "event_msg"}
