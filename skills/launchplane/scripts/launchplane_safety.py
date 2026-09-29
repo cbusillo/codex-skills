@@ -61,6 +61,7 @@ SAFE_SECRET_METADATA_KEYS = {
     "managedsecretbindingkeys",
     "secretevidence",
     "secretchangecount",
+    "secretclass",
     "secretbinding",
     "secretbindingcount",
     "secretbindingkeys",
