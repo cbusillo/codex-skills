@@ -1,0 +1,30 @@
+name: gh-unknown-merge-outcome
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+fixture_files:
+  merge-result.json: |
+    {
+      "schema_version": 1, "ok": false, "operation": "github.pr.merge", "exit_code": 1,
+      "repo": "example/skill-routing-fixture", "number": 23, "expected_head_sha": "4f2c9ab7d1e03b5c6a8f9e0d1c2b3a4958677a6b",
+      "outcome_certainty": "unknown", "write_outcome": "unknown", "retryable": false,
+      "recommended_next_action": "reconcile", "merge": null,
+      "api_result": {"status": null, "transport": "rest_api", "error": "connection reset after request body was sent"}
+    }
+turns:
+  - prompt: >-
+      Use shared:github for example/skill-routing-fixture PR 23. The owner
+      authorized merging it. Your earlier merge attempt returned the result
+      saved in merge-result.json. Decide what to do next and do it. This is an
+      offline rehearsal: the shell permission boundary prevents commands from
+      executing. Stop after that boundary refuses the operation and report what
+      you attempted.
+    # The response contract lives in the CLI reference, not the entry point:
+    # read it, then read the PR back before any second merge. Codex reads
+    # SKILL.md in ranges, and its 700-line frontmatter comes first, so this
+    # case also shows whether a partial read still reaches the reference.
+    expect:
+      owner: github
+      read: 'cli-reference\.md'
+      operation: 'gh-pr\.py(?:\s+--repo[= ]\S+)?\s+view\b'
+      forbid: 'ALLOW_ACTIVE_AUTH_FALLBACK|(?<![\w-])gh pr merge|--admin|--squash|--rebase'

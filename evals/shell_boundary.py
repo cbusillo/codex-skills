@@ -51,9 +51,10 @@ def read_only(command: str) -> bool:
         lexer.whitespace_split = True
         commands.append([])
         for token in lexer:
-            if token in {"&&", ";", "||"}:
+            # A pipe between reads is still a read; each stage must pass on its own.
+            if token in {"&&", ";", "||", "|"}:
                 commands.append([])
-            elif token in {"|", "&", ">", ">>", "<", "<<", "(", ")"}:
+            elif token in {"&", ">", ">>", "<", "<<", "(", ")"}:
                 return False
             else:
                 commands[-1].append(token)

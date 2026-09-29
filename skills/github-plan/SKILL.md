@@ -164,6 +164,8 @@ active issue labels and continuing background jobs do not lift a hold.
    available independent item; report work owned by another active worker as
    underway. A label, assignee, old PR, or old worktree alone does not prove
    active ownership; a partial session inventory does not prove availability.
+   When a session tool can message the apparent owner, ask it directly rather
+   than asking the owner to relay.
 4. Reuse preserved work only for this session's continuation or a verified
    handoff from a finished session, under the repository's worktree rules.
    Do not start duplicate implementation or take over another worker's worktree.
@@ -172,7 +174,8 @@ active issue labels and continuing background jobs do not lift a hold.
    while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On `go`, recheck ownership
-   and, where posting is authorized, record the worker/session, branch, and next
+   immediately before creating the worktree, not from an earlier `next`, and,
+   where posting is authorized, record the worker/session, branch, and next
    action in owned Current Status or a bot-authored planning comment before
    implementation, then read back for competing activity. Keep that record
    current through handoff or completion.

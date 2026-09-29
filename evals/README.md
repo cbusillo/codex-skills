@@ -69,6 +69,13 @@ grades for `work-closeout`; their `setup` scripts build real Git state, such as
 an upstream one commit ahead and a dirty or untracked file, with a fixed
 identity and clock so commit IDs are reproducible.
 
+Cases under `github-execution/` grade the `github` workflow the same way: a
+train landing and its exact-SHA runtime refresh, an adjacent planning request,
+missing merge and identity authority, and an unknown merge outcome. They may
+also set `read`, a pattern that some file read before the turn's first
+operation must match, so a case can require the reference that holds the
+contract it tests.
+
 The matched comparison measures the combined instruction and hook changes;
 it does not isolate the Claude-only protocol from the new routing instructions
 in `direction` and the execution loop.

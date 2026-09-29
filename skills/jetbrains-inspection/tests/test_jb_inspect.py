@@ -10109,6 +10109,32 @@ class HumanOutputTest(unittest.TestCase):
                 self.assertFalse(payload["retry_policy"]["retry"])
                 self.assertIn(guidance, payload["agent_result"]["next_action"])
 
+    def test_unproven_batch_annotator_unknown_names_blocking_tool_and_file(self):
+        for reason in ("native_batch_annotator_unproven", "native_cpp_batch_annotator_unproven"):
+            with self.subTest(reason=reason):
+                blocking = [
+                    {"tool": "ShellCheck", "file": "/repo/scripts/deploy.sh"},
+                    {"tool": "RadInspection", "file": "/repo/src/main.cpp"},
+                ]
+                payload = {
+                    "scope": "files",
+                    "status": "capture_incomplete",
+                    "capture_incomplete": True,
+                    "capture_incomplete_reason": "execution_not_proven",
+                    "capture_diagnostic": {
+                        "execution_proof_block_reason": reason,
+                        "execution_proof_unproven_batch_annotators": blocking,
+                    },
+                    "route": {"ide": {"inspection_execution_proof_version": 2}},
+                }
+
+                jb_inspect.apply_verdict(payload)
+
+                self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+                self.assertEqual(payload["agent_result"]["unproven_batch_annotators"], blocking)
+                self.assertIn("ShellCheck on /repo/scripts/deploy.sh", payload["agent_result"]["next_action"])
+                self.assertIn("RadInspection on /repo/src/main.cpp", payload["agent_result"]["next_action"])
+
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "whole_project",

@@ -343,6 +343,20 @@ def test_wrapped_native_items_propagate_typed_episode_costs(module: ModuleType) 
         raise AssertionError(f"native context or printed history changed typed episode costs: {payload}")
 
 
+def test_claude_code_transcript_matches_codex_episode_costs(module: ModuleType) -> None:
+    fixtures = Path(__file__).with_name("fixtures")
+    args = SimpleNamespace(since=None, until=None, context_chars=240, suppress_investigation_noise=True)
+    costs = []
+    for name in ("claude-code-transcript.jsonl", "codex-rollout.jsonl"):
+        trace = fixtures / name
+        scan_target = SimpleNamespace(path=trace, read_bytes=trace.stat().st_size)
+        hits, lines = module.collect_hits_and_lines(scan_target, args)
+        costs.append([(payload["cost"], payload["outcome"]) for payload in
+                      map(module.episode_to_json, module.build_episodes(scan_target, hits, 25, lines))])
+    if costs[0] != costs[1] or not costs[0] or not costs[0][0][0]["retry_count"]:
+        raise AssertionError(f"the same failures and retry must cost the same on both hosts: {costs}")
+
+
 def test_successful_argument_literals_do_not_create_episodes(module: ModuleType) -> None:
     records = [command_record("search", "rg --count 'error:|Command failed|exit_code=1' sample.txt"),
                result_record("search", 0, "3")]
@@ -430,6 +444,7 @@ def main() -> int:
     test_time_filters_use_analyzer_timestamp_parser(module)
     test_real_collection_counts_results_calls_and_retries_once(module)
     test_wrapped_native_items_propagate_typed_episode_costs(module)
+    test_claude_code_transcript_matches_codex_episode_costs(module)
     test_successful_argument_literals_do_not_create_episodes(module)
     test_cli_thresholds_agree_across_multiple_files(module)
     test_cli_read_diagnostics_remain_separate_from_episodes(module)
