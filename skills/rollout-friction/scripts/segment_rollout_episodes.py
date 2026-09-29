@@ -71,6 +71,7 @@ class TraceLine:
     outcome_basis: str | None = None
     kind: str = "legacy"
     file_id: str = ""
+    denied: bool = False
 
     def evidence_text(self) -> str:
         return self.snippet
@@ -164,7 +165,7 @@ def collect_hits_and_lines(target: Any, args: argparse.Namespace, *, apply_thres
             event.line, ANALYZER.redacted(event.evidence_text(), args.context_chars),
             event.outcome_basis in {"result_status", "result_text"}, event.event_id, event.tool_id,
             event.failed, event.succeeded, event.retry, event.exit_code,
-            event.expected_nonzero, event.outcome_basis, event.kind, event.file_id,
+            event.expected_nonzero, event.outcome_basis, event.kind, event.file_id, event.denied,
         ))
     return sorted(hits, key=lambda candidate: candidate.line), trace_lines
 

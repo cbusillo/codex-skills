@@ -238,10 +238,9 @@ rollout files, session traces, runout files, or agent workflow friction.
    files over broad historical scans. Each host keeps its own: Codex writes
    rollout files under its home's `sessions` folder, and Claude Code writes
    transcripts under its `projects` folder. Ask for the location when it is not
-   evident; there is no default. The helpers classify tool outcomes from Codex
-   rollout records. Given another host's transcript they still report text
-   signals, but they cannot tell a failed command from a successful one, so say
-   that outcome evidence is unavailable instead of reporting that nothing failed.
+   evident; there is no default. The helpers read both hosts' traces and
+   classify tool outcomes, including failed results, nonzero exits, and denied
+   commands, from each host's structured records.
 2. Run `uv run rollout-friction/scripts/analyze_rollouts.py` with explicit paths
    or an explicit bounded `--root`. For many recent files, write the paths to a
    newline- or NUL-delimited file and pass `--paths-file`; do not pass one

@@ -339,6 +339,7 @@ class TraceEvent:
     failed: bool = False
     succeeded: bool = False
     expected_nonzero: bool = False
+    denied: bool = False
     retry: bool = False
     outcome_basis: str | None = None
     file_id: str = ""
@@ -1023,6 +1024,8 @@ NATIVE_COMMAND_PHASE_KINDS = {
 }
 NATIVE_COMMAND_ITEM_TYPES = {"command_execution", "CommandExecution"}
 ERROR_STATUSES = {"error", "failed", "failure", "timeout", "timed_out", "cancelled"}
+# A command the approval or policy layer refused to run (Codex `declined`).
+DENIAL_STATUSES = {"declined"}
 SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed"}
 EXIT_STATUS_RE = re.compile(r"\b(?:exit[_ -]?code\s*[:=]?\s*|process exited with code\s+)(-?\d+)\b", re.I)
 SUCCESS_TEXT_RE = re.compile(r"\b(passed|succeeded|success|green|mergeable)\b", re.I)
@@ -1037,7 +1040,7 @@ def live_exec_session(value: Any) -> bool:
 def explicit_outcome(value: Any) -> bool:
     return isinstance(value, dict) and bool(
         {"exit_code", "error", "error_reason", "isError", "is_error", "success"} & value.keys()
-        or str(value.get("status", "")).lower() in ERROR_STATUSES | SUCCESS_STATUSES
+        or str(value.get("status", "")).lower() in ERROR_STATUSES | DENIAL_STATUSES | SUCCESS_STATUSES
         or live_exec_session(value)
     )
 
@@ -1178,8 +1181,10 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
     status = str(payload.get("status", "")).lower() if isinstance(payload, dict) else ""
     tool_error = isinstance(payload, dict) and bool(
         payload.get("error") or payload.get("error_reason") or payload.get("isError") is True
-        or payload.get("is_error") is True or payload.get("success") is False or status in ERROR_STATUSES
+        or payload.get("is_error") is True or payload.get("success") is False
+        or status in ERROR_STATUSES | DENIAL_STATUSES
     )
+    event.denied = status in DENIAL_STATUSES
     if event.exit_code is not None or tool_error or status in SUCCESS_STATUSES or (isinstance(payload, dict) and payload.get("success") is True):
         event.outcome_basis = "result_status"
         event.expected_nonzero = (expected_search_status(event.command, event.exit_code, tool_error)
@@ -1202,6 +1207,107 @@ def set_outcome(event: TraceEvent, payload: Any, *, typed_result: bool = False) 
             event.outcome_basis = "result_text" if typed_result else "text_hint"
 
 
+class ClaudeOutcome(NamedTuple):
+    exit_code: int | None
+    tool_error: bool
+    denied: bool
+
+
+class RecordPart(NamedTuple):
+    payload: Any
+    slot: str
+    kind: str
+    call_id: str = ""
+    command: str | list[str] | None = None
+    claude_outcome: ClaudeOutcome | None = None
+
+
+# Claude Code transcripts keep one JSON record per line under
+# ~/.claude/projects/<project>/. Messages carry content blocks in
+# `message.content`; types other than messages, system notes, and attachments
+# are harness bookkeeping and produce no events.
+CLAUDE_MESSAGE_TYPES = {"user", "assistant"}
+CLAUDE_CONTEXT_TYPES = {"system", "attachment"}
+CLAUDE_BOOKKEEPING_TYPES = {
+    "agent-name", "agent-setting", "ai-title", "atis-latch", "continued-in", "cost-state", "custom-title",
+    "file-history-delta", "file-history-snapshot", "last-prompt", "mode", "permission-mode", "pr-link",
+    "queue-operation", "summary",
+}
+CLAUDE_EXIT_HEADER_RE = re.compile(r"Exit code (-?\d+)")
+
+
+def claude_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                return block["text"]
+    return ""
+
+
+def claude_code_parts(record: Any) -> list[RecordPart] | None:
+    """Split a Claude Code transcript record into events; None when not Claude Code."""
+    if not isinstance(record, dict) or "payload" in record or not isinstance(record.get("type"), str):
+        return None
+    record_type = record["type"]
+    if record_type in CLAUDE_BOOKKEEPING_TYPES and {"sessionId", "messageId", "leafUuid"} & record.keys():
+        return []
+    if "sessionId" not in record:
+        return None
+    if record_type in CLAUDE_CONTEXT_TYPES:
+        return [RecordPart({key: record[key] for key in ("subtype", "content", "attachment") if key in record}, "", "context")]
+    message = record.get("message")
+    if record_type not in CLAUDE_MESSAGE_TYPES or not isinstance(message, dict):
+        return []
+    role = str(message.get("role") or record_type)
+    content = message.get("content")
+    if not isinstance(content, list):
+        return [RecordPart({"role": role, "content": content}, "", "context")]
+    parts: list[RecordPart] = []
+    texts: list[str] = []
+    denied = bool(record.get("toolDenialKind"))
+    for index, block in enumerate(content):
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type in {"text", "thinking"} and isinstance(block.get(block_type), str):
+            texts.append(block[block_type])
+        elif block_type == "tool_use":
+            tool_input = block.get("input")
+            parts.append(RecordPart(
+                {"type": "tool_use", "name": block.get("name"), "input": tool_input}, f"/{index}", "call",
+                str(block.get("id") or ""), command_value(tool_input),
+            ))
+        elif block_type == "tool_result":
+            is_error = block.get("is_error") is True
+            header = claude_result_text(block.get("content")).lstrip().split("\n", 1)[0].strip()
+            match = CLAUDE_EXIT_HEADER_RE.fullmatch(header)
+            exit_code = int(match.group(1)) if match else None
+            # A failed command's `is_error` reflects its exit status, so the
+            # exit code decides the outcome, as it does for Codex.
+            outcome = ClaudeOutcome(exit_code, is_error and exit_code is None, denied and is_error)
+            parts.append(RecordPart(
+                {"type": "tool_result", "content": block.get("content")}, f"/{index}", "result",
+                str(block.get("tool_use_id") or ""), None, outcome,
+            ))
+    if texts:
+        parts.insert(0, RecordPart({"role": role, "content": texts}, "", "context"))
+    return parts
+
+
+def apply_claude_outcome(event: TraceEvent, payload: Any, outcome: ClaudeOutcome) -> None:
+    """Claude Code results always carry a status: an absent `is_error` means success."""
+    event.exit_code = outcome.exit_code
+    event.denied = outcome.denied
+    tool_error = outcome.tool_error or outcome.denied
+    event.expected_nonzero = (expected_search_status(event.command, outcome.exit_code, tool_error)
+                              and not output_error_hint(payload))
+    event.failed = tool_error or (outcome.exit_code not in {None, 0} and not event.expected_nonzero)
+    event.succeeded = not event.failed
+    event.outcome_basis = "result_status"
+
+
 def normalize_events(
     path: Path, max_bytes: int, since_ts: float | None = None, until_ts: float | None = None,
     after_file: Path | None = None, after_line: int | None = None,
@@ -1220,16 +1326,20 @@ def normalize_events(
     for line, record in iter_records(path, max_bytes):
         if budget is not None:
             budget.check("normalization", path)
-        if isinstance(record, dict) and record.get("type") in {"session_meta", "thread.started"}:
+        claude_parts = claude_code_parts(record)
+        next_session = ""
+        if claude_parts is not None:
+            next_session = str(record.get("sessionId") or "")
+        elif isinstance(record, dict) and record.get("type") in {"session_meta", "thread.started"}:
             metadata = record.get("payload", {})
             next_session = (str(record.get("thread_id", "")) if record.get("type") == "thread.started"
                             else str(metadata.get("id", "")) if isinstance(metadata, dict) else "")
-            if next_session and next_session != session_id:
-                session_id = next_session
-                calls.clear()
-                previous_failure.clear()
-                invocation_retries.clear()
-        value = record
+        if next_session and next_session != session_id:
+            session_id = next_session
+            calls.clear()
+            previous_failure.clear()
+            invocation_retries.clear()
+        value = record if claude_parts is None else {}
         while isinstance(value, dict):
             wrapper_type = value.get("type")
             if (not isinstance(wrapper_type, str) or wrapper_type not in {"response_item", "event_msg"}
@@ -1259,27 +1369,34 @@ def normalize_events(
         if native_phase and not native_context:
             call_id = str(value.get("id") or "")
         command = command_value(value)
-        if line == 0:
-            parts = [(value, "", "scanner_diagnostic")]
+        parts: list[RecordPart]
+        if claude_parts is not None:
+            parts = claude_parts
+            for part in parts:
+                if part.kind == "call" and part.call_id:
+                    calls[part.call_id] = part.command
+        elif line == 0:
+            parts = [RecordPart(value, "", "scanner_diagnostic")]
         elif native_context or malformed_type:
-            parts = [(value, "", "context")]
+            parts = [RecordPart(value, "", "context")]
         elif kind in CALL_TYPES:
             if call_id:
                 calls[call_id] = command
-            parts = [(value, "", "call")]
+            parts = [RecordPart(value, "", "call")]
         elif (role in MESSAGE_ROLES or kind in CONTEXT_TYPES
               or (isinstance(value, str) and value.lstrip().startswith(("{", "[")))):
-            parts = [(value, "", "context")]
+            parts = [RecordPart(value, "", "context")]
         else:
             payloads = result_payloads(value)
-            parts = [(payload, slot, "result") for payload, slot in payloads] if payloads else [
-                (value, "", "result" if kind in RESULT_TYPES or role == "tool" else "legacy")
+            parts = [RecordPart(payload, slot, "result") for payload, slot in payloads] if payloads else [
+                RecordPart(value, "", "result" if kind in RESULT_TYPES or role == "tool" else "legacy")
             ]
-        for payload, slot, event_kind in parts:
-            payload_call_id = str(payload.get("call_id") or payload.get("tool_call_id") or "") if isinstance(payload, dict) else ""
+        for payload, slot, event_kind, part_call_id, part_command, claude_outcome in parts:
+            payload_call_id = part_call_id or (
+                str(payload.get("call_id") or payload.get("tool_call_id") or "") if isinstance(payload, dict) else "")
             child_call_id = payload_call_id or call_id
             identity_slot = "" if payload_call_id else slot
-            event_command = command_value(payload) or command or calls.get(child_call_id)
+            event_command = command_value(payload) or part_command or command or calls.get(child_call_id)
             tool_id = identity(f"tool:{child_call_id}:{identity_slot}" if child_call_id else f"tool:{line}:{slot}") if event_kind in {"call", "result"} else None
             event_id = identity(f"{event_kind}:{child_call_id}:{identity_slot}" if child_call_id else f"{event_kind}:{line}:{slot}")
             event = TraceEvent(line, event_id, event_kind, list(json_fragments(payload)), tool_id, event_command)
@@ -1287,7 +1404,9 @@ def normalize_events(
             payload_type = payload.get("type") if isinstance(payload, dict) else None
             typed_result = (kind in RESULT_TYPES or role == "tool"
                             or (isinstance(payload_type, str) and payload_type in RESULT_TYPES))
-            if native_phase != "item.updated":
+            if claude_outcome is not None:
+                apply_claude_outcome(event, payload, claude_outcome)
+            elif native_phase != "item.updated":
                 set_outcome(event, payload, typed_result=typed_result)
             # Correlate preceding calls even when the requested checkpoint excludes them.
             signature = json.dumps(simple_argv(event_command) or event_command, sort_keys=True) if event_command else None
@@ -1453,6 +1572,7 @@ def outcome_summary(events: list[TraceEvent]) -> dict[str, Any]:
         "text_hint_failure_count": sum(event.failed and event.outcome_basis == "text_hint" for event in events),
         "nonzero_exit_count": sum(event.exit_code is not None and event.exit_code != 0 for event in events),
         "expected_nonzero_count": sum(event.expected_nonzero for event in events),
+        "denied_result_count": sum(event.denied for event in events),
         "expected_nonzero_evidence": [
             {"event_id": event.event_id, "file_id": event.file_id, "line": event.line, "exit_code": event.exit_code}
             for event in events if event.expected_nonzero
@@ -1748,7 +1868,7 @@ def emit_text(targets: list[ScanTarget], findings: dict[str, Finding], limitatio
     events = getattr(findings, "events", [])
     print(f"count_semantics: {COUNT_SEMANTICS}; command failures count results, other signals count text matches")
     outcomes = outcome_summary(events)
-    print(f"nonzero_exits: {outcomes['nonzero_exit_count']}; expected_nonzero: {outcomes['expected_nonzero_count']}; text_hint_failures: {outcomes['text_hint_failure_count']}")
+    print(f"nonzero_exits: {outcomes['nonzero_exit_count']}; expected_nonzero: {outcomes['expected_nonzero_count']}; denied: {outcomes['denied_result_count']}; text_hint_failures: {outcomes['text_hint_failure_count']}")
     print(f"Scanned {len(targets)} file(s).")
     displayed_limitations = [limitation_to_json(limitation) for limitation in limitations] + scanner_diagnostics(events)
     if displayed_limitations:
