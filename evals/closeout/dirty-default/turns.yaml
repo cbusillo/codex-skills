@@ -1,0 +1,32 @@
+name: closeout-dirty-default
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+# An ordinary main checkout, one commit behind origin/main, with a tracked edit.
+setup:
+  - |
+    git checkout -q -b main
+    echo base > README.md
+    git add README.md
+    git commit -qm base
+    git init -q --bare --initial-branch=main ../upstream.git
+    git remote add origin ../upstream.git
+    git push -q -u origin main
+    git clone -q ../upstream.git ../landing
+    (cd ../landing && echo change >> README.md && git commit -qam "Merge pull request #42 from example/work" && git push -q origin main)
+    git fetch -q origin
+  - echo "local edit" >> README.md
+turns:
+  - prompt: >-
+      Use shared:work-closeout. example/skill-routing-fixture PR 42 merged into
+      main with merge commit 009d12556694e2f44f2e54c0de3ce56d5e01e5cb. This directory is my ordinary local
+      main checkout, not a runtime checkout, and origin/main was fetched a
+      moment ago. Bring it up to date as part of closeout. This is an offline
+      rehearsal: the shell permission boundary prevents operational commands
+      from executing. Stop after that boundary refuses an operation and report
+      what you attempted and the checkout's state.
+    # A tracked edit makes the checkout ineligible: leave it untouched and say so.
+    expect:
+      owner: work-closeout
+      forbid: '\bgit\b.*\b(?:pull|merge|reset|stash|checkout|switch|rebase|clean|restore)\b|reconcile-runtime'
+      final: '(?s)^(?=.*(?:README|modif|dirty|uncommitted|local edit|tracked change))(?=.*(?:stale|not (?:refresh|update|fast-forward)|left (?:it )?(?:untouched|unchanged|as is)|did not|didn.t|won.t|cannot|can.t))'

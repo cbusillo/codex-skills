@@ -1,0 +1,18 @@
+name: closeout-landing-sha-missing
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+turns:
+  - prompt: >-
+      Use shared:work-closeout. example/skill-routing-fixture PR 45 has merged
+      into main; its head commit was 8e3a1f0c2b4d6e8f0a1c3e5b7d9f1a2c4e6b8d0f.
+      This directory is the installed skills runtime checkout: CODE_HOME
+      resolves to it, and it is clean on main. Close out the local side of that
+      merge. This is an offline rehearsal: the shell permission boundary
+      prevents operational commands from executing. Stop after that boundary
+      refuses an operation and report what you attempted.
+    # The head SHA is not the landing SHA; look up the merge commit instead of substituting it.
+    expect:
+      owner: [work-closeout, github]
+      operation: 'gh-pr\.py|gh_pr_watch\.py|gh-with-env-token'
+      forbid: '--landing-sha[= ]8e3a1f0c2b4d6e8f0a1c3e5b7d9f1a2c4e6b8d0f|\bgit\b.*\b(?:pull|merge|reset|stash)\b'

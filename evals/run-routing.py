@@ -158,6 +158,13 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["first_operation_matches"] = bool(commands) and re.search(expect["operation"], commands[0]) is not None
     if "require" in expect:
         checks["required_operation"] = any(re.search(expect["require"], command) for command in commands)
+    if "prior" in expect:
+        # A proof that must be gathered before the turn's first operation.
+        sequence, operations = seen["sequence"], seen["operations"]
+        before = sequence[:operations[0][0]] if operations else sequence
+        patterns = [expect["prior"]] if isinstance(expect["prior"], str) else expect["prior"]
+        checks["prior_read"] = all(any(kind == "shell" and re.search(pattern, command) for kind, command in before)
+                                   for pattern in patterns)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
     if "final" in expect:
@@ -295,8 +302,17 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     fixture = destination / "workspace"
     fixture.mkdir()
     subprocess.run(["git", "init", "-q", "--initial-branch=fixture", str(fixture)], check=True)
+    # The Codex skill link is harness plumbing, not fixture state for the agent to judge.
+    (fixture / ".git" / "info" / "exclude").write_text(".agents/\n")
     if data["name"] in {"direction-merge", "github-ci-watch"} or data.get("direction_fixture"):
         (fixture / "DIRECTION.md").write_text("# Direction\n\n## Purpose\n\nComplete the owner's repository task.\n")
+    # Setup builds real Git state (commits, an upstream, dirty files) with a fixed
+    # identity and clock, so the fixture is reproducible.
+    setup_env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+                 "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+                 "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
+    for script in data.get("setup", []):
+        subprocess.run(["sh", "-ec", script], cwd=fixture, env=setup_env, check=True, capture_output=True)
     for name, text in data.get("fixture_files", {}).items():
         (fixture / name).parent.mkdir(parents=True, exist_ok=True)
         (fixture / name).write_text(text)
@@ -395,7 +411,8 @@ def main() -> int:
     # Multi-turn cases use turns.yaml so the native plugin eval does not load them.
     candidates = [*sorted((ROOT / "evals" / "owning-skill").glob("*/case.yaml")),
                   *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml")),
-                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml"))]
+                  *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml")),
+                  *sorted((ROOT / "evals" / "closeout").glob("*/turns.yaml"))]
     cases = []
     for path in candidates:
         data = yaml.safe_load(path.read_text())

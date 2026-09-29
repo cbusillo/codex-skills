@@ -117,6 +117,24 @@ class RoutingScoreTests(unittest.TestCase):
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 
+    def test_prior_proofs_must_come_before_the_first_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/work-closeout'}\n"}]}}
+            listing = call("Bash", {"command": "git ls-files --others --exclude-standard -z"})
+            fast_forward = call("Bash", {"command": "git merge --ff-only 0123456789abcdef0123456789abcdef01234567"})
+            turns = [{"expect": {"owner": "work-closeout", "prior": ["ls-files", "ls-files.*-z"]}}]
+            for messages, passed in [([base, listing, fast_forward], True), ([base, fast_forward, listing], False)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
+    def test_the_boundary_refuses_git_writes_behind_read_subcommands(self) -> None:
+        from shell_boundary import read_only
+        self.assertTrue(read_only("git -C repo ls-files --others --exclude-standard -z"))
+        for command in ("git hash-object -w notes.txt", "git branch -D main", "git config user.name x",
+                        "git -c core.hooksPath=/dev/null merge --ff-only 0123", "git worktree remove task"):
+            self.assertFalse(read_only(command), command)
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

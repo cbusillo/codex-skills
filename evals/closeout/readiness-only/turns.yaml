@@ -1,0 +1,15 @@
+name: closeout-readiness-only
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+turns:
+  - prompt: >-
+      Is example/skill-routing-fixture PR 46 ready to merge? Only assess it; do
+      not merge it or clean anything up. This is an offline rehearsal: the
+      shell permission boundary prevents operational commands from executing.
+      Stop after that boundary refuses an operation and report what you
+      attempted.
+    # A readiness question routes away from closeout and changes nothing.
+    expect:
+      owner: repo-readiness
+      forbid: 'worktree remove|branch -[dD]\b|\bclean\b|\breset\b|\bstash\b|\bmerge\b|\bpull\b|reconcile-runtime|gh-plan\.py.*\bclose\b|gh-issue.*\bclose\b'
