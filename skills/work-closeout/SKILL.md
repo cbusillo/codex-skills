@@ -6,13 +6,18 @@ metadata:
 resources:
   - path: scripts/repo_cleanup.py
     kind: script
-    description: Read-only cleanup inventory, private snapshot revalidation, and post-action verification.
+    description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
 commands:
   - name: repo-cleanup-inventory
     source: skill
     resource_path: scripts/repo_cleanup.py
     example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "inventory", "--repo", "/path/to/repo", "--json"]
     purpose: Reports scoped cleanup evidence without authorizing or performing deletion.
+  - name: repo-cleanup-forks
+    source: skill
+    resource_path: scripts/repo_cleanup.py
+    example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "forks", "--owner", "OWNER"]
+    purpose: Reports the cleanup policy's keep, archive, or delete disposition for each fork without changing any repository.
 ---
 
 # Work Closeout
