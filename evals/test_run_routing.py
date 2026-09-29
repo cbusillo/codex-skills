@@ -138,6 +138,12 @@ class RoutingScoreTests(unittest.TestCase):
                         "git -c core.hooksPath=/dev/null merge --ff-only 0123", "git worktree remove task"):
             self.assertFalse(read_only(command), command)
 
+    def test_usage_sums_each_hosts_reported_tokens(self) -> None:
+        claude = [{"type": "result", "usage": {"input_tokens": 5, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 5, "output_tokens": 7}}] * 2
+        codex = [{"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 4}}]
+        self.assertEqual(runner.usage(claude), {"input": 200, "cached_input": 180, "output": 14})
+        self.assertEqual(runner.usage(codex), {"input": 100, "cached_input": 80, "output": 4})
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

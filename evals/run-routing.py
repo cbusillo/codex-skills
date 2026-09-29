@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +235,23 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
             "protocol_copies": protocol_copies, "foreign_skill_reads": foreign}
 
 
+def usage(messages: list[dict[str, Any]]) -> dict[str, int]:
+    """Sum the tokens each host reports; input includes cached input."""
+    totals = {"input": 0, "cached_input": 0, "output": 0}
+    for message in messages:
+        reported = message.get("usage", {})
+        if message.get("type") == "result":
+            totals["input"] += sum(reported.get(key, 0) for key in
+                                   ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            totals["cached_input"] += reported.get("cache_read_input_tokens", 0)
+            totals["output"] += reported.get("output_tokens", 0)
+        elif message.get("type") == "turn.completed":
+            totals["input"] += reported.get("input_tokens", 0)
+            totals["cached_input"] += reported.get("cached_input_tokens", 0)
+            totals["output"] += reported.get("output_tokens", 0)
+    return totals
+
+
 def hook_override(groups: list[dict[str, Any]]) -> str:
     return "[" + ",".join(
         "{matcher=" + json.dumps(group["matcher"]) + ",hooks=[" + ",".join(
@@ -390,6 +408,7 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     receipt = {"host": host, "case": data["name"], "catalog": str(catalog), "source_digest": source_digest(catalog),
                "configured_model": model, "command": command, "prompts": prompts, "fixture": str(fixture),
                "harness_digest": hashlib.sha256(Path(__file__).read_bytes() + (ROOT / "evals" / "shell_boundary.py").read_bytes() + case.read_bytes()).hexdigest()}
+    started = time.monotonic()
     with (destination / "trace.jsonl").open("w") as out, (destination / "stderr.log").open("w") as err:
         if turns:
             run = claude_turns if host == "claude" else codex_turns
@@ -404,6 +423,8 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
                 receipt["exit_code"] = result.returncode
             except subprocess.TimeoutExpired:
                 receipt["error"] = "timeout"
+    receipt["elapsed_seconds"] = round(time.monotonic() - started, 1)
+    receipt["usage"] = usage(load_trace(destination)[0])
     receipt["score"] = (score_turns(host, turns, destination, catalog) if turns
                         else score_run(host, data["name"], destination, catalog))
     (destination / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -436,7 +457,7 @@ def main() -> int:
         name = yaml.safe_load(case.read_text())["name"]
         for index in range(args.runs):
             receipt = run_case(args.host, args.catalog.resolve(), case, args.out.resolve() / f"{name}-{index + 1}", args.model)
-            print(json.dumps({key: receipt.get(key) for key in ("host", "case", "exit_code", "error", "score")}), flush=True)
+            print(json.dumps({key: receipt.get(key) for key in ("host", "case", "exit_code", "error", "elapsed_seconds", "usage", "score")}), flush=True)
             failed |= receipt.get("exit_code") != 0 or not receipt["score"]["passed"]
     return int(failed)
 
