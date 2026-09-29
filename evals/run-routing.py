@@ -136,8 +136,13 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
 
 
-def owner_checks(seen: dict[str, Any], owner: str, helper: str) -> dict[str, bool]:
+def owner_checks(seen: dict[str, Any], owner: str, helper: str | None = None) -> dict[str, bool]:
     operations, sequence = seen["operations"], seen["sequence"]
+    if helper is None:
+        # Without a single right helper, reads may come first; the owner must precede the
+        # turn's first operation, or appear in the turn when it attempts none.
+        before = sequence[:operations[0][0]] if operations else sequence
+        return {"owner_before_first_operation": ("skill", owner) in before}
     return {"owner_before_first_operation": bool(operations) and ("skill", owner) in sequence[:operations[0][0]],
             "helper_first": bool(operations) and helper in operations[0][1]}
 
@@ -184,7 +189,7 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
         elif expect == "compacted":
             turn_checks = {"compacted": seen["compacted"]}
         else:
-            turn_checks = owner_checks(seen, expect["owner"], expect["helper"])
+            turn_checks = owner_checks(seen, expect["owner"], expect.get("helper"))
         checks |= {f"turn{number}_{name}": value for name, value in turn_checks.items()}
         reports.append({"turn": number, "loaded_skills": seen["loaded"],
                         "first_operation": seen["operations"][0][1] if seen["operations"] else None})
@@ -274,6 +279,9 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     subprocess.run(["git", "init", "-q", "--initial-branch=fixture", str(fixture)], check=True)
     if data["name"] in {"direction-merge", "github-ci-watch"} or data.get("direction_fixture"):
         (fixture / "DIRECTION.md").write_text("# Direction\n\n## Purpose\n\nComplete the owner's repository task.\n")
+    for name, text in data.get("fixture_files", {}).items():
+        (fixture / name).parent.mkdir(parents=True, exist_ok=True)
+        (fixture / name).write_text(text)
     events = destination / "shell-events.jsonl"
     gate_command = shlex.join(["uv", "run", "--quiet", str(ROOT / "evals" / "shell_boundary.py"), str(events)])
     start_command = shlex.join(["uv", "run", "--quiet", str(catalog / "hooks" / "direction_check_hook.py")])

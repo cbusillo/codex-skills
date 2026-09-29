@@ -92,6 +92,17 @@ class RoutingScoreTests(unittest.TestCase):
             score = runner.score_turns("claude", [{"expect": {"owner": "github", "helper": "gh-pr.py"}}], root)
             self.assertFalse(score["checks"]["turn1_owner_before_first_operation"])
 
+    def test_an_owner_without_one_helper_must_precede_the_first_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/work-closeout'}\n"}]}}
+            read = call("Bash", {"command": "git status"})
+            remove = call("Bash", {"command": "git worktree remove ../task"})
+            turns = [{"expect": {"owner": "work-closeout"}}]
+            for messages, passed in [([read, remove, base], False), ([read, base, remove], True), ([read], False)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

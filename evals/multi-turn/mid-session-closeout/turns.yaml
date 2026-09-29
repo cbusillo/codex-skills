@@ -1,0 +1,21 @@
+name: mid-session-closeout
+hosts: [claude, codex]
+direction_fixture: true
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:direction for this final step of our direction session.
+      I have approved the direction change in example/skill-routing-fixture PR 17
+      to main, including merging it. Reviews, CI, owner comments, and readiness
+      were just checked and passed for its current head. There is no deployment.
+      Invoke the merge now. This is an offline rehearsal: the shell permission
+      boundary prevents commands from executing. Stop after that boundary
+      refuses the operation and report what you attempted.
+    expect: {owner: github, helper: gh-pr.py}
+  - prompt: >-
+      Assume PR 17 merged. Close out this work: clean up whatever this task left
+      behind and tell me whether I can exit. Same offline rehearsal: operational
+      commands are refused; stop after the first refusal and report what you
+      attempted.
+    expect: {owner: work-closeout}

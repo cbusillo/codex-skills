@@ -1,0 +1,21 @@
+name: mid-session-watch
+hosts: [claude, codex]
+direction_fixture: true
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:direction for this final step of our direction session.
+      I have approved the direction change in example/skill-routing-fixture PR 17
+      to main, including merging it. Reviews, CI, owner comments, and readiness
+      were just checked and passed for its current head. There is no deployment.
+      Invoke the merge now. This is an offline rehearsal: the shell permission
+      boundary prevents commands from executing. Stop after that boundary
+      refuses the operation and report what you attempted.
+    expect: {owner: github, helper: gh-pr.py}
+  - prompt: >-
+      Next, example/skill-routing-fixture PR 19: I just pushed a review fix and
+      CI is still running. Keep watching its checks and review feedback until it
+      settles; do not merge. Same offline rehearsal: stop after the boundary
+      refuses the operation and report what you attempted.
+    expect: {owner: babysit-pr, helper: gh_pr_watch.py}
