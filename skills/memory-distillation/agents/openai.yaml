@@ -3,7 +3,7 @@ interface:
   display_name: "Memory Distillation"
   short_description: "Audit memories into durable sources"
   default_prompt: >-
-    Use $memory-distillation to audit Codex and Codex Lab memories and propose
+    Use $memory-distillation to audit Codex, Codex Lab, and Claude Code memories and propose
     durable promotions or retirement from reusable context.
 
 policy:
