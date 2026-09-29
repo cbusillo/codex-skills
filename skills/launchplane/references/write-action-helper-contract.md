@@ -48,6 +48,29 @@ to a projected command.
 - Apply changes the record, not the database. Check `read_back_matches`, then
   run Odoo post-deploy for the lane and verify the settings there.
 
+## Integration allowances
+
+`integration-allowances-read`, `integration-allowances-dry-run` and
+`integration-allowances-apply` call `GET /v1/product-config/integration-allowances`
+and `POST /v1/product-config/integration-allowances/apply`. A non-production lane
+may hold an integration's settings only when an allowance recorded here says why.
+These routes are local extensions until the vendored artifact is refreshed.
+
+- `integration-allowances-read --product --context --instance` returns the lane's
+  allowances. Use the product's canonical id; the service refuses a lane the
+  product doesn't own.
+- The private payload file holds `schema_version`, `product`, `context`,
+  `instance`, `reason`, and `allowances`: the lane's whole list, each entry with
+  `integration`, `kind` (`dev_store`, `read_only_source` or `pre_live`), `reason`
+  and optional `evidence` (required for `read_only_source`). An omitted
+  integration is removed. Any other field is refused before any request is sent.
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest` equal to the saved `plan_sha256`,
+  `--dry-run-evidence-file` for the same product, context and instance, and
+  `--idempotency-key`.
+- The service refuses allowances on a production lane, `pre_live` outside testing
+  and dev, and a target record changed since the review.
+
 ## Product expected configuration
 
 Use `product-expected-config-dry-run --payload-file PRIVATE.json` to add declared
