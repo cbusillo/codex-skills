@@ -249,7 +249,8 @@ def codex_turns(command: list[str], prompts: list[str], fixture: Path, env: dict
             options = [part for part in command[2:] if part not in {"--sandbox", "read-only"}]
             argv = ["codex", "exec", "resume", *options, "-c", 'sandbox_mode="read-only"', thread, prompt]
         try:
-            result = subprocess.run(argv, cwd=fixture, env=env, stdout=subprocess.PIPE, stderr=err, text=True, timeout=timeout)
+            result = subprocess.run(argv, cwd=fixture, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err,
+                                    text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None
         out.write(result.stdout)
