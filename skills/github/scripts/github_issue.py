@@ -13,6 +13,8 @@ import hashlib
 import json
 import os
 import pathlib
+import select
+import stat
 import sys
 import urllib.parse
 from typing import Any, Callable, Optional
@@ -1343,11 +1345,14 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_group.add_argument("-m", "--milestone")
     milestone_group.add_argument("--remove-milestone", action="store_true")
     edit.add_argument("--allow-cross-author-source-edit", metavar="REASON")
+    edit.add_argument("--body-file", help="Read the new body from a file, or '-' for stdin.")
 
     close = sub.add_parser("close")
     close.add_argument("number")
     close.add_argument("-R", "--repo")
-    close.add_argument("-c", "--comment")
+    close_comment = close.add_mutually_exclusive_group()
+    close_comment.add_argument("-c", "--comment")
+    close_comment.add_argument("--comment-file", help="Read the close comment from a file, or '-' for stdin.")
     close_mode = close.add_mutually_exclusive_group()
     close_mode.add_argument("-r", "--reason", default="completed")
     close_mode.add_argument("--duplicate-of")
@@ -1355,7 +1360,9 @@ def build_parser() -> argparse.ArgumentParser:
     reopen = sub.add_parser("reopen")
     reopen.add_argument("number")
     reopen.add_argument("-R", "--repo")
-    reopen.add_argument("-c", "--comment")
+    reopen_comment = reopen.add_mutually_exclusive_group()
+    reopen_comment.add_argument("-c", "--comment")
+    reopen_comment.add_argument("--comment-file", help="Read the reopen comment from a file, or '-' for stdin.")
     return parser
 
 
@@ -1390,10 +1397,49 @@ def _terminal_failure(
     return envelope
 
 
-def _read_stdin(*, optional: bool) -> str:
-    if optional and sys.stdin.isatty():
-        return ""
+# How long optional stdin may stay silent before it counts as no input.
+IMPLICIT_STDIN_WAIT_SECONDS = 1.0
+
+
+def _read_stdin() -> str:
     return sys.stdin.read()
+
+
+def _read_input_file(path: str) -> str:
+    if path == "-":
+        return _read_stdin()
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Cannot read {path}: {exc}") from exc
+
+
+def _read_implicit_stdin() -> str:
+    """Read stdin that the caller may or may not have supplied.
+
+    Agent hosts can leave stdin as an open pipe that is never written or
+    closed, so a plain read would wait forever. A redirected file is read
+    as-is; anything else is read only if it has data or end-of-file within
+    IMPLICIT_STDIN_WAIT_SECONDS. Callers with slow producers pass an explicit
+    ``-`` file argument instead.
+    """
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd):
+            return ""
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            return sys.stdin.read()
+        ready, _, _ = select.select([fd], [], [], IMPLICIT_STDIN_WAIT_SECONDS)
+    except (AttributeError, OSError, ValueError):
+        return ""
+    return sys.stdin.read() if ready else ""
+
+
+def _state_comment(args: argparse.Namespace) -> Optional[str]:
+    if args.comment_file:
+        return _read_input_file(args.comment_file) or None
+    stdin_comment = _read_implicit_stdin()
+    return stdin_comment if stdin_comment else args.comment
 
 
 def _close_reason(value: str) -> str:
@@ -1453,7 +1499,7 @@ def main() -> int:
         if args.command == "create":
             payload = create_issue(
                 args.title,
-                _read_stdin(optional=False),
+                _read_stdin(),
                 repo=args.repo,
                 labels=args.label,
                 assignees=args.assignee,
@@ -1462,10 +1508,11 @@ def main() -> int:
             )
         elif args.command == "edit":
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
-            stdin_body = _read_stdin(optional=True)
+            # An explicit file may clear the body; empty implicit stdin means no body change.
+            body = _read_input_file(args.body_file) if args.body_file else (_read_implicit_stdin() or None)
             payload = edit_issue(
                 target_number,
-                body=stdin_body if stdin_body else None,
+                body=body,
                 title=args.title,
                 repo=target_repo,
                 add_labels=args.add_label,
@@ -1479,8 +1526,7 @@ def main() -> int:
             )
         elif args.command == "close":
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
-            stdin_comment = _read_stdin(optional=True)
-            comment_body = stdin_comment if stdin_comment else args.comment
+            comment_body = _state_comment(args)
             reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
             payload = set_issue_state(
                 target_number,
@@ -1494,8 +1540,7 @@ def main() -> int:
             )
         else:
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
-            stdin_comment = _read_stdin(optional=True)
-            comment_body = stdin_comment if stdin_comment else args.comment
+            comment_body = _state_comment(args)
             payload = set_issue_state(
                 target_number,
                 state="open",
