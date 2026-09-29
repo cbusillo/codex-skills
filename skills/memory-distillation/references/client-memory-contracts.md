@@ -69,7 +69,9 @@ relying on them:
   same repository with auto memory enabled, for example a non-interactive
   `claude -p` run, and observe the index or topic-file retrieval in its
   transcript. The session saves memories during ordinary work, so deny it file
-  writes by limiting its tools, for example `claude -p --tools Read,Grep,Glob`;
+  writes by limiting its tools, for example
+  `claude -p --tools Read,Grep,Glob --strict-mcp-config`. `--tools` limits only
+  the built-in tools, `--strict-mcp-config` drops configured MCP servers, and
   pre-approving tools with `--allowedTools` leaves the user's own write
   permissions in place. If writes cannot be denied, report verification as
   pending. For a subagent store, invoke that subagent in the fresh session,
