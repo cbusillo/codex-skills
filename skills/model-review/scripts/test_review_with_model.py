@@ -105,6 +105,9 @@ class ReviewWithModelTests(unittest.TestCase):
         # `--allowedTools` only extends a user's own allowlist; `--tools` is what removes the write tools.
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
+        # `--tools` leaves configured MCP servers, which can write, unless the session ignores them.
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertNotIn("--mcp-config", argv)
 
     def test_google_preamble_names_only_allowed_commands_and_read_file(self) -> None:
         self.install("agy", FAKE_AGY)

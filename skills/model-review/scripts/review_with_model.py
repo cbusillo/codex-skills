@@ -112,8 +112,9 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
 
 def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _scratch: Path) -> dict[str, Any]:
     # `--tools` limits what exists in the session. `--allowedTools` would only pre-approve these
-    # on top of the user's own settings, which may already allow editing.
-    argv = ["claude", "-p", prompt, "--tools", "Read,Grep,Glob", "--output-format", "json"]
+    # on top of the user's own settings, which may already allow editing. `--tools` does not reach
+    # MCP servers, which can write outside the repository; `--strict-mcp-config` with no config drops them.
+    argv = ["claude", "-p", prompt, "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--output-format", "json"]
     if model:
         argv += ["--model", model]
     proc = run_cli(argv, repo, timeout)
