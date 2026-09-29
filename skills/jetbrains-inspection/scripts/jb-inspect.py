@@ -6524,6 +6524,25 @@ IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
 )
 
 
+def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
+    diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    examples = diagnostic.get("execution_proof_unproven_batch_annotators")
+    if not isinstance(examples, list):
+        return []
+    return [
+        {"tool": example["tool"], "file": example["file"]}
+        for example in examples
+        if isinstance(example, dict) and isinstance(example.get("tool"), str) and isinstance(example.get("file"), str)
+    ]
+
+
+def unproven_batch_annotator_suffix(payload: dict[str, Any]) -> str:
+    pairs = unproven_batch_annotators(payload)
+    if not pairs:
+        return ""
+    return " Blocking: " + "; ".join(f"{pair['tool']} on {pair['file']}" for pair in pairs) + "."
+
+
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
@@ -6548,11 +6567,13 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
             return (
                 "Do not report GREEN and do not retry: C/C++ files in this scope use batch-annotator inspections "
                 "(such as CLion Radler) that never report completion. Inspect a scope without C/C++ files, or report UNKNOWN."
+                + unproven_batch_annotator_suffix(payload)
             )
         if execution_proof_reason == "native_batch_annotator_unproven":
             return (
                 "Do not report GREEN and do not retry: files in this scope use batch-annotator inspections "
                 "(such as ShellCheck or ESLint) that never report completion. Inspect a scope without those files, or report UNKNOWN."
+                + unproven_batch_annotator_suffix(payload)
             )
         if execution_proof_reason == "native_tool_completion_unproven":
             return (
@@ -7019,6 +7040,8 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     inspection_proof = compact_inspection_proof(payload)
     if inspection_proof:
         agent_result["inspection_proof"] = inspection_proof
+    if verdict == "UNKNOWN" and (blocking_batch_annotators := unproven_batch_annotators(payload)):
+        agent_result["unproven_batch_annotators"] = blocking_batch_annotators
     payload["agent_result"] = agent_result
     return payload
 
