@@ -46,6 +46,25 @@ These tests establish routing and attempted tool calls, not successful GitHub
 mutations. A real interactive merge and CI watch remain separate acceptance
 evidence.
 
+Cases under `multi-turn/` use `turns.yaml`, which only the direct runner reads,
+and grade each turn on its own: a skill loaded in an earlier turn does not
+cover a later step. A quiet turn must load nothing, and `/compact` as a turn
+compacts a Claude Code session before the next step. Claude Code turns run in
+one stream-json process without session persistence. Codex turns resume a
+session recorded in a per-run `CODEX_HOME` that links only `auth.json`, so the
+owner's session history is untouched. Every Codex run gets that home and an
+empty `HOME`, because Codex always scans `$HOME/.agents/skills` and an installed
+catalog there would compete with the tested one. Claude Code does not inject a skill's
+text again while it is still in context, so a repeated `Skill` call counts
+when that skill was confirmed from the tested catalog earlier in the run.
+
+Cases under `pr-monitoring/` use the same `turns.yaml` format to grade what
+`babysit-pr` decides, not only which skill owned the step. A turn's `expect`
+may add `operation` (a pattern the first operational command must match),
+`require` (some operation must match), `forbid` (no operation may match), and
+`final` (the turn's final answer must match). A refused command still counts
+as attempted.
+
 The matched comparison measures the combined instruction and hook changes;
 it does not isolate the Claude-only protocol from the new routing instructions
 in `direction` and the execution loop.

@@ -71,6 +71,54 @@ class RoutingScoreTests(unittest.TestCase):
         self.assertTrue(runner.valid_merge_arguments(runner.ROOT, "uv run gh-pr.py --repo owner/repo merge 17 --method merge"))
         self.assertFalse(runner.valid_merge_arguments(runner.ROOT, "uv run gh-pr.py merge 17 --repo owner/repo --method merge"))
 
+    def test_a_load_in_an_earlier_turn_does_not_cover_a_later_step(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/github'}\n"}]}}
+            launched = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "Launching skill: shared:github"}]}}
+            merge = call("Bash", {"command": "uv run gh-pr.py --repo owner/repo merge 18 --method merge"})
+            turns = [{"expect": {"owner": "github", "helper": "gh-pr.py"}}] * 2
+            first = [{"type": "turn_marker", "turn": 1}, call("Skill", {"skill": "shared:github"}), launched, base, merge]
+            for second, passed in [([merge], False), ([call("Skill", {"skill": "shared:github"}), launched, merge], True)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [*first, {"type": "turn_marker", "turn": 2}, *second])))
+                score = runner.score_turns("claude", turns, root)
+                self.assertTrue(score["checks"]["turn1_owner_before_first_operation"])
+                self.assertEqual(score["checks"]["turn2_owner_before_first_operation"], passed)
+
+    def test_a_repeat_invocation_needs_an_earlier_load_from_the_tested_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launched = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "Launching skill: shared:github"}]}}
+            merge = call("Bash", {"command": "uv run gh-pr.py merge 18"})
+            (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, launched, merge])))
+            score = runner.score_turns("claude", [{"expect": {"owner": "github", "helper": "gh-pr.py"}}], root)
+            self.assertFalse(score["checks"]["turn1_owner_before_first_operation"])
+
+    def test_an_owner_without_one_helper_must_precede_the_first_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/work-closeout'}\n"}]}}
+            read = call("Bash", {"command": "git status"})
+            remove = call("Bash", {"command": "git worktree remove ../task"})
+            turns = [{"expect": {"owner": "work-closeout"}}]
+            for messages, passed in [([read, remove, base], False), ([read, base, remove], True), ([read], False)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
+    def test_decision_grades_judge_the_operations_and_final_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/babysit-pr'}\n"}]}}
+            expect = {"owner": ["github", "babysit-pr"], "operation": "--watch", "require": "--pr 21", "forbid": "--once", "final": "watching"}
+            turns = [{"expect": expect}]
+            for command, final, passed in [("uv run gh_pr_watch.py --pr 21 --watch", "Still watching.", True),
+                                           ("uv run gh_pr_watch.py --pr 21 --once", "Still watching.", False),
+                                           ("uv run gh_pr_watch.py --pr 21 --watch", "Done.", False)]:
+                messages = [{"type": "turn_marker", "turn": 1}, base, call("Bash", {"command": command}),
+                            {"type": "result", "result": final}]
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

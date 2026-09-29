@@ -279,6 +279,21 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-config/odoo-addon-settings/apply",
         "mode": "apply",
     },
+    "integration-allowances-read": {
+        "method": "GET",
+        "path": "/v1/product-config/integration-allowances",
+        "mode": "read",
+    },
+    "integration-allowances-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-config/integration-allowances/apply",
+        "mode": "dry-run",
+    },
+    "integration-allowances-apply": {
+        "method": "POST",
+        "path": "/v1/product-config/integration-allowances/apply",
+        "mode": "apply",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",

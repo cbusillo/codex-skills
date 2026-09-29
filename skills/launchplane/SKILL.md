@@ -672,9 +672,9 @@ workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, and Odoo addon-settings commands are explicit bounded
-local extensions because the vendored public operation projection does not
-contain their routes. Do not describe them as contract-backed. If a later artifact adds those
+generic-web deploy-recovery, Odoo addon-settings, and integration-allowances
+commands are explicit bounded local extensions because the vendored public
+operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
 
@@ -996,6 +996,15 @@ verification.
   the saved dry-run evidence, `--expected-plan-digest`, reviewed
   acknowledgement and an idempotency key. The record change is intent only: run
   Odoo post-deploy for the lane afterwards.
+- `GET /v1/product-config/integration-allowances` and
+  `POST /v1/product-config/integration-allowances/apply`: Bounded
+  local-extension paths for a lane's non-production integration allowances
+  (`integration-allowances-read` / `-dry-run` / `-apply`). The private payload
+  carries the lane's whole allowance list, each with `integration`, `kind`
+  (`dev_store`, `read_only_source` with grant `evidence`, or `pre_live`) and
+  `reason`. Apply requires the saved dry-run evidence, `--expected-plan-digest`,
+  reviewed acknowledgement and an idempotency key. Use the product's canonical id
+  (for example `odoo-tenant-opw`); the service checks that it owns the lane.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
