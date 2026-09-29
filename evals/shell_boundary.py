@@ -32,7 +32,7 @@ def read_only(command: str) -> bool:
         if not tokens:
             continue
         name = Path(tokens[0]).name
-        if name in {"cat", "pwd", "ls", "head", "tail"}:
+        if name in {"cat", "pwd", "ls", "head", "tail", "echo", "printf"}:
             continue
         if name == "sed" and tokens[1:2] == ["-n"]:
             continue
