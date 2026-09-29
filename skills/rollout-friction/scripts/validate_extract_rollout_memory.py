@@ -347,6 +347,31 @@ def test_destination_filter_matches_cli_behavior() -> None:
         raise AssertionError(f"destination filtering should isolate local-llm: {filtered}")
 
 
+def test_reads_claude_code_messages_and_tool_results() -> None:
+    namespace, module = args()
+
+    def record(kind: str, content: object, **extra: object) -> dict[str, object]:
+        return {"type": kind, "sessionId": "session-synthetic", "timestamp": "2026-06-01T12:00:00Z",
+                "message": {"role": kind, "content": content}, **extra}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        trace = write_trace(
+            Path(tmp),
+            [
+                record("user", "qwen3-coder-64b is our preferred local LLM extraction model."),
+                record("user", [{"type": "text", "text": "Kyle/HonkHonk is a trusted collaborator."}], isMeta=True),
+                record("user", [{"type": "tool_result", "tool_use_id": "toolu_example", "is_error": True, "content": [
+                    {"type": "text", "text": "Auto Review loop repeated and blocked the branch until confirm."}]}]),
+                {"type": "last-prompt", "sessionId": "session-synthetic",
+                 "lastPrompt": "Kyle/HonkHonk is a trusted collaborator."},
+            ],
+        )
+        candidates = module.extract([trace], namespace)
+    destinations = sorted(candidate.destination for candidate in candidates)
+    if destinations != ["local-llm", "rollout-friction"]:
+        raise AssertionError(f"expected Claude Code message and tool result, without injected or bookkeeping records: {destinations}")
+
+
 def main() -> int:
     test_skips_session_meta_base_instructions()
     test_context_window_preserves_neighboring_turns()
@@ -361,6 +386,7 @@ def main() -> int:
     test_output_dir_writes_local_artifacts()
     test_output_dir_cli_is_quiet()
     test_destination_filter_matches_cli_behavior()
+    test_reads_claude_code_messages_and_tool_results()
     print("ok validate-extract-rollout-memory")
     return 0
 

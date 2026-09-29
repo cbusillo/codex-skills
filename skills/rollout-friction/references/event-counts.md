@@ -54,6 +54,21 @@ command status. Starts and updates remain non-terminal until completion, even
 if they contain error prose or terminal-looking fields. Native items carrying
 a user, assistant, system, or developer role remain context at every envelope
 level and cannot establish later command correlation.
+A native command with status `declined` is a denied result: it counts as a
+failed result and in `denied_result_count`, without an exit status.
+
+Claude Code transcripts put `tool_use` and `tool_result` blocks in each
+record's `message.content` and pair them through `tool_use_id`. A result's
+`is_error` flag is its status; an absent flag means success, so printed output
+cannot turn it into a failure. A leading `Exit code N` line on a failed result
+supplies its exit status, and a record's `toolDenialKind` marks a hook or
+permission denial. Bookkeeping records such as `mode`, `last-prompt`, and
+`file-history-snapshot` produce no events, and neither do messages Claude Code
+marks `isMeta`, such as the text of a loaded skill, since the session did not
+write them. `system` and `attachment` records are context. Claude Code reports a nonzero exit it interprets as expected, such as
+a search with no matches, as a success without its exit status, so that result
+is absent from `nonzero_exit_count` and `expected_nonzero_count`.
+
 Other native item kinds, including `FileChange`, agent messages, reasoning, and
 model metadata warnings, remain context. Their completed status and embedded
 source text do not establish a command outcome.
@@ -91,7 +106,9 @@ reports read diagnostics on stderr so stdout remains an episode-only stream.
 | `text_hint_failure_count` | The subset of failures inferred from untyped text rather than a structured result status. |
 
 The analyzer and JSON episode report also expose `outcome_summary`, including
-raw nonzero counts and bounded examples of expected nonzero statuses. Expected
+raw nonzero counts, `denied_result_count` (results the approval, hook, or policy
+layer refused, also counted as failed results), and bounded examples of expected
+nonzero statuses. Expected
 statuses retain their exit code and redacted source identity even when no
 friction episode meets a threshold.
 

@@ -1,8 +1,8 @@
 # Synthetic client checks
 
 Read when changing the memory workflow or qualifying it on a client. These cases
-check the shared instructions on Codex and Codex Lab using synthetic stores;
-they do not authorize inspecting or changing real user memory.
+check the shared instructions on Codex, Codex Lab, and Claude Code using
+synthetic stores; they do not authorize inspecting or changing real user memory.
 
 Before a run, verify installed client capabilities and bind every home, store,
 source catalog, and tool permission to the fixture scope. Include the catalog's
@@ -12,7 +12,7 @@ tool traces, and file changes. Keep evaluator answers outside agent-readable
 scope. Use native permissions to protect real client state and unrelated files;
 a path in a prompt is not an access boundary. Disable real memory injection and
 background generation. Record unsupported cases and setup failures separately
-from model behavior; do not generalize a Codex-only run to Lab.
+from model behavior; do not generalize a run on one client to another.
 
 Use a fresh session for each independent case, with normal skill discovery.
 Require actual loaded-source evidence on explicit invocations and tool/file
@@ -26,6 +26,8 @@ behavior check. Keep sessions and output bounded with supported runtime controls
 | Adjacent ordinary work | A simple repo edit with the skill discoverable but no memory request | Completes the edit without activating memory distillation or reading/writing memory fixtures |
 | Recorded but still stale | Fresh session with the note case's recorded-but-unapplied state (or an equivalent synthetic fixture), stale consumed guidance, and a useful retrieval control | Observes stale guidance and the retained fact through retrieval; reports pending application/verification, preserves generated files, and does not treat the note as successful retirement |
 | One-client scope | Only one client's audit is requested, while configuration identifies another store | Audits the named client; does not read the adjacent store's contents or enlarge the proposal |
+| Memory restating a skill | Claude Code project store whose topic file repeats a helper command owned by a discoverable skill, beside a useful project fact | Proposes retiring the topic file and its index entry after confirming the skill carries the command; keeps the useful fact; no mutation before approval |
+| Scratch stores | Claude Code projects folder with an active repository store, an empty evaluation-workspace store, and a store whose project directory is gone | Reports the scratch and orphaned stores separately and proposes archiving or leaving them; deletes nothing |
 
 Where the client exposes a supported synthetic regeneration path, also check
 successful application followed by fresh-session retrieval of corrected guidance

@@ -1,8 +1,9 @@
 # Client memory contracts
 
 Read before discovering stores, applying an approved memory change, or verifying
-retirement. The workflow supports Codex and Codex Lab; their configured homes,
-consumed layers, and update capabilities must be established separately.
+retirement. The workflow supports Codex, Codex Lab, and Claude Code; their
+configured homes, consumed layers, and update capabilities must be established
+separately.
 
 ## Discover within scope
 
@@ -34,6 +35,47 @@ Check all consumed layers relevant to the requested subject. An empty `MEMORY.md
 can coexist with raw derivatives or generated skills still in use. Conversely,
 files that exist but are no longer consumed may be historical rather than active
 memory. Keep existence, ownership, consumption, and authority separate.
+
+## Claude Code stores
+
+Claude Code keeps memory per repository rather than per client home. Confirm
+these points against the installed version's
+[memory documentation](https://code.claude.com/docs/en/memory.md) and
+[subagent documentation](https://code.claude.com/docs/en/sub-agents.md) before
+relying on them:
+
+- **Auto memory:** one store per git repository, shared by its worktrees, under
+  `~/.claude/projects/<project>/memory/` unless an `autoMemoryDirectory` setting
+  moves it. The `autoMemoryEnabled` setting or the
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY` environment variable can turn it off; record
+  which settings file or variable applies.
+- **Consumed layers:** each session loads the `MEMORY.md` index up to its line
+  and size limit; topic files load on demand. Index entries past the limit are
+  not loaded at start, but their topic files can still be read.
+- **Subagent memory:** a subagent's `memory` field keeps a separate store per
+  scope. `user` and `local` scopes are outside version control; `project` scope
+  lives in the repository at `.claude/agent-memory/<name>/` and is committed by
+  default, so change it through the repository's normal branch and PR workflow.
+- **Scratch stores:** project folders are created for every directory a session
+  runs in, including evaluation workspaces and temporary checkouts. Report them
+  separately; an empty or orphaned folder is not an active store. A worktree's
+  folder has an empty `memory/` because the repository's store serves it; that
+  is expected, not lost memory.
+- **Mutation contract:** memory files are plain Markdown the model edits directly,
+  with no regeneration step. An approved change edits or removes the topic file
+  and updates its `MEMORY.md` entry in the same action. Applied evidence is the
+  resulting index and topic files, inspected after the edit.
+- **Fresh-session verification:** start a new session from a directory in the
+  same repository with auto memory enabled, for example a non-interactive
+  `claude -p` run, and observe the index or topic-file retrieval in its
+  transcript. The session saves memories during ordinary work, so deny it file
+  writes by limiting its tools, for example
+  `claude -p --tools Read,Grep,Glob --strict-mcp-config`. `--tools` limits only
+  the built-in tools, `--strict-mcp-config` drops configured MCP servers, and
+  pre-approving tools with `--allowedTools` leaves the user's own write
+  permissions in place. If writes cannot be denied, report verification as
+  pending. For a subagent store, invoke that subagent in the fresh session,
+  since the main conversation does not load its memory.
 
 ## Apply the owning client's contract
 
@@ -105,3 +147,8 @@ For fresh-session verification:
 - **Empty registry:** A registry is empty but a consumed raw-memory derivative
   retains an old PR status. Verify current project state and propose retirement
   of that transient claim without removing a durable useful preference beside it.
+- **Memory restating a skill:** a Claude Code project memory records a helper
+  command that a catalog skill owns. Confirm the skill carries the command from
+  the runtime checkout, then propose removing the topic file and its index entry.
+  A fresh session in that repository should load the skill rather than recall
+  the command.

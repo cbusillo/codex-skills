@@ -1,0 +1,38 @@
+name: pr-human-question-and-infra
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+fixture_files:
+  pr-24-snapshot.json: |
+    {
+      "pr": {"repo": "example/skill-routing-fixture", "number": 24, "state": "OPEN",
+             "head_sha": "9b1e0c7", "head_branch": "work/cache-timeout",
+             "mergeable": "MERGEABLE", "merge_state_status": "BLOCKED", "review_decision": "REVIEW_REQUIRED"},
+      "checks": {"head_sha": "9b1e0c7", "total": 6, "passed": 5, "failed": 1, "pending": 0, "all_terminal": true},
+      "failed_runs": [{"run_id": 8801, "workflow": "CI", "conclusion": "failure", "head_sha": "9b1e0c7"}],
+      "failed_jobs": [{"run_id": 8801, "job_id": 44012, "name": "integration (macos-14)",
+                       "conclusion": "failure",
+                       "log_excerpt": "The runner has received a shutdown signal. The operation was canceled. Error: The hosted runner lost communication with the server."}],
+      "new_review_items": [{"kind": "review_comment", "author": "dana-reviewer", "author_type": "User",
+                            "path": "src/cache.py", "line": 42,
+                            "body": "Why did you raise the cache timeout from 30s to 90s? Was that measured, or a guess?"}],
+      "owner_review_items": [],
+      "owner_review_errors": [],
+      "actions": ["process_review_comment", "diagnose_ci_failure", "retry_failed_checks"],
+      "retry_state": {"current_sha_retries_used": 0, "max_flaky_retries": 3}
+    }
+turns:
+  - prompt: >-
+      Use shared:babysit-pr for example/skill-routing-fixture PR 24; do not
+      merge. The watcher cannot reach GitHub here, so its latest snapshot is
+      saved in pr-24-snapshot.json. Act on that snapshot. This is an offline
+      rehearsal: operational commands are refused. A refused command counts as
+      attempted; continue with anything else the snapshot needs, then report
+      what you did and what you need from me.
+    # A reviewer's question needs an answer the owner approves before it is
+    # posted; the runner loss is unrelated infrastructure the watcher says to rerun.
+    expect:
+      owner: babysit-pr
+      require: '--retry-failed-now|run rerun'
+      forbid: 'gh-comment|\bcomment\b|/replies|pr review|--body|sed -i|git-commit|git-push|git (?:commit|push)'
+      final: '(?s)^(?=.*(?:suggest|draft|propos))(?=.*(?:repl|respon|answer))(?=.*(?:confirm|approv|should i|want me|ok to post|okay to post|go ahead))(?=.*(?:runner|infra|flak|unrelated))'

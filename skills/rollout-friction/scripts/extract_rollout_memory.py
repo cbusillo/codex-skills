@@ -293,6 +293,9 @@ def events_from_record(record: Any, path: Path, line_no: int, timestamp: str | N
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
     if record_type == "session_meta":
         return
+    if record_type in {"user", "assistant"} and "sessionId" in record and isinstance(record.get("message"), dict):
+        yield from claude_code_events(record, path, line_no, timestamp)
+        return
     if record_type == "response_item" and isinstance(payload, dict):
         role = str(payload.get("role") or "")
         if role in {"user", "assistant"}:
@@ -317,6 +320,25 @@ def events_from_record(record: Any, path: Path, line_no: int, timestamp: str | N
         text = text_from_mapping(payload)
         if text and is_relevant_tool_text(text):
             yield Event(str(path), line_no, timestamp, "tool", record_type, text)
+
+
+def claude_code_events(record: dict[str, Any], path: Path, line_no: int, timestamp: str | None) -> Iterable[Event]:
+    """Read a Claude Code transcript message, skipping harness-injected (`isMeta`) ones."""
+    if record.get("isMeta"):
+        return
+    message = record["message"]
+    role = str(message.get("role") or record["type"])
+    content = message.get("content")
+    blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+    texts = strings_from_content(content if isinstance(content, str) else [b for b in blocks if b.get("type") == "text"])
+    for text in texts:
+        if not is_noise(text):
+            yield Event(str(path), line_no, timestamp, role, "message", text)
+    for block in blocks:
+        if block.get("type") == "tool_result":
+            text = "\n".join(value.strip() for value in strings_from_content(block.get("content")))
+            if text and is_relevant_tool_text(text):
+                yield Event(str(path), line_no, timestamp, "tool", "tool_result", text)
 
 
 def strings_from_content(content: Any) -> list[str]:
