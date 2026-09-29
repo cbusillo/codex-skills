@@ -1,7 +1,7 @@
 ---
 name: memory-distillation
 disable-model-invocation: true
-description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex or Codex Lab memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
+description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex, Codex Lab, or Claude Code memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
 metadata:
   short-description: Audit memories into durable sources
 policy:
@@ -10,7 +10,7 @@ policy:
 
 # Memory Distillation
 
-Audit memories for Codex and Codex Lab, preserve useful knowledge in maintained
+Audit memories for Codex, Codex Lab, and Claude Code, preserve useful knowledge in maintained
 sources, and verify approved retirement from the context each client reuses.
 Use this workflow only for an explicit memory audit or change request. A completed
 audit produces a supported proposal; a completed retirement requires evidence
@@ -52,6 +52,8 @@ Neither client nor a directory name makes a memory store authoritative.
 
 - **Skills:** reusable, durable, public-safe procedures and workflow preferences.
 - **Repo docs / GitHub issues:** repo-specific design, plans, and follow-up work.
+  Instruction files the owner maintains, such as `AGENTS.md`, `CLAUDE.md`, and
+  rules files, are maintained sources, not memory stores.
 - **Local config:** private or environment-specific facts with a maintained
   schema. Use the optional `people` skill and private people config for durable
   identity, aliases, contacts, roles, and relationship context.
@@ -71,14 +73,21 @@ Neither client nor a directory name makes a memory store authoritative.
    aliases, active/historical/unknown status, consumed layers, supported update
    mechanism, and verification capability. Report inaccessible or out-of-scope
    locations without reading past that boundary. An empty registry does not
-   establish that the store or its derivatives are empty.
+   establish that the store or its derivatives are empty. List stores that
+   belong to scratch, evaluation, or temporary checkouts, or whose project no
+   longer exists, separately from active project stores.
 2. Search the authorized layers for stale behavior, transient status, private
    details, duplicate rules, and unique useful facts. Prefer targeted retrieval
    and recent summaries; broaden only when needed to cover the requested audit.
+   Flag every memory that restates a catalog skill's procedure, helper command,
+   or policy: a client that remembers it may skip loading the skill that owns it.
 3. Classify candidates as `promote-to-skill`, `promote-to-repo-doc-or-issue`,
    `move-to-people-local-config`, `move-to-local-config`, `keep-historical`, or
-   `retire-from-reusable-context`. Propose deletion/archive only when requested
-   and supported; preserve historical originals by default.
+   `retire-from-reusable-context`. A memory that restates a skill is retired
+   once the owning skill carries it; promote any missing part to that skill
+   first. Propose deletion/archive only when requested and supported; preserve
+   historical originals by default. For scratch or stale-project stores, propose
+   archiving or report them; never remove one without approval for that store.
 4. Verify each recommendation against maintained sources. Do not turn an old
    open PR, active job, or CI snapshot into a permanent fact. Before retiring a
    unique useful rule, verify its replacement exists and is reachable by the
