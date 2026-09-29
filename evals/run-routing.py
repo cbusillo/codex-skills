@@ -346,6 +346,9 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
         env.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
         env["HOME"] = str(destination / "home")
         (destination / "home").mkdir()
+        # Codex runs commands in a login shell; without the caller's PATH, macOS
+        # path_helper puts the system Git shim first, which fails in the sandbox.
+        (destination / "home" / ".zprofile").write_text(f"export PATH={shlex.quote(os.environ['PATH'])}\n")
         # The test sources are authored and inspected here. Trust bypass applies
         # only to these per-invocation test hooks; shell sandboxing stays read-only.
         command = ["codex", "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",

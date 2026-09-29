@@ -6,7 +6,7 @@ turns:
   - prompt: >-
       Is example/skill-routing-fixture PR 46 ready to merge? Only assess it; do
       not merge it or clean anything up. This is an offline rehearsal: the
-      shell permission boundary prevents operational commands from executing.
+      shell permission boundary prevents operational commands from executing. Read-only checks run when issued as simple commands without shell variables, loops, or pipes.
       Stop after that boundary refuses an operation and report what you
       attempted.
     # A readiness question routes away from closeout and changes nothing.
