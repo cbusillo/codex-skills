@@ -29,6 +29,12 @@ Choose the interpreter from the helper's extension and shebang before running
   run with `uv run path/to/helper.py` when interpreter version or dependencies
   matter. Plain `python3` is only appropriate when the skill docs explicitly
   say the helper has no managed environment needs.
+- Some hosts' shell tools leave stdin open. `scripts/gh-issue edit`, `close`,
+  and `reopen` read stdin and wait on it
+  ([#683](https://github.com/cbusillo/codex-skills/issues/683)); give them a
+  body with `<` or pass `</dev/null`.
+- Write helper arguments out literally. zsh does not split an unquoted variable
+  into several arguments.
 
 ## Shared API Contract
 
