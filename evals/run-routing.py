@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
     """
     confirmed = set() if confirmed is None else confirmed
     sequence: list[tuple[str, str]] = []
+    failed: set[str] = set()
+    commands_by_id: dict[str, str] = {}
     final = ""
     protocol_copies = 0
     successful_reads = ""
@@ -109,6 +112,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                 if block.get("type") == "tool_use":
                     if block.get("name") == "Bash":
                         sequence.append(("shell", block["input"]["command"]))
+                        commands_by_id[block.get("id", "")] = block["input"]["command"]
                         if reads_content(block["input"]["command"]):
                             pending_reads[block.get("id")] = block["input"]["command"]
                     elif block.get("name") == "Read":
@@ -119,6 +123,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                     match = re.match(r"Base directory for this skill: ([^\n]+)", block.get("text", ""))
                     if match:
                         credit_skill(str(Path(match[1]) / "SKILL.md"))
+                if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
+                    failed.add(commands_by_id.get(block.get("tool_use_id", ""), ""))
                 if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
                     if block.get("tool_use_id") in pending_reads:
                         sequence.append(("read", pending_reads.pop(block["tool_use_id"])))
@@ -144,7 +150,10 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             if event["allowed"] and command in successful_reads and reads_content(command):
                 sequence.append(("read", command))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
-    return {"sequence": sequence, "operations": operations, "loaded": [value for kind, value in sequence if kind == "skill"],
+    def succeeded(command: str) -> bool:
+        return command in successful_reads if host == "codex" else command not in failed
+
+    return {"sequence": sequence, "operations": operations, "succeeded": succeeded, "loaded": [value for kind, value in sequence if kind == "skill"],
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
             "foreign_skill_reads": foreign_skill_reads,
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
@@ -172,6 +181,13 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["first_operation_matches"] = bool(commands) and re.search(expect["operation"], commands[0]) is not None
     if "require" in expect:
         checks["required_operation"] = any(re.search(expect["require"], command) for command in commands)
+    if "prior" in expect:
+        # A proof that must be gathered before the turn's first operation.
+        sequence, operations = seen["sequence"], seen["operations"]
+        before = sequence[:operations[0][0]] if operations else sequence
+        patterns = [expect["prior"]] if isinstance(expect["prior"], str) else expect["prior"]
+        checks["prior_read"] = all(any(kind == "shell" and re.search(pattern, command) and seen["succeeded"](command)
+                                       for kind, command in before) for pattern in patterns)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
     if "read" in expect:
@@ -236,6 +252,23 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
     checks["tested_catalog_only"] = not foreign
     return {"passed": all(checks.values()), "checks": checks, "turns": reports,
             "protocol_copies": protocol_copies, "foreign_skill_reads": foreign}
+
+
+def usage(messages: list[dict[str, Any]]) -> dict[str, int]:
+    """Sum the tokens each host reports; input includes cached input."""
+    totals = {"input": 0, "cached_input": 0, "output": 0}
+    for message in messages:
+        reported = message.get("usage", {})
+        if message.get("type") == "result":
+            totals["input"] += sum(reported.get(key, 0) for key in
+                                   ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            totals["cached_input"] += reported.get("cache_read_input_tokens", 0)
+            totals["output"] += reported.get("output_tokens", 0)
+        elif message.get("type") == "turn.completed":
+            totals["input"] += reported.get("input_tokens", 0)
+            totals["cached_input"] += reported.get("cached_input_tokens", 0)
+            totals["output"] += reported.get("output_tokens", 0)
+    return totals
 
 
 def hook_override(groups: list[dict[str, Any]]) -> str:
@@ -314,8 +347,17 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     fixture = destination / "workspace"
     fixture.mkdir()
     subprocess.run(["git", "init", "-q", "--initial-branch=fixture", str(fixture)], check=True)
+    # The Codex skill link is harness plumbing, not fixture state for the agent to judge.
+    (fixture / ".git" / "info" / "exclude").write_text(".agents/\n")
     if data["name"] in {"direction-merge", "github-ci-watch"} or data.get("direction_fixture"):
         (fixture / "DIRECTION.md").write_text("# Direction\n\n## Purpose\n\nComplete the owner's repository task.\n")
+    # Setup builds real Git state (commits, an upstream, dirty files) with a fixed
+    # identity and clock, so the fixture is reproducible.
+    setup_env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+                 "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+                 "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
+    for script in data.get("setup", []):
+        subprocess.run(["sh", "-ec", script], cwd=fixture, env=setup_env, check=True, capture_output=True)
     for name, text in data.get("fixture_files", {}).items():
         (fixture / name).parent.mkdir(parents=True, exist_ok=True)
         (fixture / name).write_text(text)
@@ -349,6 +391,9 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
         env.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
         env["HOME"] = str(destination / "home")
         (destination / "home").mkdir()
+        # Codex runs commands in a login shell; without the caller's PATH, macOS
+        # path_helper puts the system Git shim first, which fails in the sandbox.
+        (destination / "home" / ".zprofile").write_text(f"export PATH={shlex.quote(os.environ['PATH'])}\n")
         # The test sources are authored and inspected here. Trust bypass applies
         # only to these per-invocation test hooks; shell sandboxing stays read-only.
         command = ["codex", "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
@@ -382,6 +427,7 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
     receipt = {"host": host, "case": data["name"], "catalog": str(catalog), "source_digest": source_digest(catalog),
                "configured_model": model, "command": command, "prompts": prompts, "fixture": str(fixture),
                "harness_digest": hashlib.sha256(Path(__file__).read_bytes() + (ROOT / "evals" / "shell_boundary.py").read_bytes() + case.read_bytes()).hexdigest()}
+    started = time.monotonic()
     with (destination / "trace.jsonl").open("w") as out, (destination / "stderr.log").open("w") as err:
         if turns:
             run = claude_turns if host == "claude" else codex_turns
@@ -396,6 +442,8 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
                 receipt["exit_code"] = result.returncode
             except subprocess.TimeoutExpired:
                 receipt["error"] = "timeout"
+    receipt["elapsed_seconds"] = round(time.monotonic() - started, 1)
+    receipt["usage"] = usage(load_trace(destination)[0])
     receipt["score"] = (score_turns(host, turns, destination, catalog) if turns
                         else score_run(host, data["name"], destination, catalog))
     (destination / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -415,6 +463,7 @@ def main() -> int:
     candidates = [*sorted((ROOT / "evals" / "owning-skill").glob("*/case.yaml")),
                   *sorted((ROOT / "evals" / "multi-turn").glob("*/turns.yaml")),
                   *sorted((ROOT / "evals" / "pr-monitoring").glob("*/turns.yaml")),
+                  *sorted((ROOT / "evals" / "closeout").glob("*/turns.yaml")),
                   *sorted((ROOT / "evals" / "github-execution").glob("*/turns.yaml"))]
     cases = []
     for path in candidates:
@@ -428,7 +477,7 @@ def main() -> int:
         name = yaml.safe_load(case.read_text())["name"]
         for index in range(args.runs):
             receipt = run_case(args.host, args.catalog.resolve(), case, args.out.resolve() / f"{name}-{index + 1}", args.model)
-            print(json.dumps({key: receipt.get(key) for key in ("host", "case", "exit_code", "error", "score")}), flush=True)
+            print(json.dumps({key: receipt.get(key) for key in ("host", "case", "exit_code", "error", "elapsed_seconds", "usage", "score")}), flush=True)
             failed |= receipt.get("exit_code") != 0 or not receipt["score"]["passed"]
     return int(failed)
 

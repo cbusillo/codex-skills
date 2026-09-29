@@ -117,6 +117,33 @@ class RoutingScoreTests(unittest.TestCase):
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, messages)))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 
+    def test_prior_proofs_must_come_before_the_first_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/work-closeout'}\n"}]}}
+            listing = call("Bash", {"command": "git ls-files --others --exclude-standard -z"})
+            fast_forward = call("Bash", {"command": "git merge --ff-only 0123456789abcdef0123456789abcdef01234567"})
+            turns = [{"expect": {"owner": "work-closeout", "prior": ["ls-files", "ls-files.*-z"]}}]
+            failed_listing = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git ls-files --others --exclude-standard -z"}}]}}
+            error = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "fatal"}]}}
+            for messages, passed in [([base, listing, fast_forward], True), ([base, fast_forward, listing], False),
+                                     ([base, failed_listing, error, fast_forward], False)]:
+                (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
+                self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
+
+    def test_the_boundary_refuses_git_writes_behind_read_subcommands(self) -> None:
+        from shell_boundary import read_only
+        self.assertTrue(read_only("git -C repo ls-files --others --exclude-standard -z"))
+        for command in ("git hash-object -w notes.txt", "git branch -D main", "git config user.name x",
+                        "git -c core.hooksPath=/dev/null merge --ff-only 0123", "git worktree remove task"):
+            self.assertFalse(read_only(command), command)
+
+    def test_usage_sums_each_hosts_reported_tokens(self) -> None:
+        claude = [{"type": "result", "usage": {"input_tokens": 5, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 5, "output_tokens": 7}}] * 2
+        codex = [{"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 4}}]
+        self.assertEqual(runner.usage(claude), {"input": 200, "cached_input": 180, "output": 14})
+        self.assertEqual(runner.usage(codex), {"input": 100, "cached_input": 80, "output": 4})
+
     def test_a_required_reference_is_read_before_the_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

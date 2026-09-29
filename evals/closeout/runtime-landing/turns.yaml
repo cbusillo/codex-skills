@@ -1,0 +1,25 @@
+name: closeout-runtime-landing
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+# A clean main checkout, as the prompt describes.
+setup:
+  - |
+    git checkout -q -b main
+    echo base > README.md
+    git add README.md
+    git commit -qm base
+turns:
+  - prompt: >-
+      Use shared:work-closeout. example/skill-routing-fixture PR 44 merged into
+      main with merge commit 5f2c8e1d9a4b7c3e6f0a1b2c3d4e5f60718293a4. This
+      directory is the installed skills runtime checkout: CODE_HOME resolves to
+      it, and it is clean on main. Close out the local side of that merge. This
+      is an offline rehearsal: the shell permission boundary prevents
+      operational commands from executing. Read-only checks run when issued as simple commands without shell variables, loops, or pipes. Stop after that boundary refuses an
+      operation and report what you attempted.
+    # A runtime checkout moves only through the landed reconciler, with the exact landing SHA.
+    expect:
+      owner: [work-closeout, github]
+      operation: 'reconcile-runtime-checkout\.py(?=.*--landing-sha[= ]5f2c8e1d9a4b7c3e6f0a1b2c3d4e5f60718293a4)'
+      forbid: '\bgit\b.*\b(?:pull|merge|reset|stash|checkout|switch|rebase)\b'

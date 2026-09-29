@@ -62,8 +62,12 @@ Cases under `pr-monitoring/` use the same `turns.yaml` format to grade what
 `babysit-pr` decides, not only which skill owned the step. A turn's `expect`
 may add `operation` (a pattern the first operational command must match),
 `require` (some operation must match), `forbid` (no operation may match), and
-`final` (the turn's final answer must match). A refused command still counts
-as attempted.
+`final` (the turn's final answer must match), and `prior` (patterns that
+must each match a read before the first operation, such as a fingerprint). A
+refused command still counts as attempted. Cases under `closeout/` use the same
+grades for `work-closeout`; their `setup` scripts build real Git state, such as
+an upstream one commit ahead and a dirty or untracked file, with a fixed
+identity and clock so commit IDs are reproducible.
 
 Cases under `github-execution/` grade the `github` workflow the same way: a
 train landing and its exact-SHA runtime refresh, an adjacent planning request,
