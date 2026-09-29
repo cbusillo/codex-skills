@@ -46,40 +46,46 @@ def assess(fork: dict, owner: str, run: Runner, now: datetime, active_days: int)
         report.update(disposition="archived", reasons=["already archived"])
         return report
     if not upstream:
-        report.update(disposition="needs-review", reasons=["upstream is unavailable"])
+        report.update(disposition="needs-review", errors=["upstream is unavailable"])
         return report
     since = now - timedelta(days=active_days)
     try:
         base = run(["api", f"repos/{upstream}"])["default_branch"]
-        pulls = run(["pr", "list", "-R", upstream, "--author", owner, "--state", "all", "--limit", "200",
-                     "--json", "number,state,headRepositoryOwner,headRefOid,createdAt,url"])
         branches = run(["api", "--paginate", "--slurp", f"repos/{name}/branches?per_page=100"])
     except GhError as exc:
         report.update(disposition="needs-review", errors=[str(exc)])
         return report
-    pulls = [pull for pull in pulls if (pull.get("headRepositoryOwner") or {}).get("login", "").lower() == owner.lower()]
-    report["pull_requests"] = [{"number": pull["number"], "state": pull["state"], "url": pull["url"]} for pull in pulls]
-    delivered = {pull["headRefOid"]: pull["number"] for pull in pulls if pull["state"] == "MERGED"}
+    pulls = []
     for branch in (item for page in branches for item in page):
         entry = {"name": branch["name"], "sha": branch["commit"]["sha"]}
         try:
-            compare = run(["api", f"repos/{upstream}/compare/{base}...{owner}:{branch['name']}",
+            # PRs are found by their source branch, whoever opened them; a PR whose branch was deleted is closed.
+            found = run(["api", "--paginate", "--slurp", "-X", "GET", f"repos/{upstream}/pulls",
+                         "-f", f"head={owner}:{branch['name']}", "-f", "state=all", "-f", "per_page=100"])
+            # The SHA keeps branch names such as `a#b` out of the URL path.
+            compare = run(["api", f"repos/{upstream}/compare/{base}...{owner}:{entry['sha']}",
                            "--jq", "{ahead_by, status}"])
             entry["ahead_by"] = compare["ahead_by"]
         except GhError as exc:
-            if "No common ancestor" not in str(exc):
-                entry["ahead_by"] = None
-                report["errors"].append(f"{branch['name']}: {exc}")
-            else:
+            entry["ahead_by"] = None
+            if "No common ancestor" in str(exc):
                 # An orphan branch such as gh-pages shares no history, so none of it is upstream.
-                entry.update(ahead_by=None, unrelated_history=True)
-        if entry["ahead_by"] and entry["sha"] in delivered:
+                entry["unrelated_history"] = True
+            else:
+                report["errors"].append(f"{branch['name']}: {exc}")
+                found = []
+        found = [pull for page in found for pull in page]
+        pulls.extend(found)
+        delivered = [pull["number"] for pull in found if pull["merged_at"] and pull["head"]["sha"] == entry["sha"]]
+        if entry["ahead_by"] and delivered:
             # A squash or rebase merge leaves the fork's commits "ahead" although the change is upstream.
-            entry["delivered_by_pr"] = delivered[entry["sha"]]
+            entry["delivered_by_pr"] = delivered[0]
         report["branches"].append(entry)
+    report["pull_requests"] = [{"number": pull["number"], "state": "merged" if pull["merged_at"] else pull["state"],
+                                "url": pull["html_url"]} for pull in pulls]
 
-    open_pulls = [pull["number"] for pull in pulls if pull["state"] == "OPEN"]
-    recent_pulls = [pull for pull in pulls if parse_time(pull["createdAt"]) >= since]
+    open_pulls = [pull["number"] for pull in pulls if pull["state"] == "open"]
+    recent_pulls = [pull for pull in pulls if parse_time(pull["created_at"]) >= since]
     if open_pulls:
         report["reasons"].append("open PR " + ", ".join(f"#{number}" for number in open_pulls))
     if fork.get("pushedAt") and parse_time(fork["pushedAt"]) >= since:
@@ -99,12 +105,14 @@ def assess(fork: dict, owner: str, run: Runner, now: datetime, active_days: int)
         return report
     try:
         # Search only delete candidates; code search is rate-limited and sees only indexed, visible repos.
-        hits = run(["api", "-X", "GET", "search/code", "-f", f"q={name} user:{owner}",
-                    "--jq", "[.items[].repository.full_name] | unique"])
+        search = run(["api", "-X", "GET", "search/code", "-f", f"q={name} user:{owner}",
+                      "--jq", "{incomplete_results, repos: ([.items[].repository.full_name] | unique)}"])
+        if search["incomplete_results"]:
+            raise GhError("search timed out with incomplete results")
     except GhError as exc:
         report.update(disposition="needs-review", errors=[f"dependent search: {exc}"])
         return report
-    hits = [repo for repo in hits if repo.lower() != name.lower()]
+    hits = [repo for repo in search["repos"] if repo.lower() != name.lower()]
     if hits:
         report.update(disposition="keep", reasons=["referenced by " + ", ".join(hits)])
     else:
