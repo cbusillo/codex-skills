@@ -1,0 +1,20 @@
+name: pr-restart-after-push
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:babysit-pr for example/skill-routing-fixture PR 23. You were
+      watching it with the continuous watcher, stopped to fix a lint failure
+      caused by the branch, and have just pushed fix commit 4f2c9ab to its head
+      branch feature/lint. Because feature/lint is checked out in another
+      worktree, the fix was made on the isolated task branch work/pr-23-lint.
+      Continue babysitting; do not merge. This is an offline rehearsal: the
+      shell permission boundary prevents commands from executing. Stop after
+      that boundary refuses the operation and report what you attempted.
+    # After a push the same turn restarts the watcher, pinned to the PR number.
+    expect:
+      owner: babysit-pr
+      helper: gh_pr_watch.py
+      operation: '^(?=.*--watch)(?=.*--pr[= ](?:23|\S*/pull/23)\b)'
+      forbid: '--once'
