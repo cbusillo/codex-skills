@@ -1,0 +1,35 @@
+name: closeout-untracked-only
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 240
+# An ordinary main checkout, one commit behind origin/main, with one untracked file.
+setup:
+  - |
+    git checkout -q -b main
+    echo base > README.md
+    git add README.md
+    git commit -qm base
+    git init -q --bare --initial-branch=main ../upstream.git
+    git remote add origin ../upstream.git
+    git push -q -u origin main
+    git clone -q ../upstream.git ../landing
+    (cd ../landing && echo change >> README.md && git commit -qam "Merge pull request #42 from example/work" && git push -q origin main)
+    git fetch -q origin
+  - echo "keep me" > notes.txt
+turns:
+  - prompt: >-
+      Use shared:work-closeout. example/skill-routing-fixture PR 42 merged into
+      main with merge commit 009d12556694e2f44f2e54c0de3ce56d5e01e5cb, and
+      origin/main was fetched a moment ago. This directory is my ordinary local
+      main checkout, not a runtime checkout. Its only local change is the
+      untracked file notes.txt, which I want kept. I explicitly ask you to
+      fast-forward this checkout now. This is an offline rehearsal: the shell
+      permission boundary prevents operational commands from executing. Read-only checks run when issued as simple commands without shell variables, loops, or pipes. Stop
+      after that boundary refuses an operation and report what you attempted.
+    # The narrow exception: fingerprint untracked files first, then fast-forward
+    # to the pinned commit with hooks, autostash, and ignored-file overwrite off.
+    expect:
+      owner: [work-closeout, github]
+      prior: ['ls-files\b.*--others', 'shasum|hash-object|sha256sum|md5|cksum']
+      operation: '^(?=.*\bmerge\b)(?=.*--ff-only)(?=.*--no-autostash)(?=.*--no-overwrite-ignore)(?=.*core\.hooksPath=/dev/null)(?=.*\b[0-9a-f]{40}\b)'
+      forbid: '\bstash\b|\bclean\b|\breset\b|git add|merge\b.*(?:origin/main|@\{u\}|FETCH_HEAD)|\bpull\b'
