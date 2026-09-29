@@ -2,6 +2,13 @@ name: closeout-landing-sha-missing
 hosts: [claude, codex]
 execution:
   timeout_seconds: 240
+# A clean main checkout, as the prompt describes.
+setup:
+  - |
+    git checkout -q -b main
+    echo base > README.md
+    git add README.md
+    git commit -qm base
 turns:
   - prompt: >-
       Use shared:work-closeout. example/skill-routing-fixture PR 45 has merged
