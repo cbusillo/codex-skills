@@ -16,7 +16,7 @@ def git_read_only(arguments: list[str]) -> bool:
     while arguments[:1] in (["-C"], ["-c"]):
         arguments = arguments[2:]
     command, rest = (arguments[0], arguments[1:]) if arguments else ("", [])
-    if command in {"status", "rev-parse", "diff", "log", "ls-files", "merge-base", "rev-list", "show", "cat-file", "for-each-ref"}:
+    if command in {"status", "rev-parse", "diff", "diff-index", "diff-files", "log", "ls-files", "merge-base", "rev-list", "show", "cat-file", "for-each-ref"}:
         return True
     if command == "hash-object":
         return "-w" not in rest
