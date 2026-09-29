@@ -156,6 +156,8 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
     checks = {}
     if "operation" in expect:
         checks["first_operation_matches"] = bool(commands) and re.search(expect["operation"], commands[0]) is not None
+    if "require" in expect:
+        checks["required_operation"] = any(re.search(expect["require"], command) for command in commands)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
     if "final" in expect:

@@ -107,7 +107,7 @@ class RoutingScoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base = {"type": "user", "message": {"content": [{"type": "text", "text": f"Base directory for this skill: {runner.ROOT / 'skills/babysit-pr'}\n"}]}}
-            expect = {"owner": ["github", "babysit-pr"], "operation": "--watch", "forbid": "--once", "final": "watching"}
+            expect = {"owner": ["github", "babysit-pr"], "operation": "--watch", "require": "--pr 21", "forbid": "--once", "final": "watching"}
             turns = [{"expect": expect}]
             for command, final, passed in [("uv run gh_pr_watch.py --pr 21 --watch", "Still watching.", True),
                                            ("uv run gh_pr_watch.py --pr 21 --once", "Still watching.", False),

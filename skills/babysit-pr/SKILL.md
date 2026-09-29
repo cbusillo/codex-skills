@@ -75,13 +75,15 @@ Use this skill even when the user does not say "watch" once a PR task has
 become repeated CI, review, mergeability, or merged/closed follow-through. Do
 not take over a one-off PR metadata lookup that needs no lifecycle decision.
 
-Target the PR with `--pr auto` (inferred from the current branch), a number, or
-a URL. Run the watcher from this skill directory:
+Run the watcher from a worktree of the watched repository, naming the script
+through this skill's directory. `--pr auto` infers the PR from the current
+branch and a bare number resolves through the current repository; for a PR in
+another repository, pass its URL or `--repo OWNER/REPO`.
 
 ```bash
-uv run scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
-uv run scripts/gh_pr_watch.py --pr <auto|number|url> --once    # one snapshot
-uv run scripts/gh_pr_watch.py --pr <auto|number|url> --retry-failed-now
+uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
+uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --once    # one snapshot
+uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --retry-failed-now
 ```
 
 When `.github/github.json` exists, use it for gates, important workflows,
@@ -219,8 +221,9 @@ without unrelated changes; surface it instead.
 
 `ready_to_merge` is readiness evidence, not merge intent and not a stop. When
 the snapshot also has `review_owner_feedback_history`, first explain how the
-current work addresses that request or surface what remains. With merge
-authorization already given under task scope, hand the merge to `github`
+current work addresses that request, or surface what remains and do not hand
+off the merge while it is unresolved. Once the feedback is addressed and merge
+authorization already exists under task scope, hand the merge to `github`
 without asking again and keep watching until the merge or closure is confirmed.
 
 Before reporting an unconditional ready, merged, or closed all-clear, run

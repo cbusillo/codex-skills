@@ -16,5 +16,5 @@ turns:
     expect:
       owner: babysit-pr
       helper: gh_pr_watch.py
-      operation: '--watch'
-      forbid: '--pr\s+auto|--once'
+      operation: '^(?=.*--watch)(?=.*--pr[= ](?:23|\S*/pull/23)\b)'
+      forbid: '--once'
