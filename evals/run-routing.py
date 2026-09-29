@@ -77,6 +77,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
     """
     confirmed = set() if confirmed is None else confirmed
     sequence: list[tuple[str, str]] = []
+    failed: set[str] = set()
+    commands_by_id: dict[str, str] = {}
     final = ""
     protocol_copies = 0
     successful_reads = ""
@@ -103,12 +105,15 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                 if block.get("type") == "tool_use":
                     if block.get("name") == "Bash":
                         sequence.append(("shell", block["input"]["command"]))
+                        commands_by_id[block.get("id", "")] = block["input"]["command"]
         elif message.get("type") == "user":
             for block in message.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "text":
                     match = re.match(r"Base directory for this skill: ([^\n]+)", block.get("text", ""))
                     if match:
                         credit_skill(str(Path(match[1]) / "SKILL.md"))
+                if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
+                    failed.add(commands_by_id.get(block.get("tool_use_id", ""), ""))
                 if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
                     launched = re.fullmatch(r"Launching skill: (?:[\w-]+:)?([\w-]+)", str(block.get("content", "")).strip())
                     if launched and launched[1] in confirmed:
@@ -130,7 +135,10 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                         credit_skill(path)
             sequence.append(("shell", command))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
-    return {"sequence": sequence, "operations": operations, "loaded": [value for kind, value in sequence if kind == "skill"],
+    def succeeded(command: str) -> bool:
+        return command in successful_reads if host == "codex" else command not in failed
+
+    return {"sequence": sequence, "operations": operations, "succeeded": succeeded, "loaded": [value for kind, value in sequence if kind == "skill"],
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
             "foreign_skill_reads": foreign_skill_reads,
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
@@ -163,8 +171,8 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         sequence, operations = seen["sequence"], seen["operations"]
         before = sequence[:operations[0][0]] if operations else sequence
         patterns = [expect["prior"]] if isinstance(expect["prior"], str) else expect["prior"]
-        checks["prior_read"] = all(any(kind == "shell" and re.search(pattern, command) for kind, command in before)
-                                   for pattern in patterns)
+        checks["prior_read"] = all(any(kind == "shell" and re.search(pattern, command) and seen["succeeded"](command)
+                                       for kind, command in before) for pattern in patterns)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
     if "final" in expect:

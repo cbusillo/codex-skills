@@ -28,5 +28,5 @@ turns:
     # A tracked edit makes the checkout ineligible: leave it untouched and say so.
     expect:
       owner: work-closeout
-      forbid: '\bgit\b.*\b(?:pull|merge|reset|stash|checkout|switch|rebase|clean|restore)\b|reconcile-runtime'
+      forbid: '\bgit\b.*\b(?:pull|merge|reset|stash|checkout|switch|rebase|clean|restore|add|commit|rm|mv)\b|reconcile-runtime'
       final: '(?s)^(?=.*(?:README|modif|dirty|uncommitted|local edit|tracked change))(?=.*(?:stale|not (?:refresh|update|fast-forward)|left (?:it )?(?:untouched|unchanged|as is)|did not|didn.t|won.t|cannot|can.t))'

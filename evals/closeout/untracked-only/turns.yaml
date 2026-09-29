@@ -30,6 +30,6 @@ turns:
     # to the pinned commit with hooks, autostash, and ignored-file overwrite off.
     expect:
       owner: [work-closeout, github]
-      prior: ['ls-files\b.*--others', 'shasum|hash-object|sha256|md5|cksum|stat\b']
+      prior: ['ls-files\b.*--others', 'shasum|hash-object|sha256sum|md5|cksum']
       operation: '^(?=.*\bmerge\b)(?=.*--ff-only)(?=.*--no-autostash)(?=.*--no-overwrite-ignore)(?=.*core\.hooksPath=/dev/null)(?=.*\b[0-9a-f]{40}\b)'
       forbid: '\bstash\b|\bclean\b|\breset\b|git add|merge\b.*(?:origin/main|@\{u\}|FETCH_HEAD)|\bpull\b'

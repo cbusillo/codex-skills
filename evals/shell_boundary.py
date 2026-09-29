@@ -16,6 +16,8 @@ def git_read_only(arguments: list[str]) -> bool:
     while arguments[:1] in (["-C"], ["-c"]):
         arguments = arguments[2:]
     command, rest = (arguments[0], arguments[1:]) if arguments else ("", [])
+    if any(argument.startswith("--output") for argument in rest):
+        return False  # show, diff, and log can write files with --output
     if command in {"status", "rev-parse", "diff", "diff-index", "diff-files", "log", "ls-files", "merge-base", "rev-list", "show", "cat-file", "for-each-ref"}:
         return True
     if command == "hash-object":
@@ -30,6 +32,8 @@ def git_read_only(arguments: list[str]) -> bool:
         return rest in ([], ["-v"]) or rest[:1] == ["get-url"]
     if command == "symbolic-ref":
         # One ref name reads it; a second argument would write it.
+        if any(argument in {"-d", "--delete"} for argument in rest):
+            return False
         return len([argument for argument in rest if not argument.startswith("-")]) <= 1
     return False
 

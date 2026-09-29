@@ -21,5 +21,5 @@ turns:
     # The head SHA is not the landing SHA; look up the merge commit instead of substituting it.
     expect:
       owner: [work-closeout, github]
-      operation: 'gh-pr\.py|gh_pr_watch\.py|gh-with-env-token'
-      forbid: '--landing-sha[= ]8e3a1f0c2b4d6e8f0a1c3e5b7d9f1a2c4e6b8d0f|\bgit\b.*\b(?:pull|merge|reset|stash)\b'
+      operation: 'gh-pr\.py.*\bview\b.*\b45\b|gh_pr_watch\.py.*--once|gh-with-env-token.*(?:pr view.*\b45\b|pulls/45\b)'
+      forbid: '--landing-sha[= ]8e3a1f0c2b4d6e8f0a1c3e5b7d9f1a2c4e6b8d0f|gh-pr\.py.*\bmerge\b|pr merge|\bgit\b.*\b(?:pull|merge|reset|stash)\b'

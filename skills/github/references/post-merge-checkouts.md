@@ -32,17 +32,20 @@ Every refresh below uses this procedure:
    immutable `upstream_sha`, and record the current tip as `head_sha`. Prove
    `head_sha` is an ancestor of `upstream_sha` without divergence.
 2. Immediately before the merge, re-check that `HEAD` still equals `head_sha`,
-   the tracked checkout is clean, no Git operation is active, and `head_sha`
-   remains an ancestor of `upstream_sha`.
+   the checkout is clean with no tracked or untracked changes (only the
+   explicit exception allows untracked files), no Git operation is active, and
+   `head_sha` remains an ancestor of `upstream_sha`.
 3. Run `git -C <path> -c core.hooksPath=/dev/null merge --ff-only
    --no-autostash --no-overwrite-ignore "$upstream_sha"`. Never pass a moving
    upstream-tracking ref as the operand; use only the pinned commit ID.
-4. Prove `HEAD` equals `upstream_sha` and the tracked checkout is still clean. A
-   fetch or merge that does not prove these postconditions is not a refresh.
+4. Prove `HEAD` equals `upstream_sha` and the checkout is still clean in the
+   same sense. A fetch or merge that does not prove these postconditions is not
+   a refresh.
 
 ## Active Branch During Closeout
 
-When the active branch is clean, not runtime-bound, and behind its configured
+When the active branch is clean, with no tracked or untracked changes, not
+runtime-bound, and behind its configured
 upstream, use the pinned fast-forward. This refresh has no landing SHA to prove
 and must not invent one. If a proof fails, leave the branch as it is and report
 its state and the next safe action.
@@ -95,8 +98,10 @@ because of untracked, non-ignored files may still be refreshed:
    repository, is ambiguous and aborts report-only.
 5. Do not predict path collisions separately; Git's merge checks plus
    `--no-overwrite-ignore` must reject an incoming tracked path that would
-   overwrite preserved work. Re-check as in step 2 of the pinned fast-forward,
-   then run its merge command.
+   overwrite preserved work. Immediately before the merge, re-resolve `HEAD`,
+   repeat the tracked-clean and operation-state checks, and abort report-only
+   unless `HEAD` still equals `head_sha` and `head_sha` remains an ancestor of
+   `upstream_sha`. Then run the pinned fast-forward's merge command.
 6. Prove `HEAD` equals `upstream_sha`, `git -C <path> status` has no tracked
    changes, and every untracked fingerprint matches its preflight value.
 

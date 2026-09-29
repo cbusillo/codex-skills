@@ -124,7 +124,10 @@ class RoutingScoreTests(unittest.TestCase):
             listing = call("Bash", {"command": "git ls-files --others --exclude-standard -z"})
             fast_forward = call("Bash", {"command": "git merge --ff-only 0123456789abcdef0123456789abcdef01234567"})
             turns = [{"expect": {"owner": "work-closeout", "prior": ["ls-files", "ls-files.*-z"]}}]
-            for messages, passed in [([base, listing, fast_forward], True), ([base, fast_forward, listing], False)]:
+            failed_listing = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git ls-files --others --exclude-standard -z"}}]}}
+            error = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "fatal"}]}}
+            for messages, passed in [([base, listing, fast_forward], True), ([base, fast_forward, listing], False),
+                                     ([base, failed_listing, error, fast_forward], False)]:
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 
