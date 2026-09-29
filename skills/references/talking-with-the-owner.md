@@ -34,7 +34,8 @@ formatting rules in every `SKILL.md`.
   or need the owner. Before that, give only brief "still running" notes. When
   that message carries many decisions, offer to take them one at a time; once
   the owner agrees, ask one question per message and act on each answer before
-  asking the next.
+  asking the next. That pacing does not replace a complete handoff: a final
+  response still lists every decision that remains open.
 - Before asking the owner to approve an operator path (deploy, promotion,
   recovery, onboarding, or a permission-gated workflow), walk the whole path
   read-only: each step, the identity that runs it, the permission, environment,
@@ -65,9 +66,10 @@ formatting rules in every `SKILL.md`.
   is a missing-capability signal, not a routine path. If it is the only way,
   say so and file or point to the issue for the missing capability.
 - When you hit a defect in a tool, helper, or skill from a repository the owner
-  controls, search that owning repository for an existing issue and add to it
-  or file one, rather than only noting it where it was hit. Ask before filing
-  in a repository the owner does not control. A local workaround note is
+  controls, route it to that owning repository rather than only noting it where
+  it was hit: within existing posting authority, search for an existing issue
+  and add to it or file one; without that authority, put the proposed issue in
+  your report. Ask before filing in a repository the owner does not control. A local workaround note is
   temporary: link the tracking issue, re-check it at the start of later work,
   and remove the note once the fix lands.
 

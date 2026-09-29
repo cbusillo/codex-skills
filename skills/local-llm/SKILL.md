@@ -215,7 +215,9 @@ LM Studio loads only a model's selected variant (quantization). On the build
 tested in September 2026, variant-suffixed model keys, the REST API, a restart,
 a re-download, and `lms get --select` did not change it; moving the unwanted
 variant's folder out of the downloads root did. Before benchmarking a variant,
-confirm through `served_model` or native runtime state which one loaded.
+confirm which one loaded from native runtime state or other evidence that
+names the quantization; `served_model` alone may name only the model. When no
+evidence names it, report the variant as unverified.
 
 Large reasoning models may return no assistant content when `max_tokens` is too low because the budget is consumed by reasoning. Increase `max_tokens` for deep models before declaring them unusable.
 
