@@ -130,6 +130,11 @@ class RoutingScoreTests(unittest.TestCase):
                 (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [{"type": "turn_marker", "turn": 1}, *messages])))
                 self.assertEqual(runner.score_turns("claude", turns, root)["passed"], passed)
 
+    def test_a_pipe_is_a_read_only_when_every_stage_is(self) -> None:
+        self.assertTrue(runner.read_only("rg --files -g 'SKILL.md' | sed -n '1,80p'"))
+        self.assertFalse(runner.read_only("cat script | sh"))
+        self.assertFalse(runner.read_only("ls | xargs rm"))
+
     def test_duplicate_startup_context_fails_the_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
