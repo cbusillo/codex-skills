@@ -118,7 +118,9 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
     # `--tools` limits what exists in the session. `--allowedTools` would only pre-approve these
     # on top of the user's own settings, which may already allow editing. `--tools` does not reach
     # MCP servers, which can write outside the repository; `--strict-mcp-config` with no config drops them.
-    argv = ["claude", "-p", prompt, "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--output-format", "json"]
+    # The reviewed repository's own settings could start hooks, so only the user's settings load.
+    argv = ["claude", "-p", prompt, "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--setting-sources", "user"]
+    argv += ["--output-format", "json"]
     if model:
         argv += ["--model", model]
     proc = run_cli(argv, repo, timeout)

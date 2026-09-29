@@ -109,6 +109,8 @@ class ReviewWithModelTests(unittest.TestCase):
         # `--tools` leaves configured MCP servers, which can write, unless the session ignores them.
         self.assertIn("--strict-mcp-config", argv)
         self.assertNotIn("--mcp-config", argv)
+        # Settings committed to the reviewed repository can run hooks before the review starts.
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
 
     def test_the_openai_reviewer_starts_without_mcp_servers_or_the_users_config(self) -> None:
         self.install("codex", FAKE_CODEX)
