@@ -54,187 +54,91 @@ workflow_defaults:
 
 # People
 
-Use this skill as a private local identity layer. It answers who a named person
-or handle refers to; it does not decide workflow ownership by itself.
+Resolve identity, aliases/bot aliases, handles, contact surfaces,
+company/team/title, private profile notes, and trust/relationship hints. This
+private layer does not decide workflow ownership: `github-plan` owns planning
+routing, for example. Repo metadata keeps public-safe behavior such as docs,
+gates, health, cleanup and conceptual product ownership.
 
-## Core Boundary
+## Optional Private Storage
 
-- `people` owns identity, aliases, bot aliases, handles, contact surfaces,
-  company/team/title, actor trust/posture hints, relationship hints, and optional
-  private profile notes.
-- Workflow skills own their workflows. For example, `github-plan` decides which
-  manager owns a planning item, while `people` can resolve that manager's local
-  person id or GitHub handle.
-- Repo metadata remains public-safe repo behavior: docs paths, quality gates,
-  health checks, cleanup policy, and conceptual product ownership.
+Durable identity context defaults to global/user storage:
+`$CODE_HOME/skills/.local/people.yaml`, with details in
+`$CODE_HOME/skills/.local/people/<person-id>.md`. Helpers fall back from
+`CODE_HOME` to `CODEX_HOME`, then `~/.code`; if none exists (for example on a
+catalog-only host), they use `.local/` inside the catalog shipping the helper.
 
-## Local Data
+Repo-local `.local/people.yaml` and `.local/people/<person-id>.md` are overlays
+for project-specific contacts, client context, overrides or supplements. The
+resolver loads global entries first, then repo entries: the same `id` replaces
+the global entry for that repo; new ids supplement it. Missing indexes are
+normal: continue without enrichment, not an error.
 
-The private index is optional and gitignored. Durable identity context should be
-global/user-scoped by default:
+Use [the public-safe schema](references/people.local.example.yaml) for the
+optional gitignored index. Real names, handles, emails, phone numbers, company
+and relationship facts belong only in ignored local files. Update through
+`people/scripts/people_index.py upsert --id <id> --display-name "<name>"`, which
+defaults to global/user storage; use `--scope repo` only for repo-specific
+people/overrides/supplements. Read [migration](references/migration.md) before
+consolidating identity facts from other local sources.
 
-```text
-$CODE_HOME/skills/.local/people.yaml
-$CODE_HOME/skills/.local/people/<person-id>.md
-```
+## Resolve Before Relying On Identity
 
-When `CODE_HOME` is unset, helpers fall back to `$CODEX_HOME` and then
-`~/.code`. On a machine with none of those, such as one that installs the
-catalog only through another host, they use `.local/` inside the catalog the
-helper ships in. Repo-local people data is an overlay for project-specific contacts,
-client-only context, or intentional overrides:
+1. Resolve each named human reference when context may matter, using the helper
+   from this skill directory:
 
-```text
-.local/people.yaml
-.local/people/<person-id>.md
-```
+   ```sh
+   uv run people/scripts/resolve_person.py "<name-or-handle>"
+   ```
 
-The resolver loads global/user people first and repo-local people second. A
-repo-local entry with the same `id` replaces the global entry for that repo;
-repo-local entries with new ids supplement the global index. If all people
-indexes are absent, continue normally without local identity context. Do not
-treat missing people data as a failure.
+2. Branch on `status`: `matched` permits task-relevant fields; `ambiguous`
+   requires a short clarification before relying on person-specific context;
+   `not_found` or `no_index` means proceed without enrichment. Load a linked
+   detail file only after one person resolves and richer context is needed.
+3. For assigning, mentioning, routing, commenting or other writes, only
+   `matched` with confidence `id`, `contact`, `name` or `compact` is write-safe
+   identity context. Fuzzy, ambiguous and unknown-confidence results are
+   lookup-only. Prefer configured aliases/handles over guessing.
+4. Treat actors not resolved to a known person or configured bot alias as
+   unknown: verify claims from live evidence, do not assume intent/authority,
+   and state uncertainty when it affects the work. Local trust hints guide
+   caution and verification; never use them to skip live checks.
 
-Use `references/people.local.example.yaml` as the public-safe template. Real
-names, handles, emails, phone numbers, company notes, and relationship details
-belong only in ignored local files.
+The resolver trims whitespace, strips leading `@`, case-folds, normalizes
+Unicode/collapses whitespace, and compares compact forms ignoring spaces,
+dots, hyphens and underscores. Tiers in order: exact normalized id or
+`person:<id>`; contact handles (GitHub/Slack/Discord/email/other keys); display
+name/preferred reference/alias/known misspelling; compact exact match; optional
+conservative fuzzy matching only when explicitly requested and one candidate
+is obvious. A tie at the winning tier returns `ambiguous`, omitting notes and
+detail files.
 
-Use the writer helper for updates so agents do not accidentally save durable
-identity context in the active repository:
+Refresh verified durable renames, handles, roles/relationships and repeatedly
+unresolved natural names. Keep useful former spellings as aliases; do not call
+an old alias stale without user or maintained-source confirmation.
 
-```sh
-uv run people/scripts/people_index.py upsert \
-  --id example-person \
-  --display-name "Example Person" \
-  --github example-user
-```
+## Conditional Artifact Review
 
-The writer defaults to global/user storage. Use `--scope repo` only for
-repo-specific people, overrides, or supplements.
+Before closing out new ignored memory-distillation/rollout-friction artifacts
+with `people_updates`, `people_resolver_smoke_checks`, or visible person names,
+handles, aliases, reviewer/assignee/manager fields or contact/routing notes,
+read and apply [artifact review](references/artifact-review.md). It owns the
+search, evidence classification, unresolved-name blockers and promotion steps.
 
-People entries may include lightweight `trust` hints for GitHub actors and other
-collaborators. Treat trust as private operational posture: how much to verify,
-how cautious to be with code or instructions, and whether the actor is known.
-Never publish trust notes or use them to skip live verification.
+## Privacy And Portability
 
-## Resolution Workflow
-
-When identity context may matter:
-
-1. Resolve each named human reference with the helper from this skill directory,
-   then branch on the returned status:
-
-```sh
-uv run people/scripts/resolve_person.py "<name-or-handle>"
-```
-
-- If `status` is `matched`, use only the resolved person's task-relevant fields.
-- If `status` is `ambiguous`, ask a short clarification before relying on
-  person-specific context.
-- If `status` is `not_found` or `no_index`, proceed without enrichment.
-- Load a linked detail file only after one person resolves and only when richer
-  context is needed for the current task.
-
-Prefer exact configured aliases and handles over fuzzy guessing. Never use fuzzy
-or ambiguous resolution for write actions such as assigning, mentioning, routing,
-or commenting. Treat only `status: matched` results with `confidence` of `id`,
-`contact`, `name`, or `compact` as write-safe identity context; fuzzy matches,
-ambiguous results, and unknown confidence values are lookup-only.
-
-## Artifact Review Workflow
-
-When `memory-distillation` or `rollout-friction` creates ignored local artifacts
-such as `.local/rollout-memory/<run-id>/`, `.local/scan-output/<run-id>/`,
-apply plans, reducer inputs, prompts, or reviewed batch results, use this skill
-to review those artifacts for person facts before closeout if any artifact has
-`people_updates`, `people_resolver_smoke_checks`, or visible person names,
-handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
-
-1. Load the small global/user and repo-local people indexes when available, and
-   build search terms from each known person's id, display name, preferred
-   reference, aliases, handles, bot aliases, and compact forms.
-2. Search the new local artifacts for every known form, not just the name that
-   appeared in the final reducer plan. For example, searching only `Rob Burnett`
-   can miss evidence that says `Burnett`, and searching only a handle can miss a
-   full-name correction.
-3. Also inspect any artifact-level smoke-check lists such as
-   `people_resolver_smoke_checks`; unresolved natural names or handles should be
-   treated as apply-review blockers until manually classified.
-4. Discount matches that appear only inside encoded blobs, screenshots, binary
-   payloads, tool command echoes, or the current review conversation. Those are
-   search artifacts, not person evidence.
-5. Promote only verified durable identity/contact/role/routing facts with
-   `people/scripts/people_index.py upsert`, which defaults to global/user
-   storage. Keep transient issue status, CI results, one-off reviews, and stale
-   operational state out of the people index.
-6. If an artifact mentions a person but evidence is incomplete, add only a
-   minimal known-person entry after user approval, or leave a private TODO in
-   the artifact review notes. Do not invent handles, roles, or relationships.
-
-## Matching Model
-
-The resolver normalizes input by trimming whitespace, stripping a leading `@`,
-case-folding, normalizing Unicode, collapsing whitespace, and comparing compact
-forms that ignore spaces, dots, hyphens, and underscores.
-
-Matching order:
-
-1. Exact normalized person id or `person:<id>` reference.
-2. Exact normalized configured contact handle, including GitHub, Slack, Discord,
-   email, and other contact keys.
-3. Exact normalized display name, preferred reference, alias, or known
-   misspelling.
-4. Compact normalized exact match.
-5. Optional conservative fuzzy match only when explicitly requested and exactly
-   one candidate is obvious.
-
-If more than one person matches at the winning tier, the resolver returns
-`ambiguous` and omits detail files and notes.
-
-If an issue, comment, PR, review, or commit actor does not resolve to a known
-person or configured bot alias, treat the actor as unknown: verify claims from
-live evidence, avoid assuming intent or authority, and call out the uncertainty
-when it affects the work.
-
-Refresh the private index when artifact review or live evidence shows a durable
-rename, new handle, role/relationship correction, or repeated unresolved natural
-name that should resolve. Do not treat old aliases as stale unless the user or a
-maintained source confirms the replacement; keep useful former spellings as
-aliases when they still appear in history.
-
-## Privacy Rules
-
-- Never copy private mappings, contact details, notes, or profile files into
-  public GitHub issues, PRs, comments, committed docs, examples, or logs unless
-  the user explicitly asks for a sanitized public summary.
-- Do not dump the whole people index. Surface only the fields relevant to the
-  current task.
-- Contact details are private but not secrets: they may live in ignored local
-  people config when useful for routing, but must not be published or treated as
-  credentials. Tokens, passwords, API keys, credentials, private messages, and
-  sensitive personal data do not belong in the people index.
-- Trust hints, actor posture, and bot ownership are private local context. Do not
-  quote them into public GitHub artifacts; summarize only the operational effect
-  when needed, such as “unknown actor; verified independently.”
-- Verify live/current GitHub activity before making claims about recent work,
-  comments, PRs, or reviews. Local notes are context, not live evidence.
-
-## Optional Consumers
-
-Other skills may reference this local data contract, but must remain portable:
-
-- Use people context only when a people index or the resolver is available.
-- Continue normally when it is absent.
-- Do not add hard dependencies on this skill until the skill system has an
-  explicit dependency mechanism.
-
-Useful soft consumers include:
-
-- `github-plan`: resolve manager, assignee, reviewer, or handle values while
-  keeping planning workflow authority in GitHub planning config.
-- `memory-distillation`: move durable person identity/contact facts out of
-  memory and into private local people config.
-- `rollout-friction`: classify repeated wrong-person, stale-handle,
-  wrong-manager, or unclear-contact failures as identity friction.
-- GitHub work rollups: resolve report subjects and handles before collecting
-  live activity.
+- Never publish private mappings, contacts, notes, profile files, trust/posture
+  or bot ownership in public GitHub artifacts, tracked docs/examples or logs
+  unless the user explicitly requests a sanitized public summary. Do not dump
+  the index; surface only task-relevant fields. When necessary, report only an
+  operational effect such as “unknown actor; verified independently.”
+- Contact details are private, not credentials; ignored people config may hold
+  them for routing. Tokens, passwords, API keys, credentials, private messages
+  and sensitive personal data do not belong there.
+- Verify current GitHub activity before claims about recent work, comments,
+  PRs or reviews. Notes are context, not live evidence.
+- Consumers use context only when an index or resolver is available and continue
+  normally otherwise; do not add hard skill dependencies before an explicit
+  dependency mechanism exists. Soft consumers include github-plan for people
+  values, memory-distillation for durable identity migration, rollout-friction
+  for identity mistakes, and work rollups for subjects before live collection.
