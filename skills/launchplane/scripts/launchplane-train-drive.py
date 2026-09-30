@@ -21,6 +21,7 @@ Output is JSONL in `gh_pr_watch.py`'s shape: {"event": ..., "payload": ...}.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import subprocess
 import sys
@@ -46,6 +47,8 @@ class DriveIO:
     pull_request: Callable[[str, int], dict[str, Any] | None]
     update_branch: Callable[[str, int], bool]
     failing_checks: Callable[[str, str], list[dict[str, str]] | None]
+    # Numbers of ready-to-merge PRs merged at or after an epoch time.
+    merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -62,6 +65,7 @@ class DriveSettings:
     max_helper_failures: int = 5
     ineligible_passes: int = 2
     empty_candidate_failures: int = 5
+    max_stack_finish_passes: int = 5
 
 
 @dataclass
@@ -73,13 +77,18 @@ class DriveState:
     ineligible_streak: int = 0
     empty_candidate_failures: int = 0
     last_action: str = ""
+    stack_seen: bool = False
 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
     state = DriveState(batch={settings.number})
+    started = io.now()
     pass_number = 0
     while True:
         outcome = _record_landings(settings, io, state, emit)
+        if outcome == "landed":
+            _finish_landing(settings, io, state, emit, started)
+            return _stop(settings, state, emit, "landed")
         if outcome is not None:
             return _stop(settings, state, emit, outcome)
         if io.now() >= settings.deadline:
@@ -99,6 +108,8 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         result = response.get("result") or {}
         action = str(result.get("controller_action") or "")
         _remember_batch(result, state)
+        if action in {"execute_stack_collapse", "admit_collapsed_root"}:
+            state.stack_seen = True
         if action != state.last_action:
             emit("snapshot", _snapshot(settings, state, action, response))
         state.last_action = action
@@ -108,6 +119,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
             outcome, detail = verdict
             # A block can race a landing that just happened; re-read before failing.
             if _record_landings(settings, io, state, emit) == "landed":
+                _finish_landing(settings, io, state, emit, started)
                 return _stop(settings, state, emit, "landed")
             return _stop(settings, state, emit, outcome, **detail)
         io.sleep(settings.poll_seconds)
@@ -130,7 +142,7 @@ def _judge(
             return "failed", {"reason": "candidate_failed without a failing check", "candidate_sha": candidate_sha}
         return None
     if action == "update_branch":
-        return _update_branch(settings, io, state)
+        return _update_branch(settings, io, state, result)
     entry = _queue_entry(result, settings.number)
     reasons = list(entry.get("ineligible_reasons") or []) if entry else []
     if reasons:
@@ -142,8 +154,13 @@ def _judge(
     return None
 
 
-def _update_branch(settings: DriveSettings, io: DriveIO, state: DriveState) -> tuple[str, dict[str, Any]] | None:
+def _update_branch(
+    settings: DriveSettings, io: DriveIO, state: DriveState, result: dict[str, Any]
+) -> tuple[str, dict[str, Any]] | None:
     # The controller reports a behind-base PR but does not refresh it (launchplane#2590).
+    selected = ((result.get("dry_run_result") or {}).get("selected_pr") or {}).get("number")
+    if selected is not None and selected != settings.number:
+        return "needs_owner", {"reason": f"pull request #{selected} is ahead in the queue and behind its base"}
     if not settings.allow_branch_update:
         return "needs_owner", {"reason": "branch is behind its base; rerun with --allow-branch-update to refresh it"}
     pull_request = io.pull_request(settings.repository, settings.number) or {}
@@ -178,6 +195,31 @@ def _record_landings(
     if target_state == "closed":
         return "needs_owner"
     return None
+
+
+def _finish_landing(
+    settings: DriveSettings,
+    io: DriveIO,
+    state: DriveState,
+    emit: Callable[[str, dict[str, Any]], None],
+    started: float,
+) -> None:
+    # A stack root lands before its children are resolved; let the controller
+    # finish that batch, but never start driving unrelated work.
+    if state.stack_seen:
+        for finish_pass in range(settings.max_stack_finish_passes):
+            key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
+            response = io.controller(settings.repository, settings.base_branch, key)
+            action = str(((response or {}).get("result") or {}).get("controller_action") or "")
+            emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
+            if action in {"batch_landed", "idle"}:
+                break
+            io.sleep(settings.poll_seconds)
+    # Batch companions may be missing from projected evidence; report every
+    # ready-to-merge PR that merged while this driver ran.
+    for number in io.merged_since(settings.repository, started):
+        state.batch.add(number)
+    _record_landings(settings, io, state, emit)
 
 
 def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
@@ -280,7 +322,36 @@ def live_io(helper_timeout: float) -> DriveIO:
             return None
         return [run for run in payload if isinstance(run, dict) and run.get("conclusion") in FAILING_CONCLUSIONS]
 
-    return DriveIO(controller=controller, pull_request=pull_request, update_branch=update_branch, failing_checks=failing_checks)
+    def merged_since(repository: str, since: float) -> list[int]:
+        payload = _run_json(
+            [
+                str(GH_WITH_ENV_TOKEN), "api",
+                f"repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50",
+                "--jq",
+                "[.[] | select(.merged_at != null) | {number, merged_at, labels: [.labels[].name]}]",
+            ],
+            timeout=60,
+        )
+        if not isinstance(payload, list):
+            return []
+        numbers = []
+        for item in payload:
+            merged_at = str(item.get("merged_at") or "")
+            try:
+                merged = calendar.timegm(time.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                continue
+            if merged >= since and "ready-to-merge" in (item.get("labels") or []):
+                numbers.append(int(item["number"]))
+        return numbers
+
+    return DriveIO(
+        controller=controller,
+        pull_request=pull_request,
+        update_branch=update_branch,
+        failing_checks=failing_checks,
+        merged_since=merged_since,
+    )
 
 
 def main(argv: list[str]) -> int:

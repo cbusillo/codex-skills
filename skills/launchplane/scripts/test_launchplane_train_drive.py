@@ -46,6 +46,7 @@ class FakeTrain:
         self.closed: set[int] = set()
         self.updates = 0
         self.failing: list[dict[str, str]] = []
+        self.companions: list[int] = []
         self.clock = 0.0
 
     def controller(self, _repository: str, _base: str, _key: str) -> dict[str, Any] | None:
@@ -78,6 +79,7 @@ class FakeTrain:
             pull_request=self.pull_request,
             update_branch=self.update_branch,
             failing_checks=self.failing_checks,
+            merged_since=lambda _repository, _since: self.companions,
             now=lambda: self.clock,
             sleep=self.sleep,
         )
@@ -139,6 +141,26 @@ class TrainDriveTests(unittest.TestCase):
         train = FakeTrain([_response("update_branch"), _response("land_batch")], merge_after={7: 2})
         outcome, _ = _drive(train, allow_branch_update=True)
         self.assertEqual((outcome, train.updates), ("landed", 1))
+
+    def test_a_different_pull_request_behind_its_base_is_not_updated(self) -> None:
+        train = FakeTrain([_response("update_branch", dry_run_result={"selected_pr": {"number": 8}})])
+        outcome, events = _drive(train, allow_branch_update=True)
+        self.assertEqual((outcome, train.updates), ("needs_owner", 0))
+        self.assertIn("#8", events[-1][1]["reason"])
+
+    def test_batch_companions_missing_from_the_queue_are_still_reported(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
+        train.companions = [9]
+        _, events = _drive(train)
+        self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]}, {7: "landed", 9: "landed"})
+
+    def test_a_stack_landing_waits_for_the_controller_to_finish_the_batch(self) -> None:
+        train = FakeTrain(
+            [_response("execute_stack_collapse"), _response("land_batch"), _response("land_batch"), _response("batch_landed")],
+            merge_after={7: 2},
+        )
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 4))
 
     def test_a_pull_request_that_stays_ineligible_needs_the_owner(self) -> None:
         outcome, events = _drive(FakeTrain([_response("idle", **_queue((7, ["missing ready-to-merge label"])))]))
