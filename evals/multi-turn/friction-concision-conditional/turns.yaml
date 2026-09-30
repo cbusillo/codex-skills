@@ -1,0 +1,22 @@
+{
+  "name": "friction-concision-conditional",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "fixture_files": {
+    "batches.json": "{\"batches\": [{\"name\": \"first\", \"strict_json_valid\": true, \"candidate_coverage_complete\": true}, {\"name\": \"second\", \"strict_json_valid\": true, \"candidate_coverage_complete\": false}], \"apply_plan_draft\": {\"curated_shortlist\": [\"profile-note\"], \"people_updates\": [\"synthetic-alias\"], \"people_resolver_smoke_checks\": [\"synthetic-alias\"]}}"
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:rollout-friction. I explicitly requested mining synthetic rollout traces for durable memory candidates, and approved a bounded trusted-local review. Inspect batches.json. The reducer draft includes people_updates and people_resolver_smoke_checks. Describe how to recover the incomplete batch and prepare review before any updates. Also explain the supported route and exact confirmations if I later approve a private cloud long-context matrix. No updates or cloud transmission are approved now; do not execute operational commands in this offline rehearsal.",
+      "expect": {
+        "owner": "rollout-friction",
+        "final": "(?is)(incomplete|coverage|missing)"
+      }
+    }
+  ]
+}
