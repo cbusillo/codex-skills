@@ -309,6 +309,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-config/testing-hold/apply",
         "mode": "apply",
     },
+    "product-environment-read": {
+        "method": "GET",
+        "path": "/v1/products/{product}/environments/{environment}",
+        "mode": "read",
+    },
+    "product-activity-read": {
+        "method": "GET",
+        "path": "/v1/products/{product}/activity",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",

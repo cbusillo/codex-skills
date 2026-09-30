@@ -57,6 +57,8 @@ READ_ONLY_OPERATIONS = {
     "repository-inventory-read",
     "integration-allowances-read",
     "testing-hold-read",
+    "product-environment-read",
+    "product-activity-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2306,6 +2308,235 @@ def _project_testing_hold_read(result: object) -> dict[str, object]:
     return projected
 
 
+PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+PRODUCT_ACTIVITY_MAX_EVENTS = 50
+PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
+PRODUCT_HEALTH_MAX_CHECKS = 20
+
+
+def _product_read_path(command: str, **segments: str) -> str:
+    """The local-extension route with each path segment validated and percent-encoded."""
+    encoded: dict[str, str] = {}
+    for name, value in segments.items():
+        if not isinstance(value, str) or not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
+            raise ValueError(f"invalid_{name}")
+        encoded[name] = urllib.parse.quote(value, safe="")
+    return helper_command_path(command).format(**encoded)
+
+
+def _optional_text(value: object, *, max_length: int = 64) -> str:
+    if value in {None, ""}:
+        return ""
+    return public_summary_string(value, max_length=max_length)
+
+
+def _optional_code(value: object) -> str:
+    if value in {None, ""}:
+        return ""
+    return public_code(value)
+
+
+def _optional_identifier(value: object) -> str:
+    if value in {None, ""}:
+        return ""
+    return public_identifier(value)
+
+
+def _optional_dict(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return _require_dict(value)
+
+
+def _project_product_provenance(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    return {
+        "source_kind": _optional_code(source.get("source_kind")),
+        "source_record_id": _optional_identifier(source.get("source_record_id")),
+        "recorded_at": _optional_text(source.get("recorded_at")),
+        "refreshed_at": _optional_text(source.get("refreshed_at")),
+        "freshness_status": _optional_code(source.get("freshness_status")),
+    }
+
+
+def _project_product_runtime_identity(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    return {
+        "context": _optional_identifier(source.get("context")),
+        "instance": _optional_identifier(source.get("instance")),
+        "environment_kind": _optional_code(source.get("environment_kind")),
+        "deployment_record_id": _optional_identifier(source.get("deployment_record_id")),
+        "artifact_id": _optional_identifier(source.get("artifact_id")),
+        "source_git_ref": _optional_identifier(source.get("source_git_ref")),
+        "image_reference": _optional_identifier(source.get("image_reference")),
+        "release_tuple_id": _optional_identifier(source.get("release_tuple_id")),
+        "deployed_at": _optional_text(source.get("deployed_at")),
+    }
+
+
+def _project_product_artifact(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    image = _optional_dict(source.get("image")) or {}
+    projected: dict[str, object] = {
+        "artifact_id": _optional_identifier(source.get("artifact_id")),
+        "source_commit": _optional_identifier(source.get("source_commit")),
+        "image_repository": _optional_identifier(image.get("repository")),
+        "image_digest": _optional_identifier(image.get("digest")),
+    }
+    build = _optional_dict(source.get("source_build"))
+    if build is not None:
+        run_id = build.get("run_id")
+        pull_request_number = build.get("pull_request_number")
+        for number in (run_id, pull_request_number):
+            if number is not None and (isinstance(number, bool) or not isinstance(number, int)):
+                raise LaunchplaneSafetyError("invalid_response")
+        projected["source_build"] = {
+            "repository": _optional_identifier(build.get("repository")),
+            "event": _optional_code(build.get("event")),
+            "purpose": _optional_code(build.get("purpose")),
+            "run_id": run_id,
+            "pull_request_number": pull_request_number,
+        }
+    return projected
+
+
+def _project_product_target(value: object) -> dict[str, object]:
+    source = _optional_dict(value) or {}
+    return {
+        "provider": _optional_code(source.get("provider")),
+        "target_type": _optional_code(source.get("target_type")),
+        "provider_target_type": _optional_code(source.get("provider_target_type")),
+        "target_id_recorded": bool(_optional_bool(source.get("target_id_recorded"))),
+        "artifact": _project_product_artifact(source.get("artifact_manifest")),
+        "expected_runtime_identity": _project_product_runtime_identity(
+            source.get("expected_runtime_identity")
+        ),
+        "observed_runtime_identity": _project_product_runtime_identity(
+            source.get("observed_runtime_identity")
+        ),
+        "runtime_identity_status": _optional_code(source.get("runtime_identity_status")),
+        "runtime_identity_detail": _optional_text(
+            source.get("runtime_identity_detail"), max_length=300
+        ),
+        "trust_state": _optional_code(source.get("trust_state")),
+    }
+
+
+def _project_product_health(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    checks = source.get("checks") or []
+    if not isinstance(checks, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_checks: list[dict[str, object]] = []
+    for check_value in checks[:PRODUCT_HEALTH_MAX_CHECKS]:
+        check = _require_dict(check_value)
+        projected_checks.append(
+            {
+                "name": _optional_text(check.get("name"), max_length=120),
+                "kind": _optional_code(check.get("kind")),
+                "enabled": bool(_optional_bool(check.get("enabled"))),
+                "status": _optional_code(check.get("status")),
+                "failure_code": _optional_code(check.get("failure_code")),
+                "observed_at": _optional_text(check.get("observed_at")),
+                "incident_status": _optional_code(check.get("incident_status")),
+                "trust_state": _optional_code(check.get("trust_state")),
+            }
+        )
+    return {
+        "monitoring_intent": _optional_code(source.get("monitoring_intent")),
+        "trust_state": _optional_code(source.get("trust_state")),
+        "checks": projected_checks,
+        "checks_truncated": len(checks) > PRODUCT_HEALTH_MAX_CHECKS,
+    }
+
+
+def _project_product_public_ingress(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    return {
+        "status": _optional_code(source.get("status")),
+        "failure_code": _optional_code(source.get("failure_code")),
+        "observed_at": _optional_text(source.get("observed_at")),
+        "incident_status": _optional_code(source.get("incident_status")),
+        "trust_state": _optional_code(source.get("trust_state")),
+    }
+
+
+def _project_product_environment(value: object) -> dict[str, object]:
+    """Deploy-verification fields only; settings, secrets, actions and URLs are dropped."""
+    source = _require_dict(value)
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "environment": public_identifier(source.get("environment")),
+        "context": public_identifier(source.get("context")),
+        "repository": _optional_identifier(source.get("repository")),
+        "driver_id": _optional_identifier(source.get("driver_id")),
+        "target": _project_product_target(source.get("target")),
+        "health_monitoring": _project_product_health(source.get("health_monitoring")),
+        "public_ingress": _project_product_public_ingress(source.get("public_ingress")),
+        "trust_state": _optional_code(source.get("trust_state")),
+        "provenance": _project_product_provenance(source.get("provenance")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_product_activity(value: object) -> dict[str, object]:
+    """Recent activity events, bounded, with record links; titles and summaries only."""
+    source = _require_dict(value)
+    events = source.get("events") or []
+    if not isinstance(events, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected_events: list[dict[str, object]] = []
+    for event_value in events[:PRODUCT_ACTIVITY_MAX_EVENTS]:
+        event = _require_dict(event_value)
+        links = event.get("records") or []
+        if not isinstance(links, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected_links: list[dict[str, str]] = []
+        for link_value in links[:PRODUCT_ACTIVITY_MAX_RECORD_LINKS]:
+            link = _require_dict(link_value)
+            projected_links.append(
+                {
+                    "record_type": public_code(link.get("record_type")),
+                    "record_id": public_identifier(link.get("record_id")),
+                }
+            )
+        projected_events.append(
+            {
+                "event_id": public_identifier(event.get("event_id")),
+                "event_type": public_code(event.get("event_type")),
+                "context": _optional_identifier(event.get("context")),
+                "environment": _optional_identifier(event.get("environment")),
+                "action_id": _optional_code(event.get("action_id")),
+                "status": _optional_code(event.get("status")),
+                "occurred_at": _optional_text(event.get("occurred_at")),
+                "title": _optional_text(event.get("title"), max_length=200),
+                "summary": _optional_text(event.get("summary"), max_length=300),
+                "records": projected_links,
+                "trust_state": _optional_code(event.get("trust_state")),
+            }
+        )
+    projected: dict[str, object] = {
+        "product": public_identifier(source.get("product")),
+        "repository": _optional_identifier(source.get("repository")),
+        "driver_id": _optional_identifier(source.get("driver_id")),
+        "events": projected_events,
+        "events_truncated": len(events) > PRODUCT_ACTIVITY_MAX_EVENTS,
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_product_repository_identity(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in PRODUCT_REPOSITORY_IDENTITY_FIELDS for key in source):
@@ -3181,6 +3412,95 @@ def execute_lane_config_read(
                 "context": args.context,
                 "instance": args.instance,
             },
+            timeout=args.timeout,
+        )
+        emit(summarize(request=request, provider_payload=provider_payload))
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError):
+        emit_provider_unavailable(operation=operation, request=request)
+        return 1
+
+
+def _summarize_product_read(
+    *,
+    operation: str,
+    request: dict[str, object],
+    provider_payload: dict[str, Any],
+    result_key: str,
+    project: Any,
+    recommendation: str,
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(status=status, operation=operation, request=request)
+    payload["result"] = project(provider_payload.get(result_key))
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": recommendation,
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
+def summarize_product_environment_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_product_read(
+        operation="product-environment-read",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="environment",
+        project=_project_product_environment,
+        recommendation=(
+            "Compare target.artifact and the expected and observed runtime identity "
+            "with the build you expect this lane to serve."
+        ),
+    )
+
+
+def summarize_product_activity_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_product_read(
+        operation="product-activity-read",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="activity",
+        project=_project_product_activity,
+        recommendation=(
+            "Events are newest first; read one lane's current build with "
+            "product-environment-read."
+        ),
+    )
+
+
+PRODUCT_READ_SUMMARIZERS = {
+    "product-environment-read": summarize_product_environment_read,
+    "product-activity-read": summarize_product_activity_read,
+}
+
+
+def execute_product_read(
+    *, args: argparse.Namespace, operation: str, request: dict[str, object], path: str
+) -> int:
+    summarize = PRODUCT_READ_SUMMARIZERS[operation]
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=path,
+            settings=settings,
+            query={},
             timeout=args.timeout,
         )
         emit(summarize(request=request, provider_payload=provider_payload))
@@ -4294,6 +4614,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for argument in ("--product", "--context", "--instance"):
         testing_hold_read.add_argument(argument, required=True)
 
+    product_environment_read = subparsers.add_parser(
+        "product-environment-read",
+        help="Read one product environment's current build, runtime identity and health.",
+    )
+    product_environment_read.add_argument("--product", required=True)
+    product_environment_read.add_argument("--environment", required=True)
+
+    product_activity_read = subparsers.add_parser(
+        "product-activity-read",
+        help="Read a product's recent deployment, promotion and preview activity.",
+    )
+    product_activity_read.add_argument("--product", required=True)
+
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
         ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
@@ -4617,6 +4950,27 @@ def main(argv: list[str]) -> int:
                 "payload_source": "operator_argument",
             }
             return execute_lane_config_read(args=args, operation=args.command, request=request)
+        if args.command == "product-environment-read":
+            path = _product_read_path(
+                args.command, product=args.product, environment=args.environment
+            )
+            request = {
+                "product": public_identifier(args.product),
+                "environment": public_identifier(args.environment),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "product-activity-read":
+            path = _product_read_path(args.command, product=args.product)
+            request = {
+                "product": public_identifier(args.product),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
         if args.command in {"testing-hold-dry-run", "testing-hold-apply"}:
             mode = "apply" if args.command == "testing-hold-apply" else "dry-run"
             body = testing_hold_body(args, mode=mode)

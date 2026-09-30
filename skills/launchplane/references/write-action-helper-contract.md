@@ -91,6 +91,27 @@ extensions until the vendored artifact is refreshed.
 - Output shows the action, the hold before and after (reason, recorder and
   time), read-back, and whether lifting requested a testing reconcile.
 
+## Product environment and activity reads
+
+`product-environment-read` and `product-activity-read` call
+`GET /v1/products/{product}/environments/{environment}` and
+`GET /v1/products/{product}/activity`. They let an agent confirm what a
+merge-triggered deploy shipped without the operator signing in. These routes are
+local extensions until the vendored artifact is refreshed.
+
+- `product-environment-read --product --environment` returns the lane's
+  identity, `target.artifact` (artifact id, source commit, image repository and
+  digest, source build run), expected and observed runtime identity (deployment
+  record id, artifact id, source ref, image reference, deployed time) with the
+  runtime identity status, health checks, public ingress status, trust state and
+  provenance.
+- `product-activity-read --product` returns up to 50 events, newest first, each
+  with type, lane, action, status, time, title, summary and up to 10 record
+  links; `events_truncated` says when more were returned.
+- Path segments must be plain identifiers; anything else is refused before a
+  request is sent. Runtime settings, managed secrets, available actions, URLs,
+  provider target names and driver extensions are dropped from the output.
+
 ## Product repository identity
 
 `product-repository-identity-dry-run` and `product-repository-identity-apply`
