@@ -111,8 +111,9 @@ repository policy and ask when the sharing decision remains unclear.
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
 repository command in the exact linked worktree through the lifecycle helper,
-which performs preparation before opening it. The preferred public command for
-preparing and opening that worktree is:
+which performs preparation before opening it. Set
+`HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
+The preferred public command for preparing and opening that worktree is:
 
 ```bash
 uv run "$HELPER" open-worktree --repo "$PWD"
@@ -173,8 +174,6 @@ uv run <skill-dir>/scripts/jb-inspect.py \
   agent-inspect --repo "$PWD" --scope changed_files
 ```
 
-For the commands below, set `HELPER=<skill-dir>/scripts/jb-inspect.py`.
-
 Command model:
 
 - `agent-inspect`: primary LLM-facing assessment; emits a compact JSON envelope
@@ -189,19 +188,19 @@ Command model:
   "post_run_verification"` because before/after snapshots cannot identify the
   writing process. Missing native or snapshot evidence remains `not_run` or
   `unknown`; it is never presented as clean, fresh, or unchanged.
-- `list-projects`: discover plugin-visible projects only.
-- `resolve-route`: probe for an already-open exact route; it does not open or
+- `list-projects` (no arguments): discover plugin-visible projects only.
+- `resolve-route --repo "$PWD"`: probe for an already-open exact route; it does not open or
   inspect.
 - `open-worktree`: preferred public command; run configured repository
   preparation, then open and claim the exact worktree; it does not inspect.
 - `prepare-worktree` and `prepare`: backward-compatible aliases for
   `open-worktree`.
-- `inspect`: open if needed, inspect, fetch problems, and clean up
+- `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch problems, and clean up
   helper-opened projects.
-- `inspect-closeout`: readiness/hand-off inspection; use before saying a change
+- `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off inspection; use before saying a change
   is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
-- `get-status` and `get-problems`: route-pinned diagnostics for
-  already-routable projects.
+- `get-status --repo "$PWD"` and `get-problems --repo "$PWD" --severity error`:
+  route-pinned diagnostics for already-routable projects.
 - `get-problems` reads the stored inspection run; it does not start a new one.
   Repeat the original scope selectors so the plugin can prove the requested
   results belong to that run. For a `files` scope, pass at least one repeatable
@@ -215,10 +214,10 @@ Command model:
   ```
 
   A selector mismatch fails closed instead of widening retrieval.
-- `summarize-outcomes`: keep the existing diagnostic verdict/bucket/retry
-  summary when no qualification file is supplied. With
-  `--qualification-file`, run the strict post-boundary assessment gate described
-  below; strict incomplete or failed gates exit nonzero.
+- `summarize-outcomes`: diagnostic verdict/bucket/retry summary without a
+  qualification file. `summarize-outcomes --qualification-file qualification.json
+  --sample-size 50` runs the strict post-boundary assessment gate described below;
+  strict incomplete or failed gates exit nonzero.
 - `cleanup-helper-leases`: reconcile stale helper-owned leases under the
   lifecycle lock; unresolved identity or close failures return nonzero.
 
