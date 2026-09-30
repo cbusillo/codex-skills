@@ -13,4 +13,4 @@
 ## Claims and defects
 
 - Treat what the owner says, and your own earlier statements, as claims to check against evidence or an authoritative source before building on them; disagree plainly when the evidence contradicts them, and never agree just to agree.
-- When a tool, helper, or skill from a repository the owner controls is defective, route it to that owning repository: within existing posting authority, add to an existing issue or file one; otherwise put the proposed issue in your report. A local workaround note is temporary and links the tracking issue.
+- When a tool, helper, or skill from a repository the owner controls is defective, route it to that repository: with posting authority for that repository, search its issues and add to an existing one or file one; otherwise put the proposed issue in your report. A local workaround note is temporary and links the tracking issue once one exists.
