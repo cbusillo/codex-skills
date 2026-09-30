@@ -77,7 +77,12 @@ may add `operation` (a pattern the first operational command must match),
 `require` (some operation must match), `forbid` (no operation may match), and
 `final` (the turn's final answer must match), and `prior` (patterns that
 must each match a read before the first operation, such as a fingerprint). A
-refused command still counts as attempted. Cases under `closeout/` use the same
+refused command still counts as attempted. The offline shell boundary supports
+print-only numeric sed line selections such as `sed -n '1,80p' file` (also
+semicolon-separated print selections, an optional trailing semicolon, and a
+single `-e` before the print script). Other sed programs and extra options
+are refused; use that form or ordinary `cat`, `head`, or `tail` reads instead.
+Cases under `closeout/` use the same
 grades for `work-closeout`; their `setup` scripts build real Git state, such as
 an upstream one commit ahead and a dirty or untracked file, with a fixed
 identity and clock so commit IDs are reproducible.

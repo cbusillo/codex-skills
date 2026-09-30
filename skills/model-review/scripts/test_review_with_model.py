@@ -8,14 +8,16 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from review_with_model import AGY_READ_ONLY_COMMANDS
+import review_with_model
 
 SCRIPT = Path(__file__).with_name("review_with_model.py")
 
@@ -40,6 +42,29 @@ pwd > "$FAKE_AGY_CWD_FILE"
 echo "jetski: some banner text"
 printf '%s' "$FAKE_AGY_JSON"
 """
+
+RETRY_AGY = """#!/bin/sh
+if [ -f "$FAKE_AGY_COUNT" ]; then
+  echo retry >> "$FAKE_AGY_COUNT"
+  printf '%s' "$2" > "$FAKE_AGY_RETRY_PROMPT"
+  printf '%s' "$FAKE_AGY_RETRY_JSON"
+else
+  echo initial > "$FAKE_AGY_COUNT"
+  printf '%s' "$FAKE_AGY_JSON"
+fi
+"""
+
+
+def wire_varint(value: int) -> bytes:
+    output = bytearray()
+    while value > 127:
+        output.append((value & 127) | 128)
+        value >>= 7
+    return bytes(output) + bytes([value])
+
+
+def wire_bytes(field: int, data: bytes) -> bytes:
+    return wire_varint(field << 3 | 2) + wire_varint(len(data)) + data
 
 
 class ReviewWithModelTests(unittest.TestCase):
@@ -123,21 +148,103 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertLessEqual({"plugins", "apps"}, disabled)
         self.assertEqual(argv[argv.index("-s") + 1], "read-only")
 
-    def test_google_preamble_names_only_allowed_commands_and_read_file(self) -> None:
+    def saved_command(self, command: str, status: int = 7) -> str:
+        conversation = "12345678-1234-1234-1234-123456789abc"
+        directory = self.home / ".gemini/antigravity-cli/conversations"
+        directory.mkdir(parents=True, exist_ok=True)
+        call = wire_bytes(2, b"run_command") + wire_bytes(3, json.dumps({"CommandLine": command}).encode())
+        blob = wire_bytes(5, wire_bytes(4, call))
+        with sqlite3.connect(directory / f"{conversation}.db") as connection:
+            connection.execute("CREATE TABLE steps (idx INTEGER, status INTEGER, step_payload BLOB)")
+            connection.execute("INSERT INTO steps VALUES (0, 3, ?)", (blob,))
+            connection.execute("INSERT INTO steps VALUES (1, ?, ?)", (status, blob))
+            connection.execute("INSERT INTO steps VALUES (2, 7, ?)", (wire_bytes(5, b""),))
+        return conversation
+
+    def test_google_names_saved_command_and_retries_only_once(self) -> None:
+        self.install("agy", RETRY_AGY)
+        command = f"cat {self.repo}/large.py | grep -n -A 50 'example'"
+        conversation = self.saved_command(command)
+        denial = json.dumps({"status": "SUCCESS", "response": "", "conversation_id": conversation,
+                             "denied_actions": [{"action": "command", "display_name": "RunCommand"}]})
+        count, retry_prompt = self.root / "count", self.root / "retry-prompt"
+        env = {"FAKE_AGY_JSON": denial, "FAKE_AGY_RETRY_JSON": denial,
+               "FAKE_AGY_COUNT": str(count), "FAKE_AGY_RETRY_PROMPT": str(retry_prompt)}
+        db = self.home / f".gemini/antigravity-cli/conversations/{conversation}.db"
+        original = db.read_bytes()
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["ok"], result["denied_commands"]), (1, False, [command]))
+        self.assertIn(command, result["error"])
+        self.assertNotIn("hint", result)
+        self.assertEqual(result["recovery"]["attempts"], 2)
+        self.assertEqual(count.read_text().splitlines(), ["initial", "retry"])
+        count.unlink()
+        code, result = self.review("google", **{**env, "FAKE_AGY_RETRY_JSON": json.dumps({"response": "none"})})
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertEqual(result["recovery"]["denied_commands"], [command])
+        self.assertEqual(db.read_bytes(), original, "diagnosis never changes the saved conversation")
+        count.unlink()
+        code, result = self.review("google", **{**env, "FAKE_AGY_RETRY_JSON": json.dumps({"response": ""})})
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn(command, result["error"], "an empty retry must preserve the original named refusal")
+        self.assertEqual(result["recovery"]["denied_commands"], [command])
+
+    def test_google_pending_command_is_named_but_read_denial_is_not_retried(self) -> None:
         self.install("agy", FAKE_AGY)
-        prompt_file = self.root / "agy-prompt"
-        agy_json = json.dumps({"response": "none", "denied_actions": []})
-        code, result = self.review(
-            "google", FAKE_AGY_JSON=agy_json,
-            FAKE_AGY_CWD_FILE=str(self.root / "agy-cwd"),
-            FAKE_AGY_PROMPT_FILE=str(prompt_file),
-        )
-        self.assertEqual((code, result["ok"]), (0, True))
-        preamble = prompt_file.read_text()
-        for command in AGY_READ_ONLY_COMMANDS:
-            self.assertIn(f"`{command}`", preamble)
-        self.assertIn("Use read_file", preamble)
-        self.assertIn("Do not run other commands", preamble)
+        command = "sed -n '1,3000p' /repo/large.py"
+        conversation = self.saved_command(command, status=6)
+        env = {"FAKE_AGY_CWD_FILE": str(self.root / "cwd")}
+        denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}, {"action": "read_file"}]}
+        code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial), **env)
+        self.assertEqual((code, result["denied_commands"]), (1, [command]))
+        self.assertNotIn("recovery", result)
+        self.assertIn("hint", result)
+
+    def test_google_retry_timeout_preserves_refusal_without_echoing_the_prompt(self) -> None:
+        command = "cat /repo/large.py"
+        conversation = self.saved_command(command)
+        denial = json.dumps({"conversation_id": conversation, "denied_actions": [{"action": "command"}]})
+        calls = [subprocess.CompletedProcess([], 0, denial, ""),
+                 subprocess.TimeoutExpired(["agy", "-p", "private review prompt"], 31)]
+        with patch.object(review_with_model, "AGY_SETTINGS", self.home / ".gemini/antigravity-cli/settings.json"), \
+             patch.object(review_with_model, "run_cli", side_effect=calls), \
+             patch.object(review_with_model.shutil, "which", return_value="agy"):
+            result = review_with_model.review("google", "private review prompt", self.repo, None, 1)
+        self.assertFalse(result["ok"])
+        self.assertIn(command, result["error"])
+        self.assertNotIn("private review prompt", result["error"])
+
+    def test_google_missing_corrupt_or_invalid_conversation_keeps_denial_visible(self) -> None:
+        self.install("agy", FAKE_AGY)
+        for conversation in (None, "../../outside", "12345678-1234-1234-1234-123456789abc"):
+            with self.subTest(conversation=conversation):
+                denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}]}
+                code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
+                                           FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                self.assertEqual((code, result["denied_commands"]), (1, []))
+                self.assertIn("command_diagnostic", result)
+                self.assertEqual(result["recovery"]["attempts"], 2)
+        self.assertFalse((self.home / ".gemini").exists(), "mode=ro must not create missing stores")
+        self.install("agy", RETRY_AGY)
+        denial = {"denied_actions": [{"action": "command"}]}
+        code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
+                                   FAKE_AGY_RETRY_JSON=json.dumps({"response": "none"}),
+                                   FAKE_AGY_COUNT=str(self.root / "count"),
+                                   FAKE_AGY_RETRY_PROMPT=str(self.root / "retry-prompt"))
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("command_diagnostic", result["recovery"])
+        self.install("agy", FAKE_AGY)
+        conversation = self.saved_command("cat /repo/large.py")
+        db = self.home / f".gemini/antigravity-cli/conversations/{conversation}.db"
+        non_object_arguments = wire_bytes(5, wire_bytes(4, wire_bytes(2, b"run_command") + wire_bytes(3, b"[]")))
+        for blob in (b"\x2a\xff", b"\x2a\x05ab", b"\x2a\x01\x00", non_object_arguments):
+            with sqlite3.connect(db) as connection:
+                connection.execute("UPDATE steps SET step_payload=? WHERE status=7", (blob,))
+            denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}]}
+            code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
+                                       FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+            self.assertEqual((code, result["ok"]), (1, False))
+            self.assertIn("command_diagnostic", result)
 
     def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
         self.install("agy", FAKE_AGY)
@@ -164,7 +271,6 @@ class ReviewWithModelTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertIn("Do not run other commands", prompt_file.read_text())
         self.assertIn("The changes to review are in", prompt_file.read_text())
         self.assertIn("+after", diff_file.read_text())
         self.assertFalse(list(self.repo.glob(".model-review-*")), "the temporary diff must be removed")

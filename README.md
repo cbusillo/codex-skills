@@ -92,6 +92,8 @@ uv run scripts/sync-global-instructions.py --codex-hook
 uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
 
+If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
+
 Run from the maintained runtime checkout after landing the source. The helper
 generates `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, backs up changed files,
 and refuses symlink destinations. `--home-dir` selects a fixture home for tests.
@@ -99,6 +101,7 @@ Native `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides are respected; use
 `--codex-dir` or `--claude-dir` for explicit host destinations. `CODE_HOME`
 continues to locate shared catalog state, not either host's global instructions.
 Omit `--codex-hook` to synchronize instructions alone.
+If run from a task worktree where the local source is missing, the script refuses to overwrite existing files to prevent dropping private instructions. Use `--allow-missing-local` to override this and proceed.
 
 Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 `Bash` with `tool_input.command`, and honors exit 2 with a stderr reason.
@@ -163,6 +166,8 @@ diff removes nothing you want, and write:
 uv run scripts/sync-global-instructions.py --codex-hook
 uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
+
+If you are intentionally updating global instructions from a task worktree (where `.local` is missing) and want to overwrite the existing files, append `--allow-missing-local` to proceed without private instructions.
 
 ## Execution Environment
 
@@ -251,6 +256,16 @@ one skill folder alone does not preserve its cross-skill reference dependencies.
 This repository is intended to be safe for public sharing. Put personal,
 machine-specific, client-specific, or private workflow data in ignored local
 files instead of committing it.
+
+### Native helper build and CodeQL
+
+The root `Package.swift` gives CodeQL's Swift autobuilder a target for
+`skills/work-closeout/scripts/reminder_list.swift`. On macOS 14 or newer,
+`swift build --product reminder-list` compiles that existing helper without
+running it or accessing Reminders. Build output stays in ignored `.build/`.
+The normal script invocation remains supported; the package is also the build
+entry point used for Swift extraction. Existing CodeQL language scanning stays
+enabled.
 
 ### System Skill Overrides
 
