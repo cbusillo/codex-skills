@@ -11,13 +11,14 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("gh_plan_search_under_test", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
-PLAN = importlib.util.module_from_spec(SPEC)
+PLAN: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PLAN)
 
 
