@@ -3551,12 +3551,11 @@ def unedited_owner_decision(comment: dict[str, Any]) -> bool:
         {"query": OWNER_DECISION_COMMENT_QUERY, "variables": {"id": node_id}},
         is_write=False, failed_step="read_owner_decision_edit_history",
     )
-    if data.get("errors"):
-        return False
     node = (data.get("data") or {}).get("node")
+    if data.get("errors") or not isinstance(node, dict) or "lastEditedAt" not in node:
+        raise PlanError("Owner decision edit history is unavailable")
     return (
-        isinstance(node, dict)
-        and "lastEditedAt" in node and node["lastEditedAt"] is None
+        node["lastEditedAt"] is None
         and node.get("databaseId") == comment.get("id")
         and node.get("body") == comment.get("body")
         and node.get("createdAt") == comment.get("created_at")
