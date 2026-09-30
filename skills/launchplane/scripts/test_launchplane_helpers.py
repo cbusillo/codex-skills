@@ -3028,6 +3028,7 @@ def _reconcile_requests_response() -> dict[str, object]:
                     "omitted_integration_credential_keys": ["EXAMPLE_SMTP_PASSWORD"],
                     "rejected_builds": [{"run_id": 1}],
                     "provider": {"response": "private provider text"},
+                    "provider_response": "Private customer migration failed",
                 },
             },
             {"target_key": "has spaces in key"},
@@ -3052,14 +3053,36 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert plan["desired_image_digest"] == "sha256:" + "d5da36c3" * 8
     assert plan["preview_plan_id"] == "odoo-preview-plan-" + "ab12" * 16
     assert plan["preview_url"] == "https://pr-7.example.invalid"
-    assert plan["rejected_builds"] == []
+    assert plan["omitted_integration_keys"] == ["EXAMPLE_SMTP_PASSWORD"]
+    assert set(plan) == {
+        "target",
+        "action",
+        "held",
+        "head_sha",
+        "desired_image_digest",
+        "preview_plan_id",
+        "preview_url",
+        "omitted_integration_keys",
+    }
     assert result["omitted_request_count"] == 1
     assert result["dropped_field_paths"] == [
-        "requests[].last_plan.omitted_integration_credential_keys",
-        "requests[].last_plan.provider",
+        "requests[].last_plan.<unlisted field>",
         "requests[].target_key",
     ]
-    assert "private provider text" not in json.dumps(payload)
+    rendered = json.dumps(payload)
+    assert "private provider text" not in rendered
+    assert "Private customer" not in rendered
+
+    odd = _reconcile_requests_response()
+    first = cast(list[dict[str, Any]], odd["requests"])[0]
+    first["last_error"] = {"code": "build_failed"}
+    first["last_plan"]["preview_url"] = "https://pr-7.example.invalid/?access_key=private-value"
+    status, payload, _calls = _run_product_read(argv, odd)
+    assert status == 0
+    (request,) = payload["result"]["requests"]
+    assert request["last_error"] == ""
+    assert request["last_plan"]["preview_url"] == ""
+    assert "private-value" not in json.dumps(payload)
 
     secret = _reconcile_requests_response()
     cast(list[dict[str, object]], secret["requests"])[0]["last_error"] = "token ghp_abcdefghijklmnop"

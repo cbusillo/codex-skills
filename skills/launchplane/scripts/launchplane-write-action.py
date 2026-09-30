@@ -2318,7 +2318,6 @@ PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
-RECONCILE_MAX_PLAN_FIELDS = 40
 RECONCILE_MAX_PLAN_LIST_ITEMS = 20
 
 
@@ -2507,7 +2506,7 @@ class _FieldDrops:
 
     def keep(self, path: str, validate: Any, value: object) -> object:
         """The validated value, or "" when it fails; a secret-looking value still fails the read."""
-        if value in {None, ""}:
+        if value is None or value == "":
             return ""
         assert_public_safe_shape(value)
         try:
@@ -2610,41 +2609,87 @@ def _project_product_activity(value: object) -> dict[str, object]:
     return projected
 
 
-def _plan_text(value: object) -> str:
-    """An id, SHA or digest as it is; other text only when it reads as a safe summary."""
-    try:
-        return public_identifier(value)
-    except LaunchplaneSafetyError:
-        return public_summary_string(value, max_length=400)
+def _public_origin_url(value: object) -> str:
+    """A public https URL without a query or fragment, which could carry a credential."""
+    url = public_url(value)
+    if urllib.parse.urlsplit(url).query or "#" in url:
+        raise LaunchplaneSafetyError("invalid_response")
+    return url
+
+
+def _reconcile_plan_validators() -> dict[str, Any]:
+    """The plan fields the reconciler writes, each with its validator; others are dropped."""
+    fields: dict[str, Any] = dict.fromkeys(
+        (
+            "target",
+            "action",
+            "reason",
+            "deferred",
+            "current_state",
+            "preview_operation_status",
+            "preview_result_status",
+            "queued_operation_status",
+        ),
+        _public_dotted_code,
+    )
+    fields.update(
+        dict.fromkeys(
+            (
+                "context",
+                "head_sha",
+                "current_head_sha",
+                "desired_commit",
+                "desired_artifact_id",
+                "current_artifact_id",
+                "desired_image_digest",
+                "current_image_digest",
+                "current_preview_id",
+                "preview_plan_id",
+                "preview_operation_key",
+                "preview_slug",
+                "queued_operation_id",
+                "active_operation_id",
+                "deployed_operation_id",
+                "last_failed_operation_id",
+                "hold_recorded_by",
+            ),
+            public_identifier,
+        )
+    )
+    fields.update(
+        detail=lambda value: public_summary_string(value, max_length=400),
+        hold_reason=lambda value: public_summary_string(value, max_length=300),
+        hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
+        preview_url=_public_origin_url,
+    )
+    return fields
+
+
+RECONCILE_PLAN_VALIDATORS = _reconcile_plan_validators()
 
 
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
-    """The plan's top-level fields. Nested objects, sensitive key names and values that
-    do not validate are dropped with their paths."""
+    """The plan fields the reconciler is known to write. Any other field, and a value
+    that does not validate, is dropped and counted."""
     plan = plan_value if isinstance(plan_value, dict) else {}
     projected: dict[str, object] = {}
-    for raw_key, value in list(plan.items())[:RECONCILE_MAX_PLAN_FIELDS]:
-        key = str(raw_key)
-        if not PRODUCT_ACTIVITY_CODE_RE.fullmatch(key):
-            drops.drop("requests[].last_plan.<invalid key>")
-            continue
-        path = f"requests[].last_plan.{key}"
-        if is_denied_key(key) or isinstance(value, dict):
-            drops.drop(path)
-        elif value is None or isinstance(value, (bool, int)):
-            projected[key] = value
-        elif isinstance(value, str):
-            validate = public_url if key.endswith("_url") else _plan_text
-            projected[key] = drops.keep(path, validate, value)
-        elif isinstance(value, list):
+    for key, value in plan.items():
+        validate = RECONCILE_PLAN_VALIDATORS.get(key)
+        if validate is not None:
+            projected[key] = drops.keep(f"requests[].last_plan.{key}", validate, value)
+        elif key == "held":
+            projected[key] = value if isinstance(value, bool) else None
+        elif key == "pull_request_number":
+            projected[key] = value if type(value) is int else None
+        elif key == "omitted_integration_credential_keys" and isinstance(value, list):
+            # Key names only; the output name avoids the sensitive-key denylist.
             items = [
-                drops.keep(f"{path}[]", public_identifier, item)
+                drops.keep("requests[].last_plan.omitted_integration_keys[]", public_identifier, item)
                 for item in value[:RECONCILE_MAX_PLAN_LIST_ITEMS]
-                if isinstance(item, str)
             ]
-            projected[key] = [item for item in items if item]
+            projected["omitted_integration_keys"] = [item for item in items if item]
         else:
-            drops.drop(path)
+            drops.drop("requests[].last_plan.<unlisted field>")
     return projected
 
 

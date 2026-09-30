@@ -123,10 +123,11 @@ local extensions until the vendored artifact is refreshed.
 - `reconcile-requests-read --product` calls
   `GET /v1/product-profiles/{product}/reconcile-requests`. It returns up to 50
   targets, each with state, times, counts, delivery id, last error and the
-  plan's top-level fields. A plan field that is a nested object, has a
-  sensitive-looking name or fails validation is dropped and listed; lists keep
-  only plain identifiers. The service has already redacted the plan and error;
-  the same drop and omit rules apply on top.
+  plan fields the reconciler is known to write: action, reason, hold, commits,
+  artifact ids, digests, operation and plan ids, the preview URL without a query
+  or fragment, and the names of omitted integration keys (as
+  `omitted_integration_keys`). Any other plan field is dropped and counted under
+  `requests[].last_plan.<unlisted field>`; the same drop and omit rules apply.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.
