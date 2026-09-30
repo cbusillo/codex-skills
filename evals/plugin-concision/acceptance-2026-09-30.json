@@ -1,0 +1,2316 @@
+{
+  "baseline_sha": "aa428c43b14ea8d083e34987a20bdb8aae810418",
+  "freeze_sha": "fb6b3fd424053bd374614b57f64209796a317bf5",
+  "guidance_sha": "86a6ac422776ef36ce4a93b192754105d50802f5",
+  "supplement_freeze_sha": "71e58cb1bd25953cb489af3790cb564de1c2e7ff",
+  "body_words_before": 695,
+  "body_words_after": 350,
+  "net_maintained_words_removed": 345,
+  "frontmatter_unchanged": true,
+  "reference_and_helper_unchanged": true,
+  "summaries": {
+    "baseline-claude": {
+      "trials": 8,
+      "native_full_passes": 7,
+      "total_usage": {
+        "input": 321204,
+        "cached_input": 222798,
+        "output": 6175
+      },
+      "total_seconds": 88.9
+    },
+    "baseline-codex": {
+      "trials": 8,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 419665,
+        "cached_input": 350208,
+        "output": 3088
+      },
+      "total_seconds": 134.1
+    },
+    "candidate-claude": {
+      "trials": 8,
+      "native_full_passes": 7,
+      "total_usage": {
+        "input": 320366,
+        "cached_input": 222143,
+        "output": 7016
+      },
+      "total_seconds": 88.9
+    },
+    "candidate-codex": {
+      "trials": 8,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 423205,
+        "cached_input": 349184,
+        "output": 3623
+      },
+      "total_seconds": 133.9
+    },
+    "repeat-baseline-claude": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 76980,
+        "cached_input": 53305,
+        "output": 2661
+      },
+      "total_seconds": 29.7
+    },
+    "repeat-baseline-codex": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 140540,
+        "cached_input": 117760,
+        "output": 1089
+      },
+      "total_seconds": 37.2
+    },
+    "repeat-candidate-claude": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 114455,
+        "cached_input": 86472,
+        "output": 2836
+      },
+      "total_seconds": 32.3
+    },
+    "repeat-candidate-codex": {
+      "trials": 2,
+      "native_full_passes": 1,
+      "total_usage": {
+        "input": 123644,
+        "cached_input": 102656,
+        "output": 1219
+      },
+      "total_seconds": 51.4
+    },
+    "supplement-baseline-claude": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 60579,
+        "cached_input": 37026,
+        "output": 2638
+      },
+      "total_seconds": 27.9
+    },
+    "supplement-baseline-codex": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 123808,
+        "cached_input": 95488,
+        "output": 886
+      },
+      "total_seconds": 35.5
+    },
+    "supplement-candidate-claude": {
+      "trials": 2,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 95578,
+        "cached_input": 67781,
+        "output": 2783
+      },
+      "total_seconds": 30.9
+    },
+    "supplement-candidate-codex": {
+      "trials": 2,
+      "native_full_passes": 0,
+      "total_usage": {
+        "input": 123707,
+        "cached_input": 102656,
+        "output": 947
+      },
+      "total_seconds": 36.7
+    }
+  },
+  "review": {
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "reviewed_head": "86a6ac422776ef36ce4a93b192754105d50802f5",
+    "result": "No lost contract or realistic reduction regression. Existing helper defects reproduced and tracked in #901 outside the milestone. Eval hint weakness investigated with separate frozen unhinted comparison/repeats and trace checks, original cases/scores preserved."
+  },
+  "limitations": [
+    "Offline operational commands blocked; no live successful scaffolding or general behavior improvement claim. Real CLIs with isolated homes/caller PATH and same models/tools/settings per harness. Configured model names not independent backend routing proof.",
+    "Original ambiguity regex rejects correct answers split across lines. One baseline Codex native owner miss; other shared read-only fixture/shell-boundary limitations retained.",
+    "Unhinted supplement frozen after source review, before supplemental runs. Claude schema reads 0/4 baseline versus 4/4 candidate across supplement/repeat. Codex native reads 4/4 baseline versus 1/4 candidate; all eight raw Codex outputs deliver the complete reference. Three candidate false negatives come from trailing rg exit 1; tracked in #895.",
+    "All 48 trials retained. Final JSON fields independently checked in raw responses, not just ON_INSTALL regex; no entry includes products or per-entry displayName. Token totals/cache and latency include variable repeated model turns; shorter prose is not claimed faster/cheaper.",
+    "Pre-existing helper overwrite/path defects are unresolved in #901 and not fixed by this reduction. Runtime source reconciliation is separately required after merge."
+  ],
+  "trials": [
+    {
+      "host": "claude",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.4,
+      "usage": {
+        "input": 13679,
+        "cached_input": 4812,
+        "output": 18
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a060a79de916ce80d99a4092cba7173808d4a0b1456dfba4cf7a169d02d44301",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 3.3,
+      "usage": {
+        "input": 13679,
+        "cached_input": 4812,
+        "output": 18
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f6693a0f51b2c7e0e77bd793c65967798f0db5b15e7860025b2e96304fbc8afd",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.9,
+      "usage": {
+        "input": 29977,
+        "cached_input": 18489,
+        "output": 476
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f38af10094fbe3cdb8863613727c3ca207d41ca172aa677899293e9561590d9c",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.1,
+      "usage": {
+        "input": 29979,
+        "cached_input": 18489,
+        "output": 428
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "d13d8152ca0059bce075a96c94b648034aa935032d5f873197cac00cbdfc4725",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.5,
+      "usage": {
+        "input": 66587,
+        "cached_input": 52900,
+        "output": 1276
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator",
+              "python-uv-workflow"
+            ],
+            "first_operation": "uv run --no-project <task-worktree>/.local/plugin-eval/baseline/skills/plugin-creator/scripts/create_basic_plugin.py \"My Notes\" --with-skills --with-marketplace 2>&1; echo \"exit=$?\""
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "6d6b31be26f966e2bcb7a48efb5fe0e65e80bcd55606d8112b0636ba4ddbbf09",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.7,
+      "usage": {
+        "input": 66713,
+        "cached_input": 52983,
+        "output": 1290
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator",
+              "python-uv-workflow"
+            ],
+            "first_operation": "uv run --no-project <task-worktree>/.local/plugin-eval/baseline/skills/plugin-creator/scripts/create_basic_plugin.py \"My Notes\" --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7ee1fcd5ebb8661f32a010134ad425602f022fe1ffbc9206b48e9147be712dcf",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-spec",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.5,
+      "usage": {
+        "input": 50326,
+        "cached_input": 35172,
+        "output": 1383
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "bb4413387a698f65390669c85683699a5dd38cc64e4d2c96d2010776a00a4b77",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-spec",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.5,
+      "usage": {
+        "input": 50264,
+        "cached_input": 35141,
+        "output": 1286
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "8e2bd5f9011cea73dbee9d67692a944809811a59c2cc4e22bc8cefd858ab34b1",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.4,
+      "usage": {
+        "input": 15983,
+        "cached_input": 11008,
+        "output": 12
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "72d9b220849cd581e2d4637391982c733fcfc25ecf79189a3157fc289b6b0087",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.6,
+      "usage": {
+        "input": 15983,
+        "cached_input": 11008,
+        "output": 13
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f6c6e100bba88e54c6e6f946f110b9949edbcaac2dc4fb06e490aef45eadf8a9",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 26.2,
+      "usage": {
+        "input": 88364,
+        "cached_input": 77568,
+        "output": 597
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f81f9a56632ea94770593063fa60235082bd840770f3babdd3d55c71e5ef7495",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 24.6,
+      "usage": {
+        "input": 88217,
+        "cached_input": 77568,
+        "output": 607
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": "pwd; rg --files -g 'AGENTS.md' -g '.agents/plugins/marketplace.json' -g 'plugins/**/.codex-plugin/plugin.json' -g 'plugins/**/README*' | sort; ls -la; ls -la .agents/plugins 2>/dev/null"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "4a8dba60a97cca759baf39cb1a8dc5b1f5d876da742f812c19ae2ed598ca9817",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": false
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.9,
+      "usage": {
+        "input": 51858,
+        "cached_input": 43264,
+        "output": 441
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": "uv run <task-worktree>/.local/plugin-eval/baseline/skills/plugin-creator/scripts/create_basic_plugin.py \"My Notes\" --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "1861562ae201ff001e468314ae3313f23a34b9f2404aa3ef58897302e93f95bc",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 25.9,
+      "usage": {
+        "input": 52036,
+        "cached_input": 43264,
+        "output": 570
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": "uv run <task-worktree>/.local/plugin-eval/baseline/skills/plugin-creator/scripts/create_basic_plugin.py 'My Notes' --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "30d6e63f6382f6eaee501df9afd84e167cd144dc02b03204c5670e6f3f8c1f8e",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-spec",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.0,
+      "usage": {
+        "input": 53659,
+        "cached_input": 43264,
+        "output": 444
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "d5ac0a15052c6c0444086c22873f4141325142a3f4610d9d8db61f93ad904e35",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-spec",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.5,
+      "usage": {
+        "input": 53565,
+        "cached_input": 43264,
+        "output": 404
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "585c98626c95cb9e6540f3f3475954d9be6e6ce7c2b3df8fc444d9a92855f81d",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.4,
+      "usage": {
+        "input": 13679,
+        "cached_input": 4812,
+        "output": 18
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "9d7f55f34927162c0fae1b942398fee10bcac9481ffbd4839770fe11f1a08d90",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.4,
+      "usage": {
+        "input": 13679,
+        "cached_input": 4812,
+        "output": 18
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "4b5b856f96495a310e787a0cebf6c49e4ccbdcd43fca7e470d43417b72d89cfd",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.7,
+      "usage": {
+        "input": 28763,
+        "cached_input": 18489,
+        "output": 449
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "3620f1f9cc3e83dfe8838b634e3366395a1e5d032868270ce884e4dac5678bbd",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.6,
+      "usage": {
+        "input": 28783,
+        "cached_input": 18489,
+        "output": 447
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "9a8377c42c3d763b4aef81bc63c044e174ad3ff1648525ea27f65c80451cda85",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.3,
+      "usage": {
+        "input": 69944,
+        "cached_input": 53937,
+        "output": 1700
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator",
+              "python-uv-workflow"
+            ],
+            "first_operation": "uv run <task-worktree>/skills/plugin-creator/scripts/create_basic_plugin.py \"My Notes\" --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "84dc872953b7174ca230a1a138f4ea961937532f4060a05fb0eab9fb0c0ca2f7",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.5,
+      "usage": {
+        "input": 69867,
+        "cached_input": 53914,
+        "output": 1672
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator",
+              "python-uv-workflow"
+            ],
+            "first_operation": "uv run <task-worktree>/skills/plugin-creator/scripts/create_basic_plugin.py \"My Notes\" --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "c8deeac73ed49107b94b5a0df77578cd211b5413c9f3f94394fdec455da2789f",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-spec",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.4,
+      "usage": {
+        "input": 47968,
+        "cached_input": 34000,
+        "output": 1277
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a4b3d07194110ff333495e0f509260d9220e70b6e78d4e1800103bec2abfd74b",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-spec",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.6,
+      "usage": {
+        "input": 47683,
+        "cached_input": 33690,
+        "output": 1435
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "fd07715ae0ddad1f0d484f68dd23206742f1b3e1989cc9eda81b77ab090b26ce",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.6,
+      "usage": {
+        "input": 15972,
+        "cached_input": 11008,
+        "output": 15
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "0defb568fab95a9f6f20bd6ad311effcf6de85c8689eb162b17a4d2bf9b396e5",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "564e2b4937e8af5a4191d56b70ea5e43789204e9307f68a30c1b56a84dab8bed",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.7,
+      "usage": {
+        "input": 15972,
+        "cached_input": 11008,
+        "output": 14
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "d3d295f2bf636f4e48e91f2399f7efbc4afbbe65d785339ee512965fcbfde03e",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 28.1,
+      "usage": {
+        "input": 72419,
+        "cached_input": 61440,
+        "output": 788
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "83e14bce6b408da97b5115f0c190541d1d360920ed093238018dac0b6106713c",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "9f880f0c08f664867b3ab82c55ffaac8aa8346dd2c16047d3f0838e12260d744",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.2,
+      "usage": {
+        "input": 52273,
+        "cached_input": 42240,
+        "output": 615
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "b8c5582a01fc3a63181e8d0d3ad98079cf9c5f64fb13af4161e1116e0191f930",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 22.4,
+      "usage": {
+        "input": 71599,
+        "cached_input": 60416,
+        "output": 741
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": "uv run <task-worktree>/skills/plugin-creator/scripts/create_basic_plugin.py 'My Notes' --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "c639e37676bdabc1ee0e22a4a5723462af2d738683c56d81e720b2719aa089e8",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0861729cc99f9b82f1e58b4a9405363fb95cb0b9ed033ea7012346ce8f8ddb1f",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.5,
+      "usage": {
+        "input": 71503,
+        "cached_input": 60416,
+        "output": 663
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_first_operation_matches": true,
+          "turn1_required_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": "uv run <task-worktree>/skills/plugin-creator/scripts/create_basic_plugin.py 'My Notes' --with-skills --with-marketplace"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "b4f994b7f617f1a8cfbeba98957a6c4cdd27a853a84c819650860b9ff5b2944f",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": null,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-spec",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.9,
+      "usage": {
+        "input": 52202,
+        "cached_input": 42240,
+        "output": 379
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7650e30d07f196c40509ec2a8ed08702ba119b60a181c8f35d7ae38000f6f261",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-spec",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "0078f9a387b6c0939ef7d2ebcc055d6272f1579c5b695ab3b746fbb2da8696fb",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.5,
+      "usage": {
+        "input": 71265,
+        "cached_input": 60416,
+        "output": 408
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "e43325ad21434af26541cbb7baa121f6380f6b32bf0885d245694792bde1b501",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.1,
+      "usage": {
+        "input": 46697,
+        "cached_input": 34792,
+        "output": 1332
+      },
+      "cohort": "repeat-baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "cc47966ec0a7cc3197014fd7f0e5e7e90299cebace5eb2e9e996a61b722f7c4e",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.6,
+      "usage": {
+        "input": 30283,
+        "cached_input": 18513,
+        "output": 1329
+      },
+      "cohort": "repeat-baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f14004b499d83b4c75904a104908a2ede2e888b82617b3ded4af75fb3b711f00",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.9,
+      "usage": {
+        "input": 70274,
+        "cached_input": 58368,
+        "output": 572
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "db0eaff5044983f4d266e6e3a081cd8524b68550755df504403586c253804eb0",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.3,
+      "usage": {
+        "input": 70266,
+        "cached_input": 59392,
+        "output": 517
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "0dc8c38acd3d8238d673ad9f26476dbd86ed8c9e18fd7d9dd437f510212e7469",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 17.2,
+      "usage": {
+        "input": 66623,
+        "cached_input": 52560,
+        "output": 1477
+      },
+      "cohort": "repeat-candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "954488e3f4aa0b38771ca7f3cce766cff6a24eb22173e26fae3158c325a78ccf",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.1,
+      "usage": {
+        "input": 47832,
+        "cached_input": 33912,
+        "output": 1359
+      },
+      "cohort": "repeat-candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f3fc0ab2069ec420932e6804821f1417fcc12a491c75287bcaaf89b5147bd029",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 28.0,
+      "usage": {
+        "input": 52190,
+        "cached_input": 42240,
+        "output": 560
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "bd828c2717e5a4bad1e67805038c627a4f9e92995e72471689ae30ffe3d03da5",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.4,
+      "usage": {
+        "input": 71454,
+        "cached_input": 60416,
+        "output": 659
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "665704a5a8f3ff968eaa19966e3152463af48a0cd13eed9d8b92cba2ac597e16",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.7,
+      "usage": {
+        "input": 30294,
+        "cached_input": 18513,
+        "output": 1296
+      },
+      "cohort": "supplement-baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "896dd6006c4cdac3f9df904c94bcf2f8253333310ebf7fde58e46ffa14fa9bfe",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.2,
+      "usage": {
+        "input": 30285,
+        "cached_input": 18513,
+        "output": 1342
+      },
+      "cohort": "supplement-baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "953de6e91676bfe306159713f7147de88a690513be7d55c834d7476e9bff1783",
+      "trace_checks": {
+        "schema_reference_delivered": false,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.3,
+      "usage": {
+        "input": 53509,
+        "cached_input": 43264,
+        "output": 360
+      },
+      "cohort": "supplement-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "33fcf993e6ead4f9b662b3980ea039e7b4ef09eb063f145c6cc2cfa41384305c",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "ce4e0150a237f4c115a6545d24dd478b7c06f533b904826a8a3b717eb8bdff02",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.2,
+      "usage": {
+        "input": 70299,
+        "cached_input": 52224,
+        "output": 526
+      },
+      "cohort": "supplement-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "ad68a31ee39ccad500b8d51ed9dc4c2bb2f4dfb462b54bb2fea86aa99c49aaf0",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.2,
+      "usage": {
+        "input": 47826,
+        "cached_input": 33909,
+        "output": 1466
+      },
+      "cohort": "supplement-candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a13845acbaabd7c5d08bb0e3187665703985fb13f98341072092170033f8969c",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.7,
+      "usage": {
+        "input": 47752,
+        "cached_input": 33872,
+        "output": 1317
+      },
+      "cohort": "supplement-candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7cecdbc49d4235c700f557dffffdd7229bd12221ed321b80a450845c938291a8",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.1,
+      "usage": {
+        "input": 52183,
+        "cached_input": 42240,
+        "output": 372
+      },
+      "cohort": "supplement-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "2f4294c1b731b77c6de576610624b16bf2160822b553fcfec0ce914015cbf253",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "plugin-concision-unhinted",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "f0801d08cc20e475c28ae76cc73c965c0c5f2f18907bd499793d4c94c9af41c4",
+      "harness_digest": "f0f29ff4e4d16e535711e8bfeade7114494fd411e194489297c88f0e43656167",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.6,
+      "usage": {
+        "input": 71524,
+        "cached_input": 60416,
+        "output": 575
+      },
+      "cohort": "supplement-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "plugin-creator"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "557ee574e60847cac6d1680931b623699fbeeb73f1def234c6b4ce940bbd616a",
+      "trace_checks": {
+        "schema_reference_delivered": true,
+        "proposed_entry_required_fields_and_no_products": true,
+        "ambiguity_choice_in_final": null
+      }
+    }
+  ]
+}
