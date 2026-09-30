@@ -6,6 +6,7 @@
 """Offline routing fixture: allow simple file reads, refuse operational commands."""
 
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -89,6 +90,18 @@ def find_read_only(arguments: list[str]) -> bool:
     return depth == 0
 
 
+def sed_read_only(arguments: list[str]) -> bool:
+    # Support print-only line selections, never arbitrary sed programs/options.
+    if len(arguments) < 2 or arguments[0] != "-n":
+        return False
+    address = r"[1-9][0-9]*"
+    selection = rf"(?:{address}(?:\s*,\s*{address})?\s*)?p"
+    return (
+        re.fullmatch(rf"\s*{selection}(?:\s*;\s*{selection})*\s*", arguments[1]) is not None
+        and all(not filename.startswith("-") for filename in arguments[2:])
+    )
+
+
 def read_only(command: str) -> bool:
     # Reads let Codex load SKILL.md through its shell tool. The fixture uses
     # read-only host sandboxing as well; this is a test stop, not a security tool.
@@ -120,7 +133,7 @@ def read_only(command: str) -> bool:
         name = Path(tokens[0]).name
         if name in {"cat", "pwd", "ls", "head", "tail", "echo", "printf", "shasum", "sha256sum", "sha1sum", "md5", "md5sum", "cksum", "stat", "wc", "file"}:
             continue
-        if name == "sed" and tokens[1:2] == ["-n"]:
+        if name == "sed" and sed_read_only(tokens[1:]):
             continue
         if name == "rg" and not any(token.startswith(("--pre", "--hostname-bin")) for token in tokens):
             continue
