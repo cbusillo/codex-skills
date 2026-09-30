@@ -70,5 +70,53 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual(first.read_text(), "preserve\n")
 
 
+
+    
+    def test_missing_local_source_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, local = root / "shared.md", root / "private.md"
+            source.write_text("# Shared rules\n")
+            targets = [root / "claude.md"]
+            targets[0].write_text("HEADER\n\n# Shared rules\n\n## Host rules\nKeep this local.\n")
+
+            # Preview reports refusal
+            content_str = sync.render(source, local)
+            preview = sync.synchronize(content_str, targets, write=False, local_source_missing=True, allow_missing_local=False)
+            self.assertEqual(preview[0]["state"], "refused")
+            self.assertIn("refusal", preview[0])
+
+            # Write is refused
+            with self.assertRaises(ValueError):
+                sync.synchronize(content_str, targets, write=True, local_source_missing=True, allow_missing_local=False)
+
+            # Runtime checkout (local source exists) writes normally
+            # In a real run, content_str would include the local file content if it existed.
+            # Here we just verify the flag allows the write to proceed.
+            receipt = sync.synchronize(content_str, targets, write=True, local_source_missing=False, allow_missing_local=False)
+            self.assertEqual(receipt[0]["state"], "written")
+
+            # Reset target
+            targets[0].write_text("HEADER\n\n# Shared rules\n\n## Host rules\nKeep this local.\n")
+
+            # Explicit override proceeds even if local source is missing
+            receipt = sync.synchronize(content_str, targets, write=True, local_source_missing=True, allow_missing_local=True)
+            self.assertEqual(receipt[0]["state"], "written")
+
+    def test_missing_local_source_refusal_leaves_first_destination_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, local = root / "shared.md", root / "private.md"
+            source.write_text("# Shared rules\n")
+            targets = [root / "claude.md", root / "codex.md"]
+            # First target doesn't exist. Second target differs.
+            targets[1].write_text("HEADER\n\n# Shared rules\n\n## Host rules\nKeep this local.\n")
+
+            content_str = sync.render(source, local)
+            with self.assertRaises(ValueError):
+                sync.synchronize(content_str, targets, write=True, local_source_missing=True, allow_missing_local=False)
+            self.assertFalse(targets[0].exists())
+
+
 if __name__ == "__main__":
     unittest.main()
