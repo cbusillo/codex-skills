@@ -181,6 +181,26 @@ class SdkRetirementTests(unittest.TestCase):
                 with self.assertRaisesRegex(jb_inspect.InspectError, "absent from the current"):
                     jb_inspect.command_retire_sdks(args)
 
+    def test_unowned_sdk_refusal_is_preserved_while_eligible_worktree_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = Path(tmp) / "primary"
+            root = Path(tmp) / "task"
+            subprocess.run(["git", "init", "-q", str(primary)], check=True)
+            subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+            def post(_port, _endpoint, params):
+                response = self.response(root, params["dry_run"] == "true")
+                response.body["status"] = "refused"
+                response.body["sdks"][0].update(status="refused", reason="not_helper_owned")
+                raise jb_inspect.InspectError("HTTP 409", 3, response.body | {"http_status": 409})
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+                result = jb_inspect.command_retire_sdks(args)
+            self.assertTrue(result["worktree_removed"])
+            self.assertEqual(result["preserved_unowned_sdk_count"], 1)
+            self.assertEqual(result["sdk_cleanup"][0]["result"]["sdks"][0]["reason"], "not_helper_owned")
+            self.assertFalse(root.exists())
+
     def test_new_sdk_in_final_preview_keeps_the_worktree(self):
         root = Path("/fixture/task")
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)

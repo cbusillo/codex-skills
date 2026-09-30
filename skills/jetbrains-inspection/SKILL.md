@@ -236,8 +236,11 @@ Command model:
   live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned, then
   remove the clean, unlocked linked worktree with non-force Git removal. Close
   its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
-  dirty worktrees, missing plugin support, session drift and refused SDK cleanup
-  retain the worktree. This command preserves its branch.
+  dirty worktrees, missing plugin support, session drift and unsafe SDK cleanup
+  retain the worktree. Unrecorded SDKs remain registered and are reported as
+  preserved; their `not_helper_owned` refusal does not prevent eligible Git
+  removal. Other refusal reasons retain the worktree. This command preserves
+  its branch.
 - `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
   inventory. Review the listed entries, then use `--no-dry-run` with repeated
   `--worktree-path /reviewed/orphan` flags. Apply is limited to those paths

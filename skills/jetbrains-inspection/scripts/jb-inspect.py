@@ -10701,7 +10701,7 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
             body = http_post(identity["port"], "lifecycle/unregister-python-sdk", params).body
         except InspectError as error:
             # A refused orphan preview still contains the candidates and held records.
-            if root is None and dry_run and error.payload.get("http_status") == 409 and error.payload.get("status") == "refused":
+            if error.payload.get("http_status") == 409 and error.payload.get("status") == "refused" and (root is not None or dry_run):
                 body = error.payload
             else:
                 error.payload["completed_sdk_cleanup"] = results
@@ -10710,20 +10710,24 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
         orphan_preview = root is None and dry_run
         valid_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
         valid_reasons = {"helper_owned", "already_absent"}
+        if root is not None:
+            valid_statuses.add("refused")
+            valid_reasons.add("not_helper_owned")
         if orphan_preview:
             valid_statuses.add("refused")
             valid_reasons.update({"sdk_in_use", "ownership_mismatch", "ambiguous_sdk"})
-        if (body.get("session_id") != identity["session_id"] or body.get("status") not in ({"ok", "refused"} if orphan_preview else {"ok"})
+        if (body.get("session_id") != identity["session_id"] or body.get("status") not in {"ok", "refused"}
             or body.get("sdk_lifecycle_version") != 1 or body.get("dry_run") is not dry_run
             or not isinstance(entries, list) or any(
                 not isinstance(entry, dict) or entry.get("status") not in valid_statuses
                 or entry.get("reason") not in valid_reasons
+                or (entry.get("status") == "refused" and not orphan_preview and entry.get("reason") != "not_helper_owned")
                 or not isinstance(entry.get("worktree_path"), str)
                 or not Path(entry.get("worktree_path") or "").is_absolute()
                 or (root is not None and not paths_same(entry.get("worktree_path"), root))
                 for entry in entries)):
             raise InspectError("SDK cleanup did not prove a successful helper-owned result; retain the worktree.", 3,
-                               {"sdk_cleanup": public_payload(body), "completed_sdk_cleanup": results})
+                               {"sdk_cleanup": public_payload(body), "completed_sdk_cleanup": results, "http_status": body.get("http_status")})
         results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
     return results
 
@@ -10766,7 +10770,7 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     retirement_worktree(root)
                     current = discover_identities(None)
                     final_preview = unregister_helper_sdks(current, root, True)
-                    if any(entry["status"] != "absent" for item in final_preview for entry in item["result"]["sdks"]):
+                    if any(entry["status"] != "absent" and entry["reason"] != "not_helper_owned" for item in final_preview for entry in item["result"]["sdks"]):
                         raise InspectError("An SDK still needs retirement; retain the worktree and repeat the preview.", 3,
                                            {"sdk_remaining": final_preview})
                     common = git_common_worktree(root)
@@ -10779,7 +10783,9 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                                            {"git_error": completed.stderr})
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
                     "sdk_preview": preview, "sdk_cleanup": applied,
-                    "worktree_removed": root is not None and not args.dry_run}
+                    "worktree_removed": root is not None and not args.dry_run,
+                    "refused_preview_sdk_count": sum(entry["status"] == "refused" for item in preview for entry in item["result"]["sdks"]),
+                    "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied) for entry in item["result"]["sdks"])}
         except (subprocess.CalledProcessError, OSError) as error:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
                                {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
