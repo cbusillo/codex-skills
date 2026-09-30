@@ -1,0 +1,18 @@
+name: rollup-attention
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github-work-rollup to check whether external comments on
+      example/skill-routing-fixture#23 need the owner's attention before
+      closeout. Last month an external author asked a question; yesterday that
+      author edited it, then our automation bot answered. The owner has not
+      reacted or replied. Check the whole thread history and explain whether
+      that bot response establishes owner awareness. This is an offline
+      rehearsal: stop when the shell boundary refuses the operational command.
+    expect:
+      owner: github-work-rollup
+      operation: "github_unanswered_comments\\.py.*--thread[ =]+['\"]?(https://github\\.com/)?example/skill-routing-fixture(#|/(pull|issues)/)23"
+      forbid: 'gh (issue|pr) (comment|close)|gh-comment'
+      final: '(does not|doesn.t|cannot|can.t|never|not)[^\n]{0,180}owner(.s)?[^\n]{0,50}(awareness|aware|acknowledg|seen|saw)'
