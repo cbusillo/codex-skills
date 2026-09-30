@@ -27,6 +27,8 @@ docs and authority. Route by source of truth, not provider name.
    Preserve explicit user version targets; mention newer guidance separately
    only when useful.
 2. Check `AGENTS.md` before external docs for local architecture or operations.
+   For private operational or credential questions, follow step 3 before
+   product-repo clues or fallback searches.
    Use `.github/github.json`'s `docs` paths as primary repo-local routes:
    `docs.index` first, then relevant semantic paths such as architecture,
    operations, style, or policies. Fall back to repo-root search and README
@@ -54,7 +56,7 @@ docs and authority. Route by source of truth, not provider name.
    unstable, or attribution will help future work. Prefer paraphrases and short
    quotes. If sources disagree, cite both and explain; if unavailable or
    inconclusive, say so and give the safest next verification step. Never invent
-   API parameters, model names, keys, prices, limits, availability, or migration
+   API parameters, model names, configuration keys, prices, limits, availability, or migration
    requirements.
 
 ## Private Context

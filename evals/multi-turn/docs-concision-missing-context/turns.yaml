@@ -14,4 +14,4 @@ turns:
       owner: docs-lookup
       read: 'references/routing\.md'
       forbid: '\.env|history|cloudflare|curl|wget'
-      final: 'not configured|missing|not.*configured'
+      final: 'not configured|missing|not.*configured|isn.t configured'
