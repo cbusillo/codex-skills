@@ -42,10 +42,11 @@ printf '%s' "$FAKE_AGY_JSON"
 
 RETRY_AGY = """#!/bin/sh
 if [ -f "$FAKE_AGY_COUNT" ]; then
+  echo retry >> "$FAKE_AGY_COUNT"
   printf '%s' "$2" > "$FAKE_AGY_RETRY_PROMPT"
   printf '%s' "$FAKE_AGY_RETRY_JSON"
 else
-  touch "$FAKE_AGY_COUNT"
+  echo initial > "$FAKE_AGY_COUNT"
   printf '%s' "$FAKE_AGY_JSON"
 fi
 """
@@ -173,6 +174,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertIn(command, result["error"])
         self.assertNotIn("hint", result)
         self.assertEqual(result["recovery"]["attempts"], 2)
+        self.assertEqual(count.read_text().splitlines(), ["initial", "retry"])
         count.unlink()
         code, result = self.review("google", **{**env, "FAKE_AGY_RETRY_JSON": json.dumps({"response": "none"})})
         self.assertEqual((code, result["response"]), (0, "none"))
