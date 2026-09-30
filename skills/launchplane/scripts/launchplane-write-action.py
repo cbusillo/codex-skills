@@ -56,6 +56,7 @@ READ_ONLY_OPERATIONS = {
     "change-impact-policy-read",
     "repository-inventory-read",
     "integration-allowances-read",
+    "testing-hold-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2050,6 +2051,61 @@ INTEGRATION_ALLOWANCES_PAYLOAD_FIELDS = {
     "allowances",
 }
 INTEGRATION_ALLOWANCE_INPUT_FIELDS = {"integration", "kind", "reason", "evidence"}
+TESTING_HOLD_FIELDS = {"reason", "recorded_by", "recorded_at"}
+TESTING_HOLD_ACTIONS = {"set", "update", "clear", "unchanged"}
+TESTING_HOLD_PLAN_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "context",
+    "instance",
+    "action",
+    "changed",
+    "applied",
+    "before",
+    "after",
+    "read_back",
+    "read_back_matches",
+    "reconcile_requested",
+    "reason",
+    "source_label",
+    "record_sha256_before",
+    "record_sha256_after",
+    "plan_sha256",
+}
+TESTING_HOLD_READ_FIELDS = {
+    "status",
+    "product",
+    "context",
+    "instance",
+    "hold",
+    "record_sha256",
+}
+PRODUCT_REPOSITORY_IDENTITY_FIELDS = {"repository_id", "repository_owner_id"}
+PRODUCT_REPOSITORY_IDENTITY_OPERATIONS = {"record", "unchanged"}
+PRODUCT_REPOSITORY_IDENTITY_PLAN_FIELDS = {
+    "status",
+    "mode",
+    "product",
+    "repository",
+    "operation",
+    "identity_before",
+    "identity_after",
+    "inventory_record_id",
+    "inventory_revision",
+    "inventory_digest",
+    "changed",
+    "applied",
+    "reason",
+    "source_label",
+    "profile_record_sha256_before",
+    "profile_updated_at_before",
+    "profile_updated_at_after",
+    "plan_sha256",
+    "read_back",
+    "read_back_matches",
+}
+REVIEWED_PLAN_MODES = {"dry-run", "apply"}
 
 
 def _optional_sha256(value: object) -> str:
@@ -2177,6 +2233,137 @@ def _project_integration_allowances_read(result: object) -> dict[str, object]:
         "allowances": _project_integration_allowance_list(source.get("allowances")),
         "record_sha256": _optional_sha256(source.get("record_sha256")),
     }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _reviewed_plan_mode(value: object) -> str:
+    if value not in REVIEWED_PLAN_MODES:
+        raise LaunchplaneSafetyError("invalid_response")
+    return cast(str, value)
+
+
+def _project_testing_hold(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _require_dict(value)
+    if any(str(key) not in TESTING_HOLD_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {"reason": public_summary_string(source.get("reason"))}
+    if source.get("recorded_by"):
+        projected["recorded_by"] = public_identifier(source.get("recorded_by"))
+    if source.get("recorded_at"):
+        projected["recorded_at"] = public_summary_string(source.get("recorded_at"), max_length=64)
+    return projected
+
+
+def _project_testing_hold_plan(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in TESTING_HOLD_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    action = source.get("action")
+    if action not in TESTING_HOLD_ACTIONS:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "action": action,
+        "before": _project_testing_hold(source.get("before")),
+        "after": _project_testing_hold(source.get("after")),
+        "read_back": _project_testing_hold(source.get("read_back")),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "changed": bool(_optional_bool(source.get("changed"))),
+        "applied": bool(_optional_bool(source.get("applied"))),
+        "reconcile_requested": bool(_optional_bool(source.get("reconcile_requested"))),
+    }
+    read_back_matches = _optional_bool(source.get("read_back_matches"))
+    if read_back_matches is not None:
+        projected["read_back_matches"] = read_back_matches
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_testing_hold_read(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in TESTING_HOLD_READ_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "hold": _project_testing_hold(source.get("hold")),
+        "record_sha256": _optional_sha256(source.get("record_sha256")),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_product_repository_identity(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    if any(str(key) not in PRODUCT_REPOSITORY_IDENTITY_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {}
+    for field in ("repository_id", "repository_owner_id"):
+        identifier = source.get(field, "")
+        # GitHub ids are bounded decimals; an identity not yet recorded is empty.
+        if not isinstance(identifier, str) or (
+            identifier and not re.fullmatch(r"[1-9][0-9]{0,19}", identifier)
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[field] = identifier
+    return projected
+
+
+def _project_product_repository_identity_plan(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in PRODUCT_REPOSITORY_IDENTITY_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    operation = source.get("operation")
+    if operation not in PRODUCT_REPOSITORY_IDENTITY_OPERATIONS:
+        raise LaunchplaneSafetyError("invalid_response")
+    inventory_revision = source.get("inventory_revision")
+    if (
+        not isinstance(inventory_revision, int)
+        or isinstance(inventory_revision, bool)
+        or inventory_revision < 1
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "repository": public_identifier(source.get("repository")),
+        "operation": operation,
+        "identity_before": _project_product_repository_identity(source.get("identity_before")),
+        "identity_after": _project_product_repository_identity(source.get("identity_after")),
+        "inventory_record_id": public_identifier(source.get("inventory_record_id")),
+        "inventory_revision": inventory_revision,
+        "inventory_digest": _project_sha256(source.get("inventory_digest")),
+        "reason": public_summary_string(source.get("reason")),
+        "source_label": public_identifier(source.get("source_label")),
+        "profile_record_sha256_before": _optional_sha256(
+            source.get("profile_record_sha256_before")
+        ),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "changed": bool(_optional_bool(source.get("changed"))),
+        "applied": bool(_optional_bool(source.get("applied"))),
+    }
+    for field in ("profile_updated_at_before", "profile_updated_at_after"):
+        if source.get(field):
+            projected[field] = public_summary_string(source.get(field), max_length=64)
+    if source.get("read_back") is not None:
+        projected["read_back"] = _project_product_repository_identity(source["read_back"])
+    read_back_matches = _optional_bool(source.get("read_back_matches"))
+    if read_back_matches is not None:
+        projected["read_back_matches"] = read_back_matches
     assert_public_safe_shape(projected)
     return projected
 
@@ -2344,6 +2531,16 @@ def _project_success_output(operation: str, provider_payload: dict[str, Any]) ->
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_integration_allowances_plan(provider_payload.get("result"))
+    if operation in {"testing-hold-dry-run", "testing-hold-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_testing_hold_plan(provider_payload.get("result"))
+    if operation in {"product-repository-identity-dry-run", "product-repository-identity-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "repository_inventory"}
+        )
+        return records, _project_product_repository_identity_plan(provider_payload.get("result"))
     raise LaunchplaneSafetyError("invalid_response")
 
 
@@ -2501,6 +2698,26 @@ def summarize_success(
                 if operation == "integration-allowances-dry-run"
                 else "Check read_back_matches. The allowances take effect at the lane's next "
                 "integration read-back."
+            )
+        elif operation in {"testing-hold-dry-run", "testing-hold-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the hold change, then apply the same "
+                "product, lane, hold direction and reason with --expected-plan-digest."
+                if operation == "testing-hold-dry-run"
+                else "Check read_back_matches. Lifting the hold requests a reconcile of the "
+                "testing target (reconcile_requested)."
+            )
+        elif operation in {
+            "product-repository-identity-dry-run",
+            "product-repository-identity-apply",
+        }:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the identity copied from inventory, "
+                "then apply the same product and reason with --expected-plan-digest."
+                if operation == "product-repository-identity-dry-run"
+                else "Check read_back_matches before relying on repository-id event routing."
             )
         elif operation in {"odoo-addon-settings-dry-run", "odoo-addon-settings-apply"}:
             summary["plan_sha256"] = result.get("plan_sha256")
@@ -2885,35 +3102,72 @@ def integration_allowances_body(args: argparse.Namespace, *, mode: str) -> dict[
     return body
 
 
-def summarize_integration_allowances_read(
-    *, request: dict[str, object], provider_payload: dict[str, Any]
+def _summarize_lane_config_read(
+    *,
+    operation: str,
+    request: dict[str, object],
+    provider_payload: dict[str, Any],
+    project: Any,
+    recommendation: str,
 ) -> dict[str, object]:
     if any(
         str(key) not in {"status", "trace_id", "records", "result"} for key in provider_payload
     ):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     status = public_code(provider_payload.get("status"), default="ok")
-    payload = base_payload(status=status, operation="integration-allowances-read", request=request)
+    payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = _project_records(
         provider_payload.get("records"), {"product_profile", "context", "instance"}
     )
-    payload["result"] = _project_integration_allowances_read(provider_payload.get("result"))
+    payload["result"] = project(provider_payload.get("result"))
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
-        "recommendation": (
-            "Change allowances with integration-allowances-dry-run and "
-            "integration-allowances-apply; the request carries the lane's whole list."
-        ),
+        "recommendation": recommendation,
     }
     assert_public_safe_shape(payload["summary"])
     return payload
 
 
-def execute_integration_allowances_read(
-    *, args: argparse.Namespace, request: dict[str, object]
+def summarize_integration_allowances_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_lane_config_read(
+        operation="integration-allowances-read",
+        request=request,
+        provider_payload=provider_payload,
+        project=_project_integration_allowances_read,
+        recommendation=(
+            "Change allowances with integration-allowances-dry-run and "
+            "integration-allowances-apply; the request carries the lane's whole list."
+        ),
+    )
+
+
+def summarize_testing_hold_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_lane_config_read(
+        operation="testing-hold-read",
+        request=request,
+        provider_payload=provider_payload,
+        project=_project_testing_hold_read,
+        recommendation=(
+            "Set or lift the hold with testing-hold-dry-run and testing-hold-apply."
+        ),
+    )
+
+
+LANE_CONFIG_READ_SUMMARIZERS = {
+    "integration-allowances-read": summarize_integration_allowances_read,
+    "testing-hold-read": summarize_testing_hold_read,
+}
+
+
+def execute_lane_config_read(
+    *, args: argparse.Namespace, operation: str, request: dict[str, object]
 ) -> int:
-    operation = "integration-allowances-read"
+    summarize = LANE_CONFIG_READ_SUMMARIZERS[operation]
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
@@ -2929,11 +3183,7 @@ def execute_integration_allowances_read(
             },
             timeout=args.timeout,
         )
-        emit(
-            summarize_integration_allowances_read(
-                request=request, provider_payload=provider_payload
-            )
-        )
+        emit(summarize(request=request, provider_payload=provider_payload))
         return 0
     except urllib.error.HTTPError as exc:
         emit_http_error_payload(operation=operation, request=request, exc=exc)
@@ -2944,6 +3194,98 @@ def execute_integration_allowances_read(
     except (OSError, TimeoutError, urllib.error.URLError):
         emit_provider_unavailable(operation=operation, request=request)
         return 1
+
+
+def _load_reviewed_plan_evidence(
+    args: argparse.Namespace, *, operation: str, expected_plan_digest: str
+) -> dict[str, Any]:
+    """The saved dry-run result, when it is this operation's accepted plan with the digest."""
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if (
+        not isinstance(result, dict)
+        or evidence.get("operation") != operation
+        or evidence.get("status") != "accepted"
+        or result.get("status") != "ok"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return result
+
+
+def _reviewed_apply_digest(args: argparse.Namespace) -> str:
+    _require_idempotency(args)
+    if not args.reviewed_dry_run:
+        raise ValueError("reviewed_dry_run_required")
+    expected_plan_digest = args.expected_plan_digest.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+        raise ValueError("invalid_expected_plan_digest")
+    return expected_plan_digest
+
+
+def _required_argument(args: argparse.Namespace, field: str) -> str:
+    value = getattr(args, field, "")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field}_required")
+    return value.strip()
+
+
+def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "product": _required_argument(args, "product"),
+        # The service stores lanes lower-cased; send what it will compare against.
+        "context": _required_argument(args, "context").lower(),
+        "instance": _required_argument(args, "instance").lower(),
+        "mode": mode,
+        "hold": bool(args.hold),
+        "reason": _required_argument(args, "reason"),
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        result = _load_reviewed_plan_evidence(
+            args, operation="testing-hold-dry-run", expected_plan_digest=expected_plan_digest
+        )
+        if (
+            result.get("product") != body["product"]
+            or result.get("context") != body["context"]
+            or result.get("instance") != body["instance"]
+            # A lift's reason is not in the plan digest, so bind direction and reason here.
+            or (result.get("after") is not None) != body["hold"]
+            or result.get("reason") != " ".join(str(body["reason"]).split())
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
+
+
+def product_repository_identity_body(
+    args: argparse.Namespace, *, mode: str
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "product": _required_argument(args, "product"),
+        "mode": mode,
+        "reason": _required_argument(args, "reason"),
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        result = _load_reviewed_plan_evidence(
+            args,
+            operation="product-repository-identity-dry-run",
+            expected_plan_digest=expected_plan_digest,
+        )
+        if result.get("product") != body["product"]:
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
 
 
 def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
@@ -3464,6 +3806,8 @@ def execute_post(
             if operation not in {
                 "odoo-addon-settings-apply",
                 "integration-allowances-apply",
+                "testing-hold-apply",
+                "product-repository-identity-apply",
                 "change-impact-policy-apply",
                 "generic-web-deploy-recovery-apply",
                 "repository-inventory-apply",
@@ -3757,6 +4101,20 @@ def positive_decimal_id(value: str) -> str:
     return normalized
 
 
+def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: bool) -> None:
+    if not apply:
+        parser.set_defaults(idempotency_key="")
+        return
+    parser.add_argument("--idempotency-key", required=True)
+    parser.add_argument("--reviewed-dry-run", action="store_true")
+    parser.add_argument("--expected-plan-digest", required=True)
+    parser.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed dry-run.",
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -3928,6 +4286,45 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
         help="Private saved JSON output from the reviewed integration-allowances dry-run.",
     )
+
+    testing_hold_read = subparsers.add_parser(
+        "testing-hold-read",
+        help="Read a testing lane's staff-testing hold.",
+    )
+    for argument in ("--product", "--context", "--instance"):
+        testing_hold_read.add_argument(argument, required=True)
+
+    for command, help_text in (
+        ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
+        ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
+    ):
+        testing_hold = subparsers.add_parser(command, help=help_text)
+        for argument in ("--product", "--context", "--instance"):
+            testing_hold.add_argument(argument, required=True)
+        direction = testing_hold.add_mutually_exclusive_group(required=True)
+        direction.add_argument("--hold", dest="hold", action="store_true")
+        direction.add_argument("--lift", dest="hold", action="store_false")
+        testing_hold.add_argument(
+            "--reason",
+            required=True,
+            help="The hold's reason when holding; the audit reason when lifting.",
+        )
+        _add_reviewed_apply_arguments(testing_hold, apply=command.endswith("-apply"))
+
+    for command, help_text in (
+        (
+            "product-repository-identity-dry-run",
+            "Dry-run recording a product's repository identity from tracked inventory.",
+        ),
+        (
+            "product-repository-identity-apply",
+            "Apply a reviewed repository identity bound to the saved dry-run digest.",
+        ),
+    ):
+        repository_identity = subparsers.add_parser(command, help=help_text)
+        repository_identity.add_argument("--product", required=True)
+        repository_identity.add_argument("--reason", required=True)
+        _add_reviewed_apply_arguments(repository_identity, apply=command.endswith("-apply"))
 
     odoo_addon_settings_dry_run = subparsers.add_parser(
         "odoo-addon-settings-dry-run",
@@ -4211,7 +4608,51 @@ def main(argv: list[str]) -> int:
                 "instance": public_identifier(args.instance),
                 "payload_source": "operator_argument",
             }
-            return execute_integration_allowances_read(args=args, request=request)
+            return execute_lane_config_read(args=args, operation=args.command, request=request)
+        if args.command == "testing-hold-read":
+            request = {
+                "product": public_identifier(args.product),
+                "context": public_identifier(args.context),
+                "instance": public_identifier(args.instance),
+                "payload_source": "operator_argument",
+            }
+            return execute_lane_config_read(args=args, operation=args.command, request=request)
+        if args.command in {"testing-hold-dry-run", "testing-hold-apply"}:
+            mode = "apply" if args.command == "testing-hold-apply" else "dry-run"
+            body = testing_hold_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": public_identifier(body["instance"]),
+                "hold": body["hold"],
+                "payload_source": "operator_argument",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {
+            "product-repository-identity-dry-run",
+            "product-repository-identity-apply",
+        }:
+            mode = "apply" if args.command == "product-repository-identity-apply" else "dry-run"
+            body = product_repository_identity_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "payload_source": "operator_argument",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
         if args.command in {"integration-allowances-dry-run", "integration-allowances-apply"}:
             mode = "apply" if args.command == "integration-allowances-apply" else "dry-run"
             body = integration_allowances_body(args, mode=mode)

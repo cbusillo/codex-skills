@@ -71,6 +71,42 @@ These routes are local extensions until the vendored artifact is refreshed.
 - The service refuses allowances on a production lane, `pre_live` outside testing
   and dev, and a target record changed since the review.
 
+## Testing hold
+
+`testing-hold-read`, `testing-hold-dry-run` and `testing-hold-apply` call
+`GET /v1/product-config/testing-hold` and
+`POST /v1/product-config/testing-hold/apply`. While site staff test a product's
+testing lane, the hold keeps event-driven deploys off it. These routes are local
+extensions until the vendored artifact is refreshed.
+
+- `testing-hold-read --product --context --instance` returns the lane's hold or
+  `null`.
+- Dry-run and apply take `--product`, `--context`, `--instance`, `--hold` or
+  `--lift`, and `--reason` (the hold's reason, or the audit reason for a lift).
+  Nothing in the request is secret, so there is no payload file.
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest` equal to the saved `plan_sha256`,
+  `--dry-run-evidence-file` for the same product, lane and hold direction, and
+  `--idempotency-key`.
+- Output shows the action, the hold before and after (reason, recorder and
+  time), read-back, and whether lifting requested a testing reconcile.
+
+## Product repository identity
+
+`product-repository-identity-dry-run` and `product-repository-identity-apply`
+call `POST /v1/product-profiles/repository-identity/apply`. The service copies
+`repository_id` and `repository_owner_id` into the product profile from the
+current tracked repository inventory record; the caller never supplies ids, and a
+recorded identity is never overwritten. This route is a local extension until the
+vendored artifact is refreshed.
+
+- Both commands take `--product` and `--reason`; there is no payload file.
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest` equal to the saved `plan_sha256`,
+  `--dry-run-evidence-file` for the same product, and `--idempotency-key`.
+- Output shows the repository, identity before and after (decimal ids only), the
+  inventory record, revision and digest, and read-back.
+
 ## Product expected configuration
 
 Use `product-expected-config-dry-run --payload-file PRIVATE.json` to add declared

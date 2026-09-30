@@ -672,8 +672,9 @@ workflow dispatch is not allowed. Source projected HTTP paths from the vendored
 operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
-generic-web deploy-recovery, Odoo addon-settings, and integration-allowances
-commands are explicit bounded local extensions because the vendored public
+generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
+testing-hold, and product-repository-identity commands are explicit bounded
+local extensions because the vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
@@ -1014,6 +1015,15 @@ verification.
   `reason`. Apply requires the saved dry-run evidence, `--expected-plan-digest`,
   reviewed acknowledgement and an idempotency key. Use the product's canonical id
   (for example `odoo-tenant-opw`); the service checks that it owns the lane.
+- `GET /v1/product-config/testing-hold` and
+  `POST /v1/product-config/testing-hold/apply`: Bounded local-extension paths
+  for a testing lane's staff-testing hold (`testing-hold-read` / `-dry-run` /
+  `-apply`, with `--hold` or `--lift` and `--reason`). Apply requires the same
+  saved-dry-run safeguards; lifting requests a testing reconcile.
+- `POST /v1/product-profiles/repository-identity/apply`: Bounded local-extension
+  path that records a product's repository id from tracked inventory
+  (`product-repository-identity-dry-run` / `-apply`, with `--product` and
+  `--reason`). Apply requires the same saved-dry-run safeguards.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview

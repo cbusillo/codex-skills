@@ -294,6 +294,31 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-config/integration-allowances/apply",
         "mode": "apply",
     },
+    "testing-hold-read": {
+        "method": "GET",
+        "path": "/v1/product-config/testing-hold",
+        "mode": "read",
+    },
+    "testing-hold-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-config/testing-hold/apply",
+        "mode": "dry-run",
+    },
+    "testing-hold-apply": {
+        "method": "POST",
+        "path": "/v1/product-config/testing-hold/apply",
+        "mode": "apply",
+    },
+    "product-repository-identity-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/repository-identity/apply",
+        "mode": "dry-run",
+    },
+    "product-repository-identity-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/repository-identity/apply",
+        "mode": "apply",
+    },
     "generic-web-deploy-recovery-dry-run": {
         "method": "POST",
         "path": "/v1/admin/generic-web/deploy-recovery/dry-run",
