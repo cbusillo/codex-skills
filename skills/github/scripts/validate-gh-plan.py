@@ -2346,7 +2346,7 @@ def owner_decision_close(
         return "automation-gh", {"data": {"repository": {"issue": {"lastEditedAt": "2026-09-20T00:00:00Z"}}}}
 
     def fake_comments(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
-        if path == "/repos/owner/repo/issues/comments/123/reactions":
+        if path == f"/repos/owner/repo/issues/comments/{comments[0].get('id')}/reactions":
             calls.append("reactions")
             if reaction_read_fails:
                 raise plan.PlanError("reaction read unavailable")
@@ -2410,7 +2410,7 @@ def test_close_not_planned_allows_direction_milestone_work_with_owner_comment() 
 
 def recorded_decision() -> dict[str, Any]:
     return owner_comment("shiny-code-bot", "2026-09-19T00:00:00Z") | {
-        "id": 123, "node_id": "IC_decision",
+        "id": 5_920_161_975, "node_id": "IC_decision",
         "body": "Owner decision: Close #10 as not planned.\nReason: superseded by #11.",
     }
 

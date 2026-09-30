@@ -343,7 +343,10 @@ labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
 helper is unavailable. Closing a durable plan with the generic issue helper can
 leave planning labels or Project fields stale.
 It also skips the relationship and owner-decision preflight; perform those
-checks below yourself before using that fallback.
+checks below yourself before using that fallback. For reaction approval, read
+the comment's `lastEditedAt` (must be explicitly null) and all reaction pages
+to verify the owner and time; if that evidence is unavailable, require the
+owner's typed decision comment.
 
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
