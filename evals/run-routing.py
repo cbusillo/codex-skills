@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
@@ -31,6 +30,24 @@ import yaml
 from shell_boundary import read_only
 
 ROOT = Path(__file__).resolve().parents[1]
+GRADER_VERSION = 2
+
+
+def recorded_shell_command(command: str) -> str:
+    """Unwrap the shell invocation Codex records around a hook's raw command."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return command
+    if len(tokens) == 3 and Path(tokens[0]).name in {"sh", "bash", "zsh"} and tokens[1] in {"-c", "-lc"}:
+        return tokens[2]
+    return command
+
+
+def normalize_answer(text: str) -> str:
+    text = text.replace(chr(96), "").replace("*", "")
+    text = re.sub(r"(?<!\w)_|_(?!\w)", "", text)
+    return " ".join(text.casefold().split()).rstrip(".!?")
 
 
 def source_digest(catalog: Path) -> str:
@@ -59,13 +76,77 @@ args = namespace['parse_args']()
 raise SystemExit(0 if args.command == 'merge' else 1)
 """
     result = subprocess.run([sys.executable, "-c", program, str(catalog / "skills/github/scripts/gh-pr.py"), *tokens[index + 1:]],
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=15, check=False)
     return result.returncode == 0
 
 
 def reads_content(command: str) -> bool:
     """A shell read that returns file content, not only names."""
     return any(re.match(r"\s*(?:cat|head|tail|sed -n|rg(?!.*--files))\b", part) for part in re.split(r"&&|\|\||;|\|", command))
+
+
+def shell_read_paths(command: str) -> list[str]:
+    """Extract literal reader arguments without executing the recorded shell."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    paths, segment = [], []
+    try:
+        for token in [*lexer, ";"]:
+            if token in {";", "&&", "||", "|"}:
+                if segment and reads_content(shlex.join(segment)):
+                    arguments = segment[1:]
+                    reader = Path(segment[0]).name
+                    operands = []
+                    skip_next = False
+                    pattern_seen = False
+                    for argument in arguments:
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        if argument in {"-n", "-c", "--max-count", "--glob", "-g", "--type", "-t", "-e", "--regexp"}:
+                            skip_next = argument not in {"-n", "-c"} or reader in {"head", "tail"}
+                            if argument in {"-e", "--regexp"}:
+                                pattern_seen = True
+                            continue
+                        if argument.startswith("-"):
+                            continue
+                        if reader in {"rg", "sed"} and not pattern_seen:
+                            pattern_seen = True
+                            continue
+                        operands.append(argument)
+                    paths.extend(operands)
+                segment = []
+            else:
+                segment.append(token)
+    except ValueError:
+        return []
+    return paths
+
+
+def delivered_paths(command: str, output: str, destination: Path, catalog: Path) -> list[str]:
+    """Prove delivery before a later nonzero exit using the pinned input text.
+
+    Only fixture and catalog files may be read by the grader. An error message,
+    nonempty stdout, or a path in the command alone cannot prove a partial read.
+    """
+    delivered = []
+    roots = [(destination / "workspace").resolve(), (catalog / "skills").resolve()]
+    for path_text in shell_read_paths(command):
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = destination / "workspace" / path
+        path = path.resolve()
+        if not any(path.is_relative_to(root) for root in roots):
+            continue
+        try:
+            if not path.is_file() or path.stat().st_size > 1024 * 1024:
+                continue
+            content = path.read_text().strip()
+        except (OSError, UnicodeError):
+            continue
+        if content and content in output:
+            delivered.append(path_text)
+    return delivered
 
 
 def load_trace(destination: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -89,10 +170,12 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
     commands_by_id: dict[str, str] = {}
     final = ""
     protocol_copies = 0
-    successful_reads = ""
+    successful_reads: set[str] = set()
+    partial_reads: dict[str, list[str]] = {}
     skill_paths: list[str] = []
     foreign_skill_reads: list[str] = []
     pending_reads: dict[str, str] = {}
+    read_attempts: list[str] = []
 
     def credit_skill(path_text: str) -> None:
         skill_path = Path(path_text)
@@ -100,7 +183,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             skill_path = destination / "workspace" / skill_path
         resolved = skill_path.resolve()
         skill_paths.append(str(resolved))
-        if resolved.is_relative_to((catalog / "skills").resolve()):
+        relative = resolved.relative_to((catalog / "skills").resolve()) if resolved.is_relative_to((catalog / "skills").resolve()) else None
+        if relative and len(relative.parts) == 2 and not relative.parts[0].startswith("."):
             sequence.append(("skill", resolved.parent.name))
             confirmed.add(resolved.parent.name)
         else:
@@ -117,8 +201,15 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                         commands_by_id[block.get("id", "")] = block["input"]["command"]
                         if reads_content(block["input"]["command"]):
                             pending_reads[block.get("id")] = block["input"]["command"]
+                            read_attempts.extend(shell_read_paths(block["input"]["command"]))
                     elif block.get("name") == "Read":
                         pending_reads[block.get("id")] = block["input"].get("file_path", "")
+                        read_attempts.append(block["input"].get("file_path", ""))
+                    elif block.get("name") == "Grep":
+                        path = block["input"].get("path", ".")
+                        read_attempts.append(str(Path(path) / block["input"].get("glob", "")))
+                        if block["input"].get("output_mode") == "content":
+                            pending_reads[block.get("id")] = block["input"].get("path", "")
         elif message.get("type") == "user":
             for block in message.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "text":
@@ -126,10 +217,19 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                     if match:
                         credit_skill(str(Path(match[1]) / "SKILL.md"))
                 if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
-                    failed.add(commands_by_id.get(block.get("tool_use_id", ""), ""))
+                    command = commands_by_id.get(block.get("tool_use_id", ""), "")
+                    failed.add(command)
+                    for path in delivered_paths(command, str(block.get("content", "")), destination, catalog):
+                        sequence.append(("read", path))
+                        if Path(path).name == "SKILL.md":
+                            credit_skill(path)
                 if isinstance(block, dict) and block.get("type") == "tool_result" and not block.get("is_error"):
                     if block.get("tool_use_id") in pending_reads:
-                        sequence.append(("read", pending_reads.pop(block["tool_use_id"])))
+                        read = pending_reads.pop(block["tool_use_id"])
+                        sequence.append(("read", read))
+                        for path in shell_read_paths(read) if block.get("tool_use_id") in commands_by_id else [read]:
+                            if Path(path).name == "SKILL.md":
+                                credit_skill(path)
                     launched = re.fullmatch(r"Launching skill: (?:[\w-]+:)?([\w-]+)", str(block.get("content", "")).strip())
                     if launched and launched[1] in confirmed:
                         sequence.append(("skill", launched[1]))
@@ -137,27 +237,38 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             final = message.get("result", "")
         elif message.get("type") == "item.completed":
             item = message["item"]
-            if item.get("type") == "command_execution" and item.get("exit_code") == 0:
-                successful_reads += item.get("command", "") + "\n"
+            if item.get("type") == "command_execution":
+                command = recorded_shell_command(item.get("command", ""))
+                if item.get("exit_code") == 0:
+                    successful_reads.add(command)
+                else:
+                    partial_reads[command] = delivered_paths(command, item.get("aggregated_output", ""), destination, catalog)
             if item.get("type") == "agent_message":
                 final = item.get("text", "")
     if host == "codex":
         for event in events:
             command = event["command"]
+            if reads_content(command):
+                read_attempts.extend(shell_read_paths(command))
             if event["allowed"]:
-                for path in re.findall(r"[^\s'\"]*/skills/[^/\s'\"]+/SKILL\.md", command):
-                    if path in successful_reads:
+                paths = shell_read_paths(command) if command in successful_reads else partial_reads.get(command, [])
+                for path in paths:
+                    if Path(path).name == "SKILL.md":
                         credit_skill(path)
             sequence.append(("shell", command))
             if event["allowed"] and command in successful_reads and reads_content(command):
                 sequence.append(("read", command))
+            elif event["allowed"]:
+                sequence.extend(("read", path) for path in partial_reads.get(command, []))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
-    def succeeded(command: str) -> bool:
-        return command in successful_reads if host == "codex" else command not in failed
+    def succeeded(proof_command: str) -> bool:
+        return proof_command in successful_reads if host == "codex" else proof_command not in failed
 
     return {"sequence": sequence, "operations": operations, "succeeded": succeeded, "loaded": [value for kind, value in sequence if kind == "skill"],
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
             "foreign_skill_reads": foreign_skill_reads,
+            "read_attempts": read_attempts,
+            "workspace": destination / "workspace",
             "compacted": any(message.get("subtype") == "compact_boundary" for message in messages)}
 
 
@@ -165,6 +276,8 @@ def owner_checks(seen: dict[str, Any], owner: str | list[str], helper: str | Non
     """`owner` may list several skills when any of them properly owns the step."""
     operations, sequence = seen["operations"], seen["sequence"]
     owners = [owner] if isinstance(owner, str) else owner
+    if not owners and helper is None:
+        return {"owner_before_first_operation": not seen["loaded"]}
     if helper is None:
         # Without a single right helper, reads may come first; the owner must precede the
         # turn's first operation, or appear in the turn when it attempts none.
@@ -192,6 +305,8 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
                                        for kind, command in before) for pattern in patterns)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
+    if "forbid_read" in expect:
+        checks["no_forbidden_read"] = not any(re.search(expect["forbid_read"], path) for path in seen["read_attempts"])
     if "read" in expect:
         # A reference must be delivered before the turn acts on it; a listing or a failed read is not enough.
         operations, sequence = seen["operations"], seen["sequence"]
@@ -199,6 +314,25 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
         checks["read_before_operation"] = any(kind == "read" and re.search(expect["read"], value) for kind, value in before)
     if "final" in expect:
         checks["final_matches"] = re.search(expect["final"], seen["final"], re.IGNORECASE) is not None
+    if "final_any" in expect:
+        checks["final_matches_any"] = any(re.search(pattern, seen["final"], re.IGNORECASE) for pattern in expect["final_any"])
+    if "final_none" in expect:
+        checks["final_excludes"] = not any(re.search(pattern, seen["final"], re.IGNORECASE) for pattern in expect["final_none"])
+    if "answer_from_fixture" in expect:
+        answer = expect["answer_from_fixture"]
+        workspace = seen["workspace"].resolve()
+        path = (workspace / answer["file"]).resolve()
+        match = None
+        if path.is_relative_to(workspace):
+            try:
+                match = re.search(answer["capture"], path.read_text())
+            except (OSError, UnicodeError):
+                pass
+        forms = [form.format(value=match[1]) for form in answer["forms"]] if match else []
+        checks["fixture_answer"] = any(normalize_answer(form) == normalize_answer(seen["final"]) for form in forms)
+    if expect.get("quiet"):
+        checks["no_operations"] = not commands
+        checks["no_unneeded_skills"] = not seen["loaded"]
     return checks
 
 
@@ -218,7 +352,7 @@ def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> 
             checks["exact_response"] = seen["final"].strip() == "The pull request is waiting for review."
     checks["single_protocol_delivery"] = seen["protocol_copies"] <= 1
     checks["tested_catalog_only"] = not seen["foreign_skill_reads"]
-    return {"passed": all(checks.values()), "checks": checks, "loaded_skills": loaded,
+    return {"grader_version": GRADER_VERSION, "passed": all(checks.values()), "checks": checks, "loaded_skills": loaded,
             "first_operation": operations[0][1] if operations else None, "protocol_copies": seen["protocol_copies"],
             "skill_paths": seen["skill_paths"], "foreign_skill_reads": seen["foreign_skill_reads"]}
 
@@ -252,7 +386,7 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
     compactions = sum(message.get("subtype") == "compact_boundary" for message in messages)
     checks["single_protocol_delivery"] = protocol_copies <= 1 + compactions
     checks["tested_catalog_only"] = not foreign
-    return {"passed": all(checks.values()), "checks": checks, "turns": reports,
+    return {"grader_version": GRADER_VERSION, "passed": all(checks.values()), "checks": checks, "turns": reports,
             "protocol_copies": protocol_copies, "foreign_skill_reads": foreign}
 
 
@@ -327,7 +461,7 @@ def codex_turns(command: list[str], prompts: list[str], fixture: Path, env: dict
             argv = ["codex", "exec", "resume", *options, "-c", 'sandbox_mode="read-only"', thread, prompt]
         try:
             result = subprocess.run(argv, cwd=fixture, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err,
-                                    text=True, timeout=timeout)
+                                    text=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired:
             return None
         out.write(result.stdout)
@@ -440,7 +574,7 @@ def run_case(host: str, catalog: Path, case: Path, destination: Path, model: str
         else:
             try:
                 result = subprocess.run([*command, prompts[0]], cwd=fixture, env=env, stdout=out, stderr=err,
-                                        text=True, timeout=timeout)
+                                        text=True, timeout=timeout, check=False)
                 receipt["exit_code"] = result.returncode
             except subprocess.TimeoutExpired:
                 receipt["error"] = "timeout"
