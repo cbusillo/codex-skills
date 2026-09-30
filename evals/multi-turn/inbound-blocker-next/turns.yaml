@@ -1,0 +1,20 @@
+name: inbound-blocker-next
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  next-result.json: |
+    {"ok":true,"candidate_count":1,"candidates":[{"repo":"example/catalog","number":42,"title":"Repair the index","rank":1,"url":"https://github.com/example/catalog/issues/42"}],"excluded":[{"repo":"example/catalog","number":17,"exclusion":"waiting"}],"dependency_context":{"complete":true},"blocking_work_elsewhere":[{"repo":"example/catalog","number":17,"title":"Approve provider access","url":"https://github.com/example/catalog/issues/17","blocking":[{"repo":"example/site","number":93,"title":"Restore site publishing","url":"https://github.com/example/site/issues/93"}]}],"blocking_work_elsewhere_context":{"complete":false,"inventory_truncated":true,"scan_limit":1,"errors":[],"unevaluated":[18]}}
+turns:
+  - prompt: >-
+      Use shared:github-plan to report next work for example/catalog and stop.
+      The completed gh-plan.py next result is saved in next-result.json; use it
+      instead of calling GitHub. Ownership checks confirm candidate #42 is
+      available and independent. All recorded waits remain in effect. This is
+      an offline fixture; report the result without mutations.
+    expect:
+      owner: github-plan
+      forbid: 'gh-plan\.py.*(create|update-section|close)|gh-comment|gh-issue|dev-worktree'
+      final: '(?s)(#?17|issues/17).*(#?93|issues/93)|(#?93|issues/93).*(#?17|issues/17)'
+      final_any: ['incomplete', 'truncat', 'partial']
+      final_none: ['(?i)start.*#17', '(?i)coverage is complete']

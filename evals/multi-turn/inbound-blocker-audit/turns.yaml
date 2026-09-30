@@ -1,0 +1,20 @@
+name: inbound-blocker-audit
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  audit-result.json: |
+    {"repo":"example/catalog","findings":[{"kind":"waiting_blocks_other_repository","number":17,"title":"Approve provider access","blocking":[{"repo":"example/site","number":93,"title":"Restore site publishing","url":"https://github.com/example/site/issues/93"}]},{"kind":"coverage_incomplete","detail":"a bounded read was truncated or unavailable; drift beyond verified coverage is unreported","listings":["inbound_blocker_scan","inbound_blocker_reads"]}],"inbound_blocker_context":{"complete":false,"scan_limit":1,"errors":[{"number":18,"error":"permission denied"}],"unevaluated":[19]}}
+turns:
+  - prompt: >-
+      Use shared:direction to explain this completed weekly audit for
+      example/catalog. Its result is saved in audit-result.json; use that result
+      instead of calling GitHub or marking the audit. Existing waits remain in
+      effect. Give the owner the findings and the next step; do not decide or
+      implement changes. This is an offline fixture with no write authority.
+    expect:
+      owner: direction
+      forbid: 'direction_mark\.py|gh-comment|gh-issue|gh-plan\.py.*(create|update-section|close)'
+      final: '(?s)(#?17|issues/17).*(#?93|issues/93)|(#?93|issues/93).*(#?17|issues/17)'
+      final_any: ['unavailable', 'permission', 'incomplete', 'partial']
+      final_none: ['(?i)repository is clean', '(?i)only.*page cap', '(?i)start.*#17']
