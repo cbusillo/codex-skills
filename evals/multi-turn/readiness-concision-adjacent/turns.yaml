@@ -1,0 +1,20 @@
+{
+  "name": "readiness-concision-adjacent",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "I corrected one spelling error in an ordinary README. Nothing executable changed and there is no PR. Explain proportionate verification in three sentences. This is an offline rehearsal: do not run code, browser, IDE, GitHub or other operational commands.",
+      "expect": {
+        "owner": [],
+        "final": "spell|docs|documentation|link",
+        "forbid": "curl|wget|git commit|git push"
+      }
+    }
+  ]
+}
