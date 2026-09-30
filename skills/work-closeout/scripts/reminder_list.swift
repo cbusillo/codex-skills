@@ -9,7 +9,7 @@ func fail(_ message: String) -> Never {
 
 guard CommandLine.arguments.count == 2 else { fail("Expected an exact list name") }
 guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
-    fail("Reminders access is unavailable. Approve Reminders access for the invoking terminal in System Settings > Privacy & Security > Reminders, or use the visible manual workflow.")
+    fail("Reminders access is unavailable. Use the visible manual workflow. If the invoking terminal already appears in System Settings > Privacy & Security > Reminders, the owner can enable its access there; this helper does not initiate a first-time access request.")
 }
 let store = EKEventStore()
 let target = CommandLine.arguments[1]

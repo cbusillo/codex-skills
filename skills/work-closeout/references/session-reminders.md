@@ -47,14 +47,15 @@ For a linked worktree, use `--repo /original/repository` to select its existing
 private repository configuration. Configuration selects a destination; it does
 not grant permission to create, change, or delete reminders.
 
-`--verify-list` uses a read-only EventKit lookup on macOS with Swift and existing
+`--verify-list` uses a read-only EventKit lookup on macOS 14 or later with Swift and existing
 Reminders access. Zero or multiple exact names fail; there is no default-list
 fallback. A renamed list must be corrected in private configuration or chosen
 explicitly. The helper never requests access. If access is unavailable, use the
-visible native workflow, or ask the owner to approve Reminders access for the
-invoking terminal under System Settings > Privacy & Security > Reminders. A
-permission prompt needs the owner's action; continue independent work while it
-waits. Without native verification, output says `manual_required`: verify the
+visible native workflow. A terminal with no prior access request may not appear
+in System Settings: this helper does not initiate that request. If an existing
+terminal entry is disabled, the owner can enable it under System Settings >
+Privacy & Security > Reminders. A permission prompt from an available native
+tool needs the owner's action; continue independent work while it waits. Without native verification, output says `manual_required`: verify the
 exact unique list visibly before any write. Same-name lists in different accounts
 are ambiguous, even if one looks preferable.
 
@@ -64,6 +65,10 @@ Use existing external-write authorization; otherwise prepare the concrete title,
 list, schedule, notes and URL and ask the owner before saving. An explicit reminder
 request supplies that authority within its stated scope. Do not automatically
 create one merely because a task is parked for several days.
+
+If this harness has no native UI controls, give the owner the prepared fields
+and the steps below; explicitly record that saving and verification await the
+owner. Do not invent UI tools or retry a hanging AppleScript writer.
 
 1. Open the exact unique target list. Search only that list's incomplete items
    for the output marker in Notes. The marker identifies harness, canonical
@@ -99,7 +104,8 @@ app is required; the scoped marker gives the visible workflow its update contrac
 
 ## Limits and sources
 
-The supported adapter is iTerm2 on macOS. Other terminals and other platforms use
+The supported adapter is iTerm2 on macOS. Native list verification requires
+macOS 14 or later; older macOS uses visible list verification. Other terminals and other platforms use
 the recorded manual command in the named directory. No iPhone, Watch, cross-device
 click behavior, unattended execution, or account/profile portability is claimed.
 The receiving machine needs the directory, installed CLI, intended account and
