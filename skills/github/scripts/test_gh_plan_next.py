@@ -33,6 +33,8 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.real_read_next_inbound_blockers = module.read_next_inbound_blockers
+    module.read_next_inbound_blockers = lambda *_a, **_kw: ("automation-gh", [], {"complete": True})
     return module
 
 
@@ -1305,54 +1307,94 @@ def test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_contex
     assert ranked["candidates"][0]["review_required"] == "complete_parent_context"
 
 
-def test_local_next_reports_waiting_and_nonplan_cross_repository_gates() -> None:
+def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
     module = load_module()
-    downstream = {**related(141), "repo": "owner/other", "url": "https://github.com/owner/other/issues/141"}
-    waiting = issue(2554, labels=["plan", "plan:waiting"])
-    ordinary_gate = issue(2555, labels=["bug"])
-    for gate in (waiting, ordinary_gate):
-        gate["issue_dependencies_summary"] = {"blocking": 1}
-    plans = [issue(1, milestone=milestone_data(1, "First", created_at="2026-07-01")), waiting, ordinary_gate]
-    captured: dict[str, Any] = {}
-    calls: list[int] = []
-
-    def read(_repo: str, number: int) -> Any:
-        calls.append(number)
-        return "automation-gh", relationships(blocking=[downstream, related(99), {**downstream, "number": 142, "state": "closed"}]), []
-
-    with patch.multiple(module, collect_paged_rest_items=lambda *_a, **kw: ("automation-gh", plans) if "labels" not in kw["query"] else (_ for _ in ()).throw(AssertionError("inbound gates must include non-plan issues")), next_focus_context=lambda *_: (None, {}, {"available": False}), read_next_issue_relationships=read, load_direction=lambda *_: DIRECTION, emit=captured.update):
-        module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
-    assert calls == [2554, 2555]  # both gates survive the scan cap
-    gates = captured["blocking_work_elsewhere"]
-    assert [item["number"] for item in gates] == [2554, 2555]
-    assert all(item["blocking"] == [downstream] for item in gates)
-    assert gates[0]["waiting"] is True and gates[1]["waiting"] is False
-    assert captured["candidates"] == []  # visibility does not override waits or adopt bugs
-    assert captured["excluded"][0]["exclusion"] == "waiting"
-    assert captured["blocking_work_elsewhere_context"]["complete"] is False
-
-
-def test_local_next_inbound_report_keeps_native_blockers_and_read_failures() -> None:
-    module = load_module()
-    gate = issue(2554)
+    gate = issue(2554, labels=["plan", "plan:waiting"])
+    bug = issue(2555, labels=["bug"])
+    for item in (gate, bug):
+        item["issue_dependencies_summary"] = {"blocking": 1}
+    plan = issue(1, milestone=milestone_data(1, "First", created_at="2026-07-01"))
+    plan["issue_dependencies_summary"] = {"blocking": 0}
     downstream = {**related(141), "repo": "owner/other"}
     captured: dict[str, Any] = {}
-    with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [gate]), next_focus_context=lambda *_: (None, {}, {"available": False}), load_direction=lambda *_: DIRECTION, emit=captured.update):
-        with patch.object(module, "read_next_issue_relationships", return_value=("automation-gh", relationships(blocked_by=[related(10)], blocking=[downstream]), [])):
-            module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
-        assert captured["blocking_work_elsewhere"][0]["blocking"] == [downstream]
-        assert captured["candidates"] == []
-        assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
-        for read in (Mock(side_effect=module.PlanError("unavailable")), Mock(return_value=("automation-gh", relationships(blocking=[downstream]), ["blocking"]))):
-            with patch.object(module, "read_next_issue_relationships", read):
-                module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
-            assert captured["blocking_work_elsewhere"] == []
-            assert captured["blocking_work_elsewhere_context"]["complete"] is False
+    calls: list[str] = []
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        calls.append(path)
+        if path.endswith("/blocking"):
+            return "automation-gh", [downstream, related(99), {**downstream, "number": 142, "state": "closed"}]
+        if kwargs["query"].get("labels"):
+            return "automation-gh", [plan, gate]
+        return "automation-gh", [plan, gate, bug]
+
+    with patch.multiple(module, collect_paged_rest_items=collect,
+                        next_focus_context=lambda *_: (None, {}, {"available": False}),
+                        read_next_issue_relationships=lambda *_: ("automation-gh", relationships(), []),
+                        read_next_inbound_blockers=module.real_read_next_inbound_blockers,
+                        load_direction=lambda *_: DIRECTION, emit=captured.update):
+        module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
+    assert [item["number"] for item in captured["candidates"]] == [1]
+    assert captured["excluded"][0]["exclusion"] == "waiting"
+    assert [item["number"] for item in captured["blocking_work_elsewhere"]] == [2554, 2555]
+    assert all(item["blocking"] == [downstream] for item in captured["blocking_work_elsewhere"])
+    assert captured["blocking_work_elsewhere"][0]["labels"] == ["plan", "plan:waiting"]
+    assert captured["blocking_work_elsewhere_context"]["complete"] is True
+    assert captured["inventory_count"] == 2  # non-plans cannot consume the plan inventory
+    assert len(calls) == 4
+
+
+def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:
+    module = load_module()
+    gates = [issue(1), issue(2)]  # missing native summaries are conservatively read
+    downstream = {**related(141), "repo": "owner/other"}
+    calls: list[str] = []
+
+    def collect(path: str, **kwargs: Any) -> Any:
+        calls.append(path)
+        if path.endswith("/blocking"):
+            assert kwargs["limit"] == module.NEXT_RELATIONSHIP_LIMIT + 1
+            return "automation-gh", [downstream] * kwargs["limit"]
+        assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
+        return "automation-gh", gates
+
+    with patch.object(module, "collect_paged_rest_items", collect):
+        _, report, context = module.real_read_next_inbound_blockers("owner/repo", scan_limit=1)
+    assert report[0]["number"] == 1
+    assert len(report[0]["blocking"]) == module.NEXT_RELATIONSHIP_LIMIT
+    assert context["complete"] is False and context["evaluated"] == 1
+    assert context["gate_count"] == 2 and context["errors"]
+    assert len(calls) == 2
+    with patch.object(module, "NEXT_PLAN_INVENTORY_LIMIT", 1), patch.object(module, "collect_paged_rest_items", collect):
+        _, _, context = module.real_read_next_inbound_blockers("owner/repo", scan_limit=3)
+    assert context["inventory_truncated"] and not context["complete"]
+
+
+def test_inbound_failure_does_not_degrade_successful_plan_reads() -> None:
+    module = load_module()
+    captured: dict[str, Any] = {}
+    with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [issue(1)]),
+                        next_focus_context=lambda *_: (None, {}, {"available": False}),
+                        read_next_issue_relationships=lambda *_: ("automation-gh", relationships(), []),
+                        read_next_inbound_blockers=Mock(side_effect=module.PlanError("inbound inventory unavailable")),
+                        load_direction=lambda *_: DIRECTION, emit=captured.update):
+        module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
+    assert captured["candidates"][0]["number"] == 1
+    assert captured["dependency_context"]["complete"] is True
+    assert captured["blocking_work_elsewhere_context"]["complete"] is False
+    failure = module.github_api_core.FailureDetail(cause="rest_primary_rate_limited", message="quota exhausted", retryable=False, fallback_eligible=False, disposition="stop")
+    with patch.object(module, "collect_paged_rest_items", Mock(side_effect=module.PlanError("quota exhausted", failure=failure))):
+        try:
+            module.real_read_next_inbound_blockers("owner/repo", scan_limit=2)
+        except module.PlanError as exc:
+            assert exc.failure.cause == failure.cause
+        else:
+            raise AssertionError("quota stop policy must remain authoritative")
 
 
 TESTS = [
-    test_local_next_reports_waiting_and_nonplan_cross_repository_gates,
-    test_local_next_inbound_report_keeps_native_blockers_and_read_failures,
+    test_local_next_inbound_scan_preserves_plan_budget_and_waits,
+    test_inbound_scan_bounds_and_partial_reads_are_explicit,
+    test_inbound_failure_does_not_degrade_successful_plan_reads,
     test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
     test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_context,
     test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,

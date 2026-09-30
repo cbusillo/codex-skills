@@ -2176,6 +2176,45 @@ def read_next_issue_relationships(
     return actor, relationships, truncated
 
 
+def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Separate bounded visibility scan; never consumes ranked plan slots."""
+    actor, inventory = collect_paged_rest_items(
+        f"/repos/{repo}/issues", query={"state": "open", "sort": "created", "direction": "asc"},
+        bucket="rest_core", step_prefix="next_inbound_inventory",
+        limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+    )
+    inventory_truncated = len(inventory) > NEXT_PLAN_INVENTORY_LIMIT
+    gates = [issue for issue in inventory[:NEXT_PLAN_INVENTORY_LIMIT]
+             if (issue.get("issue_dependencies_summary") or {}).get("blocking") != 0]
+    report: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for issue in gates[:scan_limit]:
+        try:
+            relation_actor, blocking = collect_paged_rest_items(
+                f"/repos/{repo}/issues/{issue['number']}/dependencies/blocking",
+                query={}, bucket="rest_core", step_prefix="next_inbound_blocking",
+                limit=NEXT_RELATIONSHIP_LIMIT + 1,
+            )
+            actor = relation_actor or actor
+            if len(blocking) > NEXT_RELATIONSHIP_LIMIT:
+                errors.append({"number": issue["number"], "error": "blocking_relationships_truncated"})
+            targets = [compact_relationship_issue(item, "blocking") for item in blocking[:NEXT_RELATIONSHIP_LIMIT]]
+        except PlanError as exc:
+            errors.append({"number": issue["number"], "error": next_source_error(exc)})
+            continue
+        downstream = [item for item in targets if item["state"] == "open" and item["repo"].casefold() != repo.casefold()]
+        if downstream:
+            report.append({**compact_list_issue(repo, issue), "blocking": downstream})
+    return actor, report, {
+        "complete": not (inventory_truncated or len(gates) > scan_limit or errors),
+        "inventory_count": min(len(inventory), NEXT_PLAN_INVENTORY_LIMIT),
+        "inventory_truncated": inventory_truncated,
+        "gate_count": len(gates), "evaluated": min(len(gates), scan_limit),
+        "scan_limit": scan_limit, "errors": errors,
+        "scope": "repository_open_cross_repository_dependencies",
+    }
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
@@ -2187,6 +2226,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
     issue_query: dict[str, Any] = {
+        "labels": config["labels"]["plan"],
         "state": "open",
         "sort": "created",
         "direction": "asc",
@@ -2238,9 +2278,6 @@ def cmd_next(args: argparse.Namespace) -> None:
     for issue in issues:
         issue["repo"] = repo
     rank_next_candidates(issues, direction_milestones=direction_milestones)
-    # Native dependency summaries put potential inbound gates ahead of the
-    # scan cap, including waiting issues outside this repository's milestones.
-    issues.sort(key=lambda issue: not bool((issue.get("issue_dependencies_summary") or {}).get("blocking")))
     scan_truncated = len(issues) > args.scan_limit
     issues = issues[: args.scan_limit]
 
@@ -2249,18 +2286,12 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     dependency_degraded_count = 0
-    blocking_work_elsewhere: list[dict[str, Any]] = []
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
-        is_plan = config["labels"]["plan"] in normalize_labels(issue.get("labels"))
         static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
-        # Preserve ordinary candidate classification; inbound gates are a
-        # separate visibility report, not permission to override a wait.
-        if static_exclusion is not None and not (issue.get("issue_dependencies_summary") or {}).get("blocking"):
+        if static_exclusion is not None:
             excluded.append(static_exclusion)
-            continue
-        if not is_plan and not (issue.get("issue_dependencies_summary") or {}).get("blocking"):
             continue
         relationship_error = None
         relationships = None
@@ -2281,16 +2312,6 @@ def cmd_next(args: argparse.Namespace) -> None:
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
-        if relationships is not None:
-            downstream = [item for item in relationships["blocking"]
-                          if item["state"] == "open" and item["repo"].casefold() != repo.casefold()]
-            if downstream:
-                blocking_work_elsewhere.append({
-                    **compact_list_issue(repo, issue),
-                    "plan_status": github_direction_next.next_plan_status(issue, config),
-                    "blocking": downstream,
-                    "waiting": github_direction_next.next_plan_status(issue, config) == "waiting",
-                })
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
@@ -2302,8 +2323,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             dependency_degraded_count += 1
             if truncated_relationships:
                 evaluated["truncated_relationships"] = truncated_relationships
-        if is_plan:
-            (candidates if disposition == "candidate" else excluded).append(evaluated)
+        (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
@@ -2316,6 +2336,12 @@ def cmd_next(args: argparse.Namespace) -> None:
                 and milestone.get("title") not in listed
             ):
                 candidate.setdefault("notes", []).append("milestone_unlisted_from_direction")
+    try:
+        inbound_actor, blocking_work_elsewhere, inbound_context = read_next_inbound_blockers(repo, scan_limit=args.scan_limit)
+        actor = inbound_actor or actor
+    except PlanError as exc:
+        blocking_work_elsewhere = []
+        inbound_context = {"complete": False, "error": next_source_error(exc)}
     notes = [
         "native_blocked_by_relationships_are_authoritative",
         "milestones_are_the_execution_order",
@@ -2355,10 +2381,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         },
         "blocking_work_elsewhere": blocking_work_elsewhere,
         "blocking_work_elsewhere_count": len(blocking_work_elsewhere),
-        "blocking_work_elsewhere_context": {
-            "complete": not (inventory_truncated or scan_truncated or dependency_degraded_count),
-            "scope": "open_cross_repository_dependencies_within_selection_scope",
-        },
+        "blocking_work_elsewhere_context": inbound_context,
         "evaluated": len(issues),
         "truncated": inventory_truncated or scan_truncated,
         "inventory_count": inventory_count,
