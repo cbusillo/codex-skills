@@ -1,7 +1,7 @@
 # Work rollup configuration
 
 Read before configuring collection limits, priority-section metadata, private
-defaults, or recipient tailoring. User instructions override local config; local
+defaults, comment identities, or recipient tailoring. User instructions override local config; local
 config overrides defaults. Use
 [`github-work-rollup.local.example.yaml`](github-work-rollup.local.example.yaml)
 for the public-safe shape. Keep private values in ignored local files.
