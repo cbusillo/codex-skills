@@ -1,0 +1,9 @@
+name: openai-concision-adjacent
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Rewrite this sentence for clarity. Only return the rewritten sentence:
+      Codex helped us to fix the notes app search box so searching works.
+    expect: quiet

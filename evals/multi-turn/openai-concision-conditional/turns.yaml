@@ -1,0 +1,20 @@
+name: openai-concision-conditional
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  official-page.md: 'Already fetched official ChatGPT Work fixture. Work is for projects and ongoing tasks. Chat is for conversation. This page does not document shared context inheritance, exact model identity, account entitlements or API request schemas. Source https://learn.chatgpt.com/docs/get-started-with-work .'
+turns:
+  - prompt: >-
+      Use shared:openai-docs. In this offline rehearsal official-page.md is the
+      already-fetched official page; read it instead of network search/fetch.
+      Compare Chat and Work, including whether files and context automatically
+      transfer between them. The page leaves source selection unresolved for
+      those claims; follow the specialized documentation workflow for such a gap.
+      State what is supported and what remains unknown, with a citation. Do not
+      inspect local configuration or attempt installation.
+    expect:
+      owner: openai-docs
+      read: 'official-docs\.md'
+      forbid: 'fetch-codex-manual|resolve-latest-model|codex mcp add|curl|wget'
+      final: '(not document|not establish|doesn.t|does not|unknown|cannot|unverified)'
