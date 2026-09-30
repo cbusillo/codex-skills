@@ -154,14 +154,14 @@ behavior or provenance-sensitive evidence.
 Temporary until the installer runs this itself (#828). From the runtime
 checkout, render both hosts' global instructions as described in
 [Shared global instructions and Codex hooks](#shared-global-instructions-and-codex-hooks).
-First put any personal instructions already in `~/.claude/CLAUDE.md` or
-`~/.codex/AGENTS.md` into the ignored `.local/global-instructions.md`, so the
-sync keeps them. Then preview, check that the diff removes nothing you want,
-and write:
+The sync overwrites both files with the same output, so first merge the
+personal instructions from both `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
+into the ignored `.local/global-instructions.md`. Then preview, check that the
+diff removes nothing you want, and write:
 
 ```sh
-uv run scripts/sync-global-instructions.py
-uv run scripts/sync-global-instructions.py --write
+uv run scripts/sync-global-instructions.py --codex-hook
+uv run scripts/sync-global-instructions.py --codex-hook --write
 ```
 
 ## Execution Environment
