@@ -10,11 +10,18 @@ metadata:
 Use this skill when visual style, UX direction, or an external design pass
 should be coordinated before or alongside implementation.
 
-Use `github-plan` for durable design state and
-`../references/talking-with-the-owner.md` when drafting requests, issue
-comments, critique summaries, and closeout notes. Active workflow state belongs
-in GitHub issues; repository docs hold product and implementation facts. Do not
-create local handoff Markdown files.
+Design collaboration is issue-backed. Use `github-plan` for durable design
+state: product context, design requests, returned critique, accepted direction,
+implementation constraints, PR links, browser QA evidence, tradeoffs, and
+closeout state.
+
+Use `../references/talking-with-the-owner.md` when drafting design requests,
+issue comments, critique summaries, and closeout notes so design state remains
+compact, point-in-time, and recoverable from GitHub.
+
+Do not create local handoff Markdown files. Repos should hold product and
+implementation facts; GitHub planning issues should hold active design workflow
+state.
 
 ## Core Split
 
@@ -35,6 +42,19 @@ The coding agent owns:
 - browser validation, accessibility, responsive behavior, and final QA
 
 ## GitHub Issue Model
+
+Use `github-plan` before creating or updating design work:
+
+1. Think in chat first when the direction is still fuzzy.
+2. Search existing planning/design issues before creating a new one.
+3. Create or update one canonical issue when the design work should persist.
+4. For broad redesigns, use a parent issue plus sub-issues for independent
+   surfaces, states, implementation tracks, or validation work.
+5. Use `Current Status` as the recovery point for future sessions.
+6. Link implementation PRs with `Refs #123` unless auto-close is clearly
+   intended and validation can conclusively finish the issue.
+7. Before closeout, update the issue with accepted direction, evidence,
+   remaining work, and stale/related issue cleanup.
 
 Design issues should use the normal `github-plan` headings, with design-specific
 content inside them:
@@ -85,6 +105,12 @@ For second-pass or implementation-prep work, convert the accepted design into
 concrete UI tasks, preserve backend/API constraints, and note any intentional
 departures from the draft in `Decisions`.
 
+When the user has asked to read or prepare from a design brief and then
+explicitly says to implement it, start coding, or move to implementation, move
+into the work instead of asking for another confirmation unless a real blocker
+or scope ambiguity remains. Do not treat a bare "go" or "go ahead" as
+implementation approval by itself.
+
 ## Consuming Returned Design
 
 Do not blindly trust returned UI/design output.
@@ -97,12 +123,16 @@ Do not blindly trust returned UI/design output.
   shippable version and record the tradeoff.
 - Update `Decisions`, `Acceptance Criteria`, `Validation`, and `Current Status`
   instead of leaving conclusions only in chat.
+- Use `browser-ui-review` after implementation and attach or reference browser
+  evidence before signoff.
 - Finish passes should leave reviewable proof for key states, accessibility
   basics, responsive behavior, and destructive-action safety when relevant.
 
 ## Repo Documentation Boundary
 
-Keep durable product and implementation facts in repo docs:
+Repository docs should not describe skill workflows or active design plans.
+
+Keep repo docs for durable product and implementation facts such as:
 
 - design tokens and component conventions
 - route structure and target surfaces
@@ -118,25 +148,18 @@ issue.
 
 ## Workflow
 
-1. Think in chat first when direction is fuzzy. Use `github-plan` to search
-   existing planning/design issues, then create or update one canonical issue
-   when work should persist. For broad redesigns, use a parent and sub-issues
-   for independent surfaces, states, implementation tracks, or validation.
-2. Put the design request or critique prompt in that issue or a comment.
-3. Evaluate returned design against acceptance criteria, constraints, and
-   required states using the guidance above.
-4. Implement when the user explicitly asks, when accepted direction is already
-   captured and execution is the requested next step, or after an explicitly
-   requested external design pass has been accepted. When the user has asked to read or prepare from a design brief and then
-   explicitly says to implement it, start coding, or move to implementation, proceed
-   without another confirmation unless a real blocker or scope ambiguity
-   remains. A bare "go" or "go ahead" alone does not approve switching into
-   implementation.
-5. Use `browser-ui-review` after implementation across relevant interactions
-   and viewports; attach or reference browser evidence before signoff.
-6. Keep `Decisions`, `Acceptance Criteria`, `Validation`, and `Current Status`
-   current with accepted direction, intentional departures, evidence, PR links,
-   and remaining work. `Current Status` is the future-session recovery point.
-   Link implementation PRs with `Refs #123` unless auto-close is clearly intended and
-   validation can conclusively finish the issue. Before closeout, reconcile
-   stale/related issues rather than leaving conclusions only in chat.
+1. Use `github-plan` to search for existing relevant planning issues.
+2. Decide whether the design need is ephemeral chat or durable issue-backed
+   work.
+3. Create or update the canonical design issue when durable state is needed.
+4. Add the design request or critique prompt to the issue or an issue comment.
+5. Evaluate returned design against acceptance criteria, constraints, and
+   required states.
+6. Implement when the user explicitly asks for implementation, when the
+   accepted direction is already captured and execution is the requested next
+   step, or after an explicitly requested external design pass has been
+   accepted. Do not treat a bare "go" or "go ahead" as sufficient approval to
+   switch into implementation.
+7. Validate with `browser-ui-review` across relevant interactions and viewports.
+8. Update the issue with accepted decisions, evidence, PR links, and remaining
+   work before closeout.
