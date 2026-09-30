@@ -60,6 +60,7 @@ READ_ONLY_OPERATIONS = {
     "product-environment-read",
     "product-activity-read",
     "preview-history-read",
+    "reconcile-requests-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2316,6 +2317,9 @@ PRODUCT_HEALTH_MAX_CHECKS = 20
 PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
+RECONCILE_MAX_REQUESTS = 50
+RECONCILE_MAX_PLAN_FIELDS = 40
+RECONCILE_MAX_PLAN_LIST_ITEMS = 20
 
 
 def _product_read_path(command: str, **segments: str) -> str:
@@ -2599,6 +2603,107 @@ def _project_product_activity(value: object) -> dict[str, object]:
         "events": projected_events,
         "events_truncated": len(events) > PRODUCT_ACTIVITY_MAX_EVENTS,
         "omitted_event_count": omitted_event_count,
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _plan_text(value: object) -> str:
+    """An id, SHA or digest as it is; other text only when it reads as a safe summary."""
+    try:
+        return public_identifier(value)
+    except LaunchplaneSafetyError:
+        return public_summary_string(value, max_length=400)
+
+
+def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
+    """The plan's top-level fields. Nested objects, sensitive key names and values that
+    do not validate are dropped with their paths."""
+    plan = plan_value if isinstance(plan_value, dict) else {}
+    projected: dict[str, object] = {}
+    for raw_key, value in list(plan.items())[:RECONCILE_MAX_PLAN_FIELDS]:
+        key = str(raw_key)
+        if not PRODUCT_ACTIVITY_CODE_RE.fullmatch(key):
+            drops.drop("requests[].last_plan.<invalid key>")
+            continue
+        path = f"requests[].last_plan.{key}"
+        if is_denied_key(key) or isinstance(value, dict):
+            drops.drop(path)
+        elif value is None or isinstance(value, (bool, int)):
+            projected[key] = value
+        elif isinstance(value, str):
+            validate = public_url if key.endswith("_url") else _plan_text
+            projected[key] = drops.keep(path, validate, value)
+        elif isinstance(value, list):
+            items = [
+                drops.keep(f"{path}[]", public_identifier, item)
+                for item in value[:RECONCILE_MAX_PLAN_LIST_ITEMS]
+                if isinstance(item, str)
+            ]
+            projected[key] = [item for item in items if item]
+        else:
+            drops.drop(path)
+    return projected
+
+
+def _project_reconcile_request(
+    request_value: object, drops: _FieldDrops
+) -> dict[str, object] | None:
+    if not isinstance(request_value, dict):
+        return None
+    request = cast(dict[str, Any], request_value)
+    target_key = drops.keep("requests[].target_key", public_identifier, request.get("target_key"))
+    if not target_key:
+        return None
+
+    def field(name: str, validate: Any) -> object:
+        return drops.keep(f"requests[].{name}", validate, request.get(name))
+
+    def count(name: str) -> int | None:
+        value = request.get(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            if value is not None:
+                drops.drop(f"requests[].{name}")
+            return None
+        return value
+
+    return {
+        "target_key": target_key,
+        "target_kind": field("target_kind", _public_dotted_code),
+        "pull_request_number": count("pull_request_number"),
+        "state": field("state", _public_dotted_code),
+        "requested_at": field("requested_at", lambda value: public_summary_string(value, max_length=64)),
+        "updated_at": field("updated_at", lambda value: public_summary_string(value, max_length=64)),
+        "request_count": count("request_count"),
+        "attempt": count("attempt"),
+        "last_delivery_id": field("last_delivery_id", public_identifier),
+        "last_error": field("last_error", lambda value: public_summary_string(value, max_length=400)),
+        "last_plan": _project_reconcile_plan(request.get("last_plan"), drops),
+    }
+
+
+def _project_reconcile_requests(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """Each target's last reconcile decision, bounded. Odd fields are dropped and unusable
+    requests omitted, with counts and field paths; a secret-looking value fails the read."""
+    requests = provider_payload.get("requests") or []
+    if not isinstance(requests, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    drops = _FieldDrops()
+    projected_requests: list[dict[str, object]] = []
+    omitted_request_count = 0
+    for request_value in requests[:RECONCILE_MAX_REQUESTS]:
+        projected_request = _project_reconcile_request(request_value, drops)
+        if projected_request is None:
+            omitted_request_count += 1
+        else:
+            projected_requests.append(projected_request)
+    projected: dict[str, object] = {
+        "product": public_identifier(provider_payload.get("product")),
+        "requests": projected_requests,
+        "requests_truncated": len(requests) > RECONCILE_MAX_REQUESTS,
+        "omitted_request_count": omitted_request_count,
         "dropped_field_count": drops.count,
         "dropped_field_paths": sorted(drops.paths),
     }
@@ -3765,10 +3870,31 @@ def summarize_preview_history_read(
     return payload
 
 
+def summarize_reconcile_requests_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "product", "requests"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
+    payload["result"] = _project_reconcile_requests(provider_payload)
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Compare each target's last_plan action, reason and desired_image_digest with "
+            "the build you expect; read the preview itself with preview-history-read."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 PRODUCT_READ_SUMMARIZERS = {
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
     "preview-history-read": summarize_preview_history_read,
+    "reconcile-requests-read": summarize_reconcile_requests_read,
 }
 
 
@@ -4923,6 +5049,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     preview_history_read.add_argument("--repository")
     preview_history_read.add_argument("--pr", type=int)
 
+    reconcile_requests_read = subparsers.add_parser(
+        "reconcile-requests-read",
+        help="Read what the event reconciler last decided for each of a product's targets.",
+    )
+    reconcile_requests_read.add_argument("--product", required=True)
+
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
         ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
@@ -5259,6 +5391,15 @@ def main(argv: list[str]) -> int:
                 args=args, operation=args.command, request=request, path=path
             )
         if args.command == "product-activity-read":
+            path = _product_read_path(args.command, product=args.product)
+            request = {
+                "product": public_identifier(args.product),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "reconcile-requests-read":
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": public_identifier(args.product),

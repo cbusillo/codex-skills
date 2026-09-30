@@ -3000,6 +3000,75 @@ def test_product_activity_read_reports_http_denial_as_read_error() -> None:
     assert "read was rejected" in payload["warnings"][0]["message"]
 
 
+def _reconcile_requests_response() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_reconcile_requests",
+        "product": "example-product",
+        "requests": [
+            {
+                "target_key": "example-product:preview:7",
+                "target_kind": "preview",
+                "pull_request_number": 7,
+                "state": "failed",
+                "requested_at": "2026-09-30T18:48:00Z",
+                "updated_at": "2026-09-30T18:49:00Z",
+                "request_count": 2,
+                "attempt": 1,
+                "last_delivery_id": "7d0e5c10-9e8f-11f0-8a2b-3c1d2e4f5a6b",
+                "last_error": "Preview data workflow failed: [redacted-secret]",
+                "last_plan": {
+                    "target": "preview",
+                    "action": "apply",
+                    "held": False,
+                    "head_sha": "cdd8f4a0d68be3575389fdffbcd6ef138ca13cc9",
+                    "desired_image_digest": "sha256:" + "d5da36c3" * 8,
+                    "preview_plan_id": "odoo-preview-plan-" + "ab12" * 16,
+                    "preview_url": "https://pr-7.example.invalid",
+                    "omitted_integration_credential_keys": ["EXAMPLE_SMTP_PASSWORD"],
+                    "rejected_builds": [{"run_id": 1}],
+                    "provider": {"response": "private provider text"},
+                },
+            },
+            {"target_key": "has spaces in key"},
+        ],
+    }
+
+
+def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None:
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, calls = _run_product_read(argv, _reconcile_requests_response())
+
+    assert status == 0
+    assert contract.LOCAL_EXTENSION_ROUTES["reconcile-requests-read"]["method"] == "GET"
+    assert calls[0]["path"] == "/v1/product-profiles/example-product/reconcile-requests"
+    result = payload["result"]
+    (request,) = result["requests"]
+    assert request["state"] == "failed"
+    assert request["last_delivery_id"] == "7d0e5c10-9e8f-11f0-8a2b-3c1d2e4f5a6b"
+    assert request["last_error"] == "Preview data workflow failed: [redacted-secret]"
+    plan = request["last_plan"]
+    assert plan["head_sha"] == "cdd8f4a0d68be3575389fdffbcd6ef138ca13cc9"
+    assert plan["desired_image_digest"] == "sha256:" + "d5da36c3" * 8
+    assert plan["preview_plan_id"] == "odoo-preview-plan-" + "ab12" * 16
+    assert plan["preview_url"] == "https://pr-7.example.invalid"
+    assert plan["rejected_builds"] == []
+    assert result["omitted_request_count"] == 1
+    assert result["dropped_field_paths"] == [
+        "requests[].last_plan.omitted_integration_credential_keys",
+        "requests[].last_plan.provider",
+        "requests[].target_key",
+    ]
+    assert "private provider text" not in json.dumps(payload)
+
+    secret = _reconcile_requests_response()
+    cast(list[dict[str, object]], secret["requests"])[0]["last_error"] = "token ghp_abcdefghijklmnop"
+    status, payload, _calls = _run_product_read(argv, secret)
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
 def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "product": "example-product",

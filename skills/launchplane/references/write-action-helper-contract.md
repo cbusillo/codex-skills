@@ -120,6 +120,13 @@ local extensions until the vendored artifact is refreshed.
   newest first, each with state, times, artifact id, PR head SHA, source map,
   deploy and verify status, failure stage and summary, and runtime identity
   including the image digest. The same drop and omit rules apply.
+- `reconcile-requests-read --product` calls
+  `GET /v1/product-profiles/{product}/reconcile-requests`. It returns up to 50
+  targets, each with state, times, counts, delivery id, last error and the
+  plan's top-level fields. A plan field that is a nested object, has a
+  sensitive-looking name or fails validation is dropped and listed; lists keep
+  only plain identifiers. The service has already redacted the plan and error;
+  the same drop and omit rules apply on top.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.
