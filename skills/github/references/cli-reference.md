@@ -317,9 +317,11 @@ or Project focus state.
 - `search <query>`: Search issues through the REST search endpoint with an
   `is:issue` constraint. Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
-  adds its repository constraint. Each result's `repo` identifies its own
+  adds its repository qualifier. GitHub ORs multiple `repo:` qualifiers, so
+  this can widen a query that already names another repository.
+  Each result's `repo` identifies its own
   repository, while the top-level `repo` records the caller's default context
-  (null for a scoped search outside a checkout).
+  (null when a scoped search cannot resolve a GitHub origin).
   Result milestones retain the search payload's title. `--state open|closed` adds the matching
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
