@@ -384,11 +384,16 @@ retrying until planning stalls.
 pairs, including waiting or unmilestoned issues and non-plan blockers. These
 entries provide visibility; review recorded waits and ownership before starting
 work. They do not override candidate exclusions.
-`blocking_work_elsewhere_context` records an independent repository inventory
-and scan budget, errors, caps, and unread gates. This report covers the whole
-repository even when candidate selection uses `--milestone`, subject to its
-reported caps. Permission-denied and not-found reads degrade inbound coverage;
-quota and authentication failures retain the existing command-stop policy.
+`blocking_work_elsewhere_context` reports the independent inventory and scan
+budget, truncation indicators, errors, and unread gates when the scan runs. If
+inventory cannot be read, it reports only `complete: false` and `error`.
+The report scans repository-wide even with `--milestone`, subject to its
+reported truncation. Each open issue with a nonzero or unknown blocking count
+consumes an inbound scan slot, including issues blocking only same-repository
+work. Permission-denied, not-found, and unclassified response errors degrade
+inbound coverage; other classified API failures, including quota,
+authentication, provider/network, and timeout failures, stop the command under
+the existing plan relationship policy.
 
 For `<owner>/direction`, `next` automatically selects global direction scope;
 no flag is needed. The target repository's merged `DIRECTION.md` is required,
