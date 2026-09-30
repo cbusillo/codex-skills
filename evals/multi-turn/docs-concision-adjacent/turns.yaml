@@ -1,0 +1,11 @@
+name: docs-concision-adjacent
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  local.py: 'MAX_RETRIES = 7'
+turns:
+  - prompt: >-
+      What is MAX_RETRIES in local.py? This is a stable checked-in fact;
+      read the file and answer in one sentence. No external behavior is involved.
+    expect: quiet
