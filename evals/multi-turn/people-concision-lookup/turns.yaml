@@ -1,0 +1,26 @@
+name: people-concision-lookup
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  .local/people.yaml: |
+    version: 1
+    people:
+      - id: demo-reviewer
+        display_name: Demo Reviewer
+        aliases: [Demo]
+        contacts:
+          github:
+            username: demo-reviewer
+turns:
+  - prompt: >-
+      Use shared:people to resolve Demo in the supplied synthetic .local/people.yaml.
+      This is an offline rehearsal: use exactly that fixture index, not real
+      global/home indexes. Do not assign, mention, message, or change any index.
+      The shell boundary blocks helper execution; stop after its refusal and
+      report the attempted lookup.
+    expect:
+      owner: people
+      operation: 'resolve_person\.py'
+      require: '--index[ =]+(?:\./)?\.local/people\.yaml'
+      forbid: 'people_index\.py.*upsert|gh (issue|pr)|curl'

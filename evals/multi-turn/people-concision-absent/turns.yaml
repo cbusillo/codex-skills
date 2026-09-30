@@ -1,0 +1,18 @@
+name: people-concision-absent
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  resolver-result.json: '{"ok":true,"status":"no_index","query":"Demo"}'
+turns:
+  - prompt: >-
+      Use shared:people. The fixture resolver has already completed a lookup of
+      Demo; read resolver-result.json. No people indexes are configured. Decide
+      whether an ordinary unrelated repository task can continue and whether
+      missing identity context is an error. Do not access real home/config,
+      invent a person, create an index, or rerun the supplied result.
+    expect:
+      owner: people
+      read: 'resolver-result\.json'
+      forbid: 'people_index\.py|resolve_person\.py|gh (issue|pr)|curl'
+      final: 'continue|proceed'

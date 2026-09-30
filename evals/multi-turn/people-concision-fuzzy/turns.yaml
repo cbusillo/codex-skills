@@ -1,0 +1,17 @@
+name: people-concision-fuzzy
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  resolver-result.json: '{"ok":true,"status":"matched","confidence":"fuzzy","query":"Dmeo","person":{"id":"demo-reviewer","display_name":"Demo Reviewer","contacts":{"github":{"username":"demo-reviewer"}}}}'
+turns:
+  - prompt: >-
+      Use shared:people. Read resolver-result.json, the already-completed fixture
+      lookup. Is this result sufficient identity evidence to assign an issue to
+      the candidate? Explain the next verification step. Do not perform a write,
+      load real home/config, or rerun the supplied lookup.
+    expect:
+      owner: people
+      read: 'resolver-result\.json'
+      forbid: 'people_index\.py|resolve_person\.py|gh (issue|pr)|curl'
+      final: 'exact|lookup.only|not.*write|not.*sufficient'
