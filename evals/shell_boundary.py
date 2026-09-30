@@ -67,10 +67,17 @@ def shell_expansion(command: str) -> bool:
 def find_read_only(arguments: list[str]) -> bool:
     # Allow the observed discovery predicates, rather than a denylist of actions.
     operands = {"-name", "-iname", "-path", "-ipath", "-type", "-maxdepth", "-mindepth"}
-    flags = {"-H", "-L", "-P", "-print", "-print0", "-o", "-or", "-a", "-and", "!", "-not"}
+    flags = {"-H", "-L", "-P", "-print", "-print0", "-prune", "-o", "-or", "-a", "-and", "!", "-not", "(", ")"}
     index = 0
+    depth = 0
     while index < len(arguments):
         argument = arguments[index]
+        if argument == "(":
+            depth += 1
+        elif argument == ")":
+            depth -= 1
+            if depth < 0:
+                return False
         if argument in operands:
             index += 2
             if index > len(arguments):
@@ -79,7 +86,7 @@ def find_read_only(arguments: list[str]) -> bool:
             index += 1
         else:
             return False
-    return True
+    return depth == 0
 
 
 def read_only(command: str) -> bool:
@@ -101,6 +108,8 @@ def read_only(command: str) -> bool:
             # A pipe between reads is still a read; each stage must pass on its own.
             if token in {"&&", ";", "||", "|"}:
                 commands.append([])
+            elif token in {"(", ")"} and commands[-1] and Path(commands[-1][0]).name == "find":
+                commands[-1].append(token)
             elif token and all(character in "();<>|&" for character in token):
                 return False
             else:
