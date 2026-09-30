@@ -83,8 +83,11 @@ owner. Do not invent UI tools or retry a hanging AppleScript writer.
    interval (for example Custom > Every 2 days). Confirm ambiguous relative dates
    with the owner. Do not invent a recurrence. For a one-off reminder set Repeat
    to Never.
-4. Reopen Details and verify the saved title, exact list, first date/time,
-   recurrence, notes/marker and URL. Click the saved attachment and verify the
+4. Leave the URL field and close Details, then reopen it to verify the saved
+   title, exact list, first date/time, recurrence, notes/marker and URL. Verify
+   the visible attachment too: EventKit URL readback alone does not prove that
+   Reminders saved its native URL field. Open the saved attachment (double-click
+   if a single click only selects it) and verify the
    command and directory in iTerm2's **Run Command from URL** dialog. Keep that
    dialog; never enable silent execution or replace confirmation with automation.
    Resume only when the original worker has stopped; cancel the dialog during a
