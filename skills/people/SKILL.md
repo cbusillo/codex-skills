@@ -113,8 +113,9 @@ conservative fuzzy matching only when explicitly requested and one candidate
 is obvious. A tie at the winning tier returns `ambiguous`, omitting notes and
 detail files.
 
-Refresh verified durable renames, handles, roles/relationships and repeatedly
-unresolved natural names. Keep useful former spellings as aliases; do not call
+Refresh the private index when artifact review or live evidence shows verified
+durable renames, handles, role/relationship corrections or repeatedly unresolved
+natural names that should resolve. Keep useful former spellings as aliases; do not call
 an old alias stale without user or maintained-source confirmation.
 
 ## Artifact Review Workflow
@@ -147,14 +148,14 @@ handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
    minimal known-person entry after user approval, or leave a private TODO in
    the artifact review notes. Do not invent handles, roles, or relationships.
 
-
 ## Privacy And Portability
 
-- Never publish private mappings, contacts, notes, profile files, trust/posture
-  or bot ownership in public GitHub artifacts, tracked docs/examples or logs
+- Never publish private mappings, contacts, notes or profile files in public GitHub artifacts, tracked docs/examples or logs
   unless the user explicitly requests a sanitized public summary. Do not dump
-  the index; surface only task-relevant fields. When necessary, report only an
-  operational effect such as “unknown actor; verified independently.”
+  the index; surface only task-relevant fields.
+- Trust hints, actor posture and bot ownership stay private: never quote them
+  into public GitHub artifacts; when needed, report only their operational
+  effect, such as “unknown actor; verified independently.”
 - Contact details are private, not credentials; ignored people config may hold
   them for routing. Tokens, passwords, API keys, credentials, private messages
   and sensitive personal data do not belong there.
