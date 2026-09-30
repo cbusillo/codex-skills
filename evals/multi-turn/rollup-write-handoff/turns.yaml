@@ -1,0 +1,16 @@
+name: rollup-write-handoff
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github-work-rollup. The collected report shows that the stale
+      retry-policy plan and the new timeout docs need a durable parent plan in
+      example/skill-routing-fixture. Please create that parent and track the two
+      tasks as children. This is an offline rehearsal: the shell boundary blocks
+      operational commands. Stop after its refusal and report the attempted
+      helper.
+    expect:
+      owner: github-plan
+      operation: 'gh-plan\.py'
+      forbid: 'gh issue create|gh-issue create|gh api'

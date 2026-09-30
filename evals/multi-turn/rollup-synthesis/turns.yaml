@@ -1,0 +1,24 @@
+name: rollup-synthesis
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  evidence.json: >-
+    {"source_notes":["Repository collection limit reached; counts may be incomplete."],"collection":{"window":"24h","mode":"standup"},"items":[{"kind":"pull_request","repo":"example/skill-routing-fixture","number":23,"state":"open","title":"Improve cache recovery","url":"https://github.com/example/skill-routing-fixture/pull/23"}]}
+turns:
+  - prompt: >-
+      Use shared:github-work-rollup to have the trusted local model write an
+      executive conversation brief from evidence.json. The reader is a product
+      leader who cares about reliability and customer impact; all needed context
+      is supplied for this one-off report. Save brief.md and verify its grounding.
+      Do not recollect GitHub data or create private config for this report.
+      This is an offline rehearsal: the shell boundary blocks operational
+      commands. Stop after that refusal and report what you attempted and the
+      evidence's collection limitation.
+    expect:
+      owner: github-work-rollup
+      operation: 'synthesize_work_brief\.py'
+      read: 'references/prompt-contract\.md'
+      require: '--audience[ =]+executive'
+      forbid: '--no-verify|github_work_rollup\.py|gh (issue|pr) (create|edit|merge)'
+      final: 'incomplete|collection limit'

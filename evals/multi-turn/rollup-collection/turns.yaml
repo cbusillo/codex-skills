@@ -1,0 +1,17 @@
+name: rollup-collection
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:github-work-rollup to summarize active work and blockers for
+      example/skill-routing-fixture over the past 24 hours. Include older open
+      work, and return compact Markdown for the person doing the work. No local
+      defaults are configured. This is an offline rehearsal: the shell boundary
+      prevents operational commands from executing. Stop after its refusal and
+      report what you attempted.
+    expect:
+      owner: github-work-rollup
+      operation: 'github_work_rollup\.py'
+      require: '--mode[ =]+standup'
+      forbid: 'gh (issue|pr) (create|edit|merge)|gh-plan\.py.*(create|update|close)'
