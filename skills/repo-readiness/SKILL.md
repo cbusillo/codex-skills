@@ -14,13 +14,10 @@ Use this skill to answer whether a change, branch, PR, or workstream is ready.
 It is an orchestrator: follow repo-specific instructions first, then call the
 relevant focused skills or tools instead of duplicating their details.
 
-When the user asks whether work is done, ready to hand off, or safe to exit,
-use this skill first for gates and evidence, then use `work-closeout` for final
-hygiene, artifact cleanup, and durable parking state. Do not force a single
-skill when both readiness and closeout are required. A safe-to-exit, wrap-up,
-pause, or handoff prompt must not end with a readiness-only final answer; the
-final answer must come from `work-closeout` and include both `Love Gate` and
-`Safe to exit`.
+For done, handoff, safe-to-exit, wrap-up, or pause requests, establish gates
+and evidence here, then use `work-closeout` for final hygiene, artifact cleanup
+and durable parking. Its final answer must include `Love Gate` and `Safe to
+exit`; a readiness report alone does not finish these requests.
 
 ## Outcome
 
@@ -50,12 +47,8 @@ inspection, browser, CI, deployment, or security gates.
    ```
 
 4. For code changes, delegate inspection execution and triage to
-   `jetbrains-inspection` and follow the authoritative section below. When
-   `.github/github.json` defines `qualityGate.inspection`, readiness must include
-   JetBrains evidence or an explicit not-run reason. For blank, missing,
-   contradictory, or surprising config, use a safe one-off `changed_files`
-   default only when the helper can infer the route, and ask the user before
-   changing repo policy.
+   `jetbrains-inspection`; follow [JetBrains IDE And Inspections](#jetbrains-ide-and-inspections)
+   for evidence and configuration decisions.
 
    If `qualityGate.inspection.prepare` is configured, run that exact command in
    the target linked worktree before the first JetBrains assessment. The command
@@ -123,10 +116,8 @@ inspection, browser, CI, deployment, or security gates.
 7. If UI was touched, use `browser-ui-review` for browser-visible validation.
 8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.
-9. Report readiness concisely. If the user asked for handoff, wrap-up, or
-   safe-to-exit, treat any readiness report as interim evidence and continue
-   into `work-closeout` after the readiness answer is established. The closeout
-   answer owns the final safe-to-exit verdict and must include `Love Gate`.
+9. Report readiness concisely, then continue into `work-closeout` for the
+   requests identified above, using the handoff below.
 
 ## Readiness To Closeout Handoff
 
@@ -151,10 +142,8 @@ fields in chat, a PR comment, or the owning issue when durable state is needed:
   `observation unavailable`, or an exact terminal outcome.
 - Next action: the smallest step that would change readiness.
 
-This handoff is evidence for `work-closeout`; it is not cleanup. Do not delete
-artifacts, remove worktrees, close planning issues, or claim safe-to-exit from
-this skill alone. If the user asked whether they can exit or stop, the final
-response belongs to `work-closeout`, not this readiness handoff.
+This handoff is evidence, not cleanup: do not delete artifacts, remove
+worktrees, close planning issues, or claim safe-to-exit from this skill alone.
 
 Both this skill and `work-closeout` read `.github/github.json` with the same
 schema expectations: `qualityGate`, `docs`, `metadataFreshness`, `cleanup`,
@@ -271,8 +260,10 @@ not-clean states. Do not add suppressions, disable inspections, or change IDE
 inspection profiles without explicit approval unless the repo already has an
 approved convention.
 
-If the repo inspection config is blank or feels wrong, ask the user when the
-choice affects durable repo policy or readiness. Examples: configured IDE does
+When `.github/github.json` defines `qualityGate.inspection`, include JetBrains
+evidence or an explicit not-run reason. For blank, missing, contradictory or
+surprising inspection config, ask the user when the choice affects durable
+repo policy or readiness. Examples: configured IDE does
 not match the open project, configured scope is disproportionate to the change,
 or configured paths point away from the active worktree. For a one-off local
 check with no durable policy change, prefer the helper's safe inferred route and
