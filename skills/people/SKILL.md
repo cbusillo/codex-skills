@@ -122,8 +122,9 @@ an old alias stale without user or maintained-source confirmation.
 Before closing out new ignored memory-distillation/rollout-friction artifacts
 with `people_updates`, `people_resolver_smoke_checks`, or visible person names,
 handles, aliases, reviewer/assignee/manager fields or contact/routing notes,
-read and apply [artifact review](references/artifact-review.md). It owns the
-search, evidence classification, unresolved-name blockers and promotion steps.
+read [artifact review](references/artifact-review.md) from this skill directory
+before inspecting or classifying those artifacts. Then apply its search, evidence
+classification, unresolved-name blockers and promotion steps before closeout.
 
 ## Privacy And Portability
 
