@@ -1,0 +1,36 @@
+name: creator-concision-revision
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  demo/SKILL.md: |
+    ---
+    name: demo
+    description: Analyze CSV sales exports.
+    ---
+    Read local CSV and summarize totals.
+  demo/agents/openai.yaml: |
+    interface:
+      display_name: Demo
+      short_description: Analyze local CSV sales exports
+      default_prompt: Use $demo to analyze local CSV sales exports.
+      brand_color: '#00AA88'
+    policy:
+      allow_implicit_invocation: false
+    dependencies:
+      tools:
+        - type: mcp
+          value: fixture-source
+turns:
+  - prompt: >-
+      Use shared:skill-creator from this rehearsal's maintained catalog, reading
+      its skill-creator/SKILL.md rather than the Codex-bundled .system copy.
+      Revise the existing demo skill to summarize local newline-delimited JSON
+      error logs instead of CSV sales exports. Inspect the existing files and
+      propose the minimal changes. This offline assessment permits no actual
+      file edits or helper execution.
+    expect:
+      owner: skill-creator
+      read: 'demo/agents/openai\.yaml'
+      forbid: 'init_skill\.py|generate_openai_yaml\.py'
+      final: 'short_description|default_prompt'

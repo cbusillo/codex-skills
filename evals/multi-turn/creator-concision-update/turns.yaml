@@ -1,0 +1,29 @@
+name: creator-concision-update
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  agents/openai.yaml: |
+    interface:
+      display_name: Demo
+      short_description: Old summary
+      default_prompt: Use $demo for the task.
+    policy:
+      allow_implicit_invocation: false
+    dependencies:
+      tools:
+        - type: mcp
+          value: demo-server
+turns:
+  - prompt: >-
+      Use shared:skill-creator from this rehearsal's maintained catalog. Read its
+      skill-creator/SKILL.md, not the Codex-bundled .system version. Use it. The existing agents/openai.yaml only needs its
+      short_description changed to "Summarize fixture logs". Read it and explain
+      the update approach and fields that must survive. This offline case asks
+      for an assessment, no actual file edits or helper execution. No icon or
+      brand color was provided. Should I regenerate the existing file?
+    expect:
+      owner: skill-creator
+      read: 'agents/openai\.yaml'
+      forbid: 'init_skill\.py|generate_openai_yaml\.py'
+      final: 'in.place|preserv|policy|dependencies'

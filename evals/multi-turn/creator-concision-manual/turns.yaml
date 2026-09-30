@@ -1,0 +1,32 @@
+name: creator-concision-manual
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  SKILL.md: |
+    ---
+    name: demo
+    description: Fixture only.
+    disable-model-invocation: true
+    ---
+    Inspect fixture logs.
+  agents/openai.yaml: |
+    interface:
+      display_name: Demo
+      short_description: Inspect fixture logs
+      default_prompt: Use $demo for fixture logs.
+    policy:
+      allow_implicit_invocation: true
+turns:
+  - prompt: >-
+      Use shared:skill-creator from this rehearsal's maintained catalog. Read its
+      skill-creator/SKILL.md, not the Codex-bundled .system version. Use it. Our fixture demo skill is intended to require
+      explicit invocation on both Codex and Claude Code. Read SKILL.md and
+      agents/openai.yaml and explain whether the current files satisfy that.
+      State the needed file/field change without editing files. Do not assume
+      catalog acceptance proves runtime enforcement.
+    expect:
+      owner: skill-creator
+      read: 'references/openai_yaml\.md|agents/openai\.yaml'
+      forbid: 'init_skill\.py|generate_openai_yaml\.py'
+      final: 'allow_implicit_invocation[\s\S]*false'
