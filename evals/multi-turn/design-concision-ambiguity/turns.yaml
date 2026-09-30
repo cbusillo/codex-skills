@@ -1,0 +1,14 @@
+name: design-concision-ambiguity
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: Use shared:design-collaboration. You just drafted a first-pass design brief;
+    no design has been accepted, and I reply only "go ahead". What happens next? Explain
+    the boundary without performing any writes or operational commands. Do not assume
+    additional context.
+  expect:
+    owner: design-collaboration
+    final: (?is)(not|does not|isn.t|is not|clarif|ask|confirm|insufficient).*(implement|coding|code)

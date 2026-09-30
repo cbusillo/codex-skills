@@ -1,0 +1,16 @@
+name: design-concision-critique
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: 'Use shared:design-collaboration. Review the returned mobile stock dashboard
+    design. It meets all requested states, existing backend constraints, keyboard/touch
+    needs and visual goals. We accept its direction, but no implementation is requested
+    in this session. Tell us what happens before ending the critique session, including
+    what to preserve for the next worker. Offline trial: no writes or operational
+    commands.'
+  expect:
+    owner: design-collaboration
+    final: (?is)(issue|GitHub|Decisions|Current Status).*(accept|direction|recover|next)
