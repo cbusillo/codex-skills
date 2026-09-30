@@ -2621,6 +2621,7 @@ def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
             ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
             ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
             ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
+            ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
         ):
             args = argparse.Namespace(**{**vars(apply_args), **overrides})
             _expect_error(lambda args=args: write_action.testing_hold_body(args, mode="apply"), code)
@@ -2629,7 +2630,9 @@ def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
 def test_testing_hold_cli_dispatches_local_extension_route() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         evidence_path = Path(directory) / "testing-hold-dry-run.json"
-        lift_plan = _testing_hold_plan(action="clear", before=_testing_hold_plan()["after"], after=None)
+        lift_plan = _testing_hold_plan(
+            action="clear", before=_testing_hold_plan()["after"], after=None, reason="Testing done."
+        )
         evidence_path.write_text(
             json.dumps(_saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(lift_plan))),
             encoding="utf-8",
@@ -2728,6 +2731,12 @@ def test_product_repository_identity_projection_is_bounded_and_fail_closed() -> 
             "unsafe_response_shape",
         ),
         (_repository_identity_plan(inventory_digest="not-a-digest"), "invalid_response"),
+        (
+            _repository_identity_plan(
+                identity_after={"repository_id": "1" * 21, "repository_owner_id": "1"}
+            ),
+            "invalid_response",
+        ),
     ):
         _expect_error(
             lambda plan=plan: write_action._project_product_repository_identity_plan(plan), code

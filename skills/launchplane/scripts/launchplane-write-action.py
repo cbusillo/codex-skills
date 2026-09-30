@@ -2313,8 +2313,10 @@ def _project_product_repository_identity(value: object) -> dict[str, object]:
     projected: dict[str, object] = {}
     for field in ("repository_id", "repository_owner_id"):
         identifier = source.get(field, "")
-        # GitHub ids are decimal; an identity not yet recorded is empty.
-        if not isinstance(identifier, str) or (identifier and not identifier.isdecimal()):
+        # GitHub ids are bounded decimals; an identity not yet recorded is empty.
+        if not isinstance(identifier, str) or (
+            identifier and not re.fullmatch(r"[1-9][0-9]{0,19}", identifier)
+        ):
             raise LaunchplaneSafetyError("invalid_response")
         projected[field] = identifier
     return projected
@@ -3255,8 +3257,9 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
             result.get("product") != body["product"]
             or result.get("context") != body["context"]
             or result.get("instance") != body["instance"]
-            # A lift's reason is not in the plan digest, so bind the direction here.
+            # A lift's reason is not in the plan digest, so bind direction and reason here.
             or (result.get("after") is not None) != body["hold"]
+            or result.get("reason") != " ".join(str(body["reason"]).split())
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
         body["reviewed_plan_sha256"] = expected_plan_digest
