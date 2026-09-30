@@ -259,7 +259,7 @@ def main() -> None:
     validate_plugin_name(plugin_name)
 
     try:
-        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
         root = Path(result.stdout.strip()) if result.returncode == 0 else Path.cwd()
     except FileNotFoundError:
         root = Path.cwd()
