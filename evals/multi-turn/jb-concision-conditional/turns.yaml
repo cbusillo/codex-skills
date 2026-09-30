@@ -1,0 +1,21 @@
+{
+  "name": "jb-concision-conditional",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:jetbrains-inspection from this maintained rehearsal catalog. Diagnose one known stale helper lease 11111111-2222-4333-8444-555555555555 whose inspection ended with deferred cleanup. Describe a scoped recovery plan, including supported command arguments, ownership proof and activity prerequisites. Do not execute operational commands in this offline rehearsal.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "read": "lifecycle-diagnostics\\.md",
+        "final": "--lease-id",
+        "forbid": "curl|wget"
+      }
+    }
+  ]
+}

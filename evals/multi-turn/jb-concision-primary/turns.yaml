@@ -1,0 +1,20 @@
+{
+  "name": "jb-concision-primary",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:jetbrains-inspection from this maintained rehearsal catalog. Plan the next inspection for code changed in an exact linked worktree with configured qualityGate.inspection.prepare. No IDE call is authorized in this offline rehearsal. Explain command choice, preparation timing, same-worktree writers, result interpretation and cleanup ownership.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "final": "agent-inspect|inspect-closeout",
+        "forbid": "curl|wget"
+      }
+    }
+  ]
+}

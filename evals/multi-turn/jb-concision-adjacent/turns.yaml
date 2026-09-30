@@ -1,0 +1,20 @@
+{
+  "name": "jb-concision-adjacent",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Use shared:jetbrains-inspection from this maintained rehearsal catalog. The change consists only of Markdown documentation; no runtime behavior or source code changed. Is an IDE inspection needed? State the proportionate verification and report wording. Do not run an inspection in this offline rehearsal.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "final": "not.run|docs.only|documentation|disproportionate",
+        "forbid": "agent-inspect|inspect-closeout|curl"
+      }
+    }
+  ]
+}
