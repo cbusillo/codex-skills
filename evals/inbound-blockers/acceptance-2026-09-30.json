@@ -170,11 +170,91 @@
       "receipt_sha256": "435c603e758845664794d923fb8b44621b63a56fa0abee16b32e7644a325ebd2"
     }
   ],
-  "interpretation": "All 16 matched raw traces report the blocker pair and incomplete coverage and preserve waits; no pair-reporting omission was reproduced. These runs establish preservation, not improvement. Guidance aligns the documented procedure with existing helper output.",
-  "grading": "Original receipts are preserved privately. Separately rescored the same traces with final case-insensitive coverage expressions and removed broad negative expressions that matched legitimate complete candidate coverage or negated clean claims. No trace or original receipt was rewritten. An earlier pilot also had an invalid required-operation assertion on a read-only fixture; it is excluded from this comparison.",
+  "interpretation": "All 16 original matched raw traces were manually read: they report blocker pairs and incomplete coverage and preserve waits. No pair-reporting omission reproduced. This establishes preservation, not improvement. Initial audit fixtures included unsupported detail; the final comparison below uses actual helper output shapes.",
+  "grading": "Original receipts are preserved privately. Separately rescored the same traces with final coverage expressions accepting ordinary synonyms and removed broad negative expressions that matched legitimate complete candidate coverage or negated clean claims. No trace or original receipt was rewritten. An earlier pilot also had an invalid required-operation assertion on a read-only fixture; it is excluded from this comparison.",
   "limits": "Offline saved-report fixtures establish reporting and attempted mutations, not live GitHub mutation or complete probabilistic reliability.",
   "final_fixture_sha256": {
-    "inbound-blocker-next": "b043ba7adf376f68d8e9408f2dc91301b4caa77ff62b8d94524e0c940dfdf678",
-    "inbound-blocker-audit": "eb1f845c83c6c0cf47b56722e0e503431cb23f7883484379ac0c75dbf2af43c7"
+    "inbound-blocker-next": "3d0170365b14121bf1748a02db229241a4df3ed37dd9f5665ae38a8f6932c037",
+    "inbound-blocker-audit": "07f60accacd60ce66857372eb9cd03541a7aebb943f055a9631669adcfc6dd31"
+  },
+  "final_comparison": {
+    "runs_per_case_per_host": 1,
+    "results": [
+      {
+        "comparison": "final-baseline-claude",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "7c7859931b295a3411b99b80b6de6caf3a9964c886d3dbc7c4e13e4491fb5b15"
+      },
+      {
+        "comparison": "final-baseline-claude",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "4662f88c8c5f7fc6435a878755d1877776cc33fe84acb195a407b91ddd65392c"
+      },
+      {
+        "comparison": "final-baseline-codex",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "6564a8ed5bb50b8227dbe323af4dc78bbff84227ecb2d4a13a68ca696b1fc4ed"
+      },
+      {
+        "comparison": "final-baseline-codex",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "c8ae468ff6439c987fa9c284e717a6a1db6a39f0aca308a5c29f81285f967b29"
+      },
+      {
+        "comparison": "final-claude",
+        "case": "inbound-blocker-audit",
+        "original_passed": false,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "94da80571d3506fbc35529116186afdbbd9c2258613f706b65ba7807293b5b01"
+      },
+      {
+        "comparison": "final-claude",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "a2f87e0d02582f2a6afc068ee962f9238b7e91d12ea99850b001669bbd4e7e65"
+      },
+      {
+        "comparison": "final-codex",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "9d62ad5063b6c98b7182a21088fdd77ce07bd2e8a93f4a1649336b5643367e90"
+      },
+      {
+        "comparison": "final-codex",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "c869ee23f42dfd81fab2c725b35c7333ae75d910732ddd634dd27c7bd3c79735"
+      }
+    ],
+    "manual_review": "All eight raw finals report the local/downstream pair, preserve waits and report the coverage gap. Claude audit wording about the uncovered dependency direction is imprecise, so lexical passes are not proof of complete semantic accuracy. The real audit does not expose exact read errors; final guidance requests causes only when present.",
+    "grading_limits": "Seven of eight native grades passed; the remaining Claude audit trace said unavailable, which the final rubric now accepts. Separate rescoring is not independent evidence. Private receipt hashes identify artifacts but cannot be verified from this repository alone.",
+    "reviewer_trigger_check": "Both final case rubrics reject the reviewer start-17/lift-wait example and a raw gh issue edit command in classifier-only checks. No unsafe operation executed."
   }
 }

@@ -180,7 +180,8 @@ and writes nothing. For each finding:
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the
-  reported cause; drift beyond verified coverage is unreported. Do not call
+  reported cause when present; drift beyond verified coverage is unreported.
+  Do not call
   the repository clean. The audit marker stays unchanged only when the closed
   `audit` listing is incomplete.
 
