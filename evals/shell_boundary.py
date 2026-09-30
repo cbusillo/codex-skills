@@ -94,11 +94,14 @@ def sed_read_only(arguments: list[str]) -> bool:
     # Support print-only line selections, never arbitrary sed programs/options.
     if len(arguments) < 2 or arguments[0] != "-n":
         return False
+    operands = arguments[2:] if arguments[1] == "-e" else arguments[1:]
+    if not operands:
+        return False
     address = r"[1-9][0-9]*"
     selection = rf"(?:{address}(?:\s*,\s*{address})?\s*)?p"
     return (
-        re.fullmatch(rf"\s*{selection}(?:\s*;\s*{selection})*\s*", arguments[1]) is not None
-        and all(not filename.startswith("-") for filename in arguments[2:])
+        re.fullmatch(rf"\s*{selection}(?:\s*;\s*{selection})*\s*;?\s*", operands[0]) is not None
+        and all(not filename.startswith("-") for filename in operands[1:])
     )
 
 

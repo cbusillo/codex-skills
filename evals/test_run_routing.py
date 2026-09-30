@@ -322,6 +322,7 @@ class RoutingScoreTests(unittest.TestCase):
         for command in (
             "sed -n '1,80p' file", "sed -n 10p file", "sed -n p file",
             "sed -n '1p; 3,5p' file other",
+            "sed -n -e '1,80p' file", "sed -n '1,80p;' file",
             "cat file | sed -n '1,5p'", "sed -n '1,5p' 'file with spaces'",
         ):
             with self.subTest(command=command):
@@ -336,6 +337,8 @@ class RoutingScoreTests(unittest.TestCase):
             "sed -n 's/a/b/e' file", "sed -n 'p' -e 'w out.txt' file",
             "sed -n 'p' -f program.sed file", "sed -n 'p' -i file",
             "sed -n 'p' --in-place file", "sed -n -f program.sed file", "sed -n",
+            "sed -n -e '1w out.txt' file", "sed -n -e '1p' -e 'e touch x' file",
+            "sed -n -e",
         ):
             with self.subTest(command=command):
                 self.assertFalse(read_only(command))
