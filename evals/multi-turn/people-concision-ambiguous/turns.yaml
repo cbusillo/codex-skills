@@ -1,0 +1,17 @@
+name: people-concision-ambiguous
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  resolver-result.json: '{"ok":true,"status":"ambiguous","confidence":"name","query":"Demo","candidates":[{"id":"demo-a","display_name":"Demo A"},{"id":"demo-b","display_name":"Demo B"}]}'
+turns:
+  - prompt: >-
+      Use shared:people. Read the supplied resolver-result.json. Should I rely
+      on Demo's person-specific profile when choosing an assignee? Decide the
+      next identity step, without assigning or mentioning anyone, reading any
+      detail file or real home/config, or rerunning the supplied lookup.
+    expect:
+      owner: people
+      read: 'resolver-result\.json'
+      forbid: 'people_index\.py|resolve_person\.py|gh (issue|pr)|curl'
+      final: 'clarif|which|ambiguous'

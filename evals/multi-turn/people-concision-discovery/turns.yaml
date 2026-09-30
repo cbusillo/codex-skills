@@ -1,0 +1,20 @@
+name: people-concision-discovery
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  .local/rollout-memory/demo/final-plan.md: 'No people updates in this final plan.'
+  .local/rollout-memory/demo/reducer-input.md: 'people_resolver_smoke_checks: [Demo Alias]; classification unresolved, no durable identity facts verified.'
+turns:
+  - prompt: >-
+      Use shared:people for review before closing out this new ignored rollout
+      artifact group. Inspect both .local/rollout-memory/demo/final-plan.md and
+      .local/rollout-memory/demo/reducer-input.md. The final plan says no people
+      updates. No people indexes exist in this fixture. Do not access real
+      home/config, resolve against the machine, write an index or change files.
+      Decide whether apply review can close and what remains to classify.
+    expect:
+      owner: people
+      read: 'reducer-input\.md'
+      forbid: 'people_index\.py.*upsert|gh (issue|pr)|curl'
+      final: 'block|classif|unresolved'
