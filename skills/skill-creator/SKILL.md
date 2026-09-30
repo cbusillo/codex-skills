@@ -105,7 +105,7 @@ final result contract easy to find. Preserve hard safety, permission, evidence
 and output constraints; remove repetition that changes no decision. Reserve
 absolute wording for invariants and use decision rules for judgment calls.
 
-Keep essential routing, judgment, safety and workflow in `SKILL.md`, under 500
+Keep essential routing, judgment, safety and workflow in the `SKILL.md` body, under 500
 lines. Metadata is always visible; the body loads on invocation; resources
 load as needed, and scripts can execute without loading their source. Put
 variant details, examples, configuration, schemas and exhaustive commands in
@@ -190,17 +190,12 @@ For an absent metadata file, initial generation may also use:
 uv run scripts/generate_openai_yaml.py <skill-folder> --interface key=value
 ```
 
-On an existing metadata file, edit only intended fields in place, check that it
-still matches the skill, and preserve policy, dependencies and unrelated
-interface fields. The generator writes an interface-only file: do not use it
-for updates. Include optional UI fields (such as icons/brand color) only when
-explicitly supplied.
 
 ### 4. Implement Resources And Instructions
 
 Author for another agent: keep reusable procedural/domain knowledge it needs,
 not explanations of what it already knows. Start with the chosen resources,
-execute added scripts, and remove unused example placeholders.
+remove unused example placeholders.
 
 Write imperative/infinitive instructions. `SKILL.md` needs YAML `name` and
 `description`; description is the full model-visible routing trigger, including
@@ -208,6 +203,12 @@ what the skill does and all activation contexts. Do not put activation-only
 sections in the body, which loads after triggering. Optional
 `metadata.short-description` is a compact human-facing listing summary, not a
 replacement for routing detail. The body explains execution and resource use.
+
+On an existing metadata file, edit only intended fields in place, check that it
+still matches the skill, and preserve policy, dependencies and unrelated
+interface fields. The generator writes an interface-only file: do not use it
+for updates. Include optional UI fields (such as icons/brand color) only when
+explicitly supplied.
 
 For explicit-only Codex invocation, put this in `agents/openai.yaml`:
 
@@ -225,7 +226,8 @@ the validator checks agreement between both files.
 
 Preserve tooling-consumed `resources`, `commands`, `workflow_defaults` and
 command policies. Add catalog extensions only where the target catalog uses
-them; portable Codex skills do not require them. Read
+them; portable Codex skills do not require them. These are catalog tooling declarations,
+not Codex runtime enforcement controls. Read
 [skill design details](references/skill-design-details.md) before adding/changing
 structured metadata, and [agents metadata](references/openai_yaml.md) for
 supported UI/dependency/policy fields.
@@ -246,13 +248,11 @@ uv run scripts/quick_validate.py <skill-folder>
 ```
 
 This checks naming/frontmatter/catalog contracts, not host discovery or model
-behavior. Complete the owning repo's required gates, fix failures and rerun the
+behavior. Complete the owning repo's required checks, fix failures and rerun the
 affected check. Read [validation guidance](references/validation.md) when
-selecting evidence for behavior-sensitive changes; instruction changes in this
-catalog use its structure/reference, behavior and command-policy validators.
-Added scripts need actual execution evidence; metadata changes need catalog
-checks and the target host's documented loader contract. Public-safety validation precedes
-publishing.
+selecting evidence for behavior-sensitive changes; it owns proportional static,
+helper, host-loader and execution checks and publishing validation. Missing an
+optional harness does not create a new approval gate.
 
 For routing, command-policy, safety or GitHub/repo workflow changes, normally
 cover intended trigger/success, adjacent routing, and boundary cases; add a
