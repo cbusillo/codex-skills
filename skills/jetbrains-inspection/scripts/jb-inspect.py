@@ -10722,6 +10722,7 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
                 not isinstance(entry, dict) or entry.get("status") not in valid_statuses
                 or entry.get("reason") not in valid_reasons
                 or (entry.get("status") == "refused" and not orphan_preview and entry.get("reason") != "not_helper_owned")
+                or not isinstance(entry.get("sdk_name"), str) or not entry.get("sdk_name")
                 or not isinstance(entry.get("worktree_path"), str)
                 or not Path(entry.get("worktree_path") or "").is_absolute()
                 or (root is not None and not paths_same(entry.get("worktree_path"), root))
@@ -10765,6 +10766,12 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                             if path.exists() or not path.parent.is_dir() or path.is_symlink():
                                 raise InspectError("Orphan path changed before SDK removal.", 3)
                             applied.extend(unregister_helper_sdks([identity], path, False))
+                    selected_sdk_names = {entry["sdk_name"] for item in preview for entry in item["result"]["sdks"]
+                                          if str(Path(entry["worktree_path"]).resolve()) in selected}
+                    remaining = unregister_helper_sdks(identities, None, True)
+                    if any(entry.get("sdk_name") in selected_sdk_names and entry["status"] != "absent"
+                           for item in remaining for entry in item["result"]["sdks"]):
+                        raise InspectError("Reviewed orphan SDKs remain registered after apply.", 3, {"sdk_remaining": remaining})
                 if root is not None:
                     # Recheck local state and live projects after SDK retirement.
                     retirement_worktree(root)

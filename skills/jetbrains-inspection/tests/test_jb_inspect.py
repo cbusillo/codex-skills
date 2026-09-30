@@ -114,17 +114,24 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp) / "removed"
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000,
                              worktree_path=[str(root)])
+            applied = False
             def post(_port, _endpoint, params, **_kwargs):
+                nonlocal applied
                 if params["dry_run"] == "true":
                     self.assertEqual(params["orphans"], "true")
                     self.assertNotIn("worktree_path", params)
                 else:
                     self.assertEqual(params["worktree_path"], str(root.resolve()))
                     self.assertNotIn("orphans", params)
-                return self.response(root, params["dry_run"] == "true")
+                response = self.response(root, params["dry_run"] == "true")
+                if applied:
+                    response.body["sdks"] = []
+                if params["dry_run"] == "false":
+                    applied = True
+                return response
             with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post) as request:
                 result = jb_inspect.command_retire_sdks(args)
-                self.assertEqual([call.args[2]["dry_run"] for call in request.call_args_list], ["true", "false"])
+                self.assertEqual([call.args[2]["dry_run"] for call in request.call_args_list], ["true", "false", "true"])
                 self.assertFalse(result["worktree_removed"])
 
     def test_open_project_refuses_even_without_sdk_records(self):
@@ -165,13 +172,18 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp).resolve() / "removed"
             held = Path(tmp).resolve() / "renamed"
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000, worktree_path=[str(root)])
+            applied = False
             def post(_port, _endpoint, params, **_kwargs):
+                nonlocal applied
                 response = self.response(root, params["dry_run"] == "true")
                 if params["dry_run"] == "true":
                     response.body["status"] = "refused"
-                    response.body["sdks"].append({"worktree_path": str(held), "status": "refused", "reason": "ownership_mismatch"})
+                    if applied:
+                        response.body["sdks"] = []
+                    response.body["sdks"].append({"worktree_path": str(held), "status": "refused", "reason": "ownership_mismatch", "sdk_name": "held"})
                     raise jb_inspect.InspectError("HTTP 409", 3, response.body | {"http_status": 409})
                 self.assertEqual(params["worktree_path"], str(root))
+                applied = True
                 return response
             with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
@@ -179,6 +191,19 @@ class SdkRetirementTests(unittest.TestCase):
                 self.assertEqual(len(result["sdk_cleanup"]), 1)
                 args.worktree_path = [str(held)]
                 with self.assertRaisesRegex(jb_inspect.InspectError, "absent from the current"):
+                    jb_inspect.command_retire_sdks(args)
+
+    def test_empty_orphan_apply_cannot_hide_a_remaining_owned_sdk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "removed"
+            args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000, worktree_path=[str(root)])
+            def post(_port, _endpoint, params, **_kwargs):
+                response = self.response(root, params["dry_run"] == "true")
+                if params["dry_run"] == "false":
+                    response.body["sdks"] = []
+                return response
+            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+                with self.assertRaisesRegex(jb_inspect.InspectError, "remain registered"):
                     jb_inspect.command_retire_sdks(args)
 
     def test_unowned_sdk_refusal_is_preserved_while_eligible_worktree_is_removed(self):
