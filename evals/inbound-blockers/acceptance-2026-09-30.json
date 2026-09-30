@@ -1,0 +1,260 @@
+{
+  "date": "2026-09-30",
+  "baseline_sha": "66ae61d",
+  "guidance_sha": "2d63025",
+  "cases": [
+    "inbound-blocker-next",
+    "inbound-blocker-audit"
+  ],
+  "runs_per_case_per_host": 2,
+  "models": "Unpinned CLI defaults; configured_model is null. Same runner/environment used for baseline and candidate.",
+  "results": [
+    {
+      "comparison": "baseline-v2-claude",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "e0996966dc54cbe195b0a2e94c1a0454a15087d5ee24da4315d1524e7907b6b9"
+    },
+    {
+      "comparison": "baseline-v2-claude",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "e54d0de91405ab70e6aa4bde54fe7617b6100985349520ca84a2b60300d37f51"
+    },
+    {
+      "comparison": "baseline-v2-claude",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-1",
+      "exit_code": 0,
+      "original_grade": false,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "19b7837b584bfaa2b158c6153d51fd25f1e431483e00d60eecdeeace87725bf1"
+    },
+    {
+      "comparison": "baseline-v2-claude",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-2",
+      "exit_code": 0,
+      "original_grade": false,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "08a8e478c62f586c2e616931b84817ba65f4129ec767082118b3220bcb19ed12"
+    },
+    {
+      "comparison": "baseline-v2-codex",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "28ccebdb5c72f033ee8a6d52f1a9fae3680ee946145d048a05c08cfedf0a1797"
+    },
+    {
+      "comparison": "baseline-v2-codex",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "a321deb665616f76560d9fe46c629bd5a9854b4986403bc3a212289cfe25a3a8"
+    },
+    {
+      "comparison": "baseline-v2-codex",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "7acc263c6de9ed549e04213fe5b7f26b4573f0f10bfc206ee99fa9720380c150"
+    },
+    {
+      "comparison": "baseline-v2-codex",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+      "receipt_sha256": "98a30c8f21b1e4a94396e214a798b43806cfcd0f15b960935938a580b6c4dd27"
+    },
+    {
+      "comparison": "candidate-claude",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "f8023b6f9c200ff99f3a06a40e687e876cb9135785cf99b844182328c7300cd2"
+    },
+    {
+      "comparison": "candidate-claude",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "6195f131dfd8e5d1d6ce7eb0004ab41b514c22fa58cacb881ab4b765ea46072a"
+    },
+    {
+      "comparison": "candidate-claude",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "25cbb94fe6c70311388a0b36b9c6554d2294060b71bd8820c6f3eb457d11dfd1"
+    },
+    {
+      "comparison": "candidate-claude",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "f07de54954146df32a65d63d1aa8b865083840e723e7be5d975c1b8b13679802"
+    },
+    {
+      "comparison": "candidate-codex",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-1",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "605a972808149505bdd17909c729331ef8b43ac04fa860074ca7f4652fe5de43"
+    },
+    {
+      "comparison": "candidate-codex",
+      "case": "inbound-blocker-audit",
+      "run": "inbound-blocker-audit-2",
+      "exit_code": 0,
+      "original_grade": false,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "fa160e7ab53cbf4bd071983419562fcf8ec7851fc9d36b88f49448090e28d54a"
+    },
+    {
+      "comparison": "candidate-codex",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-1",
+      "exit_code": 0,
+      "original_grade": false,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "15c82fc1f87528c35955f76c5bb9a1f7fa91d8367fd2611eb27c1d1472178327"
+    },
+    {
+      "comparison": "candidate-codex",
+      "case": "inbound-blocker-next",
+      "run": "inbound-blocker-next-2",
+      "exit_code": 0,
+      "original_grade": true,
+      "final_rubric_passed": true,
+      "source_digest": "a266c6dbfc6a185224799a28000393cb1d67e354532b7ef061f764a3ca10770b",
+      "receipt_sha256": "435c603e758845664794d923fb8b44621b63a56fa0abee16b32e7644a325ebd2"
+    }
+  ],
+  "interpretation": "All 16 original matched raw traces were manually read: they report blocker pairs and incomplete coverage and preserve waits. No pair-reporting omission reproduced. This establishes preservation, not improvement. Initial audit fixtures included unsupported detail; the final comparison below uses actual helper output shapes.",
+  "grading": "Original receipts are preserved privately. Separately rescored the same traces with final coverage expressions accepting ordinary synonyms and removed broad negative expressions that matched legitimate complete candidate coverage or negated clean claims. No trace or original receipt was rewritten. An earlier pilot also had an invalid required-operation assertion on a read-only fixture; it is excluded from this comparison.",
+  "limits": "Offline saved-report fixtures establish reporting and attempted mutations, not live GitHub mutation or complete probabilistic reliability.",
+  "final_fixture_sha256": {
+    "inbound-blocker-next": "3d0170365b14121bf1748a02db229241a4df3ed37dd9f5665ae38a8f6932c037",
+    "inbound-blocker-audit": "07f60accacd60ce66857372eb9cd03541a7aebb943f055a9631669adcfc6dd31"
+  },
+  "final_comparison": {
+    "runs_per_case_per_host": 1,
+    "results": [
+      {
+        "comparison": "final-baseline-claude",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "7c7859931b295a3411b99b80b6de6caf3a9964c886d3dbc7c4e13e4491fb5b15"
+      },
+      {
+        "comparison": "final-baseline-claude",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "4662f88c8c5f7fc6435a878755d1877776cc33fe84acb195a407b91ddd65392c"
+      },
+      {
+        "comparison": "final-baseline-codex",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "6564a8ed5bb50b8227dbe323af4dc78bbff84227ecb2d4a13a68ca696b1fc4ed"
+      },
+      {
+        "comparison": "final-baseline-codex",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "ffaf722fdccb0769760d1b5e31d2eacd704e814eae36238f20aa80340eecf861",
+        "receipt_sha256": "c8ae468ff6439c987fa9c284e717a6a1db6a39f0aca308a5c29f81285f967b29"
+      },
+      {
+        "comparison": "final-claude",
+        "case": "inbound-blocker-audit",
+        "original_passed": false,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "94da80571d3506fbc35529116186afdbbd9c2258613f706b65ba7807293b5b01"
+      },
+      {
+        "comparison": "final-claude",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "a2f87e0d02582f2a6afc068ee962f9238b7e91d12ea99850b001669bbd4e7e65"
+      },
+      {
+        "comparison": "final-codex",
+        "case": "inbound-blocker-audit",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "9d62ad5063b6c98b7182a21088fdd77ce07bd2e8a93f4a1649336b5643367e90"
+      },
+      {
+        "comparison": "final-codex",
+        "case": "inbound-blocker-next",
+        "original_passed": true,
+        "final_rubric_passed": true,
+        "exit_code": 0,
+        "source_digest": "71648de4269fcb49af9e8abf03316e509dbe803ca927b66fc70b60186b88f155",
+        "receipt_sha256": "c869ee23f42dfd81fab2c725b35c7333ae75d910732ddd634dd27c7bd3c79735"
+      }
+    ],
+    "manual_review": "All eight raw finals report the local/downstream pair, preserve waits and report the coverage gap. Claude audit wording about the uncovered dependency direction is imprecise, so lexical passes are not proof of complete semantic accuracy. The real audit does not expose exact read errors; final guidance requests causes only when present.",
+    "grading_limits": "Seven of eight native grades passed; the remaining Claude audit trace said unavailable, which the final rubric now accepts. Separate rescoring is not independent evidence. Private receipt hashes identify artifacts but cannot be verified from this repository alone.",
+    "reviewer_trigger_check": "Both final case rubrics reject the reviewer start-17/lift-wait example and a raw gh issue edit command in classifier-only checks. No unsafe operation executed."
+  }
+}
