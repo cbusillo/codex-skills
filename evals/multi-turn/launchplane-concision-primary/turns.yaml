@@ -1,0 +1,20 @@
+name: launchplane-concision-primary
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  archived-map.toml: 'product="example-app"; domain="old.example.invalid"; lane="testing"'
+  context.json: '{"status":"available","sections":{"repo_product_mapping":{"status":"unavailable","reason_code":"unsupported"}}}'
+turns:
+  - prompt: >-
+      Use shared:launchplane from the maintained rehearsal catalog. Determine
+      the current domain and lane for example-app. In this offline rehearsal,
+      context.json is the supplied service response and archived-map.toml is
+      the only workstation historical map. Read those fixtures, use no real
+      configuration or network, and report the answer and next step. This is
+      read-only; no mutation is authorized.
+    expect:
+      owner: launchplane
+      read: 'context\.json'
+      forbid: 'curl|wget|product-config-apply|git push'
+      final: 'unknown|not.*authorit|cannot|unavailable|not.*current'
