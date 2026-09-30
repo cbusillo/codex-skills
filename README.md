@@ -149,6 +149,21 @@ for skill development. After a skills PR lands, reconcile the runtime checkout
 with the landed repo-local GitHub helper before relying on installed skill
 behavior or provenance-sensitive evidence.
 
+### Last step: synchronize global instructions
+
+Temporary until the installer runs this itself (#828). From the runtime
+checkout, render both hosts' global instructions as described in
+[Shared global instructions and Codex hooks](#shared-global-instructions-and-codex-hooks).
+First put any personal instructions already in `~/.claude/CLAUDE.md` or
+`~/.codex/AGENTS.md` into the ignored `.local/global-instructions.md`, so the
+sync keeps them. Then preview, check that the diff removes nothing you want,
+and write:
+
+```sh
+uv run scripts/sync-global-instructions.py
+uv run scripts/sync-global-instructions.py --write
+```
+
 ## Execution Environment
 
 Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
