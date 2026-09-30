@@ -77,7 +77,7 @@ normal: continue without enrichment, not an error.
 Use [the public-safe schema](references/people.local.example.yaml) for the
 optional gitignored index. Real names, handles, emails, phone numbers, company
 and relationship facts belong only in ignored local files. Update through
-`people/scripts/people_index.py upsert --id <id> --display-name "<name>"`, which
+`uv run people/scripts/people_index.py upsert --id <id> --display-name "<name>"`, which
 defaults to global/user storage; use `--scope repo` only for repo-specific
 people/overrides/supplements. Read [migration](references/migration.md) before
 consolidating identity facts from other local sources.

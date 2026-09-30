@@ -3,7 +3,7 @@ hosts: [claude, codex]
 execution:
   timeout_seconds: 180
 fixture_files:
-  resolver-result.json: '{"ok":true,"status":"matched","confidence":"fuzzy","query":"Dmeo","person":{"id":"demo-reviewer","display_name":"Demo Reviewer","contacts":{"github":{"username":"demo-reviewer"}}}}'
+  resolver-result.json: '{"ok":true,"status":"matched","confidence":"fuzzy","query":"Demo Reviwer","match":{"id":"demo-reviewer","display_name":"Demo Reviewer","contacts":{"github":{"username":"demo-reviewer"}}}}'
 turns:
   - prompt: >-
       Use shared:people. Read resolver-result.json, the already-completed fixture
