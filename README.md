@@ -252,6 +252,16 @@ This repository is intended to be safe for public sharing. Put personal,
 machine-specific, client-specific, or private workflow data in ignored local
 files instead of committing it.
 
+### Native helper build and CodeQL
+
+The root `Package.swift` gives CodeQL's Swift autobuilder a target for
+`skills/work-closeout/scripts/reminder_list.swift`. On macOS 14 or newer,
+`swift build --product reminder-list` compiles that existing helper without
+running it or accessing Reminders. Build output stays in ignored `.build/`.
+The normal script invocation remains supported; the package is also the build
+entry point used for Swift extraction. Existing CodeQL language scanning stays
+enabled.
+
 ### System Skill Overrides
 
 Hosts may expose bundled system skills or generate installation caches. Treat

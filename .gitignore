@@ -42,5 +42,7 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 node_modules/
+.build/
+.swiftpm/
 /handoff*.md
 /evals/results/
