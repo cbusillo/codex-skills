@@ -261,8 +261,8 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
             elif event["allowed"]:
                 sequence.extend(("read", path) for path in partial_reads.get(command, []))
     operations = [(index, command) for index, (kind, command) in enumerate(sequence) if kind == "shell" and not read_only(command)]
-    def succeeded(command: str) -> bool:
-        return command in successful_reads if host == "codex" else command not in failed
+    def succeeded(proof_command: str) -> bool:
+        return proof_command in successful_reads if host == "codex" else proof_command not in failed
 
     return {"sequence": sequence, "operations": operations, "succeeded": succeeded, "loaded": [value for kind, value in sequence if kind == "skill"],
             "final": final, "protocol_copies": protocol_copies, "skill_paths": skill_paths,
