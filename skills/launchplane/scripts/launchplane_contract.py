@@ -319,6 +319,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/products/{product}/activity",
         "mode": "read",
     },
+    "preview-history-read": {
+        "method": "GET",
+        "path": "/v1/previews/{preview_id}/history",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",

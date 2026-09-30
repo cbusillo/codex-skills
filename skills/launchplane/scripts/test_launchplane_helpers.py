@@ -2834,6 +2834,151 @@ def test_product_activity_read_bounds_events_and_record_links() -> None:
     assert "private-event-field" not in json.dumps(payload)
 
 
+def test_product_activity_read_keeps_real_events_and_drops_odd_fields() -> None:
+    # Shaped like the live refusal: authz events carry dotted action ids and joined summaries.
+    authz_event = {
+        **_product_activity_event(0),
+        "event_id": "authz_policy:authz-policy-7",
+        "event_type": "authz_policy",
+        "context": "launchplane",
+        "environment": "",
+        "driver_id": "launchplane",
+        "action_id": "authz_policy.grant",
+        "status": "active",
+        "title": "Example Product authorization granted",
+        "summary": "service:authz · managed authorization grant · terminal-agent-credential-rule",
+        "records": [{"record_type": "authz_policy", "record_id": "authz-policy-7"}],
+    }
+    odd_status_event = {**_product_activity_event(1), "status": "needs review"}
+    unusable_event = {**_product_activity_event(2), "event_id": "has spaces in id"}
+    response = {
+        "status": "ok",
+        "trace_id": "launchplane_req_product_activity",
+        "activity": {
+            "product": "example-product",
+            "repository": "example/site",
+            "driver_id": "odoo",
+            "events": [authz_event, odd_status_event, unusable_event, _product_activity_event(3)],
+        },
+    }
+    status, payload, _calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], response
+    )
+    assert status == 0
+    result = payload["result"]
+    assert [event["event_id"] for event in result["events"]] == [
+        "authz_policy:authz-policy-7",
+        "deployment:deployment-example-testing-1",
+        "deployment:deployment-example-testing-3",
+    ]
+    authz = result["events"][0]
+    assert authz["action_id"] == "authz_policy.grant"
+    assert authz["status"] == "active"
+    assert authz["summary"] == ""
+    assert authz["records"] == [{"record_type": "authz_policy", "record_id": "authz-policy-7"}]
+    assert result["events"][1]["status"] == ""
+    assert result["events"][2]["records_truncated"] is True
+    assert result["omitted_event_count"] == 1
+    assert result["dropped_field_count"] == 3
+    assert result["dropped_field_paths"] == [
+        "events[].event_id",
+        "events[].status",
+        "events[].summary",
+    ]
+
+    secret_event = {**_product_activity_event(4), "summary": "rotated ghp_abcdefghijklmnop"}
+    response["activity"] = {**cast(dict[str, object], response["activity"]), "events": [secret_event]}
+    status, payload, _calls = _run_product_read(
+        ["product-activity-read", "--product", "example-product"], response
+    )
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
+def _preview_history_response() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_preview_history",
+        "preview": {
+            "preview_id": "preview-example-site-pr-7",
+            "context": "example",
+            "anchor_repo": "site",
+            "anchor_pr_number": 7,
+            "anchor_pr_url": "https://github.com/example/site/pull/7",
+            "canonical_url": "https://pr-7.example.invalid",
+            "state": "active",
+            "created_at": "2026-09-30T18:00:00Z",
+            "updated_at": "2026-09-30T18:05:00Z",
+            "serving_generation_id": "preview-example-site-pr-7-generation-0002",
+            "private_note": "private-preview-field",
+        },
+        "generations": [
+            {
+                "generation_id": "preview-example-site-pr-7-generation-0001",
+                "sequence": 1,
+                "state": "superseded",
+            },
+            {
+                "generation_id": "preview-example-site-pr-7-generation-0002",
+                "sequence": 2,
+                "state": "ready",
+                "requested_reason": "external_preview_refresh",
+                "artifact_id": "artifact-example-abc123",
+                "anchor_summary": {"head_sha": "a" * 40, "private": "private-anchor-field"},
+                "deploy_status": "pass",
+                "runtime_identity": {
+                    "deployment_record_id": "deployment-example-preview-7",
+                    "artifact_id": "artifact-example-abc123",
+                    "source_git_ref": "a" * 40,
+                    "image_reference": "ghcr.io/example/site@sha256:" + "d" * 64,
+                    "deployed_at": "2026-09-30T18:05:00Z",
+                },
+                "env": {"PRIVATE_KEY_NAME": "private-env-value"},
+            },
+        ],
+    }
+
+
+def test_preview_history_read_derives_launchplanes_preview_id() -> None:
+    # Values computed with Launchplane's generate_preview_id.
+    assert write_action.preview_id_for(
+        context="cm_website", repository="cbusillo/odoo-tenant-cm-website", pr_number=111
+    ) == "preview-cm-website-odoo-tenant-cm-website-pr-111"
+    assert write_action.preview_id_for(
+        context="Example_Ctx", repository="owner/Site.Repo", pr_number=7
+    ) == "preview-example-ctx-site-repo-pr-7"
+
+
+def test_preview_history_read_projects_newest_generation_first() -> None:
+    argv = ["preview-history-read", "--context", "example", "--repository", "example/site", "--pr", "7"]
+    status, payload, calls = _run_product_read(argv, _preview_history_response())
+    assert status == 0
+    assert calls[0]["path"] == "/v1/previews/preview-example-site-pr-7/history"
+    result = payload["result"]
+    assert result["preview"]["state"] == "active"
+    assert result["preview"]["serving_generation_id"] == "preview-example-site-pr-7-generation-0002"
+    newest = result["generations"][0]
+    assert newest["sequence"] == 2
+    assert newest["anchor_head_sha"] == "a" * 40
+    assert newest["runtime_identity"]["image_digest"] == "sha256:" + "d" * 64
+    assert result["generations"][1]["state"] == "superseded"
+    rendered = json.dumps(payload)
+    for dropped in ("private-preview-field", "private-anchor-field", "PRIVATE_KEY_NAME", "private-env-value"):
+        assert dropped not in rendered, dropped
+
+
+def test_preview_history_read_needs_exactly_one_selector() -> None:
+    for argv in (
+        ["preview-history-read"],
+        ["preview-history-read", "--preview-id", "preview-x-pr-1", "--pr", "1"],
+        ["preview-history-read", "--context", "example", "--pr", "7"],
+    ):
+        status, payload, calls = _run_product_read(argv, _preview_history_response())
+        assert status != 0, argv
+        assert calls == [], argv
+
+
 def test_product_activity_read_reports_http_denial_as_read_error() -> None:
     denial = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/products/example-product/activity",
@@ -4195,7 +4340,11 @@ def main() -> int:
         test_product_environment_read_uses_path_route_and_projects_deploy_identity,
         test_product_environment_read_refuses_bad_segments_and_unsafe_values,
         test_product_activity_read_bounds_events_and_record_links,
+        test_product_activity_read_keeps_real_events_and_drops_odd_fields,
         test_product_activity_read_reports_http_denial_as_read_error,
+        test_preview_history_read_derives_launchplanes_preview_id,
+        test_preview_history_read_projects_newest_generation_first,
+        test_preview_history_read_needs_exactly_one_selector,
         test_testing_hold_body_binds_apply_to_saved_dry_run,
         test_testing_hold_cli_dispatches_local_extension_route,
         test_product_repository_identity_projection_is_bounded_and_fail_closed,

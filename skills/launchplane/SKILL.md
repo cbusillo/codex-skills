@@ -673,8 +673,8 @@ operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
-testing-hold, product-repository-identity, product-environment-read, and
-product-activity-read commands are explicit bounded local extensions because the
+testing-hold, product-repository-identity, product-environment-read,
+product-activity-read, and preview-history-read commands are explicit bounded local extensions because the
 vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
@@ -1033,6 +1033,11 @@ verification.
   runtime identity with its deployment record id, health status, and recent
   deployment, promotion and backup-gate events with their record ids. Settings,
   secrets, actions, URLs and provider target names are dropped.
+- `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
+  (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
+  and `--pr`) for confirming what a preview serves: its state, serving
+  generation, and each generation's artifact, PR head SHA, image digest and
+  failure stage.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview

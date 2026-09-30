@@ -59,6 +59,7 @@ READ_ONLY_OPERATIONS = {
     "testing-hold-read",
     "product-environment-read",
     "product-activity-read",
+    "preview-history-read",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -2312,6 +2313,9 @@ PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PRODUCT_ACTIVITY_MAX_EVENTS = 50
 PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
 PRODUCT_HEALTH_MAX_CHECKS = 20
+PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+PREVIEW_MAX_GENERATIONS = 20
+PREVIEW_MAX_SOURCES = 10
 
 
 def _product_read_path(command: str, **segments: str) -> str:
@@ -2490,48 +2494,307 @@ def _project_product_environment(value: object) -> dict[str, object]:
     return projected
 
 
+class _FieldDrops:
+    """Field paths a tolerant projection dropped, so a partial read says what is missing."""
+
+    def __init__(self) -> None:
+        self.paths: set[str] = set()
+        self.count = 0
+
+    def keep(self, path: str, validate: Any, value: object) -> object:
+        """The validated value, or "" when it fails; a secret-looking value still fails the read."""
+        if value in {None, ""}:
+            return ""
+        assert_public_safe_shape(value)
+        try:
+            return validate(value)
+        except LaunchplaneSafetyError:
+            self.drop(path)
+            return ""
+
+    def drop(self, path: str) -> None:
+        self.paths.add(path)
+        self.count += 1
+
+
+def _public_dotted_code(value: object) -> str:
+    if not isinstance(value, str) or not PRODUCT_ACTIVITY_CODE_RE.fullmatch(value):
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_product_activity_event(
+    event_value: object, drops: _FieldDrops
+) -> dict[str, object] | None:
+    """One event, or None when its identity is unusable; odd optional fields are dropped."""
+    if not isinstance(event_value, dict):
+        return None
+    event = cast(dict[str, Any], event_value)
+    event_id = drops.keep("events[].event_id", public_identifier, event.get("event_id"))
+    event_type = drops.keep("events[].event_type", _public_dotted_code, event.get("event_type"))
+    if not event_id or not event_type:
+        return None
+    links = event.get("records")
+    if not isinstance(links, list):
+        links = []
+    projected_links: list[dict[str, object]] = []
+    for link_value in links[:PRODUCT_ACTIVITY_MAX_RECORD_LINKS]:
+        link = link_value if isinstance(link_value, dict) else {}
+        record_type = drops.keep(
+            "events[].records[].record_type", _public_dotted_code, link.get("record_type")
+        )
+        record_id = drops.keep(
+            "events[].records[].record_id", public_identifier, link.get("record_id")
+        )
+        if record_type and record_id:
+            projected_links.append({"record_type": record_type, "record_id": record_id})
+
+    def text(field: str, max_length: int) -> object:
+        return drops.keep(
+            f"events[].{field}",
+            lambda value: public_summary_string(value, max_length=max_length),
+            event.get(field),
+        )
+
+    return {
+        "event_id": event_id,
+        "event_type": event_type,
+        "context": drops.keep("events[].context", public_identifier, event.get("context")),
+        "environment": drops.keep(
+            "events[].environment", public_identifier, event.get("environment")
+        ),
+        "action_id": drops.keep("events[].action_id", _public_dotted_code, event.get("action_id")),
+        "status": drops.keep("events[].status", _public_dotted_code, event.get("status")),
+        "occurred_at": text("occurred_at", 64),
+        "title": text("title", 200),
+        "summary": text("summary", 300),
+        "records": projected_links,
+        "records_truncated": len(links) > PRODUCT_ACTIVITY_MAX_RECORD_LINKS,
+        "trust_state": drops.keep(
+            "events[].trust_state", _public_dotted_code, event.get("trust_state")
+        ),
+    }
+
+
 def _project_product_activity(value: object) -> dict[str, object]:
-    """Recent activity events, bounded, with record links; titles and summaries only."""
+    """Recent activity, bounded. Odd fields are dropped and unusable events omitted, with
+    counts and field paths; only a secret-looking value fails the whole read."""
     source = _require_dict(value)
     events = source.get("events") or []
     if not isinstance(events, list):
         raise LaunchplaneSafetyError("invalid_response")
+    drops = _FieldDrops()
     projected_events: list[dict[str, object]] = []
+    omitted_event_count = 0
     for event_value in events[:PRODUCT_ACTIVITY_MAX_EVENTS]:
-        event = _require_dict(event_value)
-        links = event.get("records") or []
-        if not isinstance(links, list):
-            raise LaunchplaneSafetyError("invalid_response")
-        projected_links: list[dict[str, str]] = []
-        for link_value in links[:PRODUCT_ACTIVITY_MAX_RECORD_LINKS]:
-            link = _require_dict(link_value)
-            projected_links.append(
-                {
-                    "record_type": public_code(link.get("record_type")),
-                    "record_id": public_identifier(link.get("record_id")),
-                }
-            )
-        projected_events.append(
-            {
-                "event_id": public_identifier(event.get("event_id")),
-                "event_type": public_code(event.get("event_type")),
-                "context": _optional_identifier(event.get("context")),
-                "environment": _optional_identifier(event.get("environment")),
-                "action_id": _optional_code(event.get("action_id")),
-                "status": _optional_code(event.get("status")),
-                "occurred_at": _optional_text(event.get("occurred_at")),
-                "title": _optional_text(event.get("title"), max_length=200),
-                "summary": _optional_text(event.get("summary"), max_length=300),
-                "records": projected_links,
-                "trust_state": _optional_code(event.get("trust_state")),
-            }
-        )
+        projected_event = _project_product_activity_event(event_value, drops)
+        if projected_event is None:
+            omitted_event_count += 1
+        else:
+            projected_events.append(projected_event)
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
-        "repository": _optional_identifier(source.get("repository")),
-        "driver_id": _optional_identifier(source.get("driver_id")),
+        "repository": drops.keep("repository", public_identifier, source.get("repository")),
+        "driver_id": drops.keep("driver_id", public_identifier, source.get("driver_id")),
         "events": projected_events,
         "events_truncated": len(events) > PRODUCT_ACTIVITY_MAX_EVENTS,
+        "omitted_event_count": omitted_event_count,
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def preview_id_for(*, context: str, repository: str, pr_number: int) -> str:
+    """Launchplane's generate_preview_id, with anchor_repo being the repository's name."""
+    owner, separator, repo = repository.strip().partition("/")
+    if not separator or not owner.strip() or not repo.strip() or "/" in repo.strip():
+        raise ValueError("invalid_repository")
+    if not context.strip():
+        raise ValueError("invalid_context")
+    if pr_number < 1:
+        raise ValueError("invalid_pr")
+    preview_key = f"{context.strip()}-{repo.strip()}-pr-{pr_number}".lower()
+    normalized_key = re.sub(r"[^a-z0-9]+", "-", preview_key).strip("-")
+    return f"preview-{normalized_key}"
+
+
+def _preview_history_selector(args: argparse.Namespace) -> str:
+    derived = (args.context, args.repository, args.pr)
+    if args.preview_id:
+        if any(value is not None for value in derived):
+            raise ValueError("preview_selector_conflict")
+        return args.preview_id
+    if any(value is None for value in derived):
+        raise ValueError("preview_selector_required")
+    return preview_id_for(context=args.context, repository=args.repository, pr_number=args.pr)
+
+
+def _image_digest(image_reference: object) -> str:
+    if not isinstance(image_reference, str) or "@" not in image_reference:
+        return ""
+    return image_reference.rsplit("@", 1)[1]
+
+
+def _project_preview_generation(
+    generation_value: object, drops: _FieldDrops
+) -> dict[str, object] | None:
+    if not isinstance(generation_value, dict):
+        return None
+    generation = cast(dict[str, Any], generation_value)
+    generation_id = drops.keep(
+        "generations[].generation_id", public_identifier, generation.get("generation_id")
+    )
+    if not generation_id:
+        return None
+    sequence = generation.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        drops.drop("generations[].sequence")
+        sequence = None
+
+    def field(name: str, validate: Any) -> object:
+        return drops.keep(f"generations[].{name}", validate, generation.get(name))
+
+    def timestamp(name: str) -> object:
+        return field(name, lambda value: public_summary_string(value, max_length=64))
+
+    anchor = generation.get("anchor_summary")
+    anchor = anchor if isinstance(anchor, dict) else {}
+    sources = generation.get("source_map")
+    sources = sources if isinstance(sources, list) else []
+    projected_sources: list[dict[str, object]] = []
+    for source_value in sources[:PREVIEW_MAX_SOURCES]:
+        source = source_value if isinstance(source_value, dict) else {}
+        projected_sources.append(
+            {
+                "repo": drops.keep(
+                    "generations[].source_map[].repo", public_identifier, source.get("repo")
+                ),
+                "git_sha": drops.keep(
+                    "generations[].source_map[].git_sha", public_identifier, source.get("git_sha")
+                ),
+                "selection": drops.keep(
+                    "generations[].source_map[].selection",
+                    _public_dotted_code,
+                    source.get("selection"),
+                ),
+            }
+        )
+    identity = generation.get("runtime_identity")
+    projected_identity: dict[str, object] | None = None
+    if isinstance(identity, dict):
+        image_reference = drops.keep(
+            "generations[].runtime_identity.image_reference",
+            public_identifier,
+            identity.get("image_reference"),
+        )
+        projected_identity = {
+            "deployment_record_id": drops.keep(
+                "generations[].runtime_identity.deployment_record_id",
+                public_identifier,
+                identity.get("deployment_record_id"),
+            ),
+            "artifact_id": drops.keep(
+                "generations[].runtime_identity.artifact_id",
+                public_identifier,
+                identity.get("artifact_id"),
+            ),
+            "source_git_ref": drops.keep(
+                "generations[].runtime_identity.source_git_ref",
+                public_identifier,
+                identity.get("source_git_ref"),
+            ),
+            "image_reference": image_reference,
+            "image_digest": _image_digest(image_reference),
+            "deployed_at": drops.keep(
+                "generations[].runtime_identity.deployed_at",
+                lambda value: public_summary_string(value, max_length=64),
+                identity.get("deployed_at"),
+            ),
+        }
+    return {
+        "generation_id": generation_id,
+        "sequence": sequence,
+        "state": field("state", _public_dotted_code),
+        "requested_reason": field("requested_reason", _public_dotted_code),
+        "requested_at": timestamp("requested_at"),
+        "started_at": timestamp("started_at"),
+        "ready_at": timestamp("ready_at"),
+        "finished_at": timestamp("finished_at"),
+        "failed_at": timestamp("failed_at"),
+        "superseded_at": timestamp("superseded_at"),
+        "artifact_id": field("artifact_id", public_identifier),
+        "anchor_head_sha": drops.keep(
+            "generations[].anchor_summary.head_sha", public_identifier, anchor.get("head_sha")
+        ),
+        "source_map": projected_sources,
+        "deploy_status": field("deploy_status", _public_dotted_code),
+        "verify_status": field("verify_status", _public_dotted_code),
+        "overall_health_status": field("overall_health_status", _public_dotted_code),
+        "failure_stage": field("failure_stage", _public_dotted_code),
+        "failure_summary": field(
+            "failure_summary", lambda value: public_summary_string(value, max_length=300)
+        ),
+        "runtime_identity": projected_identity,
+    }
+
+
+def _project_preview_history(provider_payload: dict[str, Any]) -> dict[str, object]:
+    """The preview and its newest generations. Odd fields are dropped and unusable
+    generations omitted, with counts and field paths; a secret-looking value fails the read."""
+    preview = _require_dict(provider_payload.get("preview"))
+    generations = provider_payload.get("generations") or []
+    if not isinstance(generations, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    drops = _FieldDrops()
+
+    def field(name: str, validate: Any) -> object:
+        return drops.keep(f"preview.{name}", validate, preview.get(name))
+
+    def timestamp(name: str) -> object:
+        return field(name, lambda value: public_summary_string(value, max_length=64))
+
+    pr_number = preview.get("anchor_pr_number")
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int):
+        drops.drop("preview.anchor_pr_number")
+        pr_number = None
+
+    def newest_first(item: object) -> int:
+        sequence = item.get("sequence") if isinstance(item, dict) else None
+        return sequence if isinstance(sequence, int) and not isinstance(sequence, bool) else 0
+
+    ordered = sorted(generations, key=newest_first, reverse=True)
+    projected_generations: list[dict[str, object]] = []
+    omitted_generation_count = 0
+    for generation_value in ordered[:PREVIEW_MAX_GENERATIONS]:
+        projected_generation = _project_preview_generation(generation_value, drops)
+        if projected_generation is None:
+            omitted_generation_count += 1
+        else:
+            projected_generations.append(projected_generation)
+    projected: dict[str, object] = {
+        "preview": {
+            "preview_id": public_identifier(preview.get("preview_id")),
+            "context": field("context", public_identifier),
+            "anchor_repo": field("anchor_repo", public_identifier),
+            "anchor_pr_number": pr_number,
+            "anchor_pr_url": field("anchor_pr_url", public_url),
+            "canonical_url": field("canonical_url", public_url),
+            "state": field("state", _public_dotted_code),
+            "created_at": timestamp("created_at"),
+            "updated_at": timestamp("updated_at"),
+            "destroyed_at": timestamp("destroyed_at"),
+            "destroy_reason": field("destroy_reason", _public_dotted_code),
+            "active_generation_id": field("active_generation_id", public_identifier),
+            "serving_generation_id": field("serving_generation_id", public_identifier),
+            "latest_generation_id": field("latest_generation_id", public_identifier),
+        },
+        "generations": projected_generations,
+        "generations_truncated": len(generations) > PREVIEW_MAX_GENERATIONS,
+        "omitted_generation_count": omitted_generation_count,
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
     }
     assert_public_safe_shape(projected)
     return projected
@@ -3482,9 +3745,30 @@ def summarize_product_activity_read(
     )
 
 
+def summarize_preview_history_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    if any(str(key) not in {"status", "trace_id", "preview", "generations"} for key in provider_payload):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    status = public_code(provider_payload.get("status"), default="ok")
+    payload = base_payload(status=status, operation="preview-history-read", request=request)
+    payload["result"] = _project_preview_history(provider_payload)
+    payload["summary"] = {
+        "launchplane_status": status,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": (
+            "Generations are newest first; compare serving_generation_id with the generation "
+            "whose anchor_head_sha is the pull request head you expect."
+        ),
+    }
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 PRODUCT_READ_SUMMARIZERS = {
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
+    "preview-history-read": summarize_preview_history_read,
 }
 
 
@@ -4627,6 +4911,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_activity_read.add_argument("--product", required=True)
 
+    preview_history_read = subparsers.add_parser(
+        "preview-history-read",
+        help=(
+            "Read one preview and its generation history, by --preview-id or by "
+            "--context, --repository OWNER/REPO and --pr."
+        ),
+    )
+    preview_history_read.add_argument("--preview-id")
+    preview_history_read.add_argument("--context")
+    preview_history_read.add_argument("--repository")
+    preview_history_read.add_argument("--pr", type=int)
+
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
         ("testing-hold-apply", "Apply a reviewed testing hold change bound to the saved dry-run digest."),
@@ -4966,6 +5262,16 @@ def main(argv: list[str]) -> int:
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": public_identifier(args.product),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "preview-history-read":
+            preview_id = _preview_history_selector(args)
+            path = _product_read_path(args.command, preview_id=preview_id)
+            request = {
+                "preview_id": public_identifier(preview_id),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
