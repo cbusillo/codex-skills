@@ -77,7 +77,7 @@ normal: continue without enrichment, not an error.
 Use [the public-safe schema](references/people.local.example.yaml) for the
 optional gitignored index. Real names, handles, emails, phone numbers, company
 and relationship facts belong only in ignored local files. Update through
-`uv run people/scripts/people_index.py upsert --id <id> --display-name "<name>"`, which
+`uv run people/scripts/people_index.py upsert --id <id> --display-name "<name>" --github <handle>`, which
 defaults to global/user storage; use `--scope repo` only for repo-specific
 people/overrides/supplements. Read [migration](references/migration.md) before
 consolidating identity facts from other local sources.
@@ -119,12 +119,11 @@ an old alias stale without user or maintained-source confirmation.
 
 ## Conditional Artifact Review
 
-Before closing out new ignored memory-distillation/rollout-friction artifacts
-with `people_updates`, `people_resolver_smoke_checks`, or visible person names,
-handles, aliases, reviewer/assignee/manager fields or contact/routing notes,
-read [artifact review](references/artifact-review.md) from this skill directory
-before inspecting or classifying those artifacts. Then apply its search, evidence
-classification, unresolved-name blockers and promotion steps before closeout.
+When reviewing or closing out new ignored memory-distillation/rollout-friction
+artifacts, read [artifact review](references/artifact-review.md) from this skill
+directory before inspecting them. That guide determines whether person-content
+conditions apply, then owns the search, evidence classification, unresolved-name
+blockers and promotion steps.
 
 ## Privacy And Portability
 
