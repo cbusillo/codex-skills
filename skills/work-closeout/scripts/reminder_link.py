@@ -59,7 +59,7 @@ def verify_native_list(name: str) -> None:
         raise ValueError("Native list verification requires macOS; use the manual workflow on this platform")
     script = Path(__file__).with_name("reminder_list.swift")
     result = subprocess.run(["swift", str(script), name], capture_output=True, text=True,
-                            timeout=45, check=False)
+                            timeout=45)
     if result.returncode:
         raise ValueError(result.stderr.strip() or "Native list verification failed")
     require_unique_list(name, json.loads(result.stdout))
@@ -84,7 +84,7 @@ def prepare(harness: str, directory: Path, session: str | None, prompt: str | No
         argv = [harness, "--", prompt]
         identity = prompt
     command = shlex.join(argv)
-    query = urlencode({"c": command, "d": str(directory)}, quote_via=quote, safe="")
+    query = urlencode({"c": command, "d": str(directory)}, quote_via=quote)
     key = hashlib.sha256(json.dumps([harness, str(directory), "resume" if session is not None else "fresh", identity],
                                    ensure_ascii=False).encode()).hexdigest()
     return {"url": "iterm2:/command?" + query, "command": command,

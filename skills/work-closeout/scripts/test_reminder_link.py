@@ -12,6 +12,8 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
+import reminder_link
+
 from reminder_link import prepare, target_list, require_unique_list, verify_native_list
 
 SESSION = "12345678-1234-1234-1234-123456789abc"
@@ -66,7 +68,8 @@ class ReminderLinkTests(unittest.TestCase):
                        prepare("codex", self.directory, None, SESSION)):
             self.assertNotEqual(first["marker"], result["marker"])
 
-    def config(self, root, name):
+    @staticmethod
+    def config(root, name):
         path = root / "skill-data/work-closeout.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('[reminders]\nlist = "' + name + '"\n')
@@ -105,7 +108,7 @@ class ReminderLinkTests(unittest.TestCase):
         require_unique_list("target", ["another", "target"])
 
     def test_native_lookup_failure_is_not_success(self):
-        with patch("reminder_link.sys.platform", "darwin"), patch("reminder_link.subprocess.run") as run:
+        with patch.object(reminder_link.sys, "platform", "darwin"), patch.object(reminder_link.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess([], 1, "", "access unavailable")
             with self.assertRaisesRegex(ValueError, "access unavailable"):
                 verify_native_list("target")
