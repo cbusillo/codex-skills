@@ -1,0 +1,20 @@
+{
+  "name": "jb-source-ambiguity",
+  "hosts": [
+    "claude",
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "Read the complete maintained jetbrains-inspection/SKILL.md entry point from the tested catalog before answering, using bounded chunks if a tool truncates it. Use shared:jetbrains-inspection from this maintained rehearsal catalog. A helper process exited 0 but its agent_result says UNKNOWN, lifecycle_outcome says mutation detected, native inspection_outcome says GREEN, retry_policy.retry=false, and tracked IDE metadata changed. Can this qualify as inspection-clean? Give the verdict, attribution limits, handling of IDE state and next step. This is an offline rehearsal; do not invoke the helper or change any files.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "final": "UNKNOWN",
+        "forbid": "curl|git restore|git clean|git stash"
+      }
+    }
+  ]
+}

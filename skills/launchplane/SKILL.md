@@ -679,8 +679,9 @@ operation map rather than adding duplicate literals.
 
 The merge-train policy import, repository inventory, product expected configuration,
 generic-web deploy-recovery, Odoo addon-settings, integration-allowances,
-testing-hold, and product-repository-identity commands are explicit bounded
-local extensions because the vendored public
+testing-hold, product-repository-identity, product-environment-read,
+product-activity-read, and preview-history-read commands are explicit bounded local extensions because the
+vendored public
 operation projection does not contain their routes. Do not describe them as contract-backed. If a later artifact adds those
 routes, migrate them deliberately and remove the local-extension entries instead
 of retaining parallel sources of truth.
@@ -946,8 +947,8 @@ verification.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
   change-impact policy dry-run/apply/read-back, guarded merge-train policy
-  import, repository inventory read/dry-run/apply, and merge-train controller
-  calls.
+  import, repository inventory read/dry-run/apply, product environment and
+  activity reads, and merge-train controller calls.
 - `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
   public-safety, operation, workflow, invariant, and local-consumer conformance
   gate. A green result is not upstream freshness evidence.
@@ -1008,6 +1009,19 @@ verification.
   path that records a product's repository id from tracked inventory
   (`product-repository-identity-dry-run` / `-apply`, with `--product` and
   `--reason`). Apply requires the same saved-dry-run safeguards.
+- `GET /v1/products/{product}/environments/{environment}` and
+  `GET /v1/products/{product}/activity`: Bounded local-extension reads
+  (`product-environment-read --product --environment` and
+  `product-activity-read --product`) for confirming what a lane actually runs:
+  the current artifact id, source commit, image digest, expected and observed
+  runtime identity with its deployment record id, health status, and recent
+  deployment, promotion and backup-gate events with their record ids. Settings,
+  secrets, actions, URLs and provider target names are dropped.
+- `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
+  (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
+  and `--pr`) for confirming what a preview serves: its state, serving
+  generation, and each generation's artifact, PR head SHA, image digest and
+  failure stage.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview

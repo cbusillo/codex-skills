@@ -107,6 +107,8 @@ clean, or stash operations that can absorb machine-local or unrelated IDE state.
 Do not stage untracked, non-ignored IDE configuration automatically; check
 repository policy and ask when the sharing decision remains unclear.
 
+Set `HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
+
 ## Before The First Inspection
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, run that exact
@@ -122,14 +124,10 @@ uv run "$HELPER" open-worktree --repo "$PWD"
 not the preferred public command. Do not substitute a different setup command,
 even if it seems equivalent.
 
-Preparation may create ignored local worktree state such as `.venv/` and
-`.idea/` directories or files. That is allowed. What is not allowed is a
-nonzero exit or any tracked-file mutation. If either happens, stop and treat
-preparation as a blocker before the first inspection.
-
-Preparation-created ignored IDE state stays untracked and is not a reason to
-start versioning IDE configuration. Starting to track it is a durable repository
-policy change and requires explicit user direction.
+Preparation may create ignored worktree-local `.venv/` or `.idea/` state.
+A nonzero exit or tracked-file mutation blocks the first inspection. Keep
+ignored IDE state untracked; starting to track it changes durable repository
+policy and requires explicit user direction.
 
 Python repositories should prefer the structured, skill-owned preparation
 shape instead of embedding an absolute helper path or copying IDE files between
@@ -160,9 +158,7 @@ remain supported for repository-specific preparation. Structured preparation
 rejects unknown fields, path traversal, extras without sync, and outer-level
 `requiredGeneratedState` ambiguity.
 
-Run preparation before the first inspection assessment, not after an
-inspection has already started. Preparation is a repo-specific readiness step,
-not an inspection surrogate.
+Preparation precedes the first assessment and does not substitute for inspection.
 
 Do not preflight SDK setup on every assessment. After `language_sdk_missing`,
 repair the documented prerequisite and run a new assessment; do not repeat the
@@ -179,29 +175,10 @@ uv run <skill-dir>/scripts/jb-inspect.py \
   agent-inspect --repo "$PWD" --scope changed_files
 ```
 
-Useful commands:
-
-```bash
-HELPER=<skill-dir>/scripts/jb-inspect.py
-uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
-uv run "$HELPER" list-projects
-uv run "$HELPER" resolve-route --repo "$PWD"
-uv run "$HELPER" open-worktree --repo "$PWD"
-uv run "$HELPER" inspect --repo "$PWD" --scope changed_files
-uv run "$HELPER" inspect-closeout --repo "$PWD" --scope changed_files
-uv run "$HELPER" get-status --repo "$PWD"
-uv run "$HELPER" get-problems --repo "$PWD" --severity error
-uv run "$HELPER" summarize-outcomes
-uv run "$HELPER" summarize-outcomes --qualification-file qualification.json --sample-size 50
-uv run "$HELPER" cleanup-helper-leases --no-dry-run
-```
-
 Command model:
 
-- `agent-inspect`: primary LLM-facing command; runs the maintained inspection
-  and lifecycle flow once, emits a compact JSON envelope, and exits successfully
-  whenever it produced an `agent_result`. Read the verdict and retry permission
-  from `agent_result`, never from the shell exit code. The additive
+- `agent-inspect`: primary LLM-facing assessment; emits a compact JSON envelope
+  and exits successfully whenever it produced an `agent_result`. The additive
   `inspection_outcome` field describes the native inspection dimension, while
   `lifecycle_outcome` describes cleanup/worktree lifecycle evidence. A lifecycle
   mutation keeps the overall `agent_result.verdict` fail-closed as `UNKNOWN`;
@@ -212,19 +189,19 @@ Command model:
   "post_run_verification"` because before/after snapshots cannot identify the
   writing process. Missing native or snapshot evidence remains `not_run` or
   `unknown`; it is never presented as clean, fresh, or unchanged.
-- `list-projects`: discover plugin-visible projects only.
-- `resolve-route`: probe for an already-open exact route; it does not open or
-  inspect.
+- `list-projects` (no arguments): discover plugin-visible projects only.
+- `resolve-route --repo "$PWD"`: probe an already-open exact route without
+  opening or inspecting.
 - `open-worktree`: preferred public command; run configured repository
   preparation, then open and claim the exact worktree; it does not inspect.
 - `prepare-worktree` and `prepare`: backward-compatible aliases for
   `open-worktree`.
-- `inspect`: open if needed, inspect, fetch problems, and clean up
-  helper-opened projects.
-- `inspect-closeout`: readiness/hand-off inspection; use before saying a change
-  is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
-- `get-status` and `get-problems`: route-pinned diagnostics for
-  already-routable projects.
+- `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch
+  problems, and clean up helper-opened projects.
+- `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
+  inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- `get-status --repo "$PWD"` and `get-problems --repo "$PWD" --severity error`:
+  route-pinned diagnostics for already-routable projects.
 - `get-problems` reads the stored inspection run; it does not start a new one.
   Repeat the original scope selectors so the plugin can prove the requested
   results belong to that run. For a `files` scope, pass at least one repeatable
@@ -238,10 +215,10 @@ Command model:
   ```
 
   A selector mismatch fails closed instead of widening retrieval.
-- `summarize-outcomes`: keep the existing diagnostic verdict/bucket/retry
-  summary when no qualification file is supplied. With
-  `--qualification-file`, run the strict post-boundary assessment gate described
-  below; strict incomplete or failed gates exit nonzero.
+- `summarize-outcomes`: diagnostic verdict/bucket/retry summary without a
+  qualification file. `summarize-outcomes --qualification-file qualification.json
+  --sample-size 50` runs the strict post-boundary assessment gate described below;
+  strict incomplete or failed gates exit nonzero.
 - `cleanup-helper-leases`: reconcile stale helper-owned leases under the
   lifecycle lock; unresolved identity or close failures return nonzero.
 

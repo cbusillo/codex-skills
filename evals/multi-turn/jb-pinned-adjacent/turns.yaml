@@ -1,0 +1,19 @@
+{
+  "name": "jb-pinned-adjacent",
+  "hosts": [
+    "codex"
+  ],
+  "execution": {
+    "timeout_seconds": 180
+  },
+  "turns": [
+    {
+      "prompt": "The Codex fixture links the tested catalog at .agents/skills. Read .agents/skills/jetbrains-inspection/SKILL.md directly in bounded chunks; do not search for another catalog. Read the complete maintained jetbrains-inspection/SKILL.md entry point from the tested catalog before answering, using bounded chunks if a tool truncates it. Use shared:jetbrains-inspection from this maintained rehearsal catalog. The change consists only of Markdown documentation; no runtime behavior or source code changed. Is an IDE inspection needed? State the proportionate verification and report wording. Do not run an inspection in this offline rehearsal.",
+      "expect": {
+        "owner": "jetbrains-inspection",
+        "final": "not.run|docs.only|documentation|disproportionate",
+        "forbid": "agent-inspect|inspect-closeout|curl"
+      }
+    }
+  ]
+}
