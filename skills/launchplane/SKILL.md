@@ -621,12 +621,6 @@ operator input own real product, tenant, repository, branch, domain, lane,
 provider-target, runtime-environment, authz, operator, route, health-check, and
 other mutable runtime values.
 
-Favor service-backed audit trails over local ad hoc fallbacks. Use the deployed
-service/API or operator UI first for current product state; direct database
-access requires an explicitly approved host-side context. Archived files under
-`~/.config/launchplane/`, including `service.env`, `dokploy.env`, and
-`runtime-environments.toml`, are historical clues only.
-
 This applies even when values are not secrets. Non-secret topology can still
 steer production behavior. Treat repo metadata, workflow variables, checked-in
 examples, and archived workstation files as hints for which Launchplane helper,
@@ -634,6 +628,12 @@ service record, or operator surface to use; never use them as evidence of the
 current live value. If the needed live value is only visible in checked-in or
 workstation files, stop and obtain Launchplane context or explicit operator
 input instead of inferring it.
+
+Favor service-backed audit trails over local ad hoc fallbacks. Use the deployed
+service/API or operator UI first for current product state; direct database
+access requires an explicitly approved host-side context. Archived files under
+`~/.config/launchplane/`, including `service.env`, `dokploy.env`, and
+`runtime-environments.toml`, are historical clues only.
 
 When a repo has `.github/github.json`, inspect its `launchplane` block before
 looking in sibling repos, archived workstation files, or workflow variables. The
@@ -794,9 +794,9 @@ Mutate runtime environments, managed secrets, and product config.
   the sanctioned value into private operator config. Do not use public URL
   variables as write authority.
 - **Runtime Sources**: Apply the Runtime Authority Boundary above to reads and
-  writes: never copy product authz grants, target IDs, tenant domains, seed/import
+  writes: never add or copy product authz grants, target IDs, tenant domains, seed/import
   payloads, route batches, or live topology into deploy scripts, workflow defaults,
-  or repo config. Committed examples use fake placeholders or intentionally public,
+  or repo config or product repos. Committed examples use fake placeholders or intentionally public,
   non-authoritative sample data. Keep concrete service URLs and credentials in
   private operator config, environment variables, GitHub Actions OIDC, or signed-in
   Launchplane UI sessions. For shared/prod, use the deployed service, operator UI,
