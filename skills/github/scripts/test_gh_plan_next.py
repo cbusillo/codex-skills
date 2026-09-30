@@ -1305,7 +1305,54 @@ def test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_contex
     assert ranked["candidates"][0]["review_required"] == "complete_parent_context"
 
 
+def test_local_next_reports_waiting_and_nonplan_cross_repository_gates() -> None:
+    module = load_module()
+    downstream = {**related(141), "repo": "owner/other", "url": "https://github.com/owner/other/issues/141"}
+    waiting = issue(2554, labels=["plan", "plan:waiting"])
+    ordinary_gate = issue(2555, labels=["bug"])
+    for gate in (waiting, ordinary_gate):
+        gate["issue_dependencies_summary"] = {"blocking": 1}
+    plans = [issue(1, milestone=milestone_data(1, "First", created_at="2026-07-01")), waiting, ordinary_gate]
+    captured: dict[str, Any] = {}
+    calls: list[int] = []
+
+    def read(_repo: str, number: int) -> Any:
+        calls.append(number)
+        return "automation-gh", relationships(blocking=[downstream, related(99), {**downstream, "number": 142, "state": "closed"}]), []
+
+    with patch.multiple(module, collect_paged_rest_items=lambda *_a, **kw: ("automation-gh", plans) if "labels" not in kw["query"] else (_ for _ in ()).throw(AssertionError("inbound gates must include non-plan issues")), next_focus_context=lambda *_: (None, {}, {"available": False}), read_next_issue_relationships=read, load_direction=lambda *_: DIRECTION, emit=captured.update):
+        module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
+    assert calls == [2554, 2555]  # both gates survive the scan cap
+    gates = captured["blocking_work_elsewhere"]
+    assert [item["number"] for item in gates] == [2554, 2555]
+    assert all(item["blocking"] == [downstream] for item in gates)
+    assert gates[0]["waiting"] is True and gates[1]["waiting"] is False
+    assert captured["candidates"] == []  # visibility does not override waits or adopt bugs
+    assert captured["excluded"][0]["exclusion"] == "waiting"
+    assert captured["blocking_work_elsewhere_context"]["complete"] is False
+
+
+def test_local_next_inbound_report_keeps_native_blockers_and_read_failures() -> None:
+    module = load_module()
+    gate = issue(2554)
+    downstream = {**related(141), "repo": "owner/other"}
+    captured: dict[str, Any] = {}
+    with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [gate]), next_focus_context=lambda *_: (None, {}, {"available": False}), load_direction=lambda *_: DIRECTION, emit=captured.update):
+        with patch.object(module, "read_next_issue_relationships", return_value=("automation-gh", relationships(blocked_by=[related(10)], blocking=[downstream]), [])):
+            module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
+        assert captured["blocking_work_elsewhere"][0]["blocking"] == [downstream]
+        assert captured["candidates"] == []
+        assert captured["excluded"][0]["exclusion"] == "blocked_by_open_dependency"
+        for read in (Mock(side_effect=module.PlanError("unavailable")), Mock(return_value=("automation-gh", relationships(blocking=[downstream]), ["blocking"]))):
+            with patch.object(module, "read_next_issue_relationships", read):
+                module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
+            assert captured["blocking_work_elsewhere"] == []
+            assert captured["blocking_work_elsewhere_context"]["complete"] is False
+
+
 TESTS = [
+    test_local_next_reports_waiting_and_nonplan_cross_repository_gates,
+    test_local_next_inbound_report_keeps_native_blockers_and_read_failures,
     test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
     test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_context,
     test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,

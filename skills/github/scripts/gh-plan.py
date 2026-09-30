@@ -2187,7 +2187,6 @@ def cmd_next(args: argparse.Namespace) -> None:
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
     issue_query: dict[str, Any] = {
-        "labels": config["labels"]["plan"],
         "state": "open",
         "sort": "created",
         "direction": "asc",
@@ -2239,6 +2238,9 @@ def cmd_next(args: argparse.Namespace) -> None:
     for issue in issues:
         issue["repo"] = repo
     rank_next_candidates(issues, direction_milestones=direction_milestones)
+    # Native dependency summaries put potential inbound gates ahead of the
+    # scan cap, including waiting issues outside this repository's milestones.
+    issues.sort(key=lambda issue: not bool((issue.get("issue_dependencies_summary") or {}).get("blocking")))
     scan_truncated = len(issues) > args.scan_limit
     issues = issues[: args.scan_limit]
 
@@ -2247,12 +2249,18 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     dependency_degraded_count = 0
+    blocking_work_elsewhere: list[dict[str, Any]] = []
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
+        is_plan = config["labels"]["plan"] in normalize_labels(issue.get("labels"))
         static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
-        if static_exclusion is not None:
+        # Preserve ordinary candidate classification; inbound gates are a
+        # separate visibility report, not permission to override a wait.
+        if static_exclusion is not None and not (issue.get("issue_dependencies_summary") or {}).get("blocking"):
             excluded.append(static_exclusion)
+            continue
+        if not is_plan and not (issue.get("issue_dependencies_summary") or {}).get("blocking"):
             continue
         relationship_error = None
         relationships = None
@@ -2273,6 +2281,16 @@ def cmd_next(args: argparse.Namespace) -> None:
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
+        if relationships is not None:
+            downstream = [item for item in relationships["blocking"]
+                          if item["state"] == "open" and item["repo"].casefold() != repo.casefold()]
+            if downstream:
+                blocking_work_elsewhere.append({
+                    **compact_list_issue(repo, issue),
+                    "plan_status": github_direction_next.next_plan_status(issue, config),
+                    "blocking": downstream,
+                    "waiting": github_direction_next.next_plan_status(issue, config) == "waiting",
+                })
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
@@ -2284,7 +2302,8 @@ def cmd_next(args: argparse.Namespace) -> None:
             dependency_degraded_count += 1
             if truncated_relationships:
                 evaluated["truncated_relationships"] = truncated_relationships
-        (candidates if disposition == "candidate" else excluded).append(evaluated)
+        if is_plan:
+            (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
@@ -2333,6 +2352,12 @@ def cmd_next(args: argparse.Namespace) -> None:
             "complete": dependency_degraded_count == 0,
             "degraded_count": dependency_degraded_count,
             "relationship_limit": NEXT_RELATIONSHIP_LIMIT,
+        },
+        "blocking_work_elsewhere": blocking_work_elsewhere,
+        "blocking_work_elsewhere_count": len(blocking_work_elsewhere),
+        "blocking_work_elsewhere_context": {
+            "complete": not (inventory_truncated or scan_truncated or dependency_degraded_count),
+            "scope": "open_cross_repository_dependencies_within_selection_scope",
         },
         "evaluated": len(issues),
         "truncated": inventory_truncated or scan_truncated,
