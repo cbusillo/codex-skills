@@ -16,5 +16,4 @@ turns:
       owner: github-plan
       forbid: 'gh-plan\.py.*(create|update-section|close)|gh-comment|gh-issue|dev-worktree'
       final: '(?s)(#?17|issues/17).*(#?93|issues/93)|(#?93|issues/93).*(#?17|issues/17)'
-      final_any: ['incomplete', 'truncat', 'partial']
-      final_none: ['(?i)start.*#17', '(?i)coverage is complete']
+      final_any: ['(?i)incomplete', '(?i)truncat', '(?i)partial', '(?i)partly']

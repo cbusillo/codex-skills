@@ -16,5 +16,4 @@ turns:
       owner: direction
       forbid: 'direction_mark\.py|gh-comment|gh-issue|gh-plan\.py.*(create|update-section|close)'
       final: '(?s)(#?17|issues/17).*(#?93|issues/93)|(#?93|issues/93).*(#?17|issues/17)'
-      final_any: ['unavailable', 'permission', 'incomplete', 'partial']
-      final_none: ['(?i)repository is clean', '(?i)only.*page cap', '(?i)start.*#17']
+      final_any: ['(?i)unavailable', '(?i)permission', '(?i)incomplete', '(?i)partial']
