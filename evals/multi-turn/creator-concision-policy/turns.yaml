@@ -1,0 +1,16 @@
+name: creator-concision-policy
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:skill-creator. A skill's policy.command_policies has passed the
+      catalog validator. Is that alone evidence that the current Codex host will
+      block the raw command? Explain the owning contract, what evidence is still
+      needed, and where installation-specific enforcement settings belong.
+      This is an offline assessment: no runtime configuration changes or execution.
+    expect:
+      owner: skill-creator
+      read: 'references/command-policy-contract\.md'
+      forbid: 'init_skill\.py|generate_openai_yaml\.py'
+      final: 'runtime|host[\s\S]*(verif|test)|not.*proof|not.*guarantee'

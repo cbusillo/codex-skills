@@ -1,0 +1,17 @@
+name: creator-concision-validation
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:skill-creator. We substantially revised a fragile repository
+      routing skill. Static validators pass and a direct local-model answer looks
+      right. May we claim that Codex agent completion improved? Plan the missing
+      validation and fresh-agent forward test with bounded synthetic tasks; do
+      not start it in this offline assessment. Explain how to avoid leaking the
+      intended answer and what evidence should be recorded.
+    expect:
+      owner: skill-creator
+      read: 'references/validation\.md|references/forward-testing\.md'
+      forbid: 'codex exec|claude -p|init_skill\.py'
+      final: 'host|harness|execution|observable|actual.*(tool|action)'

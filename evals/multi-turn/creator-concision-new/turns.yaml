@@ -1,0 +1,18 @@
+name: creator-concision-new
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:skill-creator to create a new log-triage skill in the explicit
+      project source .agents/skills. It summarizes local JSON error logs using a
+      reusable Python script; name it log-triage and generate initial UI metadata.
+      This is an offline rehearsal: operational shell commands are refused.
+      Stop after the first refusal and report the attempted helper. Do not write
+      an installed runtime or generated cache.
+    expect:
+      owner: skill-creator
+      operation: 'init_skill\.py'
+      require: '--path[ =]+.*\.agents/skills'
+      read: 'references/openai_yaml\.md'
+      forbid: 'pip install|generate_openai_yaml\.py.*existing'
