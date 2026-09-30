@@ -62,7 +62,7 @@ class SdkRetirementTests(unittest.TestCase):
                             "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
             subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
             events = []
-            def post(_port, endpoint, params):
+            def post(_port, endpoint, params, **_kwargs):
                 self.assertTrue(root.is_dir())
                 self.assertEqual(endpoint, "lifecycle/unregister-python-sdk")
                 self.assertEqual(params["worktree_path"], str(root.resolve()))
@@ -114,7 +114,7 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp) / "removed"
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000,
                              worktree_path=[str(root)])
-            def post(_port, _endpoint, params):
+            def post(_port, _endpoint, params, **_kwargs):
                 if params["dry_run"] == "true":
                     self.assertEqual(params["orphans"], "true")
                     self.assertNotIn("worktree_path", params)
@@ -165,7 +165,7 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp).resolve() / "removed"
             held = Path(tmp).resolve() / "renamed"
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000, worktree_path=[str(root)])
-            def post(_port, _endpoint, params):
+            def post(_port, _endpoint, params, **_kwargs):
                 response = self.response(root, params["dry_run"] == "true")
                 if params["dry_run"] == "true":
                     response.body["status"] = "refused"
@@ -188,7 +188,7 @@ class SdkRetirementTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(primary)], check=True)
             subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
             subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
-            def post(_port, _endpoint, params):
+            def post(_port, _endpoint, params, **_kwargs):
                 response = self.response(root, params["dry_run"] == "true")
                 response.body["status"] = "refused"
                 response.body["sdks"][0].update(status="refused", reason="not_helper_owned")
@@ -201,10 +201,20 @@ class SdkRetirementTests(unittest.TestCase):
             self.assertEqual(result["sdk_cleanup"][0]["result"]["sdks"][0]["reason"], "not_helper_owned")
             self.assertFalse(root.exists())
 
+    def test_busy_empty_response_never_counts_as_cleanup_success(self):
+        root = Path("/fixture/task")
+        busy = {"status": "refused", "reason": "sdk_lifecycle_busy", "http_status": 409,
+                "session_id": "session", "sdk_lifecycle_version": 1, "dry_run": False, "sdks": []}
+        with patch.object(jb_inspect, "http_post", side_effect=jb_inspect.InspectError("HTTP 409", 3, busy)) as post:
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                jb_inspect.unregister_helper_sdks([self.identity()], root, False)
+            self.assertEqual(caught.exception.payload["reason"], "sdk_lifecycle_busy")
+            self.assertGreater(post.call_args.kwargs["timeout"], 10)
+
     def test_new_sdk_in_final_preview_keeps_the_worktree(self):
         root = Path("/fixture/task")
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-        def post(_port, _endpoint, params):
+        def post(_port, _endpoint, params, **_kwargs):
             return self.response(root, params["dry_run"] == "true")
         with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run") as removal:
             with self.assertRaisesRegex(jb_inspect.InspectError, "still needs retirement"):

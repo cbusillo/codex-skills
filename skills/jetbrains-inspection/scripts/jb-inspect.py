@@ -10698,10 +10698,10 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
         params = {"session_id": identity["session_id"], "dry_run": str(dry_run).lower()}
         params.update({"worktree_path": str(root)} if root is not None else {"orphans": "true"})
         try:
-            body = http_post(identity["port"], "lifecycle/unregister-python-sdk", params).body
+            body = http_post(identity["port"], "lifecycle/unregister-python-sdk", params, timeout=15.0).body
         except InspectError as error:
             # A refused orphan preview still contains the candidates and held records.
-            if error.payload.get("http_status") == 409 and error.payload.get("status") == "refused" and (root is not None or dry_run):
+            if error.payload.get("http_status") == 409 and error.payload.get("status") == "refused" and not error.payload.get("reason") and (root is not None or dry_run):
                 body = error.payload
             else:
                 error.payload["completed_sdk_cleanup"] = results
@@ -10716,7 +10716,7 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
         if orphan_preview:
             valid_statuses.add("refused")
             valid_reasons.update({"sdk_in_use", "ownership_mismatch", "ambiguous_sdk"})
-        if (body.get("session_id") != identity["session_id"] or body.get("status") not in {"ok", "refused"}
+        if (body.get("session_id") != identity["session_id"] or body.get("reason") or body.get("status") not in {"ok", "refused"}
             or body.get("sdk_lifecycle_version") != 1 or body.get("dry_run") is not dry_run
             or not isinstance(entries, list) or any(
                 not isinstance(entry, dict) or entry.get("status") not in valid_statuses
