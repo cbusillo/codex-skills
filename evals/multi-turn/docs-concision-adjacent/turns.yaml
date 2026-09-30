@@ -8,4 +8,17 @@ turns:
   - prompt: >-
       What is MAX_RETRIES in local.py? This is a stable checked-in fact;
       read the file and answer in one sentence. No external behavior is involved.
-    expect: quiet
+    expect:
+      owner: []
+      quiet: true
+      read: 'local\.py'
+      answer_from_fixture:
+        file: local.py
+        capture: 'MAX_RETRIES\s*=\s*(\d+)'
+        forms:
+          - 'MAX_RETRIES is {value}.'
+          - 'MAX_RETRIES in local.py is {value}.'
+          - 'In local.py, MAX_RETRIES is {value}.'
+          - 'local.py defines MAX_RETRIES = {value}.'
+          - 'MAX_RETRIES = {value}.'
+          - '{value}'

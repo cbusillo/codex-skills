@@ -14,4 +14,9 @@ turns:
       owner: docs-lookup
       read: 'references/routing\.md'
       forbid: '\.env|history|cloudflare|curl|wget'
-      final: 'not configured|missing|not.*configured|isn.t configured'
+      final_any:
+        - 'not configured|not.*configured|isn.t configured|unconfigured'
+        - 'missing|absent|not.*established|unestablished'
+        - 'cannot|can.t|unable to.*(determine|establish|identify)'
+      final_none:
+        - '(^|[.;]\s*)(you should\s+)?(manage|add|create|edit|set|use)\b[^.!?]*\bCloudflare dashboard\b'

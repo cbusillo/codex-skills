@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
@@ -24,6 +23,132 @@ def call(name: str, arguments: dict[str, str]) -> dict:
 
 
 class RoutingScoreTests(unittest.TestCase):
+    def test_compound_reads_credit_only_delivered_source_on_both_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog"
+            skill = catalog / "skills/github/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Fixture source with a complete read requirement.\n")
+            command = f"cat {skill}; rg absent missing.txt"
+            events = [{"command": command, "allowed": True}]
+            turns = [{"expect": {"owner": "github", "read": "SKILL.md"}}]
+            for host in ("codex", "claude"):
+                for output, passed in [(skill.read_text(), True), ("cat: permission denied", False),
+                                       ("Fixture source", False)]:
+                    if host == "codex":
+                        messages = [{"type": "item.completed", "item": {
+                            "type": "command_execution", "command": command,
+                            "exit_code": 1, "aggregated_output": output}}]
+                    else:
+                        use = call("Bash", {"command": command})
+                        use["message"]["content"][0]["id"] = "read"
+                        messages = [use, {"type": "user", "message": {"content": [{
+                            "type": "tool_result", "tool_use_id": "read",
+                            "is_error": True, "content": output}]}}]
+                    (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [
+                        {"type": "turn_marker", "turn": 1}, *messages])))
+                    (root / "shell-events.jsonl").write_text("\n".join(map(json.dumps, events)))
+                    self.assertEqual(runner.score_turns(host, turns, root, catalog)["passed"], passed,
+                                     (host, output))
+
+    def test_native_read_delivers_a_skill_without_the_base_directory_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = runner.ROOT / "skills/github/SKILL.md"
+            use = call("Read", {"file_path": str(path)})
+            use["message"]["content"][0]["id"] = "read"
+            result = {"type": "user", "message": {"content": [{
+                "type": "tool_result", "tool_use_id": "read", "content": "source"}]}}
+            seen = runner.observe("claude", [use, result], [], root, runner.ROOT)
+            self.assertEqual(seen["loaded"], ["github"])
+
+    def test_forbidden_reads_include_native_tools_and_failed_shell_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expect = {"owner": [], "forbid": r"\.env"}
+            for name, arguments in [("Read", {"file_path": "/private/.env"}),
+                                    ("Grep", {"path": "/private/.env", "pattern": "TOKEN"}),
+                                    ("Bash", {"command": "cat /private/.env"})]:
+                seen = runner.observe("claude", [call(name, arguments)], [], root, runner.ROOT)
+                self.assertFalse(all(runner.decision_checks(seen, expect).values()), name)
+            seen = runner.observe("codex", [], [{"command": "cat /private/.env", "allowed": False}],
+                                  root, runner.ROOT)
+            self.assertFalse(all(runner.decision_checks(seen, expect).values()))
+
+    def test_system_skill_cache_is_not_the_maintained_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog"
+            for path in (root / "account/skills/.system/skill-creator/SKILL.md",
+                         catalog / "skills/.system/skill-creator/SKILL.md"):
+                command = f"cat {path}"
+                seen = runner.observe("codex", [{"type": "item.completed", "item": {
+                    "type": "command_execution", "command": command, "exit_code": 0}}],
+                    [{"command": command, "allowed": True}], root, catalog)
+                self.assertTrue(seen["foreign_skill_reads"])
+                self.assertFalse(seen["loaded"])
+
+    def test_local_fact_requires_both_read_delivery_and_the_fixture_value(self) -> None:
+        case = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-adjacent/turns.yaml").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            for name, content in case["fixture_files"].items():
+                (workspace / name).write_text(content)
+            expect = case["turns"][0]["expect"]
+            value = runner.re.search(expect["answer_from_fixture"]["capture"],
+                                     case["fixture_files"]["local.py"])[1]
+            for host in ("codex", "claude"):
+                correct = expect["answer_from_fixture"]["forms"][0].format(value=value)
+                for delivered, final, passed in [
+                    (True, correct, True), (False, correct, False),
+                    (False, "I can't read the file.", False),
+                    (True, f"I cannot determine the value; it might be {value}.", False),
+                    (True, "MAX_RETRIES is an unsupported value.", False),
+                ]:
+                    command = "cat local.py"
+                    if host == "codex":
+                        messages = [{"type": "item.completed", "item": {
+                            "type": "command_execution", "command": command,
+                            "exit_code": 0 if delivered else 1,
+                            "aggregated_output": case["fixture_files"]["local.py"] if delivered else "refused"}},
+                            {"type": "item.completed", "item": {"type": "agent_message", "text": final}}]
+                    else:
+                        use = call("Read", {"file_path": "local.py"})
+                        use["message"]["content"][0]["id"] = "read"
+                        messages = [use, {"type": "user", "message": {"content": [{
+                            "type": "tool_result", "tool_use_id": "read",
+                            "is_error": not delivered, "content": "source" if delivered else "refused"}]}},
+                            {"type": "result", "result": final}]
+                    (root / "trace.jsonl").write_text("\n".join(map(json.dumps, [
+                        {"type": "turn_marker", "turn": 1}, *messages])))
+                    (root / "shell-events.jsonl").write_text(json.dumps({"command": command, "allowed": delivered}))
+                    self.assertEqual(runner.score_turns(host, case["turns"], root)["passed"], passed,
+                                     (host, delivered, final))
+            # The source is authoritative, rather than a second hardcoded expected value.
+            content = case["fixture_files"]["local.py"].replace(value, str(int(value) + 1))
+            (workspace / "local.py").write_text(content)
+            seen = runner.observe("claude", [{"type": "result", "result": correct}], [], root, runner.ROOT)
+            self.assertFalse(runner.decision_checks(seen, expect)["fixture_answer"])
+
+    def test_missing_context_accepts_variants_and_rejects_an_authority_guess(self) -> None:
+        expect = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-missing-context/turns.yaml").read_text())["turns"][0]["expect"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for final, passed in [
+                ("The private docs source isn't configured; provide the local docs route.", True),
+                ("The private docs source is unconfigured. Ask for its path.", True),
+                ("I can't establish authority without the missing context.", True),
+                ("Context is missing, so I cannot decide whether to use the Cloudflare dashboard; provide docs.", True),
+                ("Context is missing; create the TXT record in the Cloudflare dashboard.", False),
+                ("Use the Cloudflare dashboard.", False),
+            ]:
+                seen = runner.observe("claude", [{"type": "result", "result": final}], [], root, runner.ROOT)
+                checks = runner.decision_checks(seen, {key: expect[key] for key in ("final_any", "final_none")})
+                self.assertEqual(all(checks.values()), passed, final)
+
     def test_claude_redirect_is_not_first_try_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

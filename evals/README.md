@@ -39,6 +39,18 @@ only through the plugin. Each fixture is its own repository, so its adoption
 state and reminders do not depend on the surrounding worktree. Receipts record
 catalog and harness hashes, configured models, and deterministic routing scores.
 The runner exits nonzero for a failed grade as well as for a failed CLI run.
+Routing scores now record grader_version 2. Archived acceptance receipts keep
+their original grades; a new rubric or source revision requires a separately
+identified comparison, not an edit to those receipts.
+
+Read delivery and command success are separate observations. When a compound
+shell command returns nonzero, the grader credits only complete pinned catalog
+or fixture file text actually present in its output. A denied read, a filename,
+or unrelated stdout does not prove delivery. Partial excerpts remain unproven
+for that nonzero-command recovery. Native Claude Read results also establish
+source attribution; bundled .system skills do not count as maintained catalog
+sources. The forbid check includes attempted shell and native Read/Grep paths,
+including failed attempts, as well as operational commands.
 Traces establish skill source paths and command order; distinguish configured
 models from model names independently reported by the host. Existing personal
 instructions can still affect direct CLI runs, so keep the environment fixed.
@@ -68,6 +80,17 @@ refused command still counts as attempted. Cases under `closeout/` use the same
 grades for `work-closeout`; their `setup` scripts build real Git state, such as
 an upstream one commit ahead and a dirty or untracked file, with a fixed
 identity and clock so commit IDs are reproducible.
+
+The quiet expectation grades routing only, not task completion. For a quiet
+local-fact task, use an empty owner list, quiet: true, a required read, and
+answer_from_fixture with file, a capture pattern containing one value group,
+and accepted full-answer forms containing {value}. The expected value comes
+from the fixture itself; a refusal, a guessed value without a delivered read,
+or a value contradicted by the fixture fails. Accepted forms normalize case
+and whitespace, but remain an explicit bounded output contract.
+The final_any check accepts a listed alternative pattern; final_none rejects
+listed contradictory answers. These are lexical checks, not a general semantic
+judge: inspect actual finals when the answer falls outside the qualified rubric.
 
 Cases under `github-execution/` grade the `github` workflow the same way: a
 train landing and its exact-SHA runtime refresh, an adjacent planning request,
