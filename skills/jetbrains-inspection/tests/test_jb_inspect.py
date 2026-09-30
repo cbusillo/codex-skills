@@ -157,7 +157,7 @@ class SdkRetirementTests(unittest.TestCase):
                 jb_inspect.command_retire_sdks(args)
             self.assertEqual(len(caught.exception.payload["completed_sdk_cleanup"]), 1)
             self.assertEqual(caught.exception.payload["http_status"], 409)
-            self.assertEqual(caught.exception.payload["sdks"][0]["reason"], "sdk_in_use")
+            self.assertEqual(caught.exception.payload["sdk_cleanup"]["sdks"][0]["reason"], "sdk_in_use")
             removal.assert_not_called()
 
     def test_refused_orphan_is_listed_without_blocking_unrelated_reviewed_path(self):
