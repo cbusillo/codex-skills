@@ -1,0 +1,17 @@
+name: openai-concision-primary
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  official-page.md: 'Already fetched official Responses fixture. A streamed response has server-sent events. Source https://developers.openai.com/api/docs/guides/streaming-responses . No current model price or account access is established here.'
+turns:
+  - prompt: >-
+      Use shared:openai-docs. In this offline rehearsal, official-page.md is the
+      already-fetched official page; read it instead of network search/fetch.
+      What transport does Responses streaming use? Cite the provided source.
+      This is a factual lookup; do not edit files or run an API call.
+    expect:
+      owner: openai-docs
+      read: 'official-page\.md'
+      forbid: 'resolve-latest-model|fetch-codex-manual|curl|wget|openai-platform-api-key'
+      final: '(server.sent|SSE)'

@@ -1,0 +1,17 @@
+name: openai-concision-ambiguity
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  official-page.md: 'Already fetched official GPT-4.1 fixture. This fixture establishes only the explicitly requested model name gpt-4.1; no pricing, account availability or proposed migration is established. Source https://developers.openai.com/api/docs/models/gpt-4.1 .'
+turns:
+  - prompt: >-
+      Use shared:openai-docs. In this offline rehearsal official-page.md is the
+      already-fetched official page; read it instead of network search/fetch.
+      I specifically want GPT-4.1 for a comparison, not a migration. Does this
+      source establish my account's access and current price? Do not change
+      settings or recommend a replacement model.
+    expect:
+      owner: openai-docs
+      forbid: 'resolve-latest-model|fetch-codex-manual|curl|wget|openai-platform-api-key'
+      final: '(not establish|doesn.t establish|does not establish|cannot|can.t|not enough|unverified)'
