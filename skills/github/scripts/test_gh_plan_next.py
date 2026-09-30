@@ -1315,7 +1315,7 @@ def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
         item["issue_dependencies_summary"] = {"blocking": 1}
     plan = issue(1, milestone=milestone_data(1, "First", created_at="2026-07-01"))
     plan["issue_dependencies_summary"] = {"blocking": 0}
-    downstream = {**related(141), "repo": "owner/other"}
+    downstream = {**related(141), "repo": "owner/other", "url": "https://github.com/owner/other/issues/141"}
     captured: dict[str, Any] = {}
     calls: list[str] = []
 
@@ -1346,7 +1346,7 @@ def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
 def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:
     module = load_module()
     gates = [issue(1), issue(2)]  # missing native summaries are conservatively read
-    downstream = {**related(141), "repo": "owner/other"}
+    downstream = {**related(141), "repo": "owner/other", "url": "https://github.com/owner/other/issues/141"}
     calls: list[str] = []
 
     def collect(path: str, **kwargs: Any) -> Any:
