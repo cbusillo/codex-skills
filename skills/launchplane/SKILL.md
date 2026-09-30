@@ -621,6 +621,12 @@ operator input own real product, tenant, repository, branch, domain, lane,
 provider-target, runtime-environment, authz, operator, route, health-check, and
 other mutable runtime values.
 
+Favor service-backed audit trails over local ad hoc fallbacks. Use the deployed
+service/API or operator UI first for current product state; direct database
+access requires an explicitly approved host-side context. Archived files under
+`~/.config/launchplane/`, including `service.env`, `dokploy.env`, and
+`runtime-environments.toml`, are historical clues only.
+
 This applies even when values are not secrets. Non-secret topology can still
 steer production behavior. Treat repo metadata, workflow variables, checked-in
 examples, and archived workstation files as hints for which Launchplane helper,
@@ -710,18 +716,6 @@ approval, and an apply-eligible result. Detached application retirement must
 preserve zero authority writes and is complete only when candidate absence is
 proved.
 
-## Core Goal
-
-Provide situational awareness and safe runtime management. Always favor
-service-backed audit trails over local ad-hoc fallbacks.
-
-Do not treat archived workstation files under `~/.config/launchplane/` as the
-authority for current Launchplane runtime or product state. Files such as
-`service.env`, `dokploy.env`, and `runtime-environments.toml` can be useful
-historical clues, but they are not live records. When a task asks about current
-product state, use the deployed Launchplane service/API or operator UI first;
-use direct database access only from an explicitly approved host-side context.
-
 ## Rollout Plan Alignment
 
 For Launchplane rollout, runtime, product-boundary, merge-train, or operator
@@ -799,24 +793,14 @@ Mutate runtime environments, managed secrets, and product config.
   correct operator URL and pass it with `--url` before the subcommand, or copy
   the sanctioned value into private operator config. Do not use public URL
   variables as write authority.
-- **Repo Metadata**: Use `.github/github.json` `launchplane` metadata to find
-  helper paths, workflow entrypoints, labels, and service URL env var names, but
-  keep concrete service URLs and credentials in private operator config,
-  environment variables, GitHub Actions OIDC, or signed-in Launchplane UI
-  sessions.
-- **No Checked-In Product Authority**: Do not add or copy product-specific
-  authz grants, provider target route batches, product target IDs, tenant
-  domains, runtime seed/import payloads, or live product topology into
-  Launchplane deploy scripts, workflow defaults, repo-local config files, or
-  product repos. Committed examples must use fake placeholders or intentionally
-  public, non-authoritative sample data. For shared/prod, use the deployed
-  Launchplane service, operator UI, or the bounded write-action helper/API with
-  the correct service URL and scoped credentials.
-- **No Checked-In Topology Inference**: Do not infer real products, tenants,
-  domains, lanes, provider targets, runtime environments, route batches, authz,
-  repository bindings, branch bindings, or operator identity from checked-in
-  config or workflow defaults. Those files may identify the Launchplane surface
-  to query; they do not answer what live topology is now.
+- **Runtime Sources**: Apply the Runtime Authority Boundary above to reads and
+  writes: never copy product authz grants, target IDs, tenant domains, seed/import
+  payloads, route batches, or live topology into deploy scripts, workflow defaults,
+  or repo config. Committed examples use fake placeholders or intentionally public,
+  non-authoritative sample data. Keep concrete service URLs and credentials in
+  private operator config, environment variables, GitHub Actions OIDC, or signed-in
+  Launchplane UI sessions. For shared/prod, use the deployed service, operator UI,
+  or bounded helper/API with the correct URL and scoped credentials.
 - **First Shot**: For product-config/runtime/secret sync, use the service API
   path from the operator contract first. Do not start by searching for a local
   `launchplane` binary or by poking provider config directly.
