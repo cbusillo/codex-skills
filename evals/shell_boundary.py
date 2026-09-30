@@ -38,23 +38,70 @@ def git_read_only(arguments: list[str]) -> bool:
     return False
 
 
+def shell_expansion(command: str) -> bool:
+    """Keep quoted regex end anchors, but refuse shell expansion syntax."""
+    quote = None
+    escaped = False
+    for index, character in enumerate(command):
+        if character == "`":
+            return True
+        if escaped:
+            escaped = False
+            if character == "$":
+                return True
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+        elif character in {"'", '"'}:
+            if quote == character:
+                quote = None
+            elif quote is None:
+                quote = character
+        elif character == "$":
+            following = command[index + 1:index + 2]
+            if quote is None or following not in {quote, "|", ")"}:
+                return True
+    return False
+
+
+def find_read_only(arguments: list[str]) -> bool:
+    # Allow the observed discovery predicates, rather than a denylist of actions.
+    operands = {"-name", "-iname", "-path", "-ipath", "-type", "-maxdepth", "-mindepth"}
+    flags = {"-H", "-L", "-P", "-print", "-print0", "-o", "-or", "-a", "-and", "!", "-not"}
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in operands:
+            index += 2
+            if index > len(arguments):
+                return False
+        elif argument in flags or not argument.startswith("-"):
+            index += 1
+        else:
+            return False
+    return True
+
+
 def read_only(command: str) -> bool:
     # Reads let Codex load SKILL.md through its shell tool. The fixture uses
     # read-only host sandboxing as well; this is a test stop, not a security tool.
-    if any(part in command for part in ("$", "`")):
+    if shell_expansion(command):
         return False
     commands: list[list[str]] = []
     for line in command.splitlines():
         # A read that falls back to another read is still a read.
-        line = line.replace("2>/dev/null", "")
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         commands.append([])
-        for token in lexer:
+        try:
+            parsed = list(lexer)
+        except ValueError:
+            return False
+        for token in parsed:
             # A pipe between reads is still a read; each stage must pass on its own.
             if token in {"&&", ";", "||", "|"}:
                 commands.append([])
-            elif token in {"&", ">", ">>", "<", "<<", "(", ")"}:
+            elif token and all(character in "();<>|&" for character in token):
                 return False
             else:
                 commands[-1].append(token)
@@ -67,6 +114,10 @@ def read_only(command: str) -> bool:
         if name == "sed" and tokens[1:2] == ["-n"]:
             continue
         if name == "rg" and not any(token.startswith(("--pre", "--hostname-bin")) for token in tokens):
+            continue
+        if name == "grep":
+            continue
+        if name == "find" and find_read_only(tokens[1:]):
             continue
         if name == "git" and git_read_only(tokens[1:]):
             continue
