@@ -6,5 +6,7 @@ updates:
     # Inline release-tag comments keep immutable pin updates reviewable.
     directory: "/"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     schedule:
       interval: weekly
