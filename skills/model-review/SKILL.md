@@ -82,7 +82,7 @@ paper over it by pasting files into the prompt.
 
 - Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
-- Google uses `read_file` (`view_file`) and `list_dir` for file reads, including
+- Google uses `read_file` (`view_file`) for file reads, including
   successive line ranges for large files. If a shell command is refused, the
   helper reads only that run's saved conversation to name the command and
   retries once with file tools only. `recovery` records the first refusal;

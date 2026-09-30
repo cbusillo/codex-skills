@@ -324,7 +324,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 preamble += (
                     f"The only commands you may run are {permitted}. "
                     "Use read_file (view_file) to inspect file contents, including large files: read successive "
-                    "line ranges when needed. Use list_dir to discover paths. Do not use shell reads such as "
+                    "line ranges when needed. Use ls with absolute paths to discover paths. Do not use shell reads such as "
                     "cat, head, tail or sed, or pipelines, command chaining or substitutions. "
                     "Do not run other commands. If a command is refused, continue with file tools.\n\n"
                 )
@@ -338,7 +338,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 reminder = (
                     "A previous attempt stopped after a refused command request"
                     + (": " + json.dumps(refusal["denied_commands"]) if refusal["denied_commands"] else "")
-                    + ". Complete this review using only read_file (view_file) and list_dir. "
+                    + ". Complete this review using only read_file (view_file) with the absolute paths provided. "
                     "Do not call run_command at all. No permission changes are available.\n\n"
                 )
                 try:
