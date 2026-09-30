@@ -304,9 +304,19 @@ request path above.
    each milestone and link each repository's work to it as sub-issues or
    blockers; global `next` ranks milestone work by walking from those Track
    issues.
-4. Run the audit script for this repository once and clear its findings. That
-   first run also enters the repository in the marker's `audits` map, which is
-   how later weekly audits know to include it.
+4. Before the first audit, reconcile the open backlog once against the merged
+   `DIRECTION.md`. Read each issue's full discussion and relevant implementation
+   evidence; classify it as keep, update, completed, superseded, parked, or needs
+   an owner decision. Apply decisions the owner already made; group new
+   retirements and other owner decisions for the owner. Preserve human-authored
+   requests under `github-plan`'s ownership rules and record every disposition
+   on GitHub. Then run the audit script for this repository and clear its
+   findings. That first run also enters the repository in the marker's `audits`
+   map, which is how later weekly audits know to include it.
+
+Repositories adopted before this step existed need one catch-up reconciliation:
+codex-lab, codex-skills, and jetbrains-inspection-api. Launchplane's pass is
+already done; record each catch-up's completion on GitHub to avoid repeating it.
 
 Format chat and GitHub writes under
 [talking with the owner](../references/talking-with-the-owner.md).
