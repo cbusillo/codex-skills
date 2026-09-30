@@ -154,6 +154,7 @@ class ReviewWithModelTests(unittest.TestCase):
             connection.execute("CREATE TABLE steps (idx INTEGER, status INTEGER, step_payload BLOB)")
             connection.execute("INSERT INTO steps VALUES (0, 3, ?)", (blob,))
             connection.execute("INSERT INTO steps VALUES (1, ?, ?)", (status, blob))
+            connection.execute("INSERT INTO steps VALUES (2, 7, ?)", (wire_bytes(5, b""),))
         return conversation
 
     def test_google_names_saved_command_and_retries_only_once(self) -> None:
@@ -203,8 +204,17 @@ class ReviewWithModelTests(unittest.TestCase):
                                            FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
                 self.assertEqual((code, result["denied_commands"]), (1, []))
                 self.assertIn("command_diagnostic", result)
-                self.assertNotIn("recovery", result)
+                self.assertEqual(result["recovery"]["attempts"], 2)
         self.assertFalse((self.home / ".gemini").exists(), "mode=ro must not create missing stores")
+        self.install("agy", RETRY_AGY)
+        denial = {"denied_actions": [{"action": "command"}]}
+        code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
+                                   FAKE_AGY_RETRY_JSON=json.dumps({"response": "none"}),
+                                   FAKE_AGY_COUNT=str(self.root / "count"),
+                                   FAKE_AGY_RETRY_PROMPT=str(self.root / "retry-prompt"))
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertIn("command_diagnostic", result["recovery"])
+        self.install("agy", FAKE_AGY)
         conversation = self.saved_command("cat /repo/large.py")
         db = self.home / f".gemini/antigravity-cli/conversations/{conversation}.db"
         for blob in (b"\x2a\xff", b"\x2a\x05ab", b"\x2a\x01\x00"):

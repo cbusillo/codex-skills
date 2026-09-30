@@ -86,7 +86,8 @@ paper over it by pasting files into the prompt.
   successive line ranges for large files. If a shell command is refused, the
   helper reads only that run's saved conversation to name the command and
   retries once with file tools only. `recovery` records the first refusal;
-  a second refusal remains a failure. When the conversation is unavailable or
+  a second refusal remains a failure. The timeout applies to each attempt.
+  When the conversation is unavailable or
   unreadable, `command_diagnostic` says why the exact command could not be found.
   A command-only refusal does not call for broader permission grants.
 - A `google` failure that names denied file actions carries a `hint` with the exact

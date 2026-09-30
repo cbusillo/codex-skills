@@ -251,7 +251,8 @@ def agy_denied_commands(conversation_id: Any) -> tuple[list[str], str | None]:
             )
             for (blob,) in rows:
                 step = protobuf_fields(blob)
-                call = protobuf_fields(protobuf_fields(step[5])[4])
+                metadata = protobuf_fields(step.get(5, b""))
+                call = protobuf_fields(metadata.get(4, b""))
                 if call.get(2) != b"run_command":
                     continue
                 arguments = json.loads(call[3])
@@ -332,11 +333,11 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
             result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
-            if provider == "google" and result.get("denied") == ["command"] and result.get("denied_commands"):
+            if provider == "google" and result.get("denied") == ["command"]:
                 refusal = result
                 reminder = (
-                    "A previous attempt stopped after this refused command: "
-                    + json.dumps(refusal["denied_commands"])
+                    "A previous attempt stopped after a refused command request"
+                    + (": " + json.dumps(refusal["denied_commands"]) if refusal["denied_commands"] else "")
                     + ". Complete this review using only read_file (view_file) and list_dir. "
                     "Do not call run_command at all. No permission changes are available.\n\n"
                 )
@@ -346,6 +347,8 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                     result = failed(provider, f"file-tool retry failed: {exc}")
                 result["recovery"] = {"attempts": 2, "denied_commands": refusal["denied_commands"],
                                       "conversation_id": refusal.get("conversation_id")}
+                if refusal.get("command_diagnostic"):
+                    result["recovery"]["command_diagnostic"] = refusal["command_diagnostic"]
     except subprocess.TimeoutExpired:
         return failed(provider, f"no answer within {timeout} seconds")
     except (OSError, RuntimeError) as exc:
@@ -353,7 +356,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     if result["ok"] and not result["response"].strip():
         result = {**result, "ok": False, "error": "the reviewer returned nothing"}
         result.pop("response")
-    if not result["ok"] and result.get("recovery") and not result.get("denied_commands"):
+    if not result["ok"] and result.get("recovery", {}).get("denied_commands") and not result.get("denied_commands"):
         result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
     return result
 
