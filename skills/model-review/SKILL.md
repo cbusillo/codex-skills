@@ -82,7 +82,15 @@ paper over it by pasting files into the prompt.
 
 - Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
-- A `google` failure that names denied actions carries a `hint` with the exact
+- Google uses `read_file` (`view_file`) for file reads, including
+  successive line ranges for large files. If a shell command is refused, the
+  helper reads only that run's saved conversation to name the command and
+  retries once with file tools only. `recovery` records the first refusal;
+  a second refusal remains a failure. The timeout applies to each attempt.
+  When the conversation is unavailable or
+  unreadable, `command_diagnostic` says why the exact command could not be found.
+  A command-only refusal does not call for broader permission grants.
+- A `google` failure that names denied file actions carries a `hint` with the exact
   allow rules the user's own `agy` settings need. Show the user that hint. Apply
   it with the `configure` subcommand only when the user asks: it edits their
   personal tool configuration, and the rule applies to every `agy` session.
