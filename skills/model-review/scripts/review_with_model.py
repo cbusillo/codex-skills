@@ -21,10 +21,12 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -172,7 +174,18 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
         return failed("google", f"agy exited {proc.returncode} without JSON", detail=proc.stdout[-400:])
     denied = sorted({item.get("action", "?") for item in payload.get("denied_actions") or []})
     if denied:
-        return failed("google", f"agy was denied: {', '.join(denied)}", denied=denied, hint=agy_hint(repo))
+        commands, diagnostic = agy_denied_commands(payload.get("conversation_id")) if "command" in denied else ([], None)
+        error = f"agy was denied: {', '.join(denied)}"
+        if commands:
+            error += f"; refused command: {'; '.join(commands)}"
+        result = failed("google", error, denied=denied, denied_commands=commands,
+                        conversation_id=payload.get("conversation_id"))
+        if diagnostic:
+            result["command_diagnostic"] = diagnostic
+        # A shell refusal is not evidence of missing file access. Do not recommend new grants for it.
+        if denied != ["command"]:
+            result["hint"] = agy_hint(repo)
+        return result
     if payload.get("status") not in (None, "SUCCESS"):
         return failed("google", f"agy finished with status {payload.get('status')}")
     # agy does not report the model that ran; say where the name came from instead of implying it did.
@@ -187,6 +200,67 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
 
 
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
+
+
+def protobuf_fields(data: bytes) -> dict[int, Any]:
+    """Read agy's protobuf wire envelope without decoding opaque tool output blobs."""
+    offset = 0
+
+    def varint() -> int:
+        nonlocal offset
+        value = 0
+        for shift in range(0, 70, 7):
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 127) << shift
+            if byte < 128:
+                return value
+        raise ValueError("invalid protobuf varint")
+
+    fields = {}
+    while offset < len(data):
+        tag = varint()
+        number, wire = tag >> 3, tag & 7
+        if not number:
+            raise ValueError("invalid protobuf field")
+        if wire == 0:
+            fields[number] = varint()
+            continue
+        size = varint() if wire == 2 else {1: 8, 5: 4}.get(wire)
+        if size is None or offset + size > len(data):
+            raise ValueError("invalid protobuf length or wire type")
+        fields[number] = data[offset:offset + size]
+        offset += size
+    return fields
+
+
+def agy_denied_commands(conversation_id: Any) -> tuple[list[str], str | None]:
+    """Read only the named run's failed/pending tool calls; never scan other conversations.
+
+    Observed agy schema: step field 5 is metadata, metadata field 4 is the tool call,
+    and call fields 2/3 hold its name/JSON arguments. Status 6 is a stopped pending
+    call, 7 a failed call. The caller has already confirmed a command denial in JSON.
+    """
+    if not isinstance(conversation_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id):
+        return [], "agy did not report a valid conversation_id; refused command unavailable"
+    path = AGY_SETTINGS.expanduser().parent / "conversations" / f"{conversation_id}.db"
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
+            rows = connection.execute(
+                "SELECT step_payload FROM steps WHERE status IN (6, 7) ORDER BY idx DESC"
+            )
+            for (blob,) in rows:
+                step = protobuf_fields(blob)
+                call = protobuf_fields(protobuf_fields(step[5])[4])
+                if call.get(2) != b"run_command":
+                    continue
+                arguments = json.loads(call[3])
+                command = arguments.get("CommandLine")
+                if isinstance(command, str) and command:
+                    return [command], None
+    except (sqlite3.Error, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        return [], f"could not read agy refused command: {exc}"
+    return [], "no refused command found in agy's saved conversation"
 
 
 def branch_diff(repo: Path) -> bytes:
@@ -248,14 +322,27 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 permitted = ", ".join(f"`{name}`" for name in AGY_READ_ONLY_COMMANDS)
                 preamble += (
                     f"The only commands you may run are {permitted}. "
-                    "Use read_file to inspect file contents and for anything those commands cannot read. "
-                    "Do not run other commands.\n\n"
+                    "Use read_file (view_file) to inspect file contents, including large files: read successive "
+                    "line ranges when needed. Use list_dir to discover paths. Do not use shell reads such as "
+                    "cat, head, tail or sed, or pipelines, command chaining or substitutions. "
+                    "Do not run other commands. If a command is refused, continue with file tools.\n\n"
                 )
             if diff:
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode("utf-8", errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
             result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
+            if provider == "google" and result.get("denied") == ["command"] and result.get("denied_commands"):
+                refusal = result
+                reminder = (
+                    "A previous attempt stopped after this refused command: "
+                    + json.dumps(refusal["denied_commands"])
+                    + ". Complete this review using only read_file (view_file) and list_dir. "
+                    "Do not call run_command at all. No permission changes are available.\n\n"
+                )
+                result = review_google(preamble + reminder + prompt, repo, model, timeout, Path(scratch))
+                result["recovery"] = {"attempts": 2, "denied_commands": refusal["denied_commands"],
+                                      "conversation_id": refusal.get("conversation_id")}
     except subprocess.TimeoutExpired:
         return failed(provider, f"no answer within {timeout} seconds")
     except (OSError, RuntimeError) as exc:
