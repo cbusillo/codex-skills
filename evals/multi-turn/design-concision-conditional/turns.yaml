@@ -1,0 +1,16 @@
+name: design-concision-conditional
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: 'Use shared:design-collaboration. Draft a durable issue comment summarizing
+    an accepted mobile design, with untested keyboard navigation and a missing error
+    state. Product docs currently repeat active design checklists and name the skills.
+    Explain the documentation cleanup, remaining validation, and future-session recovery
+    point. Offline trial: no writes or operational commands.'
+  expect:
+    owner: design-collaboration
+    final: (?is)(issue|GitHub).*(keyboard|error)
+    read: skills/references/talking-with-the-owner.md
