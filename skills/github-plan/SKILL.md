@@ -355,7 +355,11 @@ reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
-owner's decision comment after the last Current Status update. Never bypass a
+owner's decision comment after the last Current Status update, or the owner's
+thumbs-up reaction after that update on an unedited comment whose first line is
+`Owner decision: Close #<number> as not planned.` Record the exact action in a
+new comment; editing a reacted-to decision invalidates it. If reaction identity,
+time, or edit history cannot be read, the helper rejects it. Never bypass a
 closure refusal through another tool.
 
 Prefer non-closing `Refs` from PRs unless the owner requests auto-close or an

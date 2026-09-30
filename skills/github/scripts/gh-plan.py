@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 import pathlib
@@ -3521,7 +3522,7 @@ def owner_decision_refusal(message: str, *, cause: str = "validation_error") -> 
         message,
         failure=github_api_core.FailureDetail(
             cause=cause,
-            message="not-planned close of direction milestone work needs the owner's comment",
+            message="not-planned close of direction milestone work needs the owner's decision",
             retryable=False,
             fallback_eligible=False,
             disposition="stop",
@@ -3531,13 +3532,85 @@ def owner_decision_refusal(message: str, *, cause: str = "validation_error") -> 
     )
 
 
+OWNER_DECISION_COMMENT_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on IssueComment { databaseId body createdAt lastEditedAt }
+  }
+}
+"""
+
+
+def unedited_owner_decision(comment: dict[str, Any]) -> bool:
+    """Require explicit edit-history evidence matching the recorded comment."""
+    node_id = comment.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        return False
+    _, data = api_json(
+        "POST", "/graphql",
+        {"query": OWNER_DECISION_COMMENT_QUERY, "variables": {"id": node_id}},
+        is_write=False, failed_step="read_owner_decision_edit_history",
+    )
+    if data.get("errors"):
+        return False
+    node = (data.get("data") or {}).get("node")
+    return (
+        isinstance(node, dict)
+        and "lastEditedAt" in node and node["lastEditedAt"] is None
+        and node.get("databaseId") == comment.get("id")
+        and node.get("body") == comment.get("body")
+        and node.get("createdAt") == comment.get("created_at")
+    )
+
+
+def owner_reaction_decision(
+    issue_repo: str, number: int, comment: dict[str, Any], status_updated_at: str,
+) -> dict[str, Any] | None:
+    # An exact first line binds the reaction to this issue and this action.
+    body = comment.get("body")
+    if not isinstance(body, str) or body.splitlines()[:1] != [f"Owner decision: Close #{number} as not planned."]:
+        return None
+    comment_id = comment.get("id")
+    if not isinstance(comment_id, int) or isinstance(comment_id, bool):
+        return None
+    if not unedited_owner_decision(comment):
+        return None
+    _, reactions = collect_paged_rest_items(
+        f"/repos/{issue_repo}/issues/comments/{comment_id}/reactions",
+        query={}, bucket="rest_core", step_prefix="owner_decision_reactions",
+    )
+    for reaction in reactions:
+        login = (reaction.get("user") or {}).get("login")
+        reacted_at = reaction.get("created_at")
+        created_at = comment.get("created_at")
+        try:
+            times = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in
+                     (reacted_at, created_at, status_updated_at)]
+            if any(value.tzinfo is None for value in times):
+                continue
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if (
+            reaction.get("content") == "+1"
+            and isinstance(login, str) and login.casefold() == issue_repo.split("/", 1)[0].casefold()
+            and isinstance(reacted_at, str) and isinstance(created_at, str)
+            and times[0] > times[2] and times[0] >= times[1]
+            and unedited_owner_decision(comment)
+        ):
+            return {
+                "approval": "owner_reaction", "comment_url": comment.get("html_url"),
+                "reaction_id": reaction.get("id"), "reacted_at": reacted_at,
+            }
+    return None
+
+
 def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[str, Any]) -> dict[str, Any]:
     """Refuse to drop milestone work the owner admitted unless the owner said so.
 
     Applies only to an issue in a milestone listed in the merged DIRECTION.md.
-    The decision is a comment authored by the repository owner after the body,
-    which holds Current Status, was last edited. Automation cannot author as
-    the owner, so no session can satisfy this by itself.
+    The decision is an owner comment or an owner thumbs-up on an unedited
+    recorded decision, after the body holding Current Status was last edited.
+    Automation cannot supply the owner identity on either path.
     """
     milestone = issue.get("milestone")
     title = milestone.get("title") if isinstance(milestone, dict) else None
@@ -3575,8 +3648,7 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
 
     _, comments = collect_paged_rest_items(
         f"/repos/{issue_repo}/issues/{number}/comments",
-        query={"since": status_updated_at},
-        bucket="rest_core",
+        query={}, bucket="rest_core",
         step_prefix="owner_decision_comments",
     )
     for comment in comments:
@@ -3594,11 +3666,22 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
                 "status_updated_at": status_updated_at,
                 "comment_url": comment.get("html_url"),
             }
+    try:
+        for comment in comments:
+            decision = owner_reaction_decision(issue_repo, number, comment, status_updated_at)
+            if decision is not None:
+                return {"required": True, "milestone": title, "status_updated_at": status_updated_at} | decision
+    except (PlanError, KeyError, TypeError, AttributeError) as exc:
+        raise owner_decision_refusal(
+            f"Cannot close {issue_repo}#{number} as not planned: could not verify the owner's "
+            "reaction and the decision's edit history.", cause="read_failure",
+        ) from exc
     raise owner_decision_refusal(
         f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
         f"last Current Status update ({status_updated_at}) records the decision. Ask the owner to comment "
-        "on the issue with the decision, then rerun; do not close it another way."
+        "on the issue, or react with thumbs-up to an unedited comment whose first line is "
+        f"\"Owner decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )
 
 
