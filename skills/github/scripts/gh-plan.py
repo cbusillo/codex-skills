@@ -2202,9 +2202,11 @@ def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list
         except PlanError as exc:
             errors.append({"number": issue["number"], "error": next_source_error(exc)})
             continue
-        downstream = [item for item in targets if item["state"] == "open" and item["repo"].casefold() != repo.casefold()]
+        source_repo = issue_repository_name(issue) or repo
+        downstream = [item for item in targets if item["state"] == "open" and item["repo"].casefold() != source_repo.casefold()]
         if downstream:
-            report.append({**compact_list_issue(repo, issue), "blocking": downstream})
+            report.append({**compact_list_issue(repo, issue), "blocking": downstream,
+                           "selection": "visibility_only_review_recorded_waits_and_ownership_before_starting"})
     return actor, report, {
         "complete": not (inventory_truncated or len(gates) > scan_limit or errors),
         "inventory_count": min(len(inventory), NEXT_PLAN_INVENTORY_LIMIT),
@@ -2212,6 +2214,7 @@ def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list
         "gate_count": len(gates), "evaluated": min(len(gates), scan_limit),
         "scan_limit": scan_limit, "errors": errors,
         "scope": "repository_open_cross_repository_dependencies",
+        "unevaluated": [{"number": issue["number"]} for issue in gates[scan_limit:]],
     }
 
 

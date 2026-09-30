@@ -45,6 +45,7 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
+MAX_INBOUND_ISSUES = 50
 
 
 class AuditError(Exception):
@@ -217,6 +218,11 @@ def audit(
         labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
         number = issue.get("number")
         state = issue.get("state", "open")
+        if state == "open" and "plan:waiting" in labels and issue.get("_blocking_work_elsewhere"):
+            findings.append({
+                "kind": "waiting_blocks_other_repository", "number": number,
+                "title": issue.get("title"), "blocking": issue["_blocking_work_elsewhere"],
+            })
         if AUDIT_LABEL in labels:
             if state == "open":
                 findings.append({"kind": "audit_question", "number": number, "title": issue.get("title")})
@@ -262,6 +268,7 @@ def audit(
         "milestone_issue_quote_missing": 8,
         "milestone_issue_quote_mismatch": 8,
         "gate_phrase": 9,
+        "waiting_blocks_other_repository": 8,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
     return {
@@ -426,6 +433,46 @@ def previous_audit_stamp(repo: str) -> dt.datetime | None:
         return None
 
 
+def enrich_waiting_inbound_blockers(
+    issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
+    max_issues: int = MAX_INBOUND_ISSUES,
+) -> bool:
+    """Read native inbound dependencies for waiting issues, including unmilestoned ones."""
+    incomplete = False
+    examined = 0
+    for issue in issues:
+        labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
+        if ("pull_request" in issue or issue.get("state", "open") != "open"
+                or "plan:waiting" not in labels
+                or (issue.get("issue_dependencies_summary") or {}).get("blocking") == 0):
+            continue
+        if examined >= max_issues:
+            incomplete = True
+            continue
+        examined += 1
+        try:
+            targets, cut = fetch_paginated(
+                f"repos/{repo}/issues/{issue['number']}/dependencies/blocking", fetch=fetch, max_pages=2,
+            )
+            incomplete = incomplete or cut
+            blocking = []
+            for target in targets:
+                if target.get("state") == "closed" or "pull_request" in target:
+                    continue
+                url = str(target.get("html_url") or target.get("url") or "")
+                match = re.search(r"github\.com/(?:repos/)?([^/]+/[^/]+)/issues/([0-9]+)", url)
+                if not match or target.get("state") != "open":
+                    raise AuditError("ambiguous blocking issue repository or state")
+                target_repo = match.group(1)
+                if target_repo.casefold() != repo.casefold():
+                    blocking.append({"repo": target_repo, "number": int(match.group(2)),
+                                     "url": f"https://github.com/{target_repo}/issues/{match.group(2)}"})
+            issue["_blocking_work_elsewhere"] = blocking
+        except AuditError:
+            incomplete = True
+    return incomplete
+
+
 def fetch_audit_issues(
     repo: str, milestones: list[dict[str, Any]], milestone_lines: dict[str, str],
     since: dt.datetime, *, fetch: Callable[[list[str]], Any],
@@ -464,6 +511,8 @@ def fetch_audit_issues(
     issues = list({issue.get("number"): issue for issue in issues}.values())
     if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch):
         truncated.append("milestone_issue_events")
+    if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
+        truncated.append("waiting_inbound_blockers")
     return issues, truncated
 
 

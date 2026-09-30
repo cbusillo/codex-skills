@@ -1357,14 +1357,14 @@ def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:
         assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
         return "automation-gh", gates
 
-    with patch.object(module, "collect_paged_rest_items", collect):
+    with patch.multiple(module, collect_paged_rest_items=collect):
         _, report, context = module.real_read_next_inbound_blockers("owner/repo", scan_limit=1)
     assert report[0]["number"] == 1
     assert len(report[0]["blocking"]) == module.NEXT_RELATIONSHIP_LIMIT
     assert context["complete"] is False and context["evaluated"] == 1
     assert context["gate_count"] == 2 and context["errors"]
     assert len(calls) == 2
-    with patch.object(module, "NEXT_PLAN_INVENTORY_LIMIT", 1), patch.object(module, "collect_paged_rest_items", collect):
+    with patch.multiple(module, NEXT_PLAN_INVENTORY_LIMIT=1), patch.multiple(module, collect_paged_rest_items=collect):
         _, _, context = module.real_read_next_inbound_blockers("owner/repo", scan_limit=3)
     assert context["inventory_truncated"] and not context["complete"]
 
@@ -1382,7 +1382,7 @@ def test_inbound_failure_does_not_degrade_successful_plan_reads() -> None:
     assert captured["dependency_context"]["complete"] is True
     assert captured["blocking_work_elsewhere_context"]["complete"] is False
     failure = module.github_api_core.FailureDetail(cause="rest_primary_rate_limited", message="quota exhausted", retryable=False, fallback_eligible=False, disposition="stop")
-    with patch.object(module, "collect_paged_rest_items", Mock(side_effect=module.PlanError("quota exhausted", failure=failure))):
+    with patch.multiple(module, collect_paged_rest_items=Mock(side_effect=module.PlanError("quota exhausted", failure=failure))):
         try:
             module.real_read_next_inbound_blockers("owner/repo", scan_limit=2)
         except module.PlanError as exc:
