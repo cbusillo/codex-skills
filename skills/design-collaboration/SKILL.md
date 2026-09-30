@@ -95,6 +95,8 @@ Do not blindly trust returned UI/design output.
   in the issue or issue comments.
 - If the returned design is not implementable, reduce it to the closest
   shippable version and record the tradeoff.
+- Update `Decisions`, `Acceptance Criteria`, `Validation`, and `Current Status`
+  instead of leaving conclusions only in chat.
 - Finish passes should leave reviewable proof for key states, accessibility
   basics, responsive behavior, and destructive-action safety when relevant.
 
@@ -125,8 +127,8 @@ issue.
    required states using the guidance above.
 4. Implement when the user explicitly asks, when accepted direction is already
    captured and execution is the requested next step, or after an explicitly
-   requested external design pass has been accepted. If brief preparation is
-   followed by an explicit request to implement or start coding, proceed
+   requested external design pass has been accepted. When the user has asked to read or prepare from a design brief and then
+   explicitly says to implement it, start coding, or move to implementation, proceed
    without another confirmation unless a real blocker or scope ambiguity
    remains. A bare "go" or "go ahead" alone does not approve switching into
    implementation.
@@ -135,6 +137,6 @@ issue.
 6. Keep `Decisions`, `Acceptance Criteria`, `Validation`, and `Current Status`
    current with accepted direction, intentional departures, evidence, PR links,
    and remaining work. `Current Status` is the future-session recovery point.
-   Link implementation PRs with `Refs #123` unless auto-close is intended and
+   Link implementation PRs with `Refs #123` unless auto-close is clearly intended and
    validation can conclusively finish the issue. Before closeout, reconcile
    stale/related issues rather than leaving conclusions only in chat.
