@@ -1,0 +1,15 @@
+name: browser-concision-primary
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: Use shared:browser-ui-review. We need final signoff of a public settings
+    page with a Save button and responsive sidebar. The host has an in-app browser.
+    No live browser tools exist in this offline trial. Describe the concrete QA inventory
+    and interaction/evidence sequence you would execute; do not sign off or run operational
+    commands.
+  expect:
+    owner: browser-ui-review
+    final: Save|save

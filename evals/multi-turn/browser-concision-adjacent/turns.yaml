@@ -1,0 +1,15 @@
+name: browser-concision-adjacent
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: Use shared:browser-ui-review. Accepted design notes require initial, error,
+    success and narrow viewport states. A static HTML check passed and an OS screenshot
+    looks plausible. Is this sufficient to sign off? State the next verification and
+    how a mismatch to the notes is handled. This is an offline trial; do not run operational
+    commands.
+  expect:
+    owner: browser-ui-review
+    final: (?is)(browser|live).*(design|accepted)|(?:design|accepted).*(browser|live)
