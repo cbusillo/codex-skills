@@ -538,18 +538,19 @@ def test_fetch_paginated_follows_full_pages_and_flags_the_cap() -> None:
 def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> None:
     module = load()
     gate = issue(2554, "Gate", labels=("plan", "plan:waiting"))
+    gate["html_url"] = "https://github.com/owner/repo/issues/2554"
     calls: list[str] = []
     targets = [
         {"number": 141, "state": "open", "html_url": "https://github.com/owner/other/issues/141"},
         {"number": 142, "state": "closed", "html_url": "https://github.com/owner/other/issues/142"},
-        {"number": 10, "state": "open", "html_url": "https://github.com/owner/repo/issues/10"},
+        {"number": 10, "state": "open", "url": "https://api.github.com/repos/OWNER/REPO/issues/10"},
     ]
 
     def fetch(args: list[str]) -> Any:
         calls.append(args[1])
         return targets
 
-    assert not module.enrich_waiting_inbound_blockers([gate], "owner/repo", fetch=fetch)
+    assert not module.enrich_waiting_inbound_blockers([gate], "owner/old-name", fetch=fetch)
     result = run(module, issues=[gate])
     pair = next(item for item in result["findings"] if item["kind"] == "waiting_blocks_other_repository")
     assert pair["number"] == 2554

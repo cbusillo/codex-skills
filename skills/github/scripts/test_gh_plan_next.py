@@ -1312,6 +1312,7 @@ def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
     gate = issue(2554, labels=["plan", "plan:waiting"])
     bug = issue(2555, labels=["bug"])
     for item in (gate, bug):
+        item.pop("repo")  # REST issue payload identifies its repository through URLs
         item["issue_dependencies_summary"] = {"blocking": 1}
     plan = issue(1, milestone=milestone_data(1, "First", created_at="2026-07-01"))
     plan["issue_dependencies_summary"] = {"blocking": 0}
@@ -1369,7 +1370,7 @@ def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:
     assert context["inventory_truncated"] and not context["complete"]
 
 
-def test_inbound_failure_does_not_degrade_successful_plan_reads() -> None:
+def test_inbound_unclassified_failure_degrades_report_but_quota_stops() -> None:
     module = load_module()
     captured: dict[str, Any] = {}
     with patch.multiple(module, collect_paged_rest_items=lambda *_a, **_kw: ("automation-gh", [issue(1)]),
@@ -1394,7 +1395,7 @@ def test_inbound_failure_does_not_degrade_successful_plan_reads() -> None:
 TESTS = [
     test_local_next_inbound_scan_preserves_plan_budget_and_waits,
     test_inbound_scan_bounds_and_partial_reads_are_explicit,
-    test_inbound_failure_does_not_degrade_successful_plan_reads,
+    test_inbound_unclassified_failure_degrades_report_but_quota_stops,
     test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
     test_portfolio_service_discoveries_cannot_bypass_exclusions_or_parent_context,
     test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,

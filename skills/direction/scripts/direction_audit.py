@@ -147,7 +147,7 @@ def audit(
     findings: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
     if truncated:
-        findings.append({"kind": "coverage_incomplete", "detail": "a listing hit the page cap; drift beyond it is unreported", "listings": sorted(truncated)})
+        findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
     if direction_text is None:
         findings.append({"kind": "direction_missing", "detail": "DIRECTION.md not found at the repository root"})
         listed: list[str] = []
@@ -456,6 +456,9 @@ def enrich_waiting_inbound_blockers(
             )
             incomplete = incomplete or cut
             blocking = []
+            source_url = str(issue.get("html_url") or issue.get("url") or "")
+            source = re.search(r"github\.com/(?:repos/)?([^/]+/[^/]+)/issues/[0-9]+", source_url)
+            source_repo = source.group(1) if source else repo
             for target in targets:
                 if target.get("state") == "closed" or "pull_request" in target:
                     continue
@@ -464,7 +467,7 @@ def enrich_waiting_inbound_blockers(
                 if not match or target.get("state") != "open":
                     raise AuditError("ambiguous blocking issue repository or state")
                 target_repo = match.group(1)
-                if target_repo.casefold() != repo.casefold():
+                if target_repo.casefold() != source_repo.casefold():
                     blocking.append({"repo": target_repo, "number": int(match.group(2)),
                                      "url": f"https://github.com/{target_repo}/issues/{match.group(2)}"})
             issue["_blocking_work_elsewhere"] = blocking
