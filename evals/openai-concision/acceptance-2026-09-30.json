@@ -1,0 +1,2399 @@
+{
+  "baseline_sha": "792dd3bd5fbda18b11b191d803a0dddba72479f3",
+  "freeze_sha": "3e2fa51ffca30b8b854a6cc98f1aec646562bc59",
+  "guidance_sha": "ca47770ad04a708a84c51edefdc87337405572ca",
+  "entrypoint_frontmatter_helpers_other_references_unchanged": true,
+  "changed_reference_words_before": 458,
+  "changed_reference_words_after": 278,
+  "net_maintained_words_removed": 180,
+  "review": {
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "result": "No lost decision or realistic reference regression. Acted on low grader-evidence gaps by checking raw source-page delivery/citations, explicit-model preservation and unnecessary primary-route reads. Frozen grader scores preserved. No instruction change requested."
+  },
+  "limitations": [
+    "Offline explicitly supplied already-fetched official-page fixtures. Tests post-fetch specialized workflow; not live docs-first retrieval, real product/model facts or API execution. Entry-point source-order rules unchanged.",
+    "Real Claude Code claude-opus-5-5 and Codex gpt-6-luna medium, isolated Codex homes/caller PATH, same settings/models per harness. Configured models are not independently verified backend routing.",
+    "Conditional prompt supplies a genuine unresolved source-selection gap and asks for specialized workflow; this checks that workflow, not unprompted discovery. Frozen native read/final checks are incomplete; raw source-page/citation/primary-reference checks supplement rather than replace them.",
+    "Codex apparent per-case losses repeated; compound reads ending rg exit 1 can hide delivered entrypoints, final regex rejects neither/unestablished synonyms, and wrong generated .system skill paths or boundary-refused compound searches can stop completion. Keep all failures; #895/#872 own those limits.",
+    "No general speedup or reliability improvement is claimed. Current source/refactor correctness is distinct from native rubric scores.",
+    "Initial Codex candidate ambiguity-2 failed before reading any skill or source: wrong generated .system path then boundary refusal. Both ambiguity repeats read the source correctly and preserve gpt-4.1; candidate repeat ambiguity-1 still omits citation, kept as incomplete output evidence. All conditional source/ref reads and citations succeed in raw traces on both arms/repeats; primary trials that deliver the supplied source provide SSE with citation; no primary trial reads a route reference. No repeated loss involving changed reference observed.",
+    "Repeat baseline Codex primary-1 stops before reading any skill/source because wrong skill path recovery attempts a boundary-refused find. It supplies no transport answer or citation and is retained as a genuine task-completion failure, not merely a native grader error."
+  ],
+  "summaries": {
+    "baseline-claude": {
+      "trials": 8,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 239764,
+        "cached_input": 152828,
+        "output": 3403
+      },
+      "total_seconds": 53.9
+    },
+    "baseline-codex": {
+      "trials": 8,
+      "native_full_passes": 3,
+      "total_usage": {
+        "input": 356761,
+        "cached_input": 294656,
+        "output": 2255
+      },
+      "total_seconds": 108.1
+    },
+    "candidate-claude": {
+      "trials": 8,
+      "native_full_passes": 8,
+      "total_usage": {
+        "input": 239128,
+        "cached_input": 152862,
+        "output": 3593
+      },
+      "total_seconds": 54.7
+    },
+    "candidate-codex": {
+      "trials": 8,
+      "native_full_passes": 3,
+      "total_usage": {
+        "input": 418723,
+        "cached_input": 345600,
+        "output": 2598
+      },
+      "total_seconds": 112.3
+    },
+    "repeat-baseline-codex": {
+      "trials": 8,
+      "native_full_passes": 2,
+      "total_usage": {
+        "input": 380224,
+        "cached_input": 308736,
+        "output": 2902
+      },
+      "total_seconds": 144.60000000000002
+    },
+    "repeat-candidate-codex": {
+      "trials": 8,
+      "native_full_passes": 6,
+      "total_usage": {
+        "input": 412100,
+        "cached_input": 347136,
+        "output": 2515
+      },
+      "total_seconds": 128.00000000000003
+    }
+  },
+  "trials": [
+    {
+      "host": "claude",
+      "case": "openai-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.4,
+      "usage": {
+        "input": 13674,
+        "cached_input": 4812,
+        "output": 18
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7d98b4b8d2027ce3de2160427b896bcfb5a2d7476dc64770585a9e1f73017b7e",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.5,
+      "usage": {
+        "input": 13674,
+        "cached_input": 4812,
+        "output": 19
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "443c5bcdad403eef264ad7e94582d000d2688c947b9fa3de30a655550acb839e",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.8,
+      "usage": {
+        "input": 29654,
+        "cached_input": 18544,
+        "output": 520
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "09507911a4053aea333b3528e6caac105a5c5b8c19d3f5162a74c8aeeb1ac190",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.1,
+      "usage": {
+        "input": 29633,
+        "cached_input": 18544,
+        "output": 517
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "b2f89d265468e65a6d98b8d08b287bd7d7356a92817d1b5273e572075dae4a64",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-conditional",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.5,
+      "usage": {
+        "input": 46989,
+        "cached_input": 34533,
+        "output": 760
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "e69305b0e4950b67c578f73ec7961ec7d77b27106aa49621daa1726e11f5a843",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-conditional",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.0,
+      "usage": {
+        "input": 46999,
+        "cached_input": 34533,
+        "output": 836
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a78b919a92dbd5656c1b1a64784f56b58fd70ef0e977d17597b1ce072d92f27f",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.0,
+      "usage": {
+        "input": 29571,
+        "cached_input": 18525,
+        "output": 372
+      },
+      "cohort": "baseline-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "ba03f4f1bd1a72a344eeca48f5f2e716d47d4842fb039c34c4b545e614b11f1b",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.6,
+      "usage": {
+        "input": 29570,
+        "cached_input": 18525,
+        "output": 361
+      },
+      "cohort": "baseline-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "0b3db7d7937626f0bf88fa9bf04ba00b187508c0e4f7bc8ef92b5553b96f7323",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.1,
+      "usage": {
+        "input": 15997,
+        "cached_input": 11008,
+        "output": 17
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "956d8bdaf5985aad73566e61bac6ddbc47b113f48922d864f5a88141b3fac5e7",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 7.2,
+      "usage": {
+        "input": 15997,
+        "cached_input": 11008,
+        "output": 19
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "33fbd46c2d226eb5cd3b8186835f0af6b039e57d67abe157f980f25cfe0e6771",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.0,
+      "usage": {
+        "input": 49751,
+        "cached_input": 41216,
+        "output": 272
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "68bbc026d65a11dd9c91d33fa944f7dff41159f7d7df0886d5f954a135eacabc",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.3,
+      "usage": {
+        "input": 52199,
+        "cached_input": 43264,
+        "output": 312
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a2d14340b8f91f73d12d095c4a7084c27250d4811d593c52984cc2969b2c28dc",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 19.0,
+      "usage": {
+        "input": 52879,
+        "cached_input": 43264,
+        "output": 435
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "6de2d2b540e288832c5e00c2d141fb45d39cf65345ccb040cbee2a968df3d359",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 16.4,
+      "usage": {
+        "input": 51588,
+        "cached_input": 43264,
+        "output": 497
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "647747f092f4ed05e4d5ab468c2e8b996747d8265e70d0ae0390ba71b7a8621b",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.6,
+      "usage": {
+        "input": 67655,
+        "cached_input": 58368,
+        "output": 489
+      },
+      "cohort": "baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "b9e3c0aef44633b449eb8823f4112a447b37335fdfe84da63c3a8ff148b78199",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.5,
+      "usage": {
+        "input": 50695,
+        "cached_input": 43264,
+        "output": 214
+      },
+      "cohort": "baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7f9fe3b1e50f524aaea750c76b053cef21846ce76be8e344088232c4d58ac5bb",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.6,
+      "usage": {
+        "input": 13674,
+        "cached_input": 4812,
+        "output": 25
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "fd1703feda2f5ac76951bbfea860fc17ec06fa3f439fc0b7cd74d65133be215b",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-adjacent",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 2.6,
+      "usage": {
+        "input": 13674,
+        "cached_input": 4812,
+        "output": 23
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "b9b53c65365cabe49e9b608fd65b9d909d1ab410a2435c1e2a7e9ff8db70e34e",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.3,
+      "usage": {
+        "input": 29653,
+        "cached_input": 18544,
+        "output": 596
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "577245006d39891f733da33bc1c920fe52892bd4acc166603a799574f79ae524",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 8.4,
+      "usage": {
+        "input": 29631,
+        "cached_input": 18544,
+        "output": 552
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "d8f204ab4ac2fae314529ab5635a265cf7cb724dccc6a9877e112e3b8b49f134",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-conditional",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.9,
+      "usage": {
+        "input": 46683,
+        "cached_input": 34538,
+        "output": 857
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "28cb0d347c171a6766880c9fe2d153eb10f061b383db4357c788bd9ef2840f56",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-conditional",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 10.6,
+      "usage": {
+        "input": 46697,
+        "cached_input": 34562,
+        "output": 845
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "149ff1a3fb70a9f21c1e54d8da523db0c7d39056fda18ab3aebda095c3f491f2",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.7,
+      "usage": {
+        "input": 29558,
+        "cached_input": 18525,
+        "output": 352
+      },
+      "cohort": "candidate-claude",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "0018dfc88604375ee2384aa38de66085bec4fbb8af86d182157c4b334cee623f",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "claude",
+      "case": "openai-concision-primary",
+      "configured_model": "claude-opus-5-5",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.6,
+      "usage": {
+        "input": 29558,
+        "cached_input": 18525,
+        "output": 343
+      },
+      "cohort": "candidate-claude",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 1,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a7ee50e8e16d62680947682dc49c7224934167acf22ca9616ab621aeefd4c9c1",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.3,
+      "usage": {
+        "input": 15985,
+        "cached_input": 11008,
+        "output": 18
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "28aa4ccabac935949b03203342857447e19c381bc09ee1f01ce8cab6ee7dffe0",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.5,
+      "usage": {
+        "input": 15985,
+        "cached_input": 11008,
+        "output": 20
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "9b91698e5ab56634fa703557202b379bc74d65b48b735c3a5717e7961d953c42",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 14.2,
+      "usage": {
+        "input": 50962,
+        "cached_input": 43264,
+        "output": 421
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "e5a7367bee728709c9ae1790fd3dd17ad16fb78b924edf32a65561374ac6e5e5",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.3,
+      "usage": {
+        "input": 48806,
+        "cached_input": 42240,
+        "output": 428
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "pwd; rg --files <task-worktree>/.local/openai-eval/candidate-codex/openai-concision-ambiguity-2 | rg '(^|/)(SKILL\\.md|official-page\\.md|AGENTS\\.md)$'"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "0951c478f63550d9f4b6cffd8dbed3a6786cfa13ab6507e74b7f766b4e54bd89",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 18.0,
+      "usage": {
+        "input": 51531,
+        "cached_input": 43264,
+        "output": 446
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "36313ce48e51129c248383b343f61b5568d8000dff0f31da75ceb2c729141b0f",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 31.7,
+      "usage": {
+        "input": 149514,
+        "cached_input": 129536,
+        "output": 943
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "f1852494ff27042b30566a514b72eb015ecfd31d80178708bdce8a75507f1a9e",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 9.7,
+      "usage": {
+        "input": 33977,
+        "cached_input": 22016,
+        "output": 142
+      },
+      "cohort": "candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "95114b41001b55cf09d4933d6be28c1863faa27e3ba686c15ac6ec2cf3f42ed9",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 11.6,
+      "usage": {
+        "input": 51963,
+        "cached_input": 43264,
+        "output": 180
+      },
+      "cohort": "candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "31c338e0ba5af22ca809ba63fb9d29cb2a5611df83c1ce22c197aba6d674e71b",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.5,
+      "usage": {
+        "input": 16000,
+        "cached_input": 11008,
+        "output": 18
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "51e0747a00cb3383c49edc1419415e85c5273fba3d393d93a8c1365bd00b062d",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 5.8,
+      "usage": {
+        "input": 16000,
+        "cached_input": 11008,
+        "output": 17
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "1e1f89a67b67187763fa55ba83ed9ae910454b5e3b03eae1af9c09ba2d07c9cc",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 23.5,
+      "usage": {
+        "input": 67659,
+        "cached_input": 59392,
+        "output": 495
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "8fe823aa9f9636ee6dbece36b26665cc285735cdc9445a8ef502633dd5d98bf1",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.8,
+      "usage": {
+        "input": 66818,
+        "cached_input": 58368,
+        "output": 590
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": false
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": [
+          "<task-worktree>/.local/openai-eval/repeat-baseline-codex/openai-concision-ambiguity-2/codex-home/skills/openai-docs/SKILL.md"
+        ]
+      },
+      "raw_trace_sha256": "5554543b553d859432725b57f239863db3841a871506e7f28c7041b404f9f932",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 29.2,
+      "usage": {
+        "input": 79017,
+        "cached_input": 60416,
+        "output": 628
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "854f7f539744fa587af8042014b86bc15f658865c2f2e5874c17078d3abc1d72",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 35.1,
+      "usage": {
+        "input": 51663,
+        "cached_input": 43264,
+        "output": 641
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "a308f548508331c1d5d4cbe82f2e3e73d5a5fb84029d6faf9ef9dd35768a637d",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.3,
+      "usage": {
+        "input": 32389,
+        "cached_input": 22016,
+        "output": 309
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": false,
+          "turn1_final_matches": false,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": "cat <task-worktree>/.local/openai-eval/repeat-baseline-codex/openai-concision-primary-1/codex-home/skills/openai-docs/SKILL.md 2>/dev/null || find <task-worktree>/.local/openai-eval/repeat-baseline-codex/openai-concision-primary-1 -path '*/openai-docs/SKILL.md' -print"
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "86af1f820f8201a0275207dc3c39a36871b44642c8bdbd9578a90334a33aa35a",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": false
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "1d715d9871d9dbd68907314dea26d890fbe62698739f83f2414ff877cf42726e",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.4,
+      "usage": {
+        "input": 50678,
+        "cached_input": 43264,
+        "output": 204
+      },
+      "cohort": "repeat-baseline-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "aed159d377a8add88645b936d7b826dd7aecb5409a91c07fd488c4cd144e2e31",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 6.8,
+      "usage": {
+        "input": 15991,
+        "cached_input": 11008,
+        "output": 19
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "7ee3ca4a6deb6dc0e1ffc1db3c8507ac1d07eaff6dab366091232e8cde892eaa",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-adjacent",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "7877b116bae64403660dc22b69455c43adb49374580c2c2be15684bb2dbc0db1",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 4.6,
+      "usage": {
+        "input": 15991,
+        "cached_input": 11008,
+        "output": 17
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_no_unneeded_skills": true,
+          "turn1_no_operations": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "bf7c0462dd709cb24503c2480f48eead9d021fbfc9eb4ae93db29fe44427d604",
+      "trace_checks": {
+        "supplied_page_delivered": false,
+        "entrypoint_delivered": false,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 12.3,
+      "usage": {
+        "input": 52112,
+        "cached_input": 43264,
+        "output": 237
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "761ce92008656fc5877081a557a9f40134019c6537b5b52c7ba1ea0ab934bc5c",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": false,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-ambiguity",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "277d8cee262e49cefcdb67be78c9f5412f9e8ee93c4283b566a7b21bae155be2",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "input": 52106,
+        "cached_input": 43264,
+        "output": 259
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "c4b1fc62603c65675423a537b368ed3e61e14a076cddb7cba75d34e89f7ecd93",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": true,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 41.1,
+      "usage": {
+        "input": 85065,
+        "cached_input": 75520,
+        "output": 814
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": false
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": [
+          "<task-worktree>/.local/openai-eval/repeat-candidate-codex/openai-concision-conditional-1/codex-home/skills/openai-docs/SKILL.md"
+        ]
+      },
+      "raw_trace_sha256": "d648822c5ac7e9fc6469eb63d31abb286d9593ae9aff33b9167a824e70d9d7bb",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-conditional",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "158e08ff2c971666e7d70899a6d79eb68d9bb04a69029b8627917c757f5917a8",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 20.9,
+      "usage": {
+        "input": 68647,
+        "cached_input": 59392,
+        "output": 659
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": false,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": false,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "8131685e6cc9bd4a9c9ff2e65941e6ad48ede97c8581b21771d39ad2939e63f9",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": true,
+        "route_reference_read_attempted": true,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": null
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.4,
+      "usage": {
+        "input": 70082,
+        "cached_input": 60416,
+        "output": 247
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "1",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "87c2396c3f4312eac3f98f86c0230371802fdef74dea95c962e098abe38203cc",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    },
+    {
+      "host": "codex",
+      "case": "openai-concision-primary",
+      "configured_model": "gpt-6-luna",
+      "source_digest": "a03844a8341131bf4433cb90e5aa1f13606c44d0ff75586b1500732075a3721c",
+      "harness_digest": "60ef52e0cab87490c0a7fe53c3eecca047b2014255e771d9dd8630df0d5c8b4b",
+      "exit_code": 0,
+      "error": null,
+      "elapsed_seconds": 13.9,
+      "usage": {
+        "input": 52106,
+        "cached_input": 43264,
+        "output": 263
+      },
+      "cohort": "repeat-candidate-codex",
+      "repetition": "2",
+      "native_score": {
+        "passed": true,
+        "checks": {
+          "all_turns_ran": true,
+          "turn1_owner_before_first_operation": true,
+          "turn1_no_forbidden_operation": true,
+          "turn1_read_before_operation": true,
+          "turn1_final_matches": true,
+          "single_protocol_delivery": true,
+          "tested_catalog_only": true
+        },
+        "turns": [
+          {
+            "turn": 1,
+            "loaded_skills": [
+              "openai-docs"
+            ],
+            "first_operation": null
+          }
+        ],
+        "protocol_copies": 0,
+        "foreign_skill_reads": []
+      },
+      "raw_trace_sha256": "c2cc07ef8eb1612e500004a66c5fdf18792479f79a6340f93223b7a36869e0a5",
+      "trace_checks": {
+        "supplied_page_delivered": true,
+        "entrypoint_delivered": true,
+        "changed_reference_delivered": false,
+        "route_reference_read_attempted": false,
+        "official_source_citation": true,
+        "explicit_model_preserved": null,
+        "final_contains_sse": true
+      }
+    }
+  ]
+}
