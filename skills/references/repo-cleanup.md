@@ -74,6 +74,17 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    Prefer non-force Git removal. Force syntax never substitutes for resolving a
    hold; use it only when necessary for the exact already-authorized disposition
    after preservation and ownership evidence is complete.
+   For prepared Python worktrees, start each IDE that prepared the worktree,
+   close its project and reconcile its helper leases. After the disposition
+   above is established, release only the completed task's worktree lock. Use
+   `uv run <catalog>/skills/jetbrains-inspection/scripts/jb-inspect.py remove-worktree --repo /exact/task/path`
+   for a dry-run, then add `--no-dry-run` to retire helper-owned
+   SDKs through the live plugin before non-force Git removal. Missing plugin
+   support or a refusal retains the worktree. A Git removal failure can follow
+   successful SDK retirement; retain and report the exact result rather than
+   forcing removal. Use `cleanup-helper-sdks` dry-run then `--no-dry-run` for
+   proved helper-owned SDKs whose worktrees were already removed. Never edit
+   running IDE config files or infer ownership from SDK names.
 7. Verify the intended effect and preservation of the remaining state. Use the
    helper's revalidation/postcondition commands where its contract applies. A
    helper hold or failed verification is not a successful result. If a separately
