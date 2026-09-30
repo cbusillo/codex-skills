@@ -146,6 +146,8 @@
     - Repo plugin: `./plugins/<plugin-name>`
     - Local plugin in `~/.agents/plugins/marketplace.json`: `./plugins/<plugin-name>`
   - The same relative path convention is used for both repo-rooted and home-rooted marketplaces.
+  - Custom plugin parents use their actual relative path, rather than the default
+    `./plugins/<plugin-name>` location.
     - Example: with `~/.agents/plugins/marketplace.json`, `./plugins/<plugin-name>` resolves to `~/plugins/<plugin-name>`.
 - `policy` (`object`): Marketplace policy block. Always include it.
   - `installation` (`string`): Availability policy.

@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
 
 MAX_PLUGIN_NAME_LENGTH = 64
-DEFAULT_PLUGIN_PARENT = Path.cwd() / "plugins"
-DEFAULT_MARKETPLACE_PATH = Path.cwd() / ".agents" / "plugins" / "marketplace.json"
 DEFAULT_INSTALL_POLICY = "AVAILABLE"
 DEFAULT_AUTH_POLICY = "ON_INSTALL"
 DEFAULT_CATEGORY = "Productivity"
@@ -94,12 +94,13 @@ def build_marketplace_entry(
     install_policy: str,
     auth_policy: str,
     category: str,
+    source_path: str | None = None,
 ) -> dict[str, Any]:
     return {
         "name": plugin_name,
         "source": {
             "source": "local",
-            "path": f"./plugins/{plugin_name}",
+            "path": source_path or f"./plugins/{plugin_name}",
         },
         "policy": {
             "installation": install_policy,
@@ -137,6 +138,7 @@ def update_marketplace_json(
     auth_policy: str,
     category: str,
     force: bool,
+    plugin_root: Path | None = None,
 ) -> None:
     if marketplace_path.exists():
         payload = load_json(marketplace_path)
@@ -152,7 +154,11 @@ def update_marketplace_json(
     if not isinstance(plugins, list):
         raise ValueError(f"{marketplace_path} field 'plugins' must be an array.")
 
-    new_entry = build_marketplace_entry(plugin_name, install_policy, auth_policy, category)
+    source_path = None
+    if plugin_root is not None:
+        marketplace_root = marketplace_path.parent.parent.parent
+        source_path = "./" + Path(os.path.relpath(plugin_root, marketplace_root)).as_posix()
+    new_entry = build_marketplace_entry(plugin_name, install_policy, auth_policy, category, source_path)
 
     for index, entry in enumerate(plugins):
         if isinstance(entry, dict) and entry.get("name") == plugin_name:
@@ -194,9 +200,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("plugin_name")
     parser.add_argument(
         "--path",
-        default=str(DEFAULT_PLUGIN_PARENT),
+        default=None,
         help=(
-            "Parent directory for plugin creation (defaults to <cwd>/plugins). "
+            "Parent directory for plugin creation (defaults to <repo-root>/plugins, or <cwd>/plugins outside Git). "
             "When using a home-rooted marketplace, use <home>/plugins."
         ),
     )
@@ -206,20 +212,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--with-assets", action="store_true", help="Create assets/ directory")
     parser.add_argument("--with-mcp", action="store_true", help="Create .mcp.json placeholder")
     parser.add_argument("--with-apps", action="store_true", help="Create .app.json placeholder")
+    parser.add_argument("--register-only", action="store_true", help="Register an existing plugin without writing any plugin files; --force replaces only its marketplace entry")
     parser.add_argument(
         "--with-marketplace",
         action="store_true",
         help=(
-            "Create or update <cwd>/.agents/plugins/marketplace.json. "
-            "Marketplace entries always point to ./plugins/<plugin-name> relative to the "
-            "marketplace root."
+            "Create or update <repo-root>/.agents/plugins/marketplace.json, or <cwd> outside Git. "
+            "Source paths point to the actual plugin destination relative to the marketplace root."
         ),
     )
     parser.add_argument(
         "--marketplace-path",
-        default=str(DEFAULT_MARKETPLACE_PATH),
+        default=None,
         help=(
-            "Path to marketplace.json (defaults to <cwd>/.agents/plugins/marketplace.json). "
+            "Path to marketplace.json (defaults to <repo-root>/.agents/plugins/marketplace.json). "
             "For a home-rooted marketplace, use <home>/.agents/plugins/marketplace.json."
         ),
     )
@@ -252,7 +258,23 @@ def main() -> None:
         print(f"Note: Normalized plugin name from '{raw_plugin_name}' to '{plugin_name}'.")
     validate_plugin_name(plugin_name)
 
-    plugin_root = (Path(args.path).expanduser().resolve() / plugin_name)
+    try:
+        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        root = Path(result.stdout.strip()) if result.returncode == 0 else Path.cwd()
+    except FileNotFoundError:
+        root = Path.cwd()
+    plugin_root = ((Path(args.path).expanduser().resolve() if args.path else root / "plugins") / plugin_name)
+    marketplace_path = Path(args.marketplace_path).expanduser().resolve() if args.marketplace_path else root / ".agents/plugins/marketplace.json"
+    if args.register_only:
+        if any((args.with_skills, args.with_hooks, args.with_scripts, args.with_assets, args.with_mcp, args.with_apps)):
+            raise ValueError("--register-only cannot be combined with scaffold component flags.")
+        manifest = plugin_root / ".codex-plugin/plugin.json"
+        if not manifest.is_file() or load_json(manifest).get("name") != plugin_name:
+            raise ValueError("--register-only requires an existing plugin manifest with the matching name.")
+        update_marketplace_json(marketplace_path, plugin_name, args.install_policy, args.auth_policy, args.category, args.force, plugin_root)
+        print(f"Registered plugin: {plugin_root}")
+        print(f"marketplace manifest: {marketplace_path}")
+        return
     plugin_root.mkdir(parents=True, exist_ok=True)
 
     plugin_json_path = plugin_root / ".codex-plugin" / "plugin.json"
@@ -285,7 +307,6 @@ def main() -> None:
         )
 
     if args.with_marketplace:
-        marketplace_path = Path(args.marketplace_path).expanduser().resolve()
         update_marketplace_json(
             marketplace_path,
             plugin_name,
@@ -293,6 +314,7 @@ def main() -> None:
             args.auth_policy,
             args.category,
             args.force,
+            plugin_root,
         )
 
     print(f"Created plugin scaffold: {plugin_root}")
