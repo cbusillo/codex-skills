@@ -55,8 +55,12 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   root to the flat train, and resolve child PRs after the root lands according
   to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
   permission-limited stacks as blocked/unsupported instead of mutating by hand.
-- **Retry Model**: Repeated controller calls are expected. Stop and report
-  blocked, stale, denied, or failed states with compact evidence and trace IDs.
+- **Retry Model**: Repeated controller calls are expected; let
+  `scripts/launchplane-train-drive.py` make them. It pauses on every non-terminal
+  state, treats a candidate made stale by a queue change as rebuildable, and
+  stops on blocked, failed, ineligible, closed, deadline or repeated helper
+  failure, with compact evidence and trace IDs. A candidate failure reports the
+  failing checks and run URLs on the candidate commit.
 - **Evidence**: For stack runs, report the stack-collapse plan record id, any
   batch candidate record id, the landing-plan record id, workflow run URLs, and
   the final root merge commit. Include child disposition evidence when the root
