@@ -314,8 +314,12 @@ or Project focus state.
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
-- `search <query>`: Search issues through the REST search endpoint with fixed
-  `repo:` and `is:issue` constraints. `--state open|closed` adds the matching
+- `search <query>`: Search issues through the REST search endpoint with an
+  `is:issue` constraint. Add the current repository only when the query has no
+  positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always
+  adds its repository constraint. Each result's `repo` identifies its own
+  repository, while the top-level `repo` records the caller's default context.
+  Result milestones retain the search payload's title. `--state open|closed` adds the matching
   search qualifier, `--state all` omits it, and quota evidence uses the search
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
   values.
