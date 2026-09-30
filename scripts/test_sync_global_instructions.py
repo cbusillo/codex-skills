@@ -70,5 +70,37 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual(first.read_text(), "preserve\n")
 
 
+
+    def test_missing_local_source_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, local = root / "shared.md", root / "private.md"
+            source.write_text("# Shared rules\n")
+            targets = [root / "claude.md"]
+            targets[0].write_text("HEADER\n\n# Shared rules\n\n## Host rules\nKeep this local.\n")
+            
+            # Preview reports refusal
+            content = sync.render(source, local)
+            preview = sync.synchronize(content, targets, write=False, local_source_missing=True, allow_missing_local=False)
+            self.assertEqual(preview[0]["state"], "would_write")
+            self.assertIn("refusal", preview[0])
+            
+            # Write is refused
+            with self.assertRaises(ValueError):
+                sync.synchronize(content, targets, write=True, local_source_missing=True, allow_missing_local=False)
+            
+            # Runtime checkout (local source exists) writes normally
+            # Assuming local source is present, so local_source_missing=False
+            receipt = sync.synchronize(content, targets, write=True, local_source_missing=False, allow_missing_local=False)
+            self.assertEqual(receipt[0]["state"], "written")
+            
+            # Reset target
+            targets[0].write_text("HEADER\n\n# Shared rules\n\n## Host rules\nKeep this local.\n")
+            
+            # Explicit override proceeds even if local source is missing
+            receipt = sync.synchronize(content, targets, write=True, local_source_missing=True, allow_missing_local=True)
+            self.assertEqual(receipt[0]["state"], "written")
+
+
 if __name__ == "__main__":
     unittest.main()

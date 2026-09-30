@@ -60,7 +60,7 @@ def render_codex_hook(destination: Path, catalog: Path = ROOT) -> str:
     return json.dumps(config, indent=2) + "\n"
 
 
-def synchronize(content: str, destinations: list[Path], *, write: bool) -> list[dict[str, str]]:
+def synchronize(content: str, destinations: list[Path], *, write: bool, local_source_missing: bool = False, allow_missing_local: bool = False) -> list[dict[str, str]]:
     # Inspect every destination before writing either one.
     previous: dict[Path, bytes | None] = {}
     for path in destinations:
@@ -73,6 +73,16 @@ def synchronize(content: str, destinations: list[Path], *, write: bool) -> list[
     for path, old in previous.items():
         entry = {"path": str(path), "sha256": hashlib.sha256(desired).hexdigest(), "state": "current"}
         if old != desired:
+            if local_source_missing and not allow_missing_local and old is not None:
+                # To be precise on "differs from the render in anything beyond the public source":
+                # We can check if `old` content has text that is not in the new public source.
+                # However, for safety and simplicity, we refuse whenever they differ.
+                msg = f"local source is missing and current file differs from the render in something beyond the public source. Use --allow-missing-local to override."
+                if write:
+                    raise ValueError(f"Refusing to write {path}: {msg}")
+                else:
+                    entry["refusal"] = msg
+
             entry["state"] = "written" if write else "would_write"
             if not write:
                 entry["diff"] = "".join(difflib.unified_diff(
@@ -108,6 +118,7 @@ def main() -> int:
     parser.add_argument("--codex-dir", type=Path, help="Codex configuration directory (default CODEX_HOME, then ~/.codex)")
     parser.add_argument("--claude-dir", type=Path, help="Claude configuration directory (default CLAUDE_CONFIG_DIR, then ~/.claude)")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--allow-missing-local", action="store_true", help="Proceed with write even if the local source is missing")
     parser.add_argument("--codex-hook", action="store_true", help="Also register the catalog's PreToolUse hook in .codex/hooks.json; host hook trust is unchanged")
     args = parser.parse_args()
     if args.home_dir and (args.codex_dir or args.claude_dir):
@@ -122,9 +133,9 @@ def main() -> int:
         hook_content = render_codex_hook(hook_destination) if args.codex_hook else None
         outputs = synchronize(render(args.source, args.local_source), [
             claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md",
-        ], write=args.write)
+        ], write=args.write, local_source_missing=not args.local_source.exists(), allow_missing_local=args.allow_missing_local)
         if hook_content is not None:
-            outputs.extend(synchronize(hook_content, [hook_destination], write=args.write))
+            outputs.extend(synchronize(hook_content, [hook_destination], write=args.write, local_source_missing=not args.local_source.exists(), allow_missing_local=args.allow_missing_local))
     except (OSError, ValueError) as error:
         print(f"Global instructions not synchronized: {error}", file=sys.stderr)
         return 1
