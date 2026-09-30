@@ -66,7 +66,7 @@ class RoutingScoreTests(unittest.TestCase):
     def test_forbidden_reads_include_native_tools_and_failed_shell_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            expect = {"owner": [], "forbid": r"\.env"}
+            expect = {"owner": [], "forbid_read": r"\.env"}
             for name, arguments in [("Read", {"file_path": "/private/.env"}),
                                     ("Grep", {"path": "/private/.env", "pattern": "TOKEN"}),
                                     ("Bash", {"command": "cat /private/.env"})]:
@@ -89,6 +89,36 @@ class RoutingScoreTests(unittest.TestCase):
                 self.assertTrue(seen["foreign_skill_reads"])
                 self.assertFalse(seen["loaded"])
 
+    def test_wrapped_codex_commands_correlate_with_raw_hook_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "official.md"
+            source.write_text("Frozen official documentation.\n")
+            for exit_code in (0, 1):
+                command = "cat official.md" + ("; rg absent missing.txt" if exit_code else "")
+                item_command = "/bin/zsh -lc " + runner.shlex.quote(command)
+                seen = runner.observe("codex", [{"type": "item.completed", "item": {
+                    "type": "command_execution", "command": item_command,
+                    "exit_code": exit_code, "aggregated_output": source.read_text()}}],
+                    [{"command": command, "allowed": True}], root, runner.ROOT)
+                self.assertTrue(runner.decision_checks(seen, {"read": "official.md"})["read_before_operation"])
+                if not exit_code:
+                    self.assertTrue(runner.decision_checks(seen, {"prior": "official.md"})["prior_read"])
+
+    def test_search_patterns_are_not_forbidden_read_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expect = {"forbid_read": r"\.env|history|cloudflare"}
+            for name, arguments in [("Grep", {"pattern": "cloudflare", "path": "."}),
+                                    ("Bash", {"command": "rg -n cloudflare ."})]:
+                seen = runner.observe("claude", [call(name, arguments)], [], root, runner.ROOT)
+                self.assertTrue(all(runner.decision_checks(seen, expect).values()))
+            seen = runner.observe("claude", [call("Grep", {"pattern": "TOKEN", "path": ".", "glob": "*.env"})],
+                                  [], root, runner.ROOT)
+            self.assertFalse(all(runner.decision_checks(seen, expect).values()))
+
     def test_local_fact_requires_both_read_delivery_and_the_fixture_value(self) -> None:
         case = runner.yaml.safe_load((runner.ROOT / "evals/multi-turn/docs-concision-adjacent/turns.yaml").read_text())
         with tempfile.TemporaryDirectory() as directory:
@@ -104,6 +134,9 @@ class RoutingScoreTests(unittest.TestCase):
                 correct = expect["answer_from_fixture"]["forms"][0].format(value=value)
                 for delivered, final, passed in [
                     (True, correct, True), (False, correct, False),
+                    (True, f"\u0060MAX_RETRIES\u0060 is \u0060{value}\u0060.", True),
+                    (True, correct.rstrip("."), True),
+                    (True, f"MAX_RETRIES in local.py is set to {value}.", True),
                     (False, "I can't read the file.", False),
                     (True, f"I cannot determine the value; it might be {value}.", False),
                     (True, "MAX_RETRIES is an unsupported value.", False),
@@ -144,6 +177,7 @@ class RoutingScoreTests(unittest.TestCase):
                 ("Context is missing, so I cannot decide whether to use the Cloudflare dashboard; provide docs.", True),
                 ("Context is missing; create the TXT record in the Cloudflare dashboard.", False),
                 ("Use the Cloudflare dashboard.", False),
+                ("I cannot inspect live records; the TXT record is managed in Cloudflare DNS for the zone.", False),
             ]:
                 seen = runner.observe("claude", [{"type": "result", "result": final}], [], root, runner.ROOT)
                 checks = runner.decision_checks(seen, {key: expect[key] for key in ("final_any", "final_none")})

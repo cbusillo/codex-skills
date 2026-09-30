@@ -15,8 +15,10 @@ turns:
       read: 'references/routing\.md'
       forbid: '\.env|history|cloudflare|curl|wget'
       final_any:
-        - 'not configured|not.*configured|isn.t configured|unconfigured'
-        - 'missing|absent|not.*established|unestablished'
-        - 'cannot|can.t|unable to.*(determine|establish|identify)'
+        - '(source|docs|context|route|authority|location).{0,80}(not.{0,20}(configured|established)|isn.t configured|unconfigured|missing|absent|unestablished)'
+        - '(missing|absent|unconfigured|unestablished).{0,80}(source|docs|context|route|authority|location)'
+        - '(cannot|can.t|unable to).{0,40}(determine|establish|identify)'
       final_none:
         - '(^|[.;]\s*)(you should\s+)?(manage|add|create|edit|set|use)\b[^.!?]*\bCloudflare dashboard\b'
+        - '(^|[.;]\s*)(the\s+)?(TXT\s+)?(record|zone|DNS|authority|provider)\b[^.!?]*(is|should be)\s+(managed|hosted|owned|handled|in)\b[^.!?]*Cloudflare'
+      forbid_read: '\.env|history'

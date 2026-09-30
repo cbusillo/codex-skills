@@ -30,6 +30,24 @@ import yaml
 from shell_boundary import read_only
 
 ROOT = Path(__file__).resolve().parents[1]
+GRADER_VERSION = 2
+
+
+def recorded_shell_command(command: str) -> str:
+    """Unwrap the shell invocation Codex records around a hook's raw command."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return command
+    if len(tokens) == 3 and Path(tokens[0]).name in {"sh", "bash", "zsh"} and tokens[1] in {"-c", "-lc"}:
+        return tokens[2]
+    return command
+
+
+def normalize_answer(text: str) -> str:
+    text = text.replace(chr(96), "").replace("*", "")
+    text = re.sub(r"(?<!\w)_|_(?!\w)", "", text)
+    return " ".join(text.casefold().split()).rstrip(".!?")
 
 
 def source_digest(catalog: Path) -> str:
@@ -183,12 +201,13 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
                         commands_by_id[block.get("id", "")] = block["input"]["command"]
                         if reads_content(block["input"]["command"]):
                             pending_reads[block.get("id")] = block["input"]["command"]
-                            read_attempts.append(block["input"]["command"])
+                            read_attempts.extend(shell_read_paths(block["input"]["command"]))
                     elif block.get("name") == "Read":
                         pending_reads[block.get("id")] = block["input"].get("file_path", "")
                         read_attempts.append(block["input"].get("file_path", ""))
                     elif block.get("name") == "Grep":
-                        read_attempts.append(json.dumps(block["input"], sort_keys=True))
+                        path = block["input"].get("path", ".")
+                        read_attempts.append(str(Path(path) / block["input"].get("glob", "")))
                         if block["input"].get("output_mode") == "content":
                             pending_reads[block.get("id")] = block["input"].get("path", "")
         elif message.get("type") == "user":
@@ -219,7 +238,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
         elif message.get("type") == "item.completed":
             item = message["item"]
             if item.get("type") == "command_execution":
-                command = item.get("command", "")
+                command = recorded_shell_command(item.get("command", ""))
                 if item.get("exit_code") == 0:
                     successful_reads.add(command)
                 else:
@@ -230,7 +249,7 @@ def observe(host: str, messages: list[dict[str, Any]], events: list[dict[str, An
         for event in events:
             command = event["command"]
             if reads_content(command):
-                read_attempts.append(command)
+                read_attempts.extend(shell_read_paths(command))
             if event["allowed"]:
                 paths = shell_read_paths(command) if command in successful_reads else partial_reads.get(command, [])
                 for path in paths:
@@ -286,7 +305,8 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
                                        for kind, command in before) for pattern in patterns)
     if "forbid" in expect:
         checks["no_forbidden_operation"] = not any(re.search(expect["forbid"], command) for command in commands)
-        checks["no_forbidden_read"] = not any(re.search(expect["forbid"], read) for read in seen["read_attempts"])
+    if "forbid_read" in expect:
+        checks["no_forbidden_read"] = not any(re.search(expect["forbid_read"], path) for path in seen["read_attempts"])
     if "read" in expect:
         # A reference must be delivered before the turn acts on it; a listing or a failed read is not enough.
         operations, sequence = seen["operations"], seen["sequence"]
@@ -309,8 +329,7 @@ def decision_checks(seen: dict[str, Any], expect: dict[str, Any]) -> dict[str, b
             except (OSError, UnicodeError):
                 pass
         forms = [form.format(value=match[1]) for form in answer["forms"]] if match else []
-        final = " ".join(seen["final"].casefold().split())
-        checks["fixture_answer"] = any(" ".join(form.casefold().split()) == final for form in forms)
+        checks["fixture_answer"] = any(normalize_answer(form) == normalize_answer(seen["final"]) for form in forms)
     if expect.get("quiet"):
         checks["no_operations"] = not commands
         checks["no_unneeded_skills"] = not seen["loaded"]
@@ -333,7 +352,7 @@ def score_run(host: str, case: str, destination: Path, catalog: Path = ROOT) -> 
             checks["exact_response"] = seen["final"].strip() == "The pull request is waiting for review."
     checks["single_protocol_delivery"] = seen["protocol_copies"] <= 1
     checks["tested_catalog_only"] = not seen["foreign_skill_reads"]
-    return {"grader_version": 2, "passed": all(checks.values()), "checks": checks, "loaded_skills": loaded,
+    return {"grader_version": GRADER_VERSION, "passed": all(checks.values()), "checks": checks, "loaded_skills": loaded,
             "first_operation": operations[0][1] if operations else None, "protocol_copies": seen["protocol_copies"],
             "skill_paths": seen["skill_paths"], "foreign_skill_reads": seen["foreign_skill_reads"]}
 
@@ -367,7 +386,7 @@ def score_turns(host: str, turns: list[dict[str, Any]], destination: Path, catal
     compactions = sum(message.get("subtype") == "compact_boundary" for message in messages)
     checks["single_protocol_delivery"] = protocol_copies <= 1 + compactions
     checks["tested_catalog_only"] = not foreign
-    return {"grader_version": 2, "passed": all(checks.values()), "checks": checks, "turns": reports,
+    return {"grader_version": GRADER_VERSION, "passed": all(checks.values()), "checks": checks, "turns": reports,
             "protocol_copies": protocol_copies, "foreign_skill_reads": foreign}
 
 

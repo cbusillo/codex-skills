@@ -49,8 +49,9 @@ or fixture file text actually present in its output. A denied read, a filename,
 or unrelated stdout does not prove delivery. Partial excerpts remain unproven
 for that nonzero-command recovery. Native Claude Read results also establish
 source attribution; bundled .system skills do not count as maintained catalog
-sources. The forbid check includes attempted shell and native Read/Grep paths,
-including failed attempts, as well as operational commands.
+sources. The forbid_read check matches attempted shell and native Read/Grep
+paths, including failed attempts and targeted globs, rather than search-pattern
+text. The existing forbid check continues to apply to operational commands.
 Traces establish skill source paths and command order; distinguish configured
 models from model names independently reported by the host. Existing personal
 instructions can still affect direct CLI runs, so keep the environment fixed.
@@ -87,7 +88,8 @@ answer_from_fixture with file, a capture pattern containing one value group,
 and accepted full-answer forms containing {value}. The expected value comes
 from the fixture itself; a refusal, a guessed value without a delivered read,
 or a value contradicted by the fixture fails. Accepted forms normalize case
-and whitespace, but remain an explicit bounded output contract.
+and whitespace, Markdown formatting and final punctuation, but remain an
+explicit bounded output contract.
 The final_any check accepts a listed alternative pattern; final_none rejects
 listed contradictory answers. These are lexical checks, not a general semantic
 judge: inspect actual finals when the answer falls outside the qualified rubric.
