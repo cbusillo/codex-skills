@@ -1790,8 +1790,14 @@ def cmd_index(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    repo = default_repo(args.repo)
-    query_parts = [args.query.strip(), f"repo:{repo}", "is:issue"]
+    query = args.query.strip()
+    unquoted_query = re.sub(r'"(?:\\.|[^"\\])*"', '""', query)
+    has_scope = re.search(r"(?:^|[\s(])(?:repo|org|user):", unquoted_query, re.IGNORECASE)
+    repo = args.repo or (repo_from_git() if has_scope else default_repo())
+    query_parts = [query]
+    if args.repo or not has_scope:
+        query_parts.append(f"repo:{repo}")
+    query_parts.append("is:issue")
     if args.state != "all":
         query_parts.append(f"is:{args.state}")
     actor, data = collect_paged_rest_items(
@@ -1803,7 +1809,12 @@ def cmd_search(args: argparse.Namespace) -> None:
         collection_key="items",
         issue_only=True,
     )
-    items = [compact_list_issue(repo, item) for item in data]
+    items = []
+    for item in data:
+        item_repo = issue_repository_name(item)
+        if item_repo is None:
+            raise PlanError("GitHub search response omitted the issue repository")
+        items.append(compact_list_issue(item_repo, item))
     emit({"ok": True, "actor": actor, "repo": repo, "count": len(items), "issues": items})
 
 

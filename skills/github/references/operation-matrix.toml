@@ -683,7 +683,7 @@ entrypoint = "github/scripts/gh-plan.py search"
 intent = "Search issues and return compact normalized planning results."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /search/issues?q={query}+repo:{repo}+is:issue with conditional is:open/is:closed qualifier; honor --limit"
+endpoint_or_command = "Paged GET /search/issues?q={query}+is:issue; add repo:{repo} only for an unscoped query or explicit --repo; conditional is:open/is:closed qualifier; honor --limit"
 quota_bucket = "search"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -692,7 +692,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issue search endpoint preserves planning discovery while using the search bucket explicitly."
 source_refs = ["github/scripts/gh-plan.py:cmd_search", "github/scripts/gh-plan.py:collect_paged_rest_items"]
-test_refs = ["github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-search.json", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-search.json", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.show"
