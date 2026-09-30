@@ -1,0 +1,16 @@
+name: design-concision-primary
+hosts:
+- claude
+- codex
+execution:
+  timeout_seconds: 180
+turns:
+- prompt: 'Use shared:design-collaboration. Prepare a first-pass Claude Design request
+    for a stock dashboard: warehouse staff must find low-stock parts quickly, with
+    replenishment as the secondary action. Existing app is React with its own component
+    library, keyboard users and narrow screens matter. Draft only; no GitHub or collaborator
+    writes. Include what the collaborator needs and explain where durable design work
+    belongs. Offline trial: no operational commands.'
+  expect:
+    owner: design-collaboration
+    final: (?is)(stock|warehouse).*(state|loading|error)
