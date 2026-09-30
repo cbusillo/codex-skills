@@ -918,6 +918,15 @@ PR and never hand-collapse stacks.
 - **Helper**: Use `scripts/launchplane-write-action.py
 merge-train-controller-run-once` instead of open-coding the route. Mutating
   calls require an idempotency key.
+- **Driving To An Outcome**: To take a labeled PR through its train, run
+  `uv run scripts/launchplane-train-drive.py --repo OWNER/REPO --pr N` in the
+  background instead of writing a loop around the run-once helper. It pauses on
+  every non-terminal state, stops at a wall-clock deadline, reports every PR in
+  the landing batch, and exits `landed` (0), `failed` (1), `needs_owner` (2) or
+  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. Pass
+  `--allow-branch-update` only for your own same-repository branches, because the
+  controller does not refresh a behind-base PR. Run one driver per repository
+  train, and keep a watcher on it while you report "waiting on the train".
 - **Operator Action**: Put `ready-to-merge` only on the root PR that targets the
   protected base branch. Do not hand-collapse stacks in GitHub.
 - **Mutation Gate**: Keep scheduled runners in dry-run mode until the operator
