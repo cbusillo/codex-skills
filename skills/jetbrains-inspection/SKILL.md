@@ -241,7 +241,8 @@ Command model:
 - `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
   inventory. Review the listed entries, then use `--no-dry-run` with repeated
   `--worktree-path /reviewed/orphan` flags. Apply is limited to those paths
-  still present in the current preview. A locked worktree can be previewed;
+  still present in the current preview. Refused orphan records remain listed
+  and are excluded from apply without blocking unrelated eligible paths. A locked worktree can be previewed;
   release its lock only for removal apply and restore it if removal fails. Start each IDE that
   prepared the removed worktrees before cleanup; discovery covers running IDEs,
   not offline SDK tables. Legacy SDK names or paths are never ownership proof.

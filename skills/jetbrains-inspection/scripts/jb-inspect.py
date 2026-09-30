@@ -10697,14 +10697,27 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
         seen.add(key)
         params = {"session_id": identity["session_id"], "dry_run": str(dry_run).lower()}
         params.update({"worktree_path": str(root)} if root is not None else {"orphans": "true"})
-        body = http_post(identity["port"], "lifecycle/unregister-python-sdk", params).body
+        try:
+            body = http_post(identity["port"], "lifecycle/unregister-python-sdk", params).body
+        except InspectError as error:
+            # A refused orphan preview still contains the candidates and held records.
+            if root is None and dry_run and error.payload.get("http_status") == 409 and error.payload.get("status") == "refused":
+                body = error.payload
+            else:
+                error.payload["completed_sdk_cleanup"] = results
+                raise
         entries = body.get("sdks")
+        orphan_preview = root is None and dry_run
         valid_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
-        if (body.get("session_id") != identity["session_id"] or body.get("status") != "ok"
+        valid_reasons = {"helper_owned", "already_absent"}
+        if orphan_preview:
+            valid_statuses.add("refused")
+            valid_reasons.update({"sdk_in_use", "ownership_mismatch", "ambiguous_sdk"})
+        if (body.get("session_id") != identity["session_id"] or body.get("status") not in ({"ok", "refused"} if orphan_preview else {"ok"})
             or body.get("sdk_lifecycle_version") != 1 or body.get("dry_run") is not dry_run
             or not isinstance(entries, list) or any(
                 not isinstance(entry, dict) or entry.get("status") not in valid_statuses
-                or entry.get("reason") not in {"helper_owned", "already_absent"}
+                or entry.get("reason") not in valid_reasons
                 or not isinstance(entry.get("worktree_path"), str)
                 or not Path(entry.get("worktree_path") or "").is_absolute()
                 or (root is not None and not paths_same(entry.get("worktree_path"), root))
@@ -10729,7 +10742,8 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     # Explicit paths bind apply to the earlier reviewed dry-run.
                     selected = {str(Path(path).expanduser().resolve()) for path in (getattr(args, "worktree_path", None) or [])}
-                    candidates = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"]}
+                    refused_roots = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"] if entry["status"] == "refused"}
+                    candidates = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"]} - refused_roots
                     if candidates and not selected:
                         raise InspectError("Repeat each reviewed orphan path with --worktree-path before applying cleanup.", 3)
                     if not selected.issubset(candidates):
@@ -10751,7 +10765,10 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     # Recheck local state and live projects after SDK retirement.
                     retirement_worktree(root)
                     current = discover_identities(None)
-                    unregister_helper_sdks(current, root, True)
+                    final_preview = unregister_helper_sdks(current, root, True)
+                    if any(entry["status"] != "absent" for item in final_preview for entry in item["result"]["sdks"]):
+                        raise InspectError("An SDK still needs retirement; retain the worktree and repeat the preview.", 3,
+                                           {"sdk_remaining": final_preview})
                     common = git_common_worktree(root)
                     if common is None:
                         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
