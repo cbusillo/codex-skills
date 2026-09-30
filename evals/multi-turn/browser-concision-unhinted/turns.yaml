@@ -1,0 +1,15 @@
+name: browser-concision-unhinted
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+turns:
+  - prompt: >-
+      Use shared:browser-ui-review. The host has no browser capability and
+      installed ui-browser is selected. Review a public form with changing
+      search results while other tasks use the same helper. Give the runbook
+      and evidence handoff you would execute. This offline trial has no live
+      browser; do not execute operational commands or claim signoff.
+    expect:
+      owner: browser-ui-review
+      read: 'ui-browser\.md'
+      final: '--session'
